@@ -63,16 +63,21 @@ type ConsensusSettings struct {
 	// disables the cap, but that is not the shipped behavior.
 	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
 
-	// P2P enables direct per-peer (one-to-one) block propagation IN ADDITION to
-	// the gossip mesh. Default 0 = gossip-only (the mesh + FloodPublish reach the
-	// whole fleet). Set to 1 to ALSO fan finalized blocks out over direct libp2p
-	// streams (e.g. during a mixed-version rollout, or if gossip reachability is
-	// degraded). Overridable via JMDN_DIRECT_BLOCK_PROPAGATION=1.
+	// P2P controls direct per-peer (one-to-one) block propagation over libp2p
+	// streams, IN ADDITION to the gossip mesh. Default 1 = direct + gossip both
+	// active (dedup + the per-block-hash apply lock make the double delivery
+	// safe); this is the resilient default because it does not depend solely on
+	// gossip-mesh reachability. Set to 0 for gossip-only (the mesh + FloodPublish
+	// reach the whole fleet with no redundant direct fan-out).
 	//
-	// YAML:
+	// Applies per node: at 1 the sequencer originates the direct fan-out AND every
+	// node hop-forwards, so direct only works fleet-wide when set on all nodes.
+	// Also overridable via JMDN_DIRECT_BLOCK_PROPAGATION=1 (env forces direct on).
+	//
+	// YAML (opt into gossip-only):
 	//
 	//	consensus:
-	//	  p2p: 1
+	//	  p2p: 0
 	P2P int `mapstructure:"p2p" yaml:"p2p"`
 }
 

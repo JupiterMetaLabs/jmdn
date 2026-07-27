@@ -646,11 +646,12 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	// message processed above, so it will not re-ingest its own gossiped copy.
 	PublishBlockGossip(msg)
 
-	// Gossip-only by default: the gossip mesh + FloodPublish reach the whole fleet,
-	// so the direct per-peer stream fan-out below is redundant — and sending over
-	// both transports delivered every block twice, which was then applied
-	// concurrently. Skip the direct fan-out unless it is explicitly re-enabled. If
-	// gossip is OFF, keep direct as the only path so a block is never un-propagated.
+	// Direct + gossip both run by default (consensus.p2p defaults to 1); dedup and
+	// the per-block-hash apply lock make the double delivery safe. Skip the direct
+	// per-peer fan-out below ONLY when the operator has opted into gossip-only
+	// (consensus.p2p: 0) AND gossip is on — the gossip mesh + FloodPublish then
+	// reach the whole fleet. If gossip is OFF, keep direct as the only path so a
+	// block is never un-propagated.
 	if EnableBlockGossip && !directBlockPropagationEnabled() {
 		return nil
 	}
