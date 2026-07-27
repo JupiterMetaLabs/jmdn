@@ -128,16 +128,25 @@ if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
     log "External ImmuDB mode — waiting for ${IMMUDB_HOST}:${IMMUDB_PORT}..."
 else
     # Embedded mode: this entrypoint runs as root and starts immudb as
-    # ${JMDN_USER} (3322). Ensure immudb's data dir is owned by that UID/GID
-    # FIRST — immudb crash-loops with "permission denied" on its tx log if the
-    # dir holds files owned by another UID (a snapshot restored out-of-band as
-    # root, or a re-provision after the bootstrap sentinel was already set, so
-    # bootstrap_sync.sh skipped its own chown). Idempotent; guarded so a missing
-    # dir (immudb creates it) or a chown error never aborts startup.
+    # ${JMDN_USER} (3322). Ensure immudb's data dir is BOTH owned by that UID/GID
+    # and writable by the owner FIRST — immudb crash-loops with "permission
+    # denied" on its tx log if either is wrong:
+    #   - files owned by another UID (a snapshot restored out-of-band as root, or
+    #     a re-provision after the bootstrap sentinel was set so bootstrap_sync.sh
+    #     skipped its own chown); or
+    #   - files read-only for the owner (a snapshot tarball unpacked at mode
+    #     0555). immudb opens its tx log O_RDWR, so a missing owner write bit
+    #     fails EACCES even when ownership is already correct.
+    # Idempotent; guarded so a missing dir (immudb creates it) or a chown/chmod
+    # error never aborts startup.
     if [ -d "${IMMUDB_DIR}" ]; then
-        log "Ensuring ${IMMUDB_DIR} ownership is ${JMDN_USER}:${JMDN_USER}..."
+        log "Ensuring ${IMMUDB_DIR} ownership ${JMDN_USER}:${JMDN_USER} + owner write..."
         chown -R "${JMDN_USER}:${JMDN_USER}" "${IMMUDB_DIR}" || \
             log "WARN: chown ${IMMUDB_DIR} failed — immudb may fail to open if ownership is wrong"
+        find "${IMMUDB_DIR}" -type d -exec chmod u+rwx {} + 2>/dev/null || \
+            log "WARN: chmod dirs in ${IMMUDB_DIR} failed — immudb may fail to open if modes are read-only"
+        find "${IMMUDB_DIR}" -type f -exec chmod u+rw  {} + 2>/dev/null || \
+            log "WARN: chmod files in ${IMMUDB_DIR} failed — immudb may fail to open if modes are read-only"
     fi
     log "Starting embedded ImmuDB as ${JMDN_USER} (dir: ${IMMUDB_DIR})..."
     gosu "${JMDN_USER}" immudb --dir "${IMMUDB_DIR}" &

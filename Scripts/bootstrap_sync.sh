@@ -176,13 +176,20 @@ log "Moving data to $DATA_DIR..."
 find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
 rm -rf "${BASE_DIR}/data_tmp"
 
-# ── Fix permissions ───────────────────────────────────────
-# Bootstrap runs as root → extracted files are root-owned (mode 644/755).
-# immudb runs as IMMUDB_UID:IMMUDB_UID and needs write access to tx logs.
-# chown so immudb can read and write its own data directory.
+# ── Fix ownership AND modes ───────────────────────────────
+# Bootstrap runs as root → extracted files are root-owned. tar also preserves
+# the modes stored in the snapshot, which have been observed READ-ONLY (files
+# 0555, dirs 0555). chown alone is NOT enough: immudb runs as
+# IMMUDB_UID:IMMUDB_UID and opens its tx log O_RDWR, so a missing owner write
+# bit makes it crash-loop with
+#   "permission denied: open .../systemdb/tx/00000000.tx"
+# EVEN AFTER a correct chown. Fix both — set ownership, then restore owner
+# write (dirs need x to traverse; files need rw for the append-only tx log).
 # jmdn connects via gRPC and never mounts this directory.
-log "Setting ownership of $DATA_DIR to $IMMUDB_UID:$IMMUDB_UID..."
+log "Setting ownership of $DATA_DIR to $IMMUDB_UID:$IMMUDB_UID and restoring owner write..."
 chown -R "${IMMUDB_UID}:${IMMUDB_UID}" "$DATA_DIR"
+find "$DATA_DIR" -type d -exec chmod u+rwx {} +
+find "$DATA_DIR" -type f -exec chmod u+rw  {} +
 
 # ── Clean up work directory ───────────────────────────────
 log "Cleaning up work directory..."
