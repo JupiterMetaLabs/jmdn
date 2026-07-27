@@ -356,6 +356,15 @@ func createSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_address_block
 			ON address_txns(address, block_number DESC);
 
+		-- Index on tx_hash alone so the explorer stats total-transaction count
+		-- (SELECT COUNT(DISTINCT tx_hash) FROM address_txns) runs as an index-only
+		-- distinct scan instead of a full-table scan (254MB+ -> multi-second). The
+		-- primary key is (address, tx_hash), which cannot serve a tx_hash-only
+		-- DISTINCT. NOTE: on an existing large table this index is built once, at
+		-- the next startup (createSchema runs in Open), which briefly delays boot.
+		CREATE INDEX IF NOT EXISTS idx_address_txns_txhash
+			ON address_txns(tx_hash);
+
 		-- Tracks the highest block fully indexed.
 		-- Single row: key='last_indexed_block', value='<uint64>'.
 		CREATE TABLE IF NOT EXISTS index_meta (
