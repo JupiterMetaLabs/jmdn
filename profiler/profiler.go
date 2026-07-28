@@ -2,10 +2,12 @@ package profiler
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -21,12 +23,53 @@ func RegisterHost(h host.Host) {
 	globalHost = h
 }
 
+// Contention-profiling sampling rates, applied only when the profiler is
+// enabled (see StartProfiler). Sampled to keep overhead modest; lower toward 1
+// for a deeper capture, or set ports.profiler to 0 to disable everything.
+const (
+	// mutexProfileFraction: report ~1 in N mutex contention events (1 = all).
+	mutexProfileFraction = 5
+	// blockProfileRateNanos: sample ~1 blocking event per N ns spent blocked
+	// (1 = every event). 10µs reliably captures multi-second lock waits cheaply.
+	blockProfileRateNanos = 10_000
+)
+
+// isLoopbackBind reports whether bindAddr is a loopback address (the only kind
+// safe to expose an unauthenticated pprof server on). Anything else is
+// reachable from the network.
+func isLoopbackBind(bindAddr string) bool {
+	switch bindAddr {
+	case "127.0.0.1", "localhost", "::1", "[::1]":
+		return true
+	}
+	if ip := net.ParseIP(bindAddr); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func StartProfiler(bindAddr string, port string) *http.Server {
 	if port == "" || port == "0" {
 		return nil
 	}
 
-	// Verify security policy allows binding to 0.0.0.0
+	// Enable mutex + block contention profiling HERE — behind the port guard —
+	// so it is active ONLY when an operator explicitly turns the profiler on
+	// (zero overhead when ports.profiler = 0). Without these, /debug/pprof/mutex
+	// and /debug/pprof/block return empty and lock contention (e.g. the global
+	// state-apply mutex) is invisible.
+	runtime.SetMutexProfileFraction(mutexProfileFraction)
+	runtime.SetBlockProfileRate(blockProfileRateNanos)
+
+	// This pprof server is UNAUTHENTICATED and exposes process internals (heap,
+	// goroutines, cmdline). Binding to a non-loopback address puts it on the
+	// network — do that only behind a firewall or a tunnel. Advisory only: the
+	// address is used as configured (no hard block), so a deliberate
+	// private-interface bind still works, but it is logged loudly.
+	if !isLoopbackBind(bindAddr) {
+		log.Warn().Str("bind", bindAddr).Msg("Profiler binding to a NON-loopback address and is unauthenticated — restrict via firewall or prefer 127.0.0.1 + an SSH tunnel")
+	}
+
 	addr := fmt.Sprintf("%s:%s", bindAddr, port)
 
 	// Register custom handlers
