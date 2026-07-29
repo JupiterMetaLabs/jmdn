@@ -1,7 +1,8 @@
 // MODULE: profiler
-// PURPOSE: Opt-in runtime diagnostics (pprof, contention, FD and libp2p stream
-//          counters). Disabled unless ports.profiler is set; bound to
-//          binds.profiler (127.0.0.1 by default).
+//
+// Opt-in runtime diagnostics: pprof, mutex/block contention, open file
+// descriptors and libp2p stream counts. Disabled unless ports.profiler is set,
+// and bound to binds.profiler (127.0.0.1 by default).
 //
 // TWO THINGS TO KNOW BEFORE EDITING THIS FILE
 //
