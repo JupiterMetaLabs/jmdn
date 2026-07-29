@@ -52,6 +52,17 @@ type Fingerprinter struct {
 	lastRoot         [32]byte            // root for the current leaves (returned when unchanged)
 	sinceFullRebuild int                 // Compute calls since the last full rebuild
 	fullRebuildEvery int                 // forced-rebuild cadence; <= 0 disables it
+
+	// Lifetime diagnostics, reported on each full-rebuild log line. Not cleared
+	// by reset(): they describe this process, not the current cache generation.
+	// Healthy steady state is cachedComputes climbing while fullRebuilds grows
+	// only on the fullRebuildEvery cadence and leavesRead tracks new blocks, not
+	// chain length. fullRebuilds tracking cachedComputes means the cache has
+	// stopped engaging and the node is paying the pre-cache O(chain) read cost
+	// every tick — invisible otherwise, since the root stays correct either way.
+	cachedComputes uint64 // served from the cache — tip check passed
+	fullRebuilds   uint64 // required a full O(chain) rescan
+	leavesRead     uint64 // leaf hashes read from the DB across all computes
 }
 
 // NewFingerprinter returns an incremental fingerprinter. fullRebuildEvery is the
@@ -99,14 +110,16 @@ func (f *Fingerprinter) compute(ctx context.Context, headFn func() uint64, scan 
 	cacheUsable := f.ready && !forceFull && head >= f.head && uint64(len(f.leaves)) == f.head+1
 
 	if cacheUsable {
-		// Tip-consistency: the cached head block must be unchanged. hashBlock
-		// chains via PrevHash+StateRoot, so any rewrite at or below f.head shows
-		// up in the head block's leaf hash.
+		// Tip-consistency: the cached head block must be unchanged. This detects a
+		// reorg (which rewrites the head block too), not an in-place write below a
+		// static head — see the reorg-safety note on Fingerprinter.
 		tip, err := scan(ctx, f.head, f.head)
 		if err != nil {
 			return nil, err
 		}
+		f.leavesRead += uint64(len(tip))
 		if len(tip) == 1 && tip[0] == f.leaves[f.head] {
+			f.cachedComputes++
 			if head == f.head {
 				// Nothing changed — return the cached root without rebuilding.
 				return &Result{Root: f.lastRoot, Head: f.head, Total: uint64(len(f.leaves))}, nil
@@ -116,6 +129,7 @@ func (f *Fingerprinter) compute(ctx context.Context, headFn func() uint64, scan 
 			if err != nil {
 				return nil, err
 			}
+			f.leavesRead += uint64(len(newLeaves))
 			f.leaves = append(f.leaves, newLeaves...)
 			f.head = head
 			return f.finalize(head)
@@ -145,11 +159,17 @@ func (f *Fingerprinter) finalize(head uint64) (*Result, error) {
 
 // fullScan re-reads every leaf 0..head and resets the rebuild counter.
 func (f *Fingerprinter) fullScan(ctx context.Context, scan leafScanFn, head uint64) error {
-	log.Printf("[merkle] fingerprint full rebuild at head %d", head)
+	f.fullRebuilds++
+	// Logged with the running tallies so a node that has silently fallen back to
+	// rebuilding every tick (cache never usable) is visible in the logs alone,
+	// without needing to scrape Stats.
+	log.Printf("[merkle] fingerprint full rebuild at head %d (rebuilds=%d, cached=%d, leaves_read=%d)",
+		head, f.fullRebuilds, f.cachedComputes, f.leavesRead)
 	leaves, err := scan(ctx, 0, head)
 	if err != nil {
 		return err
 	}
+	f.leavesRead += uint64(len(leaves))
 	f.leaves = leaves
 	f.head = head
 	f.ready = true
@@ -157,6 +177,9 @@ func (f *Fingerprinter) fullScan(ctx context.Context, scan leafScanFn, head uint
 	return nil
 }
 
+// reset drops the cache (head 0 / empty chain). The lifetime counters in Stats
+// are deliberately NOT cleared — they describe this process, not this cache
+// generation.
 func (f *Fingerprinter) reset() {
 	f.leaves = nil
 	f.head = 0

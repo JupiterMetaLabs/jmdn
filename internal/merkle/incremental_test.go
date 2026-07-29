@@ -233,3 +233,42 @@ func TestFingerprinter_HeadZeroEmptyResult(t *testing.T) {
 		t.Fatalf("head 0: got root %x head %d, want empty", res.Root, res.Head)
 	}
 }
+
+// Stats must reflect real behaviour, otherwise the metric can lie about whether
+// the cache is engaging: cold start is one full rebuild reading the whole chain,
+// subsequent appends are cached computes reading only the tip + the new block.
+func TestFingerprinter_StatsReflectCacheBehaviour(t *testing.T) {
+	chain := make([]merkletree.Hash32, 0)
+	for i := 0; i <= 50; i++ {
+		chain = append(chain, leaf(i))
+	}
+	sc := &countingScanner{chain: &chain}
+	headFn := func() uint64 { return uint64(len(chain)) - 1 }
+	fp := NewFingerprinter(0) // isolate: no forced rebuilds
+
+	if _, err := fp.compute(context.Background(), headFn, sc.scan); err != nil {
+		t.Fatalf("cold compute: %v", err)
+	}
+	cached, rebuilds, read := fp.cachedComputes, fp.fullRebuilds, fp.leavesRead
+	if cached != 0 || rebuilds != 1 {
+		t.Fatalf("after cold start: cached=%d rebuilds=%d, want 0/1", cached, rebuilds)
+	}
+	if read != 51 { // full scan of heights 0..50
+		t.Fatalf("after cold start: leavesRead=%d, want 51", read)
+	}
+
+	// Ten appends: each is a cached compute reading exactly 2 leaves (tip + new).
+	for i := 51; i <= 60; i++ {
+		chain = append(chain, leaf(i))
+		if _, err := fp.compute(context.Background(), headFn, sc.scan); err != nil {
+			t.Fatalf("append compute at %d: %v", i, err)
+		}
+	}
+	cached, rebuilds, read = fp.cachedComputes, fp.fullRebuilds, fp.leavesRead
+	if cached != 10 || rebuilds != 1 {
+		t.Fatalf("after appends: cached=%d rebuilds=%d, want 10/1", cached, rebuilds)
+	}
+	if want := uint64(51 + 10*2); read != want {
+		t.Fatalf("after appends: leavesRead=%d, want %d (cache must not re-read the chain)", read, want)
+	}
+}
