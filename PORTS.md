@@ -16,8 +16,8 @@ This document describes every port used by a JMDN node, its security posture, an
 | 6 | CLI Admin | `15053` | gRPC | **Localhost only** | Full admin control — never expose |
 | 7 | BlockGen API | `15050` | HTTP | Localhost (internal role only) | Disable on generic nodes; **not exposed in the Docker image** |
 | 8 | BlockGRPC | `15055` | gRPC | Internal (Validators) | Disable on passive nodes; **not exposed in the Docker image** |
-| 9 | Metrics | `8081` | HTTP | Localhost / Internal | Prometheus `/metrics` |
-| 10 | Profiler | `6060` | HTTP | **Disabled in production** | pprof — information leak risk |
+| 9 | Metrics | `8081` | HTTP | Localhost / Internal | Prometheus `/metrics` only |
+| 10 | Profiler | operator-chosen (`ports.profiler`, default `0` = off) | HTTP | **Disabled by default; loopback when enabled** | pprof — information leak risk |
 
 ---
 
@@ -117,18 +117,19 @@ This document describes every port used by a JMDN node, its security posture, an
 ---
 
 ### 9. Metrics (Prometheus)
-- **Port**: `8081`
-- **Protocol**: HTTP (`/metrics`)
+- **Port**: `8081` (`ports.metrics`, default `0` = disabled; bind `binds.metrics`, default `127.0.0.1`)
+- **Protocol**: HTTP — serves `/metrics` and nothing else.
 - **Purpose**: Observability — scraped by Prometheus.
-- **Recommendation**: Bind to localhost (`127.0.0.1`) or internal network only. Never expose to the public internet.
+- **Recommendation**: Bind to localhost (`127.0.0.1`) or an internal network only. Never expose to the public internet.
 
 ---
 
 ### 10. Profiler (pprof)
-- **Port**: `6060`
-- **Protocol**: HTTP (`/debug/pprof`)
-- **Purpose**: CPU and heap profiling for debugging.
-- **Recommendation**: **Disable in production.** Exposes memory and goroutine state. Significant information leak and performance impact if left open.
+- **Port**: operator-chosen via `ports.profiler` — default `0`, i.e. **disabled**; bind `binds.profiler`, default `127.0.0.1`.
+- **Protocol**: HTTP — `/debug/pprof/*`, plus `/debug/fds` and `/debug/streams`.
+- **Purpose**: CPU, heap and lock-contention profiling when diagnosing a node.
+- **Recommendation**: **Leave disabled in production**; enable temporarily to investigate, then turn it off. It is unauthenticated and exposes heap contents, goroutine stacks and the process command line, so keep it on `127.0.0.1` and reach it over an SSH tunnel. Enabling it also switches on process-wide mutex/block sampling, which runs continuously until the profiler is stopped.
+- **Note**: these endpoints are served on the profiler's own listener only. They are never exposed on the metrics port or any other service port.
 
 ---
 

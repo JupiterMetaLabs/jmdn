@@ -1,46 +1,76 @@
+// MODULE: profiler
+// PURPOSE: Opt-in runtime diagnostics (pprof, contention, FD and libp2p stream
+//          counters). Disabled unless ports.profiler is set; bound to
+//          binds.profiler (127.0.0.1 by default).
+//
+// TWO THINGS TO KNOW BEFORE EDITING THIS FILE
+//
+//  1. Serve a PRIVATE mux, never http.DefaultServeMux. The `net/http/pprof`
+//     import registers its handlers on DefaultServeMux as an import side
+//     effect, so any server in this process that serves DefaultServeMux would
+//     expose /debug/pprof/* on ITS port — regardless of ports.profiler. pprof
+//     is attached explicitly below for that reason.
+//
+//  2. Contention profiling is a RUNTIME-WIDE setting, not per-request: once
+//     enabled it samples on every mutex/block event for as long as it is on,
+//     whether or not anyone is scraping. It is therefore enabled only after the
+//     port guard passes, and reset on shutdown.
 package profiler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"os"
-	"os/exec"
 	"runtime"
-	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog/log"
 )
 
-var globalHost host.Host
-
-// RegisterHost registers the libp2p host for stream profiling
-func RegisterHost(h host.Host) {
-	globalHost = h
+// hostRef holds the libp2p host used by the stream handler. Guarded because
+// RegisterHost runs during node startup while the server may already be
+// serving requests.
+var hostRef struct {
+	mu sync.RWMutex
+	h  host.Host
 }
 
-// Contention-profiling sampling rates, applied only when the profiler is
-// enabled (see StartProfiler). Sampled to keep overhead modest; lower toward 1
-// for a deeper capture, or set ports.profiler to 0 to disable everything.
+// RegisterHost registers the libp2p host for stream profiling. Safe to call
+// concurrently with request handling.
+func RegisterHost(h host.Host) {
+	hostRef.mu.Lock()
+	hostRef.h = h
+	hostRef.mu.Unlock()
+}
+
+func currentHost() host.Host {
+	hostRef.mu.RLock()
+	defer hostRef.mu.RUnlock()
+	return hostRef.h
+}
+
+// Contention-profiling sampling rates. Sampled rather than exhaustive to keep
+// overhead modest; these values reliably surface multi-second lock waits.
 const (
 	// mutexProfileFraction: report ~1 in N mutex contention events (1 = all).
 	mutexProfileFraction = 5
-	// blockProfileRateNanos: sample ~1 blocking event per N ns spent blocked
-	// (1 = every event). 10µs reliably captures multi-second lock waits cheaply.
-	blockProfileRateNanos = 10_000
+	// blockProfileRateNanos: sample ~1 blocking event per N ns spent blocked.
+	blockProfileRateNanos = 10_000 // 10µs
 )
 
-// isLoopbackBind reports whether bindAddr is a loopback address (the only kind
-// safe to expose an unauthenticated pprof server on). Anything else is
-// reachable from the network.
+// isLoopbackBind reports whether bindAddr is a loopback address. An empty bind,
+// 0.0.0.0 and :: mean "all interfaces" and are therefore not loopback.
 func isLoopbackBind(bindAddr string) bool {
 	switch bindAddr {
 	case "127.0.0.1", "localhost", "::1", "[::1]":
 		return true
+	case "", "0.0.0.0", "::":
+		return false
 	}
 	if ip := net.ParseIP(bindAddr); ip != nil {
 		return ip.IsLoopback()
@@ -48,43 +78,61 @@ func isLoopbackBind(bindAddr string) bool {
 	return false
 }
 
+// newProfilerMux builds the profiler's private mux (see note 1 in the header).
+func newProfilerMux() *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// pprof, attached explicitly. pprof.Index also serves the named runtime
+	// profiles (heap, goroutine, mutex, block, allocs, …).
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	mux.HandleFunc("/debug/fds", fdHandler)
+	mux.HandleFunc("/debug/streams", streamHandler)
+	return mux
+}
+
+// StartProfiler starts the diagnostics server, or returns nil when disabled
+// (port unset or "0"). The caller owns the returned server; contention
+// profiling is reset when it is shut down.
 func StartProfiler(bindAddr string, port string) *http.Server {
 	if port == "" || port == "0" {
 		return nil
 	}
 
-	// Enable mutex + block contention profiling HERE — behind the port guard —
-	// so it is active ONLY when an operator explicitly turns the profiler on
-	// (zero overhead when ports.profiler = 0). Without these, /debug/pprof/mutex
-	// and /debug/pprof/block return empty and lock contention (e.g. the global
-	// state-apply mutex) is invisible.
+	// Enabled only past the port guard — see note 2 in the header.
 	runtime.SetMutexProfileFraction(mutexProfileFraction)
 	runtime.SetBlockProfileRate(blockProfileRateNanos)
 
-	// This pprof server is UNAUTHENTICATED and exposes process internals (heap,
-	// goroutines, cmdline). Binding to a non-loopback address puts it on the
-	// network — do that only behind a firewall or a tunnel. Advisory only: the
-	// address is used as configured (no hard block), so a deliberate
-	// private-interface bind still works, but it is logged loudly.
+	// pprof is unauthenticated and exposes process internals (heap, goroutine
+	// stacks, cmdline). Loopback is the intended posture: reach it with an SSH
+	// tunnel. A non-loopback bind is honoured but logged loudly.
 	if !isLoopbackBind(bindAddr) {
-		log.Warn().Str("bind", bindAddr).Msg("Profiler binding to a NON-loopback address and is unauthenticated — restrict via firewall or prefer 127.0.0.1 + an SSH tunnel")
+		log.Warn().Str("bind", bindAddr).
+			Msg("Profiler on a NON-loopback bind and unauthenticated — restrict via firewall, or prefer 127.0.0.1 + an SSH tunnel")
 	}
 
-	addr := fmt.Sprintf("%s:%s", bindAddr, port)
-
-	// Register custom handlers
-	http.HandleFunc("/debug/fds", fdHandler)
-	http.HandleFunc("/debug/streams", streamHandler)
-
-	// Create server with explicit timeouts
+	addr := net.JoinHostPort(bindAddr, port)
 	server := &http.Server{
-		Addr: addr,
-		// Handler: nil, // Uses DefaultServeMux -> imports _ "net/http/pprof"
-		ReadTimeout: 10 * time.Second,
-		// MUST be > 30s because "go tool pprof" defaults to 30s CPU profiles
-		WriteTimeout: 60 * time.Second,
+		Addr:              addr,
+		Handler:           newProfilerMux(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Must exceed the longest profile a client may request: `go tool pprof`
+		// defaults to 30s CPU profiles and ?seconds= can ask for more.
+		WriteTimeout: 180 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	// A stopped profiler should stop costing anything.
+	server.RegisterOnShutdown(func() {
+		runtime.SetMutexProfileFraction(0)
+		runtime.SetBlockProfileRate(0)
+		log.Info().Msg("Profiler stopped — contention profiling disabled")
+	})
 
 	go func() {
 		defer func() {
@@ -93,9 +141,8 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 			}
 		}()
 
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/pprof/", bindAddr, port)).Msg("Starting profiler server")
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/fds", bindAddr, port)).Msg("FD Monitor available")
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/streams", bindAddr, port)).Msg("Stream Monitor available")
+		log.Info().Str("addr", addr).
+			Msg("Profiler enabled (pprof + contention) — /debug/pprof/, /debug/fds, /debug/streams")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Str("addr", addr).Msg("Profiler server error")
@@ -105,66 +152,66 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 	return server
 }
 
-// fdHandler returns the current number of open file descriptors
-func fdHandler(w http.ResponseWriter, r *http.Request) {
-	pid := os.Getpid()
-
-	// Use lsof to count FDs. This works on Mac and Linux (if lsof is installed)
-	// We use sh -c to simple pipe usage
-	out, err := exec.Command("sh", "-c", fmt.Sprintf("lsof -p %d | wc -l", pid)).Output()
+// openFDCount returns this process's open file-descriptor count from
+// /proc/self/fd. Deliberately not `lsof`: the runtime image does not ship it
+// (so the old shell-out always failed in Docker), and this avoids a subprocess.
+func openFDCount() (int, error) {
+	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to run lsof: %v", err), http.StatusInternalServerError)
-		return
+		return 0, err
 	}
-
-	countStr := strings.TrimSpace(string(out))
-	count, err := strconv.Atoi(countStr)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse FD count: %v", err), http.StatusInternalServerError)
-		return
+	// ReadDir holds one descriptor open while listing; discount it so repeated
+	// calls report a stable number.
+	if n := len(entries) - 1; n > 0 {
+		return n, nil
 	}
-
-	// Adjust count (wc -l includes header line, so actual FDs is count-1)
-	// But usually lsof output includes a header "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"
-	// So we subtract 1. If count is 0, return 0.
-	if count > 0 {
-		count = count - 1
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	// Return simple JSON
-	fmt.Fprintf(w, `{"pid": %d, "fd_count": %d}`, pid, count)
+	return 0, nil
 }
 
-// streamHandler returns a breakdown of active streams by protocol
+// fdHandler reports the process's open file-descriptor count.
+func fdHandler(w http.ResponseWriter, r *http.Request) {
+	count, err := openFDCount()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("fd count unavailable on this platform: %v", err), http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, map[string]any{"pid": os.Getpid(), "fd_count": count})
+}
+
+// streamHandler reports active libp2p streams grouped by protocol.
 func streamHandler(w http.ResponseWriter, r *http.Request) {
-	if globalHost == nil {
-		http.Error(w, "Host not registered", http.StatusServiceUnavailable)
+	h := currentHost()
+	if h == nil {
+		http.Error(w, "host not registered", http.StatusServiceUnavailable)
 		return
 	}
 
+	conns := h.Network().Conns()
 	protocolCounts := make(map[string]int)
-	totalStreams := 0
-
-	for _, conn := range globalHost.Network().Conns() {
+	total := 0
+	for _, conn := range conns {
 		for _, s := range conn.GetStreams() {
 			proto := string(s.Protocol())
 			if proto == "" {
 				proto = "unknown"
 			}
 			protocolCounts[proto]++
-			totalStreams++
+			total++
 		}
 	}
 
+	// Protocol IDs come from remote peers, so they are untrusted input and must
+	// be encoded, never interpolated into JSON by hand.
+	writeJSON(w, map[string]any{
+		"total_streams": total,
+		"connections":   len(conns),
+		"protocols":     protocolCounts,
+	})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-
-	// Manually build JSON to avoid complicated struct definition inside function
-	var parts []string
-	for p, c := range protocolCounts {
-		parts = append(parts, fmt.Sprintf(`"%s": %d`, p, c))
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Debug().Err(err).Msg("Profiler: response encode failed")
 	}
-
-	jsonBody := fmt.Sprintf(`{"total_streams": %d, "protocols": {%s}}`, totalStreams, strings.Join(parts, ", "))
-	fmt.Fprint(w, jsonBody)
 }
