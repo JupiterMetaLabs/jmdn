@@ -33,6 +33,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
+	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
@@ -1111,7 +1112,7 @@ func main() {
 		// sequencer's finalize path; subscribe+apply runs on every node so finalized
 		// blocks reach the whole fleet (not just the sequencer's connected committee),
 		// each verified through the same fail-closed admitZKBlock gate.
-		startBlockGossip(ctx, globalPubSub.GetGossipPubSub())
+		blockgossip.Start(ctx, globalPubSub.GetGossipPubSub())
 
 		// Subscribe to the dedicated L1 commit channel at startup so this node
 		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This

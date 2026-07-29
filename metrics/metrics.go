@@ -160,10 +160,17 @@ func StartMetricsServer(addr string) {
 			return
 		}
 	}
-	// Use our custom registry instead of the default one
-	http.Handle("/metrics", promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{}))
+	// Use our custom registry instead of the default one.
+	//
+	// SECURITY: serve a PRIVATE mux, never http.DefaultServeMux. The profiler's
+	// `net/http/pprof` import registers its handlers on DefaultServeMux as an
+	// import side effect, so a metrics server that inherited it would expose
+	// /debug/pprof/* (heap contents, goroutine stacks, process cmdline) on the
+	// metrics port — unauthenticated, and regardless of ports.profiler.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{}))
 
-	server := &http.Server{Addr: addr, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	serverErr := make(chan error, 1)
 
