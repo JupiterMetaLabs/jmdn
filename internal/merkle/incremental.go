@@ -29,11 +29,17 @@ const DefaultFullRebuildEvery = 20
 // drops from O(head) to O(new blocks); ImmuDB reads drop from the whole chain to
 // the delta (plus one block for the tip check).
 //
-// Reorg safety: hashBlock chains through PrevHash and StateRoot, so a change to
-// any block at or below the cached head changes the head block's leaf hash. Each
-// Compute re-hashes the cached head block and compares it to the cached value; a
-// mismatch (or a head that moved backwards) forces a full rebuild. The periodic
-// full rebuild (fullRebuildEvery) is an additional safety net.
+// Reorg safety and its limit: hashBlock chains through PrevHash and StateRoot,
+// so a genuine reorg — successor blocks replaced — changes the cached head
+// block's leaf hash, which the per-Compute tip re-hash detects and turns into a
+// full rebuild. What the tip check does NOT catch is an isolated in-place write
+// BELOW a static head that leaves the head block untouched — e.g. catch-up
+// backfilling a gap at height N-5 (zero-hash -> real hash) while the head stays
+// at N. That leaves the cache stale, but the failure direction is SAFE: a stale
+// root mismatches peers and triggers an extra reconcile; it can never report a
+// false "in sync". The periodic full rebuild (fullRebuildEvery) bounds that
+// window — and because the rebuild counter advances on the no-change path too
+// (see compute), it fires even on a node whose head never moves.
 //
 // A Fingerprinter is safe for a single serial caller (the sync monitor); the
 // mutex guards against an accidental concurrent Compute. It does not touch
@@ -82,6 +88,13 @@ func (f *Fingerprinter) compute(ctx context.Context, headFn func() uint64, scan 
 		return &Result{}, nil
 	}
 
+	// Count this compute BEFORE any branch (including the no-change fast path)
+	// so the forced-rebuild counter advances even when the head is static —
+	// otherwise a below-head change the tip check cannot see could sit in the
+	// cache indefinitely on an idle node (see the "Reorg safety" note). fullScan
+	// resets this to 0, so with ">=" a full rebuild lands exactly every
+	// fullRebuildEvery computes.
+	f.sinceFullRebuild++
 	forceFull := f.fullRebuildEvery > 0 && f.sinceFullRebuild >= f.fullRebuildEvery
 	cacheUsable := f.ready && !forceFull && head >= f.head && uint64(len(f.leaves)) == f.head+1
 
@@ -125,7 +138,8 @@ func (f *Fingerprinter) finalize(head uint64) (*Result, error) {
 		return nil, err
 	}
 	f.lastRoot = root
-	f.sinceFullRebuild++
+	// NOTE: sinceFullRebuild is advanced at the top of compute (every call),
+	// not here, so the periodic rebuild also fires on the no-change path.
 	return &Result{Root: root, Head: head, Total: uint64(len(f.leaves))}, nil
 }
 
