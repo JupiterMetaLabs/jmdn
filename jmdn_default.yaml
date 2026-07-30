@@ -221,22 +221,3 @@ alerts:
   api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
   chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
   http_timeout: 10s
-
-# ── Orchestrator callback ──────────────────────────────
-# Where this node reports a block IT PROPOSED that the consensus committee
-# voted down, so the orchestrator can flip those transactions from
-# "included" to "consensus rejected" in its failed-transaction table.
-#
-# The orchestrator answers /api/process-block BEFORE any vote is requested,
-# so without this callback a rejected block's transactions stay mislabelled
-# as included. api_key must equal the orchestrator's
-# CONSENSUS_CALLBACK_API_KEY; the orchestrator disables the route when its
-# own key is unset.
-#
-# Empty url or api_key => reporting is OFF (silent no-op).
-# Prefer env for the secret: JMDN_ORCHESTRATOR_API_KEY
-orchestrator:
-  url: ""                    # e.g. "http://127.0.0.1:8092/api/block/consensus-rejected"
-  api_key: ""                # Prefer env: JMDN_ORCHESTRATOR_API_KEY
-  http_timeout: 10s
-  max_attempts: 3            # total POST attempts per report (1 = no retry)
