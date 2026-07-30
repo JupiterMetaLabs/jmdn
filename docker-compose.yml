@@ -330,6 +330,16 @@ services:
       # Must match security.explorer_api_key in jmdn.yaml.
       JMDN_SECURITY_EXPLORER_API_KEY: "${JMDN_SECURITY_EXPLORER_API_KEY:-}"
 
+      # Consensus-rejection callback → orchestrator. Forwarded from .env so the
+      # shared secret is not written into the mounted jmdn.yaml.
+      # Both must be non-empty or reporting stays OFF (silent no-op), and the
+      # key must equal the orchestrator's CONSENSUS_CALLBACK_API_KEY.
+      # Note the URL is resolved from INSIDE this container: use the
+      # orchestrator's service name, or host.docker.internal when it runs on the
+      # host — "localhost" here means the jmdn container itself.
+      JMDN_ORCHESTRATOR_URL: "${JMDN_ORCHESTRATOR_URL:-}"
+      JMDN_ORCHESTRATOR_API_KEY: "${JMDN_ORCHESTRATOR_API_KEY:-}"
+
     volumes:
       # Node config — jmdn.yaml must exist next to this file (see DOCKER.md Step 3).
       - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro

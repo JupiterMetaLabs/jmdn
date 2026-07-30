@@ -227,6 +227,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("alerts.api_key", d.Alerts.APIKey)
 	v.SetDefault("alerts.chat_id", d.Alerts.ChatID)
 	v.SetDefault("alerts.http_timeout", d.Alerts.HTTPTimeout)
+
+	// Orchestrator callback (consensus-rejection reports)
+	v.SetDefault("orchestrator.url", d.Orchestrator.URL)
+	v.SetDefault("orchestrator.api_key", d.Orchestrator.APIKey)
+	v.SetDefault("orchestrator.http_timeout", d.Orchestrator.HTTPTimeout)
+	v.SetDefault("orchestrator.max_attempts", d.Orchestrator.MaxAttempts)
 }
 
 // mergeStructs merges src into dest generically.

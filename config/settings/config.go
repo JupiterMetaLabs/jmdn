@@ -10,18 +10,19 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node      NodeSettings      `mapstructure:"node"`
-	Network   NetworkSettings   `mapstructure:"network"`
-	Ports     PortSettings      `mapstructure:"ports"`
-	Binds     BindSettings      `mapstructure:"binds"`
-	Database  DatabaseSettings  `mapstructure:"database"`
-	Logging   LoggingSettings   `mapstructure:"logging"`
-	Features  FeatureSettings   `mapstructure:"features"`
-	Security  SecurityConfig    `mapstructure:"security"`
-	Alerts    AlertsConfig      `mapstructure:"alerts"`
-	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
-	Selection SelectionSettings `mapstructure:"selection"`
-	Consensus ConsensusSettings `mapstructure:"consensus"`
+	Node         NodeSettings       `mapstructure:"node"`
+	Network      NetworkSettings    `mapstructure:"network"`
+	Ports        PortSettings       `mapstructure:"ports"`
+	Binds        BindSettings       `mapstructure:"binds"`
+	Database     DatabaseSettings   `mapstructure:"database"`
+	Logging      LoggingSettings    `mapstructure:"logging"`
+	Features     FeatureSettings    `mapstructure:"features"`
+	Security     SecurityConfig     `mapstructure:"security"`
+	Alerts       AlertsConfig       `mapstructure:"alerts"`
+	Orchestrator OrchestratorConfig `mapstructure:"orchestrator"`
+	FastSync     FastSyncSettings   `mapstructure:"fastsync"`
+	Selection    SelectionSettings  `mapstructure:"selection"`
+	Consensus    ConsensusSettings  `mapstructure:"consensus"`
 }
 
 // ConsensusSettings holds operator-controlled consensus policy.

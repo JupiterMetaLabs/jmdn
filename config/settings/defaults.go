@@ -99,6 +99,9 @@ func DefaultConfig() NodeConfig {
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),
+		// Consensus-rejection reporting to the orchestrator: disabled until
+		// an operator sets orchestrator.url + orchestrator.api_key.
+		Orchestrator: DefaultOrchestratorConfig(),
 		// Selection VRF material:
 		//   - Mnemonic is SECRET and has NO default — empty is rejected at use
 		//     time (fail-closed) so the insecure public test mnemonic can never

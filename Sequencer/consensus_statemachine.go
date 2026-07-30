@@ -11,6 +11,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Alerts"
+	"gossipnode/Sequencer/RejectionReport"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
@@ -413,6 +414,18 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			ab = ab.Label("buddy_rejections", detail)
 		}
 		ab.Send()
+
+		// Tell the orchestrator its transactions did NOT land. It marked them
+		// "included" the moment /api/process-block returned, which happens
+		// before any vote is requested — so without this report a rejected
+		// block's transactions stay mislabelled as included in its
+		// failed-transaction table.
+		//
+		// Safe to call under consensus.mu: the payload is snapshotted
+		// synchronously and delivered on a background sender. Disabled (no-op)
+		// unless orchestrator.url + orchestrator.api_key are configured, and it
+		// can never block or fail this round.
+		RejectionReport.Send(block, reason, detail)
 	}
 
 	return nil
