@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"strings"
 	"sync"
 
 	"gossipnode/DB_OPs"
@@ -16,6 +18,68 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+// envOn reads a boolean env override. Absent => def. Anything other than an
+// explicit off value counts as on. Mirrors messaging.envOn, duplicated because
+// messaging imports Security and the dependency cannot be reversed.
+func envOn(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// AllowNewReceiverAccounts lets a transfer name a receiver that does not exist
+// yet, instead of rejecting the block that carries it.
+//
+// THE PROBLEM IT SOLVES: requiring the receiver to pre-exist means JMDT cannot
+// be sent to a new address at all. Every voter runs
+// CheckAddressExistWithCache against its own account cache, so a first-time
+// recipient is rejected by the whole committee — the observed failure was block
+// 13756, voted down 0-of-7 with "receiver account … not found in cache". The
+// workaround (register the address out-of-band, then wait for it to propagate
+// to every voter before proposing) is what AUTO_REGISTER_PROPAGATION_DELAY and
+// the DID auto-registration path exist for, and it is inherently racy: the
+// proposer can only observe its OWN vantage, never the voters'.
+//
+// WHY RELAXING IT IS SAFE:
+//   - The receiver is not a security input. Only the SENDER must exist, and
+//     that check is unchanged: a sender absent from the cache is still a hard
+//     reject, because a funded signed transaction from an unknown account means
+//     this node's account state is out of sync, which must not be papered over.
+//   - Account creation already happens at APPLY time, not validation:
+//     DB_OPs/Nodeinfo/immudb_account_manager.go UpdateAccountBalance falls
+//     through to CreateAccount on "key not found". So the account still comes
+//     into existence exactly once, as a side effect of executing the transfer.
+//   - Nothing consensus-critical depends on the account record. The state root
+//     is stateRootChain(parentStateRoot, blockHash) — a chain of BLOCK hashes,
+//     not a Merkle root over accounts — and the fleet fingerprint hashes block
+//     and transaction fields. So per-node differences in locally stamped
+//     account metadata (CreatedAt/UpdatedAt, the Fastsync ART nonce) cannot
+//     make nodes disagree.
+//   - This is how Ethereum behaves: an account springs into existence when it
+//     first receives value.
+//
+// ROLLOUT: this is a VALIDATION RULE. A node with it on accepts blocks a node
+// with it off rejects, so a MIXED FLEET SPLITS THE VOTE and blocks fail either
+// way. Upgrade the sequencer and every buddy/voter together; a long rolling
+// upgrade leaves the fleet mixed for its duration.
+//
+// Default ON. The pre-existing behaviour is a defect — it makes sending to a
+// first-time address impossible — so an operator who sets nothing should get
+// the fix rather than silently keep the bug. Defaulting on also means there is
+// only ONE risky window (the upgrade) instead of two (upgrade, then a later
+// env-var flip).
+//
+// KILL SWITCH: JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS=0 restores the old rule without
+// redeploying. Set it on every node if you use it, for the reason above.
+var AllowNewReceiverAccounts = envOn("JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS", true)
 
 type SecurityCache struct {
 	accounts map[string]*DB_OPs.Account
@@ -128,8 +192,13 @@ func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, trace
 	}
 
 	// tx.To is nil for contract deployments — skip receiver existence check.
-	// For regular transfers, receiver must be a known DID account.
-	if tx.To != nil {
+	//
+	// For regular transfers the receiver does NOT have to pre-exist when
+	// AllowNewReceiverAccounts is on: it is created when the block is applied
+	// (UpdateAccountBalance → CreateAccount on "key not found"), which is what
+	// makes sending JMDT to a brand-new address possible at all. See the flag's
+	// doc comment for why this is not a security relaxation.
+	if tx.To != nil && !AllowNewReceiverAccounts {
 		receiver := s.GetAccount(*tx.To)
 		if receiver == nil {
 			return false, fmt.Errorf("receiver account %s not found in cache", tx.To.Hex())
