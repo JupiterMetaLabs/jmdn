@@ -55,14 +55,79 @@ func TestGasFee_NeverNegative_AcrossGasLimitDomain(t *testing.T) {
 				t.Fatalf("GasFee(gasLimit=%d) = %s, want %s", tc.gasLimit, got, want)
 			}
 
-			// The old inline form, reproduced. It must differ from the correct
-			// answer above 2^63 — if this ever stops differing the wrap has been
-			// fixed upstream and the guard can be simplified.
-			inline := new(big.Int).Mul(big.NewInt(int64(tc.gasLimit)), EffectiveGasPrice(0, price, nil, nil))
-			if tc.gasLimit >= 1<<63 && inline.Sign() >= 0 {
-				t.Errorf("expected the old int64 form to go negative at gasLimit=%d, got %s", tc.gasLimit, inline)
+			// EQUIVALENCE. Reproduce exactly what live execution used to compute:
+			//
+			//   gasLimit = tx.GasLimit != 0 ? big.NewInt(int64(tx.GasLimit))
+			//                               : big.NewInt(DefaultGasLimit /* 21000 */)
+			//   fee      = gasLimit * parsedTx.EffectiveGasFee
+			//
+			// where parsedTx.EffectiveGasFee was itself
+			// EffectiveGasPrice(tx.Type, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
+			// (parseTransaction, messaging/BlockProcessing/Processing.go).
+			//
+			// Below the int64 wrap the two MUST agree exactly — that is what makes
+			// switching live execution to config.GasFee a no-op for every real
+			// transaction. At or above 2^63 they must diverge, because that is the
+			// bug being removed.
+			var oldGasLimit *big.Int
+			if tc.gasLimit != 0 {
+				oldGasLimit = big.NewInt(int64(tc.gasLimit))
+			} else {
+				oldGasLimit = big.NewInt(21_000) // BlockProcessing.DefaultGasLimit
+			}
+			oldFee := new(big.Int).Mul(oldGasLimit, EffectiveGasPrice(0, price, nil, nil))
+
+			if tc.gasLimit < 1<<63 {
+				if oldFee.Cmp(got) != 0 {
+					t.Fatalf("BEHAVIOUR CHANGE at gasLimit=%d: old inline form = %s, config.GasFee = %s",
+						tc.gasLimit, oldFee, got)
+				}
+			} else if oldFee.Sign() >= 0 {
+				t.Errorf("expected the old int64 form to go negative at gasLimit=%d, got %s", tc.gasLimit, oldFee)
 			}
 		})
+	}
+}
+
+// Equivalence across the realistic gas-limit domain and every transaction type,
+// including EIP-1559 where EffectiveGasPrice clamps maxFee to baseFee+tip. This
+// is the regression net for "switching live execution to config.GasFee changed
+// no balance": if any real transaction would be charged differently, it fails.
+func TestGasFee_MatchesRetiredInlineForm(t *testing.T) {
+	gwei := func(n int64) *big.Int { return new(big.Int).Mul(big.NewInt(n), big.NewInt(1_000_000_000)) }
+
+	types := []struct {
+		txType                   uint8
+		gasPrice, maxFee, maxTip *big.Int
+	}{
+		{0, gwei(1), nil, nil},          // legacy, explicit price
+		{0, nil, nil, nil},              // legacy, all nil -> fallback price
+		{0, nil, gwei(50), nil},         // legacy, maxFee only
+		{1, gwei(7), nil, nil},          // access-list
+		{2, nil, gwei(20), gwei(1)},     // 1559, maxFee under base+tip
+		{2, nil, gwei(500), gwei(2)},    // 1559, maxFee above base+tip -> clamped
+		{2, nil, nil, gwei(3)},          // 1559, maxFee nil -> BaseFeeWei default
+		{2, gwei(9), gwei(40), gwei(1)}, // 1559 with a stray gasPrice set
+	}
+	limits := []uint64{0, 1, 21_000, 100_000, 30_000_000, math.MaxInt64}
+
+	for _, ty := range types {
+		for _, gl := range limits {
+			got := GasFee(ty.txType, gl, ty.gasPrice, ty.maxFee, ty.maxTip)
+
+			var oldGasLimit *big.Int
+			if gl != 0 {
+				oldGasLimit = big.NewInt(int64(gl))
+			} else {
+				oldGasLimit = big.NewInt(21_000)
+			}
+			want := new(big.Int).Mul(oldGasLimit, EffectiveGasPrice(ty.txType, ty.gasPrice, ty.maxFee, ty.maxTip))
+
+			if got.Cmp(want) != 0 {
+				t.Errorf("type=%d gasLimit=%d: config.GasFee = %s, retired inline form = %s",
+					ty.txType, gl, got, want)
+			}
+		}
 	}
 }
 
