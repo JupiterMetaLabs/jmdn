@@ -7,6 +7,97 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-31
+
+Account lifecycle and state-application. Accounts now come into existence
+through block application alone, with an identity every node derives
+identically, and account state is applied exactly once per transaction under a
+single writer discipline. Requires a coordinated deployment (see
+_Upgrade notes_).
+
+### Added
+
+- **Block-carried account identities.** A block carries the canonical identity
+  nonce for every account it touches, so every node applying it derives
+  byte-identical state. Identities come from a persisted monotonic counter,
+  reserved before use — an interrupted allocation leaves a gap, never a
+  duplicate. A node holding a different value adopts the carried one the next
+  time a block references the account; balances and counters are untouched. The
+  field is advisory: outside the canonical block hash, so hashes and
+  certificates are unchanged and nodes that do not recognise it ignore it.
+- **Transfers to addresses that do not yet exist.** The receiving account is
+  created as part of applying the block that funds it
+  (`JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS`, default on). Creation is otherwise
+  reachable only through block application — balance reads, the identity
+  service, operator commands and identity propagation are gated behind
+  `JMDN_ALLOW_LOCAL_ACCOUNT_CREATE` (default off).
+- **Exactly-once state application.** Reconciliation carries block references
+  rather than computed balances and recomputes each block's effects at apply
+  time, committing balances and their transaction markers in one atomic write —
+  a marker exists if and only if its effect was applied, so a replay is a no-op.
+  Live execution and reconciliation serialise against one another.
+- **Reconciliation-aware chain-head marker.** The marker is held back while a
+  synchronisation run is in flight and advances only once that run's effects are
+  confirmed, so live application never begins on top of state still being
+  written.
+- **Account state fingerprint** — a CLI command emitting a deterministic digest
+  of all balances and nonces, so nodes at the same height can be compared
+  directly. Volatile local metadata is excluded.
+- **Consensus rejection reporting** for blocks declined by the committee.
+- **Contention profiling.** Enabling the profiler also enables process-wide
+  mutex and block sampling, exposed on the profiler's own listener alongside
+  open-descriptor and stream diagnostics. It remains disabled by default and
+  binds to loopback when enabled (#101).
+
+### Changed
+
+- **Registering an identity no longer creates a spendable account.** An account
+  is created when it is first funded through a block.
+- **Fee arithmetic has a single implementation** — validation, execution and
+  reconciliation share one helper, removing a separately-derived copy on the
+  execution path.
+- **Sparse writes preserve stored state.** A synchronisation or propagation
+  write carrying no balance or identity information leaves the stored values
+  untouched.
+- **Identity propagation reports delivery accurately** rather than reporting
+  success for an unconfirmed send.
+- **Local chain fingerprint is computed incrementally** — per-height leaf hashes
+  are cached and only new blocks are folded in, so the periodic check reads the
+  delta rather than rescanning the chain. A tip-consistency check and a periodic
+  full rebuild bound staleness (#103).
+
+### Fixed
+
+- Header synchronisation negotiates a versioned protocol, so nodes running
+  different versions interoperate predictably instead of relying on a shared
+  frame format.
+- Transaction-nonce bookkeeping is kept separate from account identity on the
+  reconciliation path.
+- Buddy-list operations no longer stall if a peer-directory call fails partway
+  through an update.
+- Connection handles are released on the vote-aggregation and peer-sync paths.
+- The metrics listener serves only `/metrics`; profiling endpoints are confined
+  to the profiler's own listener (#101).
+
+### Dependencies
+
+- Bump `google.golang.org/grpc` 1.79.3 → 1.82.1 (#81).
+- Update `JMDN-FastSync` for reconciliation identity handling and versioned
+  header synchronisation.
+
+### Upgrade notes
+
+No configuration changes are required — the shipped defaults are the intended
+ones. Two points about ordering:
+
+- **Accepting transfers to not-yet-existing addresses is a validation-rule
+  change.** A node on this version accepts blocks a `2.0.0` node declines. A
+  `2.0.0` node that receives such a block declines it cleanly — it stops at that
+  height without storing or partially applying the block, and resumes and
+  converges once upgraded. Upgrading the network together avoids the stall.
+- **Block producers emit the block-carried identities.** Until a producer runs
+  this version, transfers to new addresses behave as on `2.0.0`.
+
 ## [2.0.0] - 2026-07-26
 
 Consensus and block-propagation hardening. This release introduces coordinated
