@@ -79,6 +79,15 @@ Displays messaging statistics (sent, received, failed).
 ```
 Displays the current state of main and accounts databases.
 
+#### Account State Fingerprint
+```bash
+./jmdn -cmd statefingerprint
+```
+Computes a deterministic digest over every account's balance, transaction
+nonce, and sent-tx count (full scan), and prints it alongside the latest
+block and applied anchor. Two nodes at the same latest block and anchor must
+print the same fingerprint — compare across nodes to confirm state agreement.
+
 ### Messaging
 
 #### Send Message (libp2p)

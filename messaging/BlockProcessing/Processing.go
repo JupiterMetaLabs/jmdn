@@ -433,7 +433,14 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			// If revocation itself fails, ABORT the rollback: applied+marked is a
 			// CONSISTENT state (replay skips the prefix, retries only the failed
 			// tx). Restoring balances under live markers would not be.
+			//
+			// The revoke+restore pair runs under the state-apply lock: the
+			// reconciliation applier reads markers to decide what to apply, so
+			// it must never observe revoked markers over not-yet-restored
+			// balances (it would re-apply effects that are still present).
+			DB_OPs.LockStateApply()
 			if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
+				DB_OPs.UnlockStateApply()
 				span.RecordError(revokeErr)
 				span.SetAttributes(attribute.String("status", "marker_revocation_failed"))
 				logger().NamedLogger.Error(span_ctx, "Marker revocation failed — SKIPPING balance rollback (applied+marked prefix stays consistent)",
@@ -453,6 +460,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 			// Rollback all account state to original snapshot
 			rollbackError := rollbackState(span_ctx, originalState, accountsClient)
+			DB_OPs.UnlockStateApply()
 			if rollbackError != nil {
 				span.RecordError(rollbackError)
 				logger().NamedLogger.Error(span_ctx, "Failed to rollback balances after transaction failure",
@@ -697,6 +705,15 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// First check with a preliminary key that shows we've started processing
 	txProcessingKey := fmt.Sprintf("tx_processing:%s", tx.Hash)
+
+	// Serialize this transaction's marker check → stage reads → atomic commit
+	// with the reconciliation applier (DB_OPs.ApplyBlockRecon). Both writers
+	// run read→modify→commit cycles on account documents; the shared lock
+	// makes each cycle atomic with respect to the other, so an effect can
+	// never be applied by both paths and neither can build on a base the
+	// other is mid-way through changing.
+	DB_OPs.LockStateApply()
+	defer DB_OPs.UnlockStateApply()
 
 	// Check if already completed. Dual-read value-aware guard (accountsdb
 	// authoritative incl. -1 revocations, defaultdb legacy). Defense-in-depth

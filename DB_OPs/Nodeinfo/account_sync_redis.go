@@ -57,6 +57,13 @@ const (
 	payloadTypeAccounts  syncPayloadType = "accounts"   // payload: []*types.Account (JSON)
 	payloadTypeUpdates   syncPayloadType = "updates"    // payload: []accountUpdateWire (JSON)
 	payloadTypeTxMarkers syncPayloadType = "tx_markers" // payload: []txMarkerWire (JSON)
+	// payloadTypeBlockRecon carries block REFERENCES ({number, hash}) whose
+	// balance effects the drain worker applies exactly once via
+	// DB_OPs.ApplyBlockRecon (deltas recomputed from the stored block at apply
+	// time, marker-filtered under the state-apply lock, balances + markers in
+	// one ExecAll). Reconciliation uses this instead of the absolute-balance
+	// `updates` payloads so its writes commute with live execution.
+	payloadTypeBlockRecon syncPayloadType = "block_recon" // payload: []blockReconWire (JSON)
 )
 
 // ─── Domain types ─────────────────────────────────────────────────────────────

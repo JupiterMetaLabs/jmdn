@@ -113,6 +113,7 @@ func PrintFuncs() {
 	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
+	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
@@ -287,6 +288,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleGetDID(parts)
 	case "dbstate":
 		h.handleDBState()
+	case "statefingerprint":
+		h.handleStateFingerprint()
 	case "gethstatus":
 		h.handleGethStatus()
 	case "grometrics":
@@ -300,6 +303,41 @@ func (h *CommandHandler) handleCommand(parts []string) {
 
 func (h *CommandHandler) handleGROMetrics() {
 	groMetrics.GroMetrics(false)
+}
+
+// handleStateFingerprint prints a deterministic digest of the account state
+// plus the coordinates needed to compare it across nodes: two nodes with the
+// same latest block and applied anchor must print the same fingerprint.
+func (h *CommandHandler) handleStateFingerprint() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	tip, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if err != nil {
+		fmt.Printf("latest_block read failed: %v\n", err)
+	}
+	anchor, found, err := DB_OPs.GetAppliedAnchor(nil)
+	if err != nil {
+		fmt.Printf("applied anchor read failed: %v\n", err)
+	}
+
+	fmt.Println("Computing account state fingerprint (full scan)...")
+	start := time.Now()
+	digest, count, err := DB_OPs.ComputeAccountStateFingerprint(ctx)
+	if err != nil {
+		fmt.Printf("state fingerprint failed: %v\n", err)
+		return
+	}
+	fmt.Printf("state fingerprint : %s\n", digest)
+	fmt.Printf("accounts hashed   : %d\n", count)
+	fmt.Printf("latest_block      : %d\n", tip)
+	if found {
+		fmt.Printf("applied anchor    : %d\n", anchor)
+	} else {
+		fmt.Println("applied anchor    : (not set)")
+	}
+	fmt.Printf("took              : %s\n", time.Since(start).Round(time.Millisecond))
+	printDashes()
 }
 
 // handleVersion prints the current binary version
