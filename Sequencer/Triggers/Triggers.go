@@ -151,6 +151,10 @@ func ProcessVoteData(voteData map[string]int8) (int8, error) {
 		log.Printf("Failed to get weights of peers: %v", err)
 		return 0, fmt.Errorf("failed to get weights of peers: %v", err)
 	}
+	// seednode.Client owns a grpc.ClientConn. This runs once per vote round, so
+	// without the close the node accumulates a connection (and its goroutines
+	// and file descriptor) every round.
+	defer client.Close()
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
 		log.Printf("Failed to get weights of peers: %v", err)
@@ -255,20 +259,28 @@ func ReleaseBuddyNodesTrigger() {
 	// Get the buddy node from global variables
 	buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if buddyNode != nil {
-		// Clear buddy list to release nodes
+		// Clear buddy list to release nodes.
+		//
+		// DEFERRED UNLOCK: the early returns below used to skip the Unlock, so a
+		// seed-client failure left buddyNode.Mutex held FOREVER — every later
+		// buddy-list operation on this node would block on it. Deferring makes
+		// every exit path release it.
 		buddyNode.Mutex.Lock()
+		defer buddyNode.Mutex.Unlock()
 		buddyNode.BuddyNodes.Buddies_Nodes = []peer.ID{}
 		client, err := seednode.NewClient(settings.Get().Network.SeedNode)
 		if err != nil {
 			log.Printf("ReleaseBuddyNodesTrigger: Failed to create seed node client: %v", err)
 			return
 		}
+		// seednode.Client owns a grpc.ClientConn; without this the connection and
+		// its goroutines leak on every invocation.
+		defer client.Close()
 		err = client.RemoveAllBuddies(context.Background())
 		if err != nil {
 			log.Printf("ReleaseBuddyNodesTrigger: Failed to remove all buddies: %v", err)
 			return
 		}
-		buddyNode.Mutex.Unlock()
 
 		log.Printf("ReleaseBuddyNodesTrigger: Released all buddy nodes")
 	}
