@@ -176,7 +176,15 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 	}
 
 	doc.Balance = balance.String()
-	doc.Nonce = nonce
+	// ART IDENTITY GUARD (mirrors mergeAccountForWrite rule 5 for this DIRECT
+	// write path): nonce here is the account's identity nonce — the Fastsync
+	// AccountSync set key — and 0 means the caller carried no identity
+	// information (e.g. reconciliation of a receiver-only account). Never zero
+	// a stored identity; a non-zero value adopts (heals to the caller's
+	// canonical identity).
+	if nonce != 0 {
+		doc.Nonce = nonce
+	}
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
 	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)

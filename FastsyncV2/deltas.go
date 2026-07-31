@@ -160,7 +160,11 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta,
 		}
 		zkvmGas, coinbaseCredits := config.SplitFee(gasFee, cbAddr, nil)
 
-		// Sender: deduct value + gasFee; advance nonce; increment TxCountSent
+		// Sender: deduct value + gasFee; advance nonce; increment TxCountSent.
+		// NOTE: d.Nonce is the max outgoing TRANSACTION nonce (bookkeeping for
+		// d.TxNonce) — it is NOT the account's ART identity nonce and must never
+		// be written into AccountUpdate.Nonce / Account.Nonce (identity comes
+		// from the stored account; see computeUpdateFromDelta in JMDN-FastSync).
 		if fromAddr != "" {
 			d := getDelta(deltas, fromAddr)
 			d.BalanceDelta.Sub(d.BalanceDelta, gasFee)
