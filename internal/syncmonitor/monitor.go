@@ -129,6 +129,7 @@ type Status struct {
 // Monitor runs the periodic sync-check loop.
 type Monitor struct {
 	blockInfo    fastsync_types.BlockInfo
+	fingerprint  *merkle.Fingerprinter
 	seedClient   SeedReporter
 	baseInterval time.Duration
 
@@ -187,6 +188,7 @@ func New(
 	}
 	return &Monitor{
 		blockInfo:                  blockInfo,
+		fingerprint:                merkle.NewFingerprinter(merkle.DefaultFullRebuildEvery),
 		seedClient:                 seedReporter,
 		baseInterval:               checkInterval,
 		currentInterval:            checkInterval,
@@ -305,8 +307,8 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 
 	start := time.Now()
 
-	// ── 1. Build local Merkle root ────────────────────────────────────────────
-	result, err := merkle.BuildLocalMerkleRoot(ctx, m.blockInfo)
+	// ── 1. Build local Merkle root (incremental — folds only new blocks) ──────
+	result, err := m.fingerprint.Compute(ctx, m.blockInfo)
 	if err != nil {
 		log.Printf("[syncmonitor] Merkle build failed: %v", err)
 		st := Status{
