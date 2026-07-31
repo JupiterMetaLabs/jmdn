@@ -228,6 +228,25 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Failed to auto-create and propagate DID %s: %v", convertedAddr.Hex(), createErr), "Balance", -1); logErr != nil {
 					fmt.Printf("Failed to log Balance error: %v\n", logErr)
 				}
+				// FAIL CLOSED. Previously this fell through and returned
+				// (0, nil), so a propagation failure was indistinguishable from
+				// "this address simply has no balance". The orchestrator's
+				// auto-register path treats a successful getBalance as the
+				// trigger for registration, then confirms existence against THIS
+				// node — which now says yes, because the local CreateAccount
+				// succeeded. It would then propose a block whose receiver no
+				// committee member holds, and every voter rejects it.
+				//
+				// Returning the error makes the orchestrator's registerAndConfirm
+				// hold the transactions for the next cycle instead (it treats a
+				// getBalance error as "do not assume registered"), which is the
+				// behaviour that path already documents.
+				//
+				// SEMANTICS: this only errors when auto-create/propagate actually
+				// FAILED. An unknown address whose registration propagates fine
+				// still returns 0 with no error, so ordinary eth_getBalance
+				// behaviour for unfunded addresses is unchanged.
+				return nil, fmt.Errorf("failed to auto-create and propagate account %s: %w", convertedAddr.Hex(), createErr)
 			} else {
 				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Auto-created and propagated DID %s via eth_getBalance", convertedAddr.Hex()), "Balance", 1); logErr != nil {
 					fmt.Printf("Failed to log Balance success: %v\n", logErr)
