@@ -562,10 +562,35 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// Stamp every distinct sender/receiver with its canonical ART identity nonce
+	// (existing account → stored nonce; account this block creates → the next
+	// monotonic ordinal). Advisory field — not part of the canonical block hash —
+	// so this does not invalidate block.BlockHash. Fail-closed: without carried
+	// identities the fleet would fall back to per-node nonce minting, the exact
+	// divergence this exists to prevent, so a failed enrichment rejects the block
+	// (the orchestrator retries/requeues the batch).
+	if err := DB_OPs.EnrichBlockAccountNonces(&block); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "account_nonce_enrichment_failed"))
+		duration := time.Since(startTime).Seconds()
+		span.SetAttributes(attribute.Float64("duration", duration))
+		logger().NamedLogger.Error(spanCtx, "Failed to enrich block with account nonces — block rejected",
+			err,
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("log_file", FILENAME),
+			ion.String("topic", BLOCKTOPIC),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enrich block with account nonces: " + err.Error()})
+		return
+	}
+
 	logger().NamedLogger.Info(spanCtx, "Block validated, starting consensus process",
 		ion.Int64("block_number", int64(block.BlockNumber)),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)),
+		ion.Int("account_nonces", len(block.AccountNonces)),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", BLOCKTOPIC),

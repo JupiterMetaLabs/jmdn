@@ -217,24 +217,14 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 		fmt.Printf("DEBUG: GetAccount error: %v\n", err)
 		fmt.Printf("DEBUG: Error type: %T\n", err)
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Auto-create and propagate the account
-			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, "jmdn", convertedAddr.Hex())
-			doc := Utils.DIDDoc{
-				Address:    convertedAddr,
-				DIDAddress: didAddress,
-				Metadata:   nil,
-			}
-			if createErr := Utils.CreateAccountandPropagateDID(doc); createErr != nil {
-				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Failed to auto-create and propagate DID %s: %v", convertedAddr.Hex(), createErr), "Balance", -1); logErr != nil {
-					fmt.Printf("Failed to log Balance error: %v\n", logErr)
-				}
-			} else {
-				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Auto-created and propagated DID %s via eth_getBalance", convertedAddr.Hex()), "Balance", 1); logErr != nil {
-					fmt.Printf("Failed to log Balance success: %v\n", logErr)
-				}
-			}
-
-			// Log and return zero balance without writing to database
+			// Ordinary Ethereum semantics: an unknown address simply has balance 0.
+			// REGISTER-ON-READ IS GONE — eth_getBalance used to auto-create and
+			// propagate the account here, which brought accounts into existence on
+			// SOME nodes only (with a locally minted ART nonce) and was the trigger
+			// for the receiver-not-found consensus failures. Accounts are now
+			// created exclusively at block apply, from the block-carried identity
+			// stamped by the sequencer (DB_OPs.EnrichBlockAccountNonces), so a read
+			// must never write state.
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance returned zero for non-existent address: %s", addr), "Balance", 1); logErr != nil {
 				fmt.Printf("Failed to log Balance success: %v\n", logErr)
 			}

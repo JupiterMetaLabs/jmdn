@@ -210,6 +210,14 @@ func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequ
 
 	addr := common.HexToAddress(req.PublicKey)
 
+	// GATED out-of-band creation (operator RPC): a manually created account exists
+	// on this node only, with a locally minted ART nonce. Accounts are created at
+	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
+	// re-enables this path for emergencies.
+	if !DB_OPs.AllowLocalAccountCreate {
+		return &pb.OperationResponse{Success: false, Message: DB_OPs.ErrLocalAccountCreateDisabled.Error()}, nil
+	}
+
 	if err := DB_OPs.CreateAccount(nil, req.Did, addr, nil); err != nil {
 		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to create account: %v", err)}, nil
 	}

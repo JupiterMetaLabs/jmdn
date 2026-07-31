@@ -785,7 +785,15 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 		balance = parts[3]
 	}
 
-	// First create document then propagate
+	// First create document then propagate.
+	// GATED out-of-band creation (operator CLI): a manually created account exists
+	// on this node only, with a locally minted ART nonce. Accounts are created at
+	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
+	// re-enables this path for emergencies.
+	if !DB_OPs.AllowLocalAccountCreate {
+		fmt.Printf("Failed to create account: %v\n", DB_OPs.ErrLocalAccountCreateDisabled)
+		return
+	}
 	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
 	if err != nil {
 		fmt.Printf("Failed to create account: %v\n", err)

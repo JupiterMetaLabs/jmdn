@@ -84,6 +84,42 @@ func (s *txStage) staged() []*DB_OPs.Account {
 	return out
 }
 
+// adoptCarriedNonce converges addr's stored ART identity nonce to the value the
+// block carries for it (see ZKBlock.AccountNonces). The sequencer stamps every
+// touched account with its canonical nonce; a node whose stored value differs —
+// a historical per-node mint, or a gap filled locally — adopts the carried
+// value so the Fastsync AccountSync key matches fleet-wide. Identity-only:
+// balances and tx counters are never touched. Missing account, no carried
+// value, or already-equal are all no-ops; the staged doc commits atomically
+// with the rest of the tx via ApplyTxAtomic.
+func adoptCarriedNonce(ctx context.Context, stage *txStage, addr *common.Address, carried map[common.Address]uint64) {
+	if addr == nil || len(carried) == 0 {
+		return
+	}
+	nonce, ok := carried[*addr]
+	if !ok || nonce == 0 {
+		return
+	}
+	doc, err := stage.get(*addr)
+	if err != nil || doc == nil {
+		return // missing account: creation (with the carried nonce) is handled by the caller
+	}
+	if doc.Nonce == nonce {
+		return
+	}
+	old := doc.Nonce
+	doc.Nonce = nonce
+	stage.put(doc)
+	logger().NamedLogger.Info(ctx, "Adopted block-carried ART nonce (identity heal)",
+		ion.String("account", addr.Hex()),
+		ion.Uint64("old_nonce", old),
+		ion.Uint64("new_nonce", nonce),
+		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+		ion.String("topic", TOPIC),
+		ion.String("function", "BlockProcessing.adoptCarriedNonce"),
+	)
+}
+
 // Global map to track processed transactions during block processing
 var (
 	processedTxs      = make(map[string]bool)
@@ -219,6 +255,31 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	ClearProcessedTransactions()
 
+	// Canonical ART identity nonces carried by the block (sequencer-stamped, see
+	// DB_OPs.EnrichBlockAccountNonces). Used below to (a) create accounts this
+	// block funds with the SAME identity on every node, and (b) adopt the
+	// sequencer's nonce when a stored account carries a different one. Empty for
+	// blocks from a pre-upgrade sequencer — creation then fails as before (no
+	// local minting fallback: that is the divergence this removes).
+	accountNonces := make(map[common.Address]uint64, len(block.AccountNonces))
+	maxCarriedOrdinal := uint64(0)
+	for _, an := range block.AccountNonces {
+		accountNonces[an.Address] = an.Nonce
+		if an.Nonce < DB_OPs.ARTOrdinalMax && an.Nonce > maxCarriedOrdinal {
+			maxCarriedOrdinal = an.Nonce
+		}
+	}
+	if maxCarriedOrdinal > 0 {
+		// Failover insurance: any node that later becomes the sequencer must
+		// continue the ordinal sequence past everything it has seen. Non-fatal.
+		if err := DB_OPs.BumpARTOrdinalFloor(maxCarriedOrdinal + 1); err != nil {
+			logger().NamedLogger.Warn(span_ctx, "Failed to bump ART ordinal floor (failover insurance only)",
+				ion.Uint64("floor", maxCarriedOrdinal+1),
+				ion.String("error", err.Error()),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
+		}
+	}
+
 	// Store original state to enable rollback - captures balance + nonce + txcount atomically
 	originalState := make(map[common.Address]AccountSnapshot)
 	affectedAccounts := make(map[common.Address]bool)
@@ -316,7 +377,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, accountNonces)
 		if Process_err != nil {
 			// DETERMINISM ON FINALIZED BLOCKS: a 2f+1 block is a canonical, agreed
 			// transaction sequence — every node MUST apply every tx or state
@@ -589,7 +650,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, accountNonces map[common.Address]uint64) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -837,24 +898,51 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		return fmt.Errorf("sender DID %s does not exist", tx.From)
 	}
 
-	// Check if recipient exists (for better error reporting)
-	recipientExists, _ := accountExists(tx.To, accountsClient)
+	// Check if recipient exists. A missing recipient is CREATED IN-STAGE below —
+	// but ONLY from the block-carried identity (canonical ART nonce stamped by
+	// the sequencer). There is deliberately NO local-mint fallback: per-node
+	// GenerateARTNonce at apply gave the same account a different identity on
+	// every node, which broke the Fastsync AccountSync diff fleet-wide.
+	// This existence check now GATES A WRITE (the in-stage create below), so its
+	// error can no longer be discarded: a transient read failure here, after the
+	// snapshot loop's read succeeded, would stage a zero-balance document over a
+	// real account. Refuse the tx instead (fail-closed; catch-up re-applies).
+	recipientExists, existErr := accountExists(tx.To, accountsClient)
+	if existErr != nil {
+		txSpan.RecordError(existErr)
+		txSpan.SetAttributes(attribute.String("status", "recipient_existence_check_failed"))
+		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+		return fmt.Errorf("cannot determine whether recipient %s exists (refusing to create): %w", tx.To, existErr)
+	}
 	txSpan.SetAttributes(attribute.Bool("recipient_exists", recipientExists))
-	if !recipientExists && !CreateMissingAccounts {
+	carriedNonce, hasCarriedNonce := uint64(0), false
+	if tx.To != nil {
+		carriedNonce, hasCarriedNonce = accountNonces[*tx.To]
+	}
+	// A carried 0 is the "no identity" sentinel, never a canonical value (a fixed
+	// sequencer assigns real ordinals for zero-stored accounts). Treat it as
+	// absent so creation stays fail-closed rather than minting a 0-keyed account
+	// from a pre-fix sequencer's block.
+	if hasCarriedNonce && carriedNonce == 0 {
+		hasCarriedNonce = false
+	}
+	if !recipientExists && (!CreateMissingAccounts || !hasCarriedNonce) {
 		txSpan.RecordError(errors.New("recipient DID does not exist"))
 		txSpan.SetAttributes(attribute.String("status", "recipient_not_found"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Recipient DID does not exist",
+		logger().NamedLogger.Error(txSpanCtx, "Recipient DID does not exist (no block-carried identity to create it from)",
 			errors.New("recipient DID does not exist"),
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("to", tx.To.Hex()),
+			ion.Bool("create_missing_accounts", CreateMissingAccounts),
+			ion.Bool("block_carried_nonce", hasCarriedNonce),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("topic", TOPIC),
 			ion.String("function", "BlockProcessing.processTransaction"),
 		)
-		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
+		return fmt.Errorf("recipient DID %s does not exist and no block-carried identity is available to create it", tx.To)
 	}
 
 	// All account mutations for this tx are STAGED in memory and then
@@ -863,6 +951,43 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// or none of it does, so a crash cannot leave partially-applied
 	// balances that a replay would double-apply.
 	stage := newTxStage(accountsClient)
+
+	// Create the missing recipient IN-STAGE from the block-carried identity.
+	// Every field is derived from the block (nonce, timestamps) or the address
+	// (DID), so all nodes construct the byte-identical account document — the
+	// credit in addToRecipient then lands on this staged doc and the whole tx
+	// commits atomically via ApplyTxAtomic.
+	if !recipientExists && CreateMissingAccounts && hasCarriedNonce {
+		ts := blockTimestamp * int64(time.Second)
+		stage.put(&DB_OPs.Account{
+			Nonce:       carriedNonce,
+			DIDAddress:  "did:jmdt:metamask:" + tx.To.Hex(),
+			Address:     *tx.To,
+			Balance:     "0",
+			TxNonce:     0,
+			TxCountSent: 0,
+			AccountType: "user",
+			CreatedAt:   ts,
+			UpdatedAt:   ts,
+		})
+		logger().NamedLogger.Info(txSpanCtx, "Created recipient account from block-carried identity",
+			ion.String("to", tx.To.Hex()),
+			ion.Uint64("art_nonce", carriedNonce),
+			ion.String("tx_hash", tx.Hash.Hex()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("topic", TOPIC),
+			ion.String("function", "BlockProcessing.processTransaction"),
+		)
+	}
+
+	// ADOPT: the sequencer's carried nonce is canonical for accounts it names.
+	// A stored account holding a DIFFERENT value (historical per-node mint, or a
+	// sync gap filled locally) converges to the sequencer's value here — nonce
+	// only, never balances or tx counters. No-op once the fleet is consistent.
+	adoptCarriedNonce(txSpanCtx, stage, tx.From, accountNonces)
+	if recipientExists {
+		adoptCarriedNonce(txSpanCtx, stage, tx.To, accountNonces)
+	}
 
 	// 1. Deduct from sender
 	if err := deductFromSender(txSpanCtx, &tx, totalDeduction.String(), stage, blockTimestamp); err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
@@ -443,14 +444,28 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	// Get all connected peers
+	// Get all connected peers.
+	//
+	// NOTE ON TRANSPORT: this is a fan-out of per-peer UNICAST libp2p streams,
+	// not pubsub. Only peers connected at this instant are reached directly;
+	// everyone else depends on receive-side hop-forwarding (MaxHops).
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
-		log.Warn().
+		log.Error().
 			Str("did", doc.DIDAddress).
 			Str("type", msgType).
 			Msg("No connected peers to propagate DID to")
-		return nil // Not an error, just no one to tell
+		// This used to `return nil // Not an error, just no one to tell`.
+		//
+		// It IS an error. The account now exists in this node's database and
+		// nowhere else, and because the dedup message ID is derived from the
+		// address alone (see deriveMessageID), a later re-propagation of the
+		// same address is dropped as a duplicate by every peer — so this is
+		// unrecoverable, not merely delayed. Reporting success here let the
+		// sequencer log "Auto-created and propagated DID" and let the
+		// orchestrator propose a block whose receiver no voter could see,
+		// which every committee member then rejected.
+		return fmt.Errorf("cannot propagate DID %s: no connected peers", doc.DIDAddress)
 	}
 
 	log.Info().
@@ -509,17 +524,91 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 	// Wait for all sends to complete
 	wg.Wait()
 
-	log.Info().
+	// successCount was previously computed and then DISCARDED — this function
+	// returned nil even when every single send failed. Callers
+	// (CreateAccountandPropagateDID → eth_getBalance auto-create) treated that
+	// as proof the fleet had the account. Report the truth instead.
+	successMutex.Lock()
+	delivered := successCount
+	successMutex.Unlock()
+
+	committeeReached, committeeSize, committeeErr := committeeDeliveryStatus(peers, delivered)
+
+	logEvent := log.Info()
+	if delivered == 0 {
+		logEvent = log.Error()
+	}
+	logEvent.
 		Str("msg_id", msg.ID).
 		Str("did", doc.DIDAddress).
 		Str("public_key", doc.Address.Hex()).
 		Str("balance", doc.Balance).
 		Str("type", msgType).
-		Int("success", successCount).
+		Int("success", delivered).
 		Int("total", len(peers)).
+		Int("committee_reached", committeeReached).
+		Int("committee_size", committeeSize).
 		Msg("DID propagation complete")
 
+	if delivered == 0 {
+		return fmt.Errorf("failed to propagate DID %s to any of %d connected peers",
+			doc.DIDAddress, len(peers))
+	}
+
+	// When this node knows the consensus committee (the sequencer does), a
+	// delivery that cannot possibly satisfy a vote is worth failing on now
+	// rather than discovering it as a rejected block a minute later. Voters
+	// reject any transaction whose receiver is absent from their account cache
+	// (Security/security_cache.go), so short of a Byzantine quorum of committee
+	// members holding the account, the block is already lost.
+	//
+	// Fail-open when the committee is unknown (committeeErr != nil): non-sequencer
+	// nodes have no eligibility source wired and must keep propagating normally.
+	if committeeErr == nil && committeeSize > 0 {
+		if need := ByzantineQuorum(committeeSize); committeeReached < need {
+			return fmt.Errorf("DID %s reached only %d of %d committee members directly (need %d); "+
+				"a block using this account would be rejected",
+				doc.DIDAddress, committeeReached, committeeSize, need)
+		}
+	}
+
 	return nil
+}
+
+// committeeDeliveryStatus reports how much of the consensus committee this
+// propagation could have reached directly.
+//
+// It is deliberately CONSERVATIVE and approximate: libp2p gives no per-peer
+// delivery receipt here, so it attributes the observed success count to the
+// committee members that were among the target peers, capped by both. A
+// receive-side hop-forward may still deliver to committee members that were not
+// directly connected, so a low count is a warning about the direct path, not
+// proof of non-delivery.
+//
+// Returns (reached, committeeSize, err). A non-nil err means the committee is
+// unknown on this node — callers must fail OPEN in that case.
+func committeeDeliveryStatus(targets []peer.ID, delivered int) (reached, size int, err error) {
+	members, err := eligibleMembers()
+	if err != nil {
+		return 0, 0, err
+	}
+	size = len(members)
+	if size == 0 {
+		return 0, 0, nil
+	}
+	inTargets := 0
+	for _, p := range targets {
+		if _, ok := members[p.String()]; ok {
+			inTargets++
+		}
+	}
+	reached = inTargets
+	if delivered < reached {
+		// Fewer sends succeeded than there were committee targets; we cannot
+		// tell which failed, so assume the worst.
+		reached = delivered
+	}
+	return reached, size, nil
 }
 
 // ListAllDIDs retrieves all known DIDs from the database
