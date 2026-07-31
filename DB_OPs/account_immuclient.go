@@ -357,6 +357,13 @@ func normalizeUpdatedAtNanos(ts int64) int64 {
 	}
 }
 
+// isZeroBalanceString reports whether a serialized account balance carries no
+// value. Every balance in this system is written via big.Int.String(), so the
+// only zero encodings are "" (field unset on a sparse update) and "0".
+func isZeroBalanceString(bal string) bool {
+	return bal == "" || bal == "0"
+}
+
 // mergeAccountForWrite is the single, PURE decision point for writing an
 // account object over stored state. It owns LWW ordering, identity-field
 // preservation, monotonic counter guards, and new-account defaults — every
@@ -366,13 +373,6 @@ func normalizeUpdatedAtNanos(ts int64) int64 {
 //
 // existing == nil means no stored account (new account). Returns the merged
 // object and whether it should be written (false = existing state wins LWW).
-// isZeroBalanceString reports whether a serialized account balance carries no
-// value. Every balance in this system is written via big.Int.String(), so the
-// only zero encodings are "" (field unset on a sparse update) and "0".
-func isZeroBalanceString(bal string) bool {
-	return bal == "" || bal == "0"
-}
-
 func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	if existing == nil {
 		// NEW ACCOUNT (no stored object to merge from): fill defaults for

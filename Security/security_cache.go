@@ -77,8 +77,11 @@ func envOn(key string, def bool) bool {
 // only ONE risky window (the upgrade) instead of two (upgrade, then a later
 // env-var flip).
 //
-// KILL SWITCH: JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS=0 restores the old rule without
-// redeploying. Set it on every node if you use it, for the reason above.
+// KILL SWITCH: JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS=0 restores the old rule. No new
+// binary is needed, but this is read ONCE at process start — it is NOT a live
+// toggle, so every node must be RESTARTED for the flip to take effect. Set it on
+// every node if you use it, for the reason above: a fleet running mixed values
+// disagrees on which blocks are valid.
 var AllowNewReceiverAccounts = envOn("JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS", true)
 
 type SecurityCache struct {
