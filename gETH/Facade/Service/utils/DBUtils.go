@@ -10,6 +10,12 @@ import (
 )
 
 func CreateAccountandPropagateDID(Document DIDDoc) error {
+	// GATED out-of-band creation: accounts created here exist on some nodes only,
+	// with a locally minted ART nonce — the fleet-divergence vector removed by
+	// block-carried identities. Disabled unless JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1.
+	if !DB_OPs.AllowLocalAccountCreate {
+		return DB_OPs.ErrLocalAccountCreateDisabled
+	}
 
 	opCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

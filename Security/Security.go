@@ -337,48 +337,15 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("failed to load accounts for validation: %w", err)
 	}
 
-	// Submit-tx only: if receiver is unknown, add an in-cache placeholder so the
-	// address-existence and balance-simulation checks inside allChecksWithConn pass.
-	// We do NOT write to DB yet — we only persist after the tx clears ALL checks,
-	// so rejected txs (bad nonce, insufficient balance, etc.) never create DB entries.
-	receiverIsNew := toAddress != nil && security_cache.GetAccount(*toAddress) == nil
-	if receiverIsNew {
-		now := time.Now().UTC().UnixNano()
-		security_cache.RegisterAccount(*toAddress, &DB_OPs.Account{
-			Nonce:       DB_OPs.GenerateARTNonce(),
-			DIDAddress:  "did:jmdt:metamask:" + toAddress.Hex(),
-			Address:     *toAddress,
-			Balance:     "0",
-			TxNonce:     0,
-			TxCountSent: 0,
-			AccountType: "user",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		})
-	}
-
+	// NOTE: submit-time receiver auto-registration is GONE. It created the
+	// receiver on THIS node only (with a locally minted ART nonce) and relied on
+	// DID propagation to reach the committee before the vote — the race behind
+	// the receiver-not-found consensus failures. An unknown receiver now passes
+	// validation via AllowNewReceiverAccounts (CheckAddressExistWithCache) and is
+	// created at BLOCK APPLY on every node from the block-carried identity
+	// stamped by the sequencer (DB_OPs.EnrichBlockAccountNonces) — one canonical
+	// identity, no propagation dependency, no DB write for rejected txs.
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
-
-	// Persist receiver only if the tx passed every check.
-	// Reload from DB after creation so the cache holds the canonical doc
-	// (correct ARTNonce + timestamps) rather than the hand-built placeholder.
-	if result && err == nil && receiverIsNew {
-		did := "did:jmdt:metamask:" + toAddress.Hex()
-		if createErr := DB_OPs.CreateAccount(accountsConn, did, *toAddress, nil); createErr != nil {
-			logger().Error(traceCtx, "Failed to persist auto-registered receiver", createErr,
-				ion.String("address", toAddress.Hex()),
-				ion.String("function", "Security.AllChecks"))
-			// Non-fatal: block processing will create the account at apply time.
-		} else {
-			if actual, getErr := DB_OPs.GetAccount(accountsConn, *toAddress); getErr == nil && actual != nil {
-				security_cache.RegisterAccount(*toAddress, actual)
-			}
-			logger().Info(traceCtx, "Auto-registered receiver account on submit",
-				ion.String("address", toAddress.Hex()),
-				ion.String("did", did),
-				ion.String("function", "Security.AllChecks"))
-		}
-	}
 
 	duration := time.Since(startTime).Seconds()
 	if err != nil {

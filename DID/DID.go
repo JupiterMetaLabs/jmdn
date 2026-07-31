@@ -158,6 +158,13 @@ func (s *AccountServer) Close() {
 
 // storeAccount stores a Account either in the database or in memory
 func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
+	// GATED out-of-band creation: a DID-service account exists only on the nodes
+	// the registration reached, with a locally minted ART nonce — the fleet
+	// divergence removed by block-carried identities. Accounts are created at
+	// block apply; DID metadata for EXISTING accounts is unaffected by this gate.
+	if !DB_OPs.AllowLocalAccountCreate {
+		return DB_OPs.ErrLocalAccountCreateDisabled
+	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	loggerCtx, cancel := context.WithCancel(context.Background())
