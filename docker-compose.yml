@@ -55,19 +55,24 @@ services:
   # and jmdn cannot connect on first deploy.
   # ── ImmuDB volume permissions (one-shot init) ───────────────────────────────
   # immudb below runs as UID 3322 in a distroless image with no-new-privileges,
-  # so it has no shell and cannot chown its own data. If the immudb-data volume
-  # is ever populated with files owned by another UID — a snapshot copied in as
-  # root, or a bootstrap that skipped its chown — immudb crash-loops with
-  # "permission denied: open .../systemdb/tx/00000000.tx" and the node never
-  # serves RPC (empty :8545). This one-shot runs as root, fixes ownership to
-  # 3322:3322, then exits; immudb waits for it to complete. Idempotent, safe on
-  # every `up`. Reuses the jmdn image so no extra image is pulled.
+  # so it has no shell and cannot fix its own data. Two conditions crash-loop it
+  # with "permission denied: open .../systemdb/tx/00000000.tx" (node never serves
+  # RPC, empty :8545):
+  #   1. files owned by another UID — a snapshot copied in as root, or a
+  #      bootstrap that skipped its chown; or
+  #   2. files READ-ONLY for the owner — a snapshot tarball unpacked at mode 0555
+  #      (dirs and files). immudb opens its tx log O_RDWR, so a missing owner
+  #      write bit fails EACCES even when ownership is already correct 3322.
+  # This one-shot runs as root and fixes BOTH: sets ownership to 3322:3322 and
+  # restores owner write (u+rwx on dirs, u+rw on files), then exits; immudb waits
+  # for it to complete. Idempotent, safe on every `up`. Reuses the jmdn image so
+  # no extra image is pulled.
   immudb-perms:
     image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
     container_name: jmdn-immudb-perms
     user: "0:0"
     entrypoint: ["/bin/sh", "-c"]
-    command: ['chown -R 3322:3322 /opt/jmdn/data && echo "[immudb-perms] ownership set to 3322:3322 on /opt/jmdn/data"']
+    command: ['chown -R 3322:3322 /opt/jmdn/data && find /opt/jmdn/data -type d -exec chmod u+rwx {} + && find /opt/jmdn/data -type f -exec chmod u+rw {} + && echo "[immudb-perms] ownership 3322:3322 + owner write restored on /opt/jmdn/data"']
     volumes:
       - immudb-data:/opt/jmdn/data
     restart: "no"
