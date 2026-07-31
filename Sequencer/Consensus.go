@@ -401,6 +401,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.Start.buddyHeads"))
 	} else {
+		// seednode.Client owns a grpc.ClientConn. Consensus.Start runs once per
+		// block proposal, so without this close the sequencer leaks a connection,
+		// its goroutines and a file descriptor on EVERY block.
+		defer sc.Close()
 		headCtx, headCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
 		if heads, herr := sc.ListBuddyHeads(headCtx); herr == nil {
 			buddyHeads = heads
