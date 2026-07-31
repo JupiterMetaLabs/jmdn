@@ -366,6 +366,13 @@ func normalizeUpdatedAtNanos(ts int64) int64 {
 //
 // existing == nil means no stored account (new account). Returns the merged
 // object and whether it should be written (false = existing state wins LWW).
+// isZeroBalanceString reports whether a serialized account balance carries no
+// value. Every balance in this system is written via big.Int.String(), so the
+// only zero encodings are "" (field unset on a sparse update) and "0".
+func isZeroBalanceString(bal string) bool {
+	return bal == "" || bal == "0"
+}
+
 func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	if existing == nil {
 		// NEW ACCOUNT (no stored object to merge from): fill defaults for
@@ -427,6 +434,20 @@ func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	}
 	if incoming.TxCountSent < existing.TxCountSent {
 		incoming.TxCountSent = existing.TxCountSent
+	}
+	// 7. Preserve Balance on a placeholder/sync write. The authoritative balance
+	// writers — live execution (ApplyTxAtomic) and reconciliation
+	// (ApplyBlockRecon) — commit directly under the state-apply lock and never
+	// reach this merge. The writes that DO reach it are account-sync, restore,
+	// and DID propagation, which carry Balance "0" as a placeholder that
+	// reconciliation is expected to fill. Letting that "0" win LWW would
+	// overwrite a real balance with zero — a silent, non-healing divergence.
+	// Treat an incoming zero/empty balance as "no balance information" and keep
+	// the stored value, exactly like the sparse-field preserves above. A real
+	// (nonzero) incoming balance is still applied, so legitimate balance updates
+	// that route through this path are unaffected.
+	if isZeroBalanceString(incoming.Balance) && !isZeroBalanceString(existing.Balance) {
+		incoming.Balance = existing.Balance
 	}
 
 	return incoming, true

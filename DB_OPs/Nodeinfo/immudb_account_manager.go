@@ -556,6 +556,89 @@ func EnqueueAppliedTxMarkers(txHashes []string, appliedAt int64) error {
 	return nil
 }
 
+// BlockReconRef references one stored block whose outstanding balance effects
+// reconciliation wants applied. The hash pins block identity between enqueue
+// and apply.
+type BlockReconRef struct {
+	BlockNumber uint64
+	BlockHash   string
+}
+
+// EnqueueBlockRecons ships block references to the account sync stream for
+// the drain worker to apply via DB_OPs.ApplyBlockRecon. Returns the refs that
+// could NOT be handed off (enqueue failure) plus the aggregated error; refs
+// that were handed off will be applied exactly once regardless of retries
+// (ApplyBlockRecon is a no-op for a block whose txs are all marked).
+//
+// Redis-unavailable fallback applies the blocks directly and synchronously —
+// slower, but the same exactly-once apply path.
+func EnqueueBlockRecons(refs []BlockReconRef) ([]BlockReconRef, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	s, mgr := getAccountQueue()
+	if s == nil {
+		log.Printf("[accountqueue] EnqueueBlockRecons: queue not initialized — applying %d blocks directly", len(refs))
+		return applyBlockReconsDirect(refs)
+	}
+
+	now := time.Now().UTC().Unix()
+	wires := make([]blockReconWire, len(refs))
+	for i, r := range refs {
+		wires[i] = blockReconWire{BlockNumber: r.BlockNumber, BlockHash: r.BlockHash, EnqueuedAt: now}
+	}
+
+	// Chunked enqueue with per-chunk failure tracking so callers know exactly
+	// which blocks must be retried on the next reconciliation run.
+	var failed []BlockReconRef
+	var errs []error
+	chunks := chunkCount(len(wires))
+	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
+	defer cancel()
+	for start := 0; start < len(wires); start += maxRecordsPerMessage {
+		end := start + maxRecordsPerMessage
+		if end > len(wires) {
+			end = len(wires)
+		}
+		data, err := json.Marshal(wires[start:end])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal block recon chunk [%d:%d]: %w", start, end, err))
+			failed = append(failed, refs[start:end]...)
+			continue
+		}
+		id, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
+			"type": string(payloadTypeBlockRecon),
+			"data": string(data),
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("enqueue block recon chunk [%d:%d]: %w", start, end, err))
+			failed = append(failed, refs[start:end]...)
+			continue
+		}
+		noteEnqueuedID(id)
+	}
+	if len(errs) == 0 {
+		mgr.EnsureActive()
+		return nil, nil
+	}
+	mgr.EnsureActive()
+	return failed, errors.Join(errs...)
+}
+
+// applyBlockReconsDirect is the Redis-unavailable fallback: apply each block
+// synchronously through the same exactly-once path the worker uses.
+func applyBlockReconsDirect(refs []BlockReconRef) ([]BlockReconRef, error) {
+	var failed []BlockReconRef
+	var errs []error
+	for _, r := range refs {
+		if _, err := DB_OPs.ApplyBlockRecon(nil, r.BlockNumber, r.BlockHash); err != nil {
+			failed = append(failed, r)
+			errs = append(errs, fmt.Errorf("block %d: %w", r.BlockNumber, err))
+		}
+	}
+	return failed, errors.Join(errs...)
+}
+
 // writeTxMarkersDirect is the Redis-unavailable fallback for marker writes.
 func writeTxMarkersDirect(txHashes []string, appliedAt int64) error {
 	markers := make(map[string]int64, len(txHashes))
