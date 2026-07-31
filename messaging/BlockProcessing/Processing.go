@@ -886,11 +886,28 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// the sequencer). There is deliberately NO local-mint fallback: per-node
 	// GenerateARTNonce at apply gave the same account a different identity on
 	// every node, which broke the Fastsync AccountSync diff fleet-wide.
-	recipientExists, _ := accountExists(tx.To, accountsClient)
+	// This existence check now GATES A WRITE (the in-stage create below), so its
+	// error can no longer be discarded: a transient read failure here, after the
+	// snapshot loop's read succeeded, would stage a zero-balance document over a
+	// real account. Refuse the tx instead (fail-closed; catch-up re-applies).
+	recipientExists, existErr := accountExists(tx.To, accountsClient)
+	if existErr != nil {
+		txSpan.RecordError(existErr)
+		txSpan.SetAttributes(attribute.String("status", "recipient_existence_check_failed"))
+		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+		return fmt.Errorf("cannot determine whether recipient %s exists (refusing to create): %w", tx.To, existErr)
+	}
 	txSpan.SetAttributes(attribute.Bool("recipient_exists", recipientExists))
 	carriedNonce, hasCarriedNonce := uint64(0), false
 	if tx.To != nil {
 		carriedNonce, hasCarriedNonce = accountNonces[*tx.To]
+	}
+	// A carried 0 is the "no identity" sentinel, never a canonical value (a fixed
+	// sequencer assigns real ordinals for zero-stored accounts). Treat it as
+	// absent so creation stays fail-closed rather than minting a 0-keyed account
+	// from a pre-fix sequencer's block.
+	if hasCarriedNonce && carriedNonce == 0 {
+		hasCarriedNonce = false
 	}
 	if !recipientExists && (!CreateMissingAccounts || !hasCarriedNonce) {
 		txSpan.RecordError(errors.New("recipient DID does not exist"))

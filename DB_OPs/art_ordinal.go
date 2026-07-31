@@ -195,8 +195,16 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 	for _, addr := range ordered {
 		doc, err := GetAccount(conn, addr)
 		switch {
-		case err == nil && doc != nil:
+		case err == nil && doc != nil && doc.Nonce != 0:
 			nonces[addr] = doc.Nonce
+		case err == nil && doc != nil:
+			// Stored identity is the 0 sentinel ("no identity information" — e.g. a
+			// reconciliation-created stub). Stamping 0 as canonical would FREEZE it:
+			// adoptCarriedNonce deliberately skips 0, so no node could ever heal the
+			// account, and multiple 0-keyed accounts collide in nonce-set lookups.
+			// Treat it as missing instead: assign a real ordinal, which apply-side
+			// adopt then propagates fleet-wide (including back onto this sequencer).
+			missing = append(missing, addr)
 		case err != nil && strings.Contains(err.Error(), "key not found"):
 			missing = append(missing, addr)
 		default:

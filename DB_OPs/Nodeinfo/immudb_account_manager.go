@@ -221,7 +221,18 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	}
 
 	doc.Balance = balance.String()
-	doc.Nonce = nonce
+	// ART IDENTITY GUARD (same contract as UpdateAccountBalance above and
+	// mergeAccountForWrite rule 5): nonce == 0 means the caller carried NO
+	// identity information — reconciliation's IsNewAccount branch sends exactly
+	// this sentinel. Writing the 0 would freeze the account in the un-healable
+	// sentinel state (enrichment must special-case it; multiple 0-keyed accounts
+	// collide in nonce-set lookups). Keeping the identity DB_OPs.CreateAccount
+	// just minted is the better failure mode: it is unique, and the next block
+	// that touches the account carries the sequencer's canonical value, which
+	// adoptCarriedNonce then heals fleet-wide.
+	if nonce != 0 {
+		doc.Nonce = nonce
+	}
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
 	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)
