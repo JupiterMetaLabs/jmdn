@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,7 +128,13 @@ var (
 	txProcessingLocks = make(map[string]*sync.Mutex)
 	txLocksGuard      = sync.Mutex{}
 
-	// Configurable defaults that can be adjusted as needed
+	// Configurable defaults that can be adjusted as needed.
+	//
+	// DefaultGasLimit is NOT the fee-path fallback — that is
+	// config.FallbackTxGasLimit, applied inside config.GasFee /
+	// config.EffectiveGasLimit, which is the single source of truth shared with
+	// validation and reconciliation. The two must stay equal (both 21000); this
+	// copy exists only for callers outside the fee path.
 	DefaultGasLimit       = int64(21000)
 	DefaultGasPrice       = int64(1000000000) // 1 Gwei
 	CreateMissingAccounts = true              // Set to false to disable automatic DID creation
@@ -829,16 +836,22 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		return fmt.Errorf("failed to parse transaction: %w", err)
 	}
 
-	// Gas Limit is already a bigInt
-	var gasLimit *big.Int
-	if tx.GasLimit != 0 {
-		gasLimit = big.NewInt(int64(tx.GasLimit))
-	} else {
-		gasLimit = big.NewInt(DefaultGasLimit)
-	}
-
-	// Calculate gas fee (gasLimit * gasPrice / 1,000,000,000)
-	gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
+	// Gas fee via config.GasFee — the SINGLE source of truth, shared with
+	// validation (Security/security_cache.go) and reconciliation
+	// (DB_OPs/account_recon.go). config/gasfee.go's header records that these
+	// paths drifted once before and corrupted balances on every reconciliation
+	// of an EIP-1559 transaction; it closes with "Do not fork this logic again".
+	//
+	// This used to re-derive the same product inline as
+	// big.NewInt(int64(tx.GasLimit)) * parsedTx.EffectiveGasFee. It agreed with
+	// config.GasFee for all realistic inputs — same FallbackTxGasLimit (21000),
+	// same EffectiveGasPrice — but the uint64→int64 conversion made a GasLimit
+	// >= 2^63 produce a NEGATIVE fee, which credits the sender and debits the
+	// fee recipients. Validation computes the correct (huge) cost with
+	// config.GasFee and rejects such a transaction for insufficient funds, so it
+	// was not reachable, but the two expressions disagreed and only one was
+	// right. GasFee applies the same zero-GasLimit fallback internally.
+	gasFeeToDeduct := config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
 	// Transaction value should remain in Wei for balance calculations
 	// parsedTx.ValueBig is already in Wei, no conversion needed
@@ -858,7 +871,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(
 		attribute.String("value", parsedTx.ValueBig.String()),
-		attribute.String("gas_limit", gasLimit.String()),
+		attribute.String("gas_limit", strconv.FormatUint(config.EffectiveGasLimit(tx.GasLimit), 10)),
 		attribute.String("gas_fee", gasFeeToDeduct.String()),
 		attribute.String("total_deduction", totalDeduction.String()),
 		attribute.String("coinbase_gas_fee", coinbaseGasFee.String()),
@@ -870,7 +883,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		ion.String("from", tx.From.Hex()),
 		ion.String("to", tx.To.Hex()),
 		ion.String("value", parsedTx.ValueBig.String()),
-		ion.String("gas_limit", gasLimit.String()),
+		ion.String("gas_limit", strconv.FormatUint(config.EffectiveGasLimit(tx.GasLimit), 10)),
 		ion.String("gas_fee", gasFeeToDeduct.String()),
 		ion.String("total_deduction", totalDeduction.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
