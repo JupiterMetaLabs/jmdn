@@ -550,6 +550,12 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 				} else if err != nil {
 					fmt.Printf("⚠️ Failed to get peer from seed node: %v\n", err)
 				}
+				// Closed explicitly, NOT deferred: this is inside the per-buddy loop,
+				// so a defer would hold every connection until the whole sync finished
+				// — one per buddy per round. Placed here, after the last use of
+				// client, and before the connection-attempt block below whose
+				// `goto nextPeer` would otherwise jump past it.
+				client.Close()
 			} else {
 				fmt.Printf("⚠️ Failed to create seed node client: %v\n", err)
 			}

@@ -237,6 +237,11 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, nil, errors.New("failed to create seed node client: " + err.Error())
 	}
+	// seednode.Client owns a grpc.ClientConn. This runs once per vote-aggregation
+	// round, so without the close the buddy accumulates a connection (and its
+	// goroutines and file descriptor) every round. Safe as a defer: this is at
+	// function-body scope, past both CRDT loops above.
+	defer client.Close()
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
