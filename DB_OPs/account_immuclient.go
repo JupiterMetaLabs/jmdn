@@ -2258,6 +2258,23 @@ func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *
 		defer PutAccountsConnection(PooledConnection)
 	}
 
+	// UPDATE-ONLY unless local creation is explicitly enabled: DID propagation
+	// reaches only the peers that happen to receive the message, so letting it
+	// CREATE accounts brings the account into existence on SOME nodes with
+	// whatever ART nonce the sender minted — the fleet-divergence vector removed
+	// by block-carried identities. Metadata/DID updates for accounts this node
+	// already holds remain allowed; creation of unknown accounts is refused.
+	if !AllowLocalAccountCreate {
+		if _, err := GetAccount(PooledConnection, account.Address); err != nil {
+			if strings.Contains(err.Error(), "key not found") {
+				return fmt.Errorf("refusing to create account %s via DID propagation: %w",
+					account.Address.Hex(), ErrLocalAccountCreateDisabled)
+			}
+			return fmt.Errorf("store propagated account: existence check for %s: %w",
+				account.Address.Hex(), err)
+		}
+	}
+
 	// Initialize volatile ledger fields (balance, tx counters) to their
 	// canonical values via the shared policy. A true return means the incoming
 	// copy carried non-canonical values; log it for observability.
