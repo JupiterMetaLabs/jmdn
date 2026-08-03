@@ -4,7 +4,7 @@ package backend
 // PURPOSE: Implement store.ReceiptStore — generate receipts on-the-fly from tx+block via ThebeReader.
 // CORE DATA STRUCTURES: config.Receipt built from TransactionRecord + BlockRecord; no persistent state.
 // TO MODIFY BEHAVIOR: edit generateReceiptFromRecords for different gas/log computation
-// DO NOT: import ImmuDB, PooledConnection, or dualdb packages
+// DO NOT: import legacy DB plumbing (PooledConnection-era packages)
 // EXTENSION POINT: persist receipts → implement a ReceiptWriter and inject via New()
 
 import (

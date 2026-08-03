@@ -12,7 +12,6 @@ require (
 	github.com/JupiterMetaLabs/ion v0.4.2
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cockroachdb/errors v1.11.3
-	github.com/codenotary/immudb v1.11.1
 	github.com/ethereum/go-ethereum v1.17.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1

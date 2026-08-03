@@ -13,7 +13,7 @@
 //
 // DO NOT:
 //   - Import config.PooledConnection or any ImmuDB-specific types.
-//   - Import DB_OPs/dualdb, DB_OPs/immuclient, or DB_OPs/account_immuclient.
+//   - Import legacy DB plumbing (the retired dual-write/immuclient layers).
 //   - Add cache logic here — cache lives in DB_OPs/store/cache/ decorators (Phase 3).
 //   - Store any per-request state on thebeBackend (stateless by design).
 //

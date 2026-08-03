@@ -17,7 +17,7 @@ import (
 // PURPOSE: Implement store.AccountStore by delegating to ThebeGateway (writes) and ThebeReader (reads).
 // CORE DATA STRUCTURES: store.Account ↔ thebegateway.AccountRecord converters — fixed size, no growth.
 // TO MODIFY BEHAVIOR: change field mapping in toAccountRecord / toStoreAccount
-// DO NOT: import ImmuDB, PooledConnection, or dualdb packages
+// DO NOT: import legacy DB plumbing (PooledConnection-era packages)
 // EXTENSION POINT: add new account fields → update toAccountRecord + toStoreAccount
 
 // CreateAccount converts store.Account → AccountRecord and writes.

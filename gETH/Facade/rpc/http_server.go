@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gossipnode/DB_OPs/cassata"
-	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/config/settings"
 	"gossipnode/internal/syncmonitor"
 	"gossipnode/logging"
@@ -22,7 +21,6 @@ import (
 
 type HTTPServer struct {
 	h           *Handlers
-	dualDB      *dualdb.DualDB
 	cassata     *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
 	logger      *ion.Ion         // Add logger
 	syncMonitor *syncmonitor.Monitor
@@ -36,11 +34,6 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 	}
 
 	return &HTTPServer{h: h, logger: l.NamedLogger}
-}
-
-func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
-	s.dualDB = d
-	return s
 }
 
 // WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
@@ -110,19 +103,6 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 			return nil
 		}
 		return err
-	}
-}
-
-func (s *HTTPServer) DualDBReport(c *gin.Context) {
-	if s.dualDB == nil {
-		c.String(http.StatusServiceUnavailable, "dualdb not enabled")
-		return
-	}
-
-	c.Header("Content-Type", "application/json")
-	if err := json.NewEncoder(c.Writer).Encode(s.dualDB.Report()); err != nil {
-		c.String(http.StatusInternalServerError, "failed to encode dualdb report")
-		return
 	}
 }
 

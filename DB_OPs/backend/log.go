@@ -4,7 +4,7 @@ package backend
 // PURPOSE: Implement store.LogStore by delegating to the LogWriter interface.
 // CORE DATA STRUCTURES: []*ethtypes.Log passed through; no internal storage on thebeBackend.
 // TO MODIFY BEHAVIOR: swap the LogWriter implementation passed to New()
-// DO NOT: import ImmuDB, PooledConnection, or dualdb packages
+// DO NOT: import legacy DB plumbing (PooledConnection-era packages)
 // EXTENSION POINT: implement LogWriter with ThebeDB SQL backing to replace ImmuDB log storage
 
 import (

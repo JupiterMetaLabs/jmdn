@@ -18,7 +18,6 @@ func (s *HTTPServer) ServeDebugWithContext(ctx context.Context, addr string) err
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
-	router.GET("/debug/dualdb/report", s.DualDBReport)
 	s.registerThebeReadRoutes(router)
 
 	srv := &http.Server{

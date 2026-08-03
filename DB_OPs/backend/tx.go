@@ -13,7 +13,7 @@ import (
 // PURPOSE: Implement store.TxStore by delegating to ThebeGateway (writes) and ThebeReader (reads).
 // CORE DATA STRUCTURES: config.Transaction ↔ thebegateway.TransactionRecord
 // TO MODIFY BEHAVIOR: change field mapping in toTransactionRecord
-// DO NOT: import ImmuDB, PooledConnection, or dualdb packages
+// DO NOT: import legacy DB plumbing (PooledConnection-era packages)
 // EXTENSION POINT: new tx fields → update toTransactionRecord
 
 // StoreTransaction converts config.Transaction → TransactionRecord and writes.

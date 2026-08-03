@@ -1129,14 +1129,15 @@ func main() {
 		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
 		cas = cassata.New(db, zap.NewNop())
 
-		// Wire ThebeGateway as the ThebeShadowWriter — replaces cassata-based ShadowAdapter.
+		// Construct the ThebeGateway (2PC writes + outbox retry) backing the
+		// process-wide handle factory below. (The legacy ThebeShadowWriter hook
+		// was removed with DualDB — migration Phase 7.)
 		outbox, err := thebegateway.NewOutboxStore(cfg.Thebe.KVPath + "/outbox.db")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FATAL thebedb: outbox store init failed: %v\n", err)
 			os.Exit(1)
 		}
 		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
-		DB_OPs.SetThebeShadowWriter(DB_OPs.NewGatewayAdapter(gw))
 
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway

@@ -12,7 +12,7 @@ import (
 // PURPOSE: Implement store.ZKProofStore — chains WriteBlock+WriteZKProof+WriteSnapshot+WriteTransaction.
 // CORE DATA STRUCTURES: config.ZKBlock decomposed into 4 separate records per write.
 // TO MODIFY BEHAVIOR: change decomposition in StoreZKBlock
-// DO NOT: import ImmuDB, PooledConnection, or dualdb packages
+// DO NOT: import legacy DB plumbing (PooledConnection-era packages)
 // EXTENSION POINT: add new ZK record types to the write chain
 
 // StoreZKBlock writes block + ZK proof + snapshot + all transactions atomically (best-effort chain).

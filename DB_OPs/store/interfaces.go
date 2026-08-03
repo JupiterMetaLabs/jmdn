@@ -18,7 +18,7 @@
 //
 // DO NOT:
 //   - Add implementation code or DB calls here — this package is contracts only.
-//   - Import DB_OPs/backend, DB_OPs/dualdb, DB_OPs/cassata, or any package with DB calls.
+//   - Import DB_OPs/backend, DB_OPs/cassata, or any package with DB calls.
 //     config and DB_OPs/thebegateway are acceptable (shared domain types, no DB logic, no cycle).
 //
 // EXTENSION POINT: add a new XStore interface → embed in ThebeHandle → implement on thebeBackend.

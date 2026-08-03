@@ -12,7 +12,7 @@
 //
 // DO NOT:
 //   - Add business logic here — this is pure assembly/wiring.
-//   - Import config.ImmuClient or DB_OPs/dualdb.
+//   - Import legacy DB plumbing (the retired dual-write/immuclient layers).
 //
 // EXTENSION POINT: add new XStore field → wire in NewComposite() → this file only changes here.
 
