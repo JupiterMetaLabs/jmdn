@@ -23,7 +23,8 @@ const (
 	PubsubChannelLocal      = "local:pubsub:channel"
 	NodeLocal               = "local:node"
 	MessagingLocal          = "local:messaging"
-	DIDPropagationLocal     = "local:did:propagation"
+	DIDPropagationLocal        = "local:did:propagation"
+	ContractPropagationLocal   = "local:contract:propagation"
 	BroadcastLocal          = "local:direct:msg"
 
 	BlockPropagationLocal = "local:block:propagation"
@@ -94,6 +95,11 @@ const (
 	DIDForwardThread           = "thread:did:forward"
 	DIDPropagationStreamThread = "thread:did:propagation:stream"
 
+	ContractStoreThread             = "thread:contract:store"
+	ContractPropagationThread       = "thread:contract:propagation"
+	ContractForwardThread           = "thread:contract:forward"
+	ContractPropagationStreamThread = "thread:contract:propagation:stream"
+
 	MessageCleanerThread   = "thread:messaging:cleaner"
 	MessageBroadcastThread = "thread:messaging:broadcast"
 	VoteBroadcastThread    = "thread:messaging:vote:broadcast"
@@ -127,6 +133,7 @@ const (
 	SeedThread = "thread:seed"
 
 	BlockGRPCServerThread      = "thread:block:grpc:server"
+	SmartContractThread        = "thread:smart:contract"
 	SubmitRawTransactionThread = "thread:block:submit:raw:transaction"
 
 	ConnectionPoolThread = "thread:connection:pool"
@@ -172,6 +179,7 @@ var (
 	// Waitgroup for the node manager
 	NodeManagerWG                    = "waitgroup:node:manager"
 	DIDForwardWG                     = "waitgroup:did:forward"
+	ContractForwardWG                = "waitgroup:contract:forward"
 	MessageBroadcastWG               = "waitgroup:messaging:broadcast"
 	VoteBroadcastWG                  = "waitgroup:messaging:vote:broadcast"
 	BroadcastBlockWG                 = "waitgroup:messaging:block:broadcast"

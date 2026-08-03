@@ -7,6 +7,8 @@ import (
 
 	"gossipnode/config"
 
+	log "gossipnode/logging"
+	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -126,7 +128,11 @@ func (gps *GossipPubSub) Shutdown(ctx context.Context) error {
 		if topic != nil {
 			if err := topic.Close(); err != nil {
 				// Log but continue closing other topics
-				fmt.Printf("Warning: failed to close topic %s: %v\n", topicName, err)
+				ctx := context.Background()
+				logInstance, logErr := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+				if logErr == nil && logInstance != nil {
+					logInstance.GetNamedLogger().Warn(ctx, "Failed to close topic", ion.Err(err), ion.String("topic", topicName))
+				}
 			}
 		}
 		delete(gps.TopicsMap, topicName)

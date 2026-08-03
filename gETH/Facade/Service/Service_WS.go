@@ -3,15 +3,18 @@ package Service
 import (
 	"context"
 	"fmt"
-	"log"
-	"sync"
-	"time"
-
 	"gossipnode/DB_OPs"
 	"gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 	"gossipnode/gETH/common"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/JupiterMetaLabs/ion"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 // Global subscription manager for new heads
@@ -64,7 +67,7 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 	startBlockPollerIfNeeded()
 
 	// Log subscription creation
-	fmt.Printf("New heads subscription created: %s\n", subscriptionID)
+	logger().Info(context.Background(), "New heads subscription created", ion.String("subscription_id", subscriptionID))
 
 	// Return channel and cleanup function
 	cleanup := func() {
@@ -75,7 +78,7 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 		cancel()
 		close(subscription.Channel)
 
-		fmt.Printf("New heads subscription closed: %s\n", subscriptionID)
+		logger().Info(context.Background(), "New heads subscription closed", ion.String("subscription_id", subscriptionID))
 	}
 
 	return subscription.Channel, cleanup, nil
@@ -205,7 +208,7 @@ func notifyNewBlock(block *Types.Block) {
 			default:
 				// Channel is full, subscriber is too slow
 				// We could close the subscription here, but for now just skip
-				fmt.Printf("Subscriber %s channel full, skipping block %d\n", subscription.ID, block.Header.Number)
+				logger().Warn(context.Background(), "Subscriber channel full, skipping block", ion.String("subscriber_id", subscription.ID), ion.Int("block_number", int(block.Header.Number)))
 			}
 		}
 	}
@@ -232,14 +235,115 @@ func GetActiveSubscriptionsCount() int {
 	return len(newHeadsSubscriptions.subscribers)
 }
 
-// SubscribeLogs implements the Service interface - placeholder implementation
+// SubscribeLogs implements the Service interface.
+// It attaches to the GlobalLogWriter fan-out channel and forwards logs that
+// match the supplied FilterQuery (address + topic filters) to the caller.
+// When ctx is cancelled or the caller invokes the returned cleanup func,
+// the subscription is torn down.
 func (s *ServiceImpl) SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error) {
-	// TODO: Implement logs subscription functionality
-	ch := make(chan Types.Log, 100)
+	// Subscribe to the EVM log fan-out
+	rawCh := DB_OPs.GlobalLogWriter.Subscribe()
+
+	// Output channel for the WebSocket forwarder
+	out := make(chan Types.Log, 100)
+
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
+				return
+			case ethLog, ok := <-rawCh:
+				if !ok {
+					return
+				}
+				if !logMatchesFilter(ethLog, q) {
+					continue
+				}
+				// Convert go-ethereum types.Log -> Service Types.Log
+				tl := ethLogToTypesLog(ethLog)
+				select {
+				case out <- tl:
+				case <-ctx.Done():
+					DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
+					return
+				}
+			}
+		}
+	}()
+
 	cleanup := func() {
-		close(ch)
+		DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
 	}
-	return ch, cleanup, fmt.Errorf("SubscribeLogs method not yet implemented")
+	return out, cleanup, nil
+}
+
+// logMatchesFilter returns true if ethLog satisfies the address and topic
+// constraints in q.  An empty q matches everything.
+func logMatchesFilter(l *ethtypes.Log, q *Types.FilterQuery) bool {
+	if q == nil {
+		return true
+	}
+
+	// Address filter (any-of)
+	if len(q.Addresses) > 0 {
+		addr := strings.ToLower(l.Address.Hex())
+		matched := false
+		for _, a := range q.Addresses {
+			if strings.EqualFold(a, addr) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Topic filter (positional AND, within each position OR, nil = wildcard)
+	for pos, orSet := range q.Topics {
+		if len(orSet) == 0 {
+			continue // wildcard for this position
+		}
+		if pos >= len(l.Topics) {
+			return false // log doesn't have enough topics
+		}
+		topicHex := l.Topics[pos].Hex()
+		posMatched := false
+		for _, want := range orSet {
+			if strings.EqualFold(want, topicHex) {
+				posMatched = true
+				break
+			}
+		}
+		if !posMatched {
+			return false
+		}
+	}
+
+	return true
+}
+
+// ethLogToTypesLog converts a go-ethereum *types.Log to the Service Types.Log
+// used by the WebSocket forwarder.
+func ethLogToTypesLog(l *ethtypes.Log) Types.Log {
+	topics := make([][]byte, len(l.Topics))
+	for i, t := range l.Topics {
+		copy := t // avoid loop variable aliasing
+		topics[i] = copy[:]
+	}
+	return Types.Log{
+		Address:     l.Address.Bytes(),
+		Topics:      topics,
+		Data:        l.Data,
+		BlockNumber: l.BlockNumber,
+		BlockHash:   l.BlockHash.Bytes(),
+		TxIndex:     uint64(l.TxIndex),
+		TxHash:      l.TxHash.Bytes(),
+		LogIndex:    uint64(l.Index),
+		Removed:     l.Removed,
+	}
 }
 
 // SubscribePendingTxs implements the Service interface - placeholder implementation

@@ -1,35 +1,25 @@
 // MODULE: DB_OPs/latest_block
-// PURPOSE: Single monotonic choke point for the defaultdb `latest_block` marker.
+// PURPOSE: Single monotonic choke point for the latest_block tip marker.
+//          ThebeDB retarget of the F6 module.
 //
-// HISTORY: latest_block had FOUR writers and no guard —
-//   1. StoreZKBlock wrote it blindly per block (immuclient.go:1949, since
-//      removed): any out-of-order store (PoTS WAL dump, replayed block, sync worker)
-//      regressed the tip; header-sync SKELETON blocks (headers, no data)
-//      advanced it past the data-complete tip.
-//   2. The headers writer therefore snapshot/RESTORED it around header batches
-//      (immudb_headers_writer.go:38,118, since removed) — and the restore
-//      clobbered any legitimate advance committed concurrently by DataSync
-//      workers or live processing: a regression vector built to patch another.
-//   3. The data writer's batch-end update was blind: a stale catchup batch
-//      committing after newer live blocks moved the marker backwards (the
-//      exact race txindex.setMetaMonotonicMax guards against).
-//   4. Catchup phase 8 wrote remoteTip blindly.
+// ON THEBEDB the authoritative tip READ is SQL MAX(block_number)
+// (GetLatestBlockNumber) — monotonic by construction, and skeleton header
+// rows cannot regress it. The explicit marker is still maintained through
+// this choke point because (a) callers gate on the "did it move" result and
+// (b) the marker records the DATA-COMPLETE tip (writers call it only after
+// full-block writes — headers-only writers never do, preserving F6's
+// "skeletons never advance it").
 //
-// NOW: every writer goes through UpdateLatestBlockMonotonic. The marker never
-// regresses; skeleton blocks never touch it (StoreZKBlock no longer writes it —
-// callers that store FULL blocks bump it explicitly).
-//
-// CONCURRENCY: live block processing, DataSync workers, and catchup all write
-// from this process; the mutex serializes the read-decide-write cycle (same
-// pattern and rationale as the applied-anchor mutex in sync_anchor.go).
+// CONCURRENCY: live block processing, DataSync workers, and catchup all
+// write from this process; the mutex serializes the read-decide-write cycle
+// (same pattern and rationale as the applied-anchor mutex in sync_anchor.go).
 
 package DB_OPs
 
 import (
-	"context"
 	"fmt"
+	"strconv"
 	"sync"
-	"time"
 )
 
 var latestBlockMu sync.Mutex
@@ -56,6 +46,8 @@ func SetLatestBlockAdvanceHook(fn func(uint64)) {
 	defer latestBlockMu.Unlock()
 	onAdvance = fn
 }
+// LatestBlockMarkerKey is the sync-state key holding the data-complete tip.
+const LatestBlockMarkerKey = "latest_block"
 
 // nextLatestBlock is the pure monotonic decision (unit-tested).
 func nextLatestBlock(current, candidate uint64) (uint64, bool) {
@@ -72,20 +64,26 @@ func UpdateLatestBlockMonotonic(blockNumber uint64) (uint64, bool, error) {
 	latestBlockMu.Lock()
 	defer latestBlockMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	current, err := GetLatestBlockNumber(ctx, nil)
+	h, err := getHandle(nil)
 	if err != nil {
-		return 0, false, fmt.Errorf("latest_block monotonic update: read: %w", err)
+		return 0, false, fmt.Errorf("latest_block: %w", err)
 	}
 
-	next, advance := nextLatestBlock(current, blockNumber)
-	if !advance {
+	var current uint64
+	if raw, err := h.GetSyncKV(LatestBlockMarkerKey); err != nil {
+		return 0, false, fmt.Errorf("latest_block read: %w", err)
+	} else if raw != nil {
+		if v, perr := strconv.ParseUint(string(raw), 10, 64); perr == nil {
+			current = v
+		}
+	}
+
+	next, moved := nextLatestBlock(current, blockNumber)
+	if !moved {
 		return current, false, nil
 	}
-	if err := Update("latest_block", next); err != nil {
-		return current, false, fmt.Errorf("latest_block monotonic update: write %d: %w", next, err)
+	if err := h.PutSyncKV(LatestBlockMarkerKey, []byte(strconv.FormatUint(next, 10))); err != nil {
+		return current, false, fmt.Errorf("latest_block write: %w", err)
 	}
 	// Marker advanced: a new block's state is committed. Fire the (non-blocking)
 	// advance hook so the node can push its fresh head to the seednode now rather

@@ -1,0 +1,16 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+[profile.jmdt]
+src = "src"
+out = "out"
+libs = ["lib"]
+rpc_url = "http://localhost:6545"
+chain_id = 8000800
+legacy = false
+verifier = "none"
+
+[rpc_endpoints]
+jmdt = "http://localhost:6545"

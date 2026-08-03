@@ -26,7 +26,7 @@ func NewPublishService(buddyNode *PubSubMessages.BuddyNode) *PublishService {
 
 // HandlePublish handles incoming publish messages
 func (s *PublishService) HandlePublish(logger_ctx context.Context, gossipMessage *PubSubMessages.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Handling publish message",
+	logger().Info(logger_ctx, "Handling publish message",
 		ion.String("topic", "PublishService"),
 		ion.String("function", "PublishService.HandlePublish"))
 
@@ -37,7 +37,7 @@ func (s *PublishService) HandlePublish(logger_ctx context.Context, gossipMessage
 	// Handle the incoming message and add it to the CRDT Engine
 	if err := SubmitMessageToCRDT(gossipMessage.Data.Message, s.buddyNode); err != nil {
 		err := errors.New("failed to add vote to local CRDT Engine: %v")
-		logger().NamedLogger.Error(logger_ctx, err.Error(),
+		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("topic", "PublishService"),
 			ion.String("function", "PublishService.HandlePublish"))

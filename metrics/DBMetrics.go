@@ -43,7 +43,7 @@
 package metrics
 
 import (
-	"fmt"
+	"log"
 	"sync"
 )
 
@@ -73,7 +73,7 @@ func NewAccountsDBMetricsBuilder() *DBPoolMetricsBuilder {
 				poolType:     "accounts",
 				functionName: "",
 			}
-			fmt.Println("AccountsDBMetricsBuilder initialized: ", AccountsDBMetricsBuilder)
+			log.Println("AccountsDBMetricsBuilder initialized")
 		}
 	}
 	return AccountsDBMetricsBuilder
@@ -91,7 +91,7 @@ func NewMainDBMetricsBuilder() *DBPoolMetricsBuilder {
 				poolType:     "main",
 				functionName: "",
 			}
-			fmt.Println("MainDBMetricsBuilder initialized: ", MainDBMetricsBuilder)
+			log.Println("MainDBMetricsBuilder initialized")
 		}
 	}
 	return MainDBMetricsBuilder

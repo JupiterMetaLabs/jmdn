@@ -2,15 +2,16 @@ package Service
 
 import (
 	"context"
-	"math/big"
-
+	"encoding/json"
 	"gossipnode/gETH/Facade/Service/Types"
+	"math/big"
 )
 
 type Service interface {
 	ChainID(ctx context.Context) (*big.Int, error)
 	GetChainIDValue() *big.Int
 	ClientVersion(ctx context.Context) (string, error)
+	Accounts(ctx context.Context) ([]string, error)
 	BlockNumber(ctx context.Context) (*big.Int, error)
 	BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error)
 	Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error)
@@ -31,13 +32,37 @@ type Service interface {
 	LatestL1CommitBlock(ctx context.Context) (*Types.Block, error)
 
 	// Streaming (for WS subscriptions)
+	GetStorageAt(ctx context.Context, address string, slot string, blockNum string) (string, error)
+	GetGasPrice(ctx context.Context) (string, error)
+	GetFeeHistory(ctx context.Context, blockCount int, newestBlock string, rewardPercentiles []float64) (interface{}, error)
+	GetMaxPriorityFeePerGas(ctx context.Context) (string, error)
+	IsListening(ctx context.Context) (bool, error)
+	GetPeerCount(ctx context.Context) (string, error)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)
 	// SubscribeLogs is used to subscribe to logs - Its used by Smartcontracts so it can be skipped for some time - // Future
 	SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error)
 	// This is to get the pending transactions - It will be implemented once MRE is ready - // Future
 	SubscribePendingTxs(ctx context.Context) (<-chan string, func(), error)
 
+	// Solidity Compiler
+	CompileSolidity(ctx context.Context, source string, optimize bool, runs uint32) (*SolcCompileResult, error)
+
 	// TxPoolContent returns all pending transactions grouped by sender and nonce,
 	// in the standard txpool_content JSON-RPC format.
 	TxPoolContent(ctx context.Context) (map[string]any, error)
+
+	// debug_traceTransaction — re-executes the transaction with a StructLogger.
+	// Returns the raw JSON payload from StructLogger.GetResult() so it can be
+	// forwarded verbatim to the caller in the standard Geth debug format.
+	// NOTE: best-effort against current state; historical pre-state is Phase 5.
+	TraceTransaction(ctx context.Context, txHash string) (json.RawMessage, error)
+}
+
+// SolcCompileResult holds compilation results for JSON-RPC
+type SolcCompileResult struct {
+	ABI              string   `json:"abi"`
+	Bytecode         string   `json:"bytecode"`
+	DeployedBytecode string   `json:"deployedBytecode"`
+	Errors           []string `json:"errors"`
+	Warnings         []string `json:"warnings"`
 }

@@ -22,6 +22,7 @@ ports:
   cli: 0
   did: 15052
   facade: 8545
+  thebe_debug: 19090
   ws: 8546
   metrics: 0       # Disabled by default (use -metrics 8081 to enable)
   profiler: 0      # Disabled by default (use -profiler 6060 to enable)
@@ -33,25 +34,35 @@ binds:
   cli: "127.0.0.1"       # Admin - CLI control
   did: "0.0.0.0"
   facade: "0.0.0.0"
+  thebe_debug: "127.0.0.1"
   ws: "0.0.0.0"
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
-# ── Database (ImmuDB) ───────────────────────────────────
-# address/port: point at an external immudb container (docker-compose default).
-#   For embedded mode (single container): leave as localhost:3322.
-#   Env: JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT
-# username/password: NOT related to P2P — only used for the local DB connection.
-#   Leave blank to use ImmuDB's built-in defaults (fine for most operators).
-#   Env: JMDN_DATABASE_USERNAME / JMDN_DATABASE_PASSWORD
+# ── Database ─────────────────────────────────────────────
+# ThebeDB is embedded (BadgerDB KV + SQL projection) — no address/credentials.
+# redis: account sync worker queue.
 database:
-  address: "localhost"   # Env: JMDN_DATABASE_ADDRESS
-  port: 3322             # Env: JMDN_DATABASE_PORT
-  username: ""           # Env: JMDN_DATABASE_USERNAME
-  password: ""           # Env: JMDN_DATABASE_PASSWORD
   redis:
     url: "127.0.0.1:6379"
     password: ""
+
+# ── ThebeDB ──────────────────────────────────────────────
+thebe:
+  enabled: true                # ThebeDB is the node's only storage backend
+  kv_path: "./storage/thebe-kv"
+  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable"  # Env: THEBE_SQL_DSN
+  redis_url: ""                # Env: THEBE_REDIS_URL
+  stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
+  max_len: 1000                # Env: THEBE_MAX_LEN
+  group_name: "projector"      # Env: THEBE_GROUP_NAME
+  cdc:
+    enabled: true                      # flip to true when Postgres is ready
+    slot_name: thebe_eventlog
+    publication: thebe_pub
+    log_path: ./data/eventlog.duckdb
+    dlq_path: ./data/dlq/DLQ.log
+    max_lag_bytes: 104857600            # 100MB lag alert threshold
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
@@ -97,7 +108,7 @@ features:
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
-  enabled: true           # Register protocol handlers and serve data to peers
+  enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships
   enable_pulling: true    # Allow this node to pull data from peers and write to its DB.
                           # Set false on sequencers — they are authoritative and must
                           # never overwrite their own state (they still serve data).

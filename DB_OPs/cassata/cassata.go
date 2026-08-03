@@ -1,0 +1,726 @@
+// Package cassata is the sole middleware between JMDN and ThebeDB.
+// It owns all SQL reads and all KV write encoding.
+// No other JMDN package imports ThebeDB directly.
+package cassata
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"reflect"
+	"time"
+
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/lib/pq"
+	"go.uber.org/zap"
+)
+
+type Cassata struct {
+	db     *thebedb.ThebeDB
+	logger *zap.Logger
+}
+
+func New(db *thebedb.ThebeDB, logger *zap.Logger) *Cassata {
+	return &Cassata{db: db, logger: logger}
+}
+
+// Write path.
+// Each Ingest* marshals the result type to JSON and calls db.Append().
+// ThebeDB projects it into Postgres synchronously via Apply().
+
+func (c *Cassata) IngestAccount(ctx context.Context, a AccountResult) error {
+	v, err := json.Marshal(a)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestAccount marshal: %w", err)
+	}
+	return c.appendRecord("account", "account:"+a.Address, v)
+}
+
+func (c *Cassata) IngestBlock(ctx context.Context, b BlockResult) error {
+	v, err := json.Marshal(b)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestBlock marshal: %w", err)
+	}
+	return c.appendRecord("block", fmt.Sprintf("block:%d", b.BlockNumber), v)
+}
+
+func (c *Cassata) IngestTx(ctx context.Context, t TxResult) error {
+	v, err := json.Marshal(t)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestTx marshal: %w", err)
+	}
+	return c.appendRecord("tx", "tx:"+t.TxHash, v)
+}
+
+func (c *Cassata) IngestZKProof(ctx context.Context, z ZKProofResult) error {
+	v, err := json.Marshal(z)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestZKProof marshal: %w", err)
+	}
+	return c.appendRecord("zk", "zk:"+z.ProofHash, v)
+}
+
+func (c *Cassata) IngestSnapshot(ctx context.Context, s SnapshotResult) error {
+	v, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestSnapshot marshal: %w", err)
+	}
+	return c.appendRecord("snapshot", fmt.Sprintf("snapshot:%d", s.BlockNumber), v)
+}
+
+func (c *Cassata) appendRecord(namespace, recordType string, value []byte) error {
+	if c.logger != nil {
+		c.logger.Debug("cassata append",
+			zap.String("namespace", namespace),
+			zap.String("record_type", recordType),
+			zap.Int("value_bytes", len(value)))
+	}
+
+	appendMethod := reflect.ValueOf(c.db).MethodByName("Append")
+	if !appendMethod.IsValid() {
+		return fmt.Errorf("cassata.appendRecord: Append method not found on ThebeDB")
+	}
+	if appendMethod.Type().NumIn() != 1 || appendMethod.Type().NumOut() != 2 {
+		return fmt.Errorf("cassata.appendRecord: unexpected Append signature")
+	}
+
+	argType := appendMethod.Type().In(0)
+	if argType.Kind() != reflect.Pointer || argType.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("cassata.appendRecord: unsupported Append argument type")
+	}
+
+	rec := reflect.New(argType.Elem())
+	recElem := rec.Elem()
+
+	nsField := recElem.FieldByName("Namespace")
+	typeField := recElem.FieldByName("Type")
+	valueField := recElem.FieldByName("Value")
+	timestampField := recElem.FieldByName("Timestamp")
+	if !nsField.IsValid() || !typeField.IsValid() || !valueField.IsValid() || !timestampField.IsValid() {
+		return fmt.Errorf("cassata.appendRecord: canonical record fields not found")
+	}
+
+	nsField.SetString(namespace)
+	typeField.SetString(recordType)
+	valueField.SetBytes(value)
+	timestampField.SetUint(uint64(time.Now().UnixNano()))
+
+	out := appendMethod.Call([]reflect.Value{rec})
+	if errV := out[1]; !errV.IsNil() {
+		return errV.Interface().(error)
+	}
+	return nil
+}
+
+// Read path.
+// All reads query the Postgres projection directly.
+// Column order in SELECT must match Scan() argument order exactly.
+
+func (c *Cassata) GetAccount(ctx context.Context, address string) (*AccountResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE address = $1`, address)
+	var a AccountResult
+	if err := row.Scan(
+		&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+		&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetAccount: %w", err)
+	}
+	return &a, nil
+}
+
+func (c *Cassata) ListAccounts(ctx context.Context, limit, offset int) ([]AccountResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts ORDER BY updated_at DESC
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListAccounts: %w", err)
+	}
+	defer rows.Close()
+	var out []AccountResult
+	for rows.Next() {
+		var a AccountResult
+		if err := rows.Scan(
+			&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+			&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetBlock(ctx context.Context, blockNumber uint64) (*BlockResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks WHERE block_number = $1`, blockNumber)
+	var b BlockResult
+	if err := row.Scan(
+		&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+		&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+		&b.CoinbaseAddr, &b.ZKVMAddr,
+		&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetBlock: %w", err)
+	}
+	return &b, nil
+}
+
+func (c *Cassata) ListBlocks(ctx context.Context, limit, offset int) ([]BlockResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks ORDER BY block_number DESC
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListBlocks: %w", err)
+	}
+	defer rows.Close()
+	var out []BlockResult
+	for rows.Next() {
+		var b BlockResult
+		if err := rows.Scan(
+			&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+			&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+			&b.CoinbaseAddr, &b.ZKVMAddr,
+			&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetTransaction(ctx context.Context, txHash string) (*TxResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
+		       value_wei, nonce, type,
+		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+		       data, access_list, sig_v, sig_r, sig_s, created_at
+		FROM transactions WHERE tx_hash = $1`, txHash)
+	var t TxResult
+	if err := row.Scan(
+		&t.TxHash, &t.BlockNumber, &t.TxIndex, &t.FromAddr, &t.ToAddr,
+		&t.ValueWei, &t.Nonce, &t.Type,
+		&t.GasLimit, &t.GasPriceWei, &t.MaxFeeWei, &t.MaxPriorityFeeWei,
+		&t.Data, &t.AccessList, &t.SigV, &t.SigR, &t.SigS, &t.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetTransaction: %w", err)
+	}
+	return &t, nil
+}
+
+func (c *Cassata) ListTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]TxResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
+		       value_wei, nonce, type,
+		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+		       data, access_list, sig_v, sig_r, sig_s, created_at
+		FROM transactions WHERE block_number = $1
+		ORDER BY tx_index ASC`, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListTransactionsByBlock: %w", err)
+	}
+	defer rows.Close()
+	var out []TxResult
+	for rows.Next() {
+		var t TxResult
+		if err := rows.Scan(
+			&t.TxHash, &t.BlockNumber, &t.TxIndex, &t.FromAddr, &t.ToAddr,
+			&t.ValueWei, &t.Nonce, &t.Type,
+			&t.GasLimit, &t.GasPriceWei, &t.MaxFeeWei, &t.MaxPriorityFeeWei,
+			&t.Data, &t.AccessList, &t.SigV, &t.SigR, &t.SigS, &t.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) ListTransactionsByAddress(ctx context.Context, address string, limit, offset int) ([]TxResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
+		       value_wei, nonce, type,
+		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+		       data, access_list, sig_v, sig_r, sig_s, created_at
+		FROM transactions
+		WHERE from_addr = $1 OR to_addr = $1
+		ORDER BY block_number DESC, tx_index ASC
+		LIMIT $2 OFFSET $3`, address, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListTransactionsByAddress: %w", err)
+	}
+	defer rows.Close()
+	var out []TxResult
+	for rows.Next() {
+		var t TxResult
+		if err := rows.Scan(
+			&t.TxHash, &t.BlockNumber, &t.TxIndex, &t.FromAddr, &t.ToAddr,
+			&t.ValueWei, &t.Nonce, &t.Type,
+			&t.GasLimit, &t.GasPriceWei, &t.MaxFeeWei, &t.MaxPriorityFeeWei,
+			&t.Data, &t.AccessList, &t.SigV, &t.SigR, &t.SigS, &t.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// GetNextNonceByAddress returns latest sent-tx nonce + 1 for the given address.
+// If no sent transactions exist for the address, it returns "0".
+func (c *Cassata) GetNextNonceByAddress(ctx context.Context, address string) (string, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT nonce
+		FROM transactions
+		WHERE from_addr = $1
+		ORDER BY block_number DESC, tx_index DESC
+		LIMIT 1`, address)
+
+	var nonce string
+	if err := row.Scan(&nonce); err != nil {
+		// No transactions from this sender => start at nonce 0.
+		if err == sql.ErrNoRows {
+			return "0", nil
+		}
+		return "", fmt.Errorf("cassata.GetNextNonceByAddress: %w", err)
+	}
+
+	n, ok := new(big.Int).SetString(nonce, 10)
+	if !ok {
+		return "", fmt.Errorf("cassata.GetNextNonceByAddress: invalid nonce %q", nonce)
+	}
+	n.Add(n, big.NewInt(1))
+	return n.String(), nil
+}
+
+func (c *Cassata) GetZKProof(ctx context.Context, proofHash string) (*ZKProofResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT proof_hash, block_number, stark_proof, commitment, created_at
+		FROM zk_proofs WHERE proof_hash = $1`, proofHash)
+	var z ZKProofResult
+	if err := row.Scan(&z.ProofHash, &z.BlockNumber, &z.StarkProof, &z.Commitment, &z.CreatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetZKProof: %w", err)
+	}
+	return &z, nil
+}
+
+func (c *Cassata) GetZKProofByBlock(ctx context.Context, blockNumber uint64) (*ZKProofResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT proof_hash, block_number, stark_proof, commitment, created_at
+		FROM zk_proofs WHERE block_number = $1`, blockNumber)
+	var z ZKProofResult
+	if err := row.Scan(&z.ProofHash, &z.BlockNumber, &z.StarkProof, &z.Commitment, &z.CreatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetZKProofByBlock: %w", err)
+	}
+	return &z, nil
+}
+
+func (c *Cassata) GetSnapshot(ctx context.Context, blockNumber uint64) (*SnapshotResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT snapshot_id, block_number, block_hash, prev_snapshot_id, created_at
+		FROM snapshots WHERE block_number = $1`, blockNumber)
+	var s SnapshotResult
+	if err := row.Scan(&s.SnapshotID, &s.BlockNumber, &s.BlockHash, &s.PrevSnapshotID, &s.CreatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetSnapshot: %w", err)
+	}
+	return &s, nil
+}
+
+func (c *Cassata) ListSnapshots(ctx context.Context, limit, offset int) ([]SnapshotResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT snapshot_id, block_number, block_hash, prev_snapshot_id, created_at
+		FROM snapshots ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListSnapshots: %w", err)
+	}
+	defer rows.Close()
+	var out []SnapshotResult
+	for rows.Next() {
+		var s SnapshotResult
+		if err := rows.Scan(
+			&s.SnapshotID, &s.BlockNumber, &s.BlockHash, &s.PrevSnapshotID, &s.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ── Contract write path ───────────────────────────────────────────
+
+func (c *Cassata) IngestContractCode(ctx context.Context, r ContractCodeResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractCode marshal: %w", err)
+	}
+	return c.appendRecord("contract_code", "contract_code:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractStorage(ctx context.Context, r ContractStorageResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractStorage marshal: %w", err)
+	}
+	key := fmt.Sprintf("contract_storage:%s:%s", r.Address, r.SlotHash)
+	return c.appendRecord("contract_storage", key, v)
+}
+
+func (c *Cassata) IngestContractStorageMeta(ctx context.Context, r ContractStorageMetaResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractStorageMeta marshal: %w", err)
+	}
+	key := fmt.Sprintf("contract_storage_meta:%s:%s", r.Address, r.SlotHash)
+	return c.appendRecord("contract_storage_meta", key, v)
+}
+
+func (c *Cassata) IngestContractNonce(ctx context.Context, r ContractNonceResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractNonce marshal: %w", err)
+	}
+	return c.appendRecord("contract_nonce", "contract_nonce:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractMeta(ctx context.Context, r ContractMetaResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractMeta marshal: %w", err)
+	}
+	return c.appendRecord("contract_meta", "contract_meta:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractReceipt(ctx context.Context, r ContractReceiptResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractReceipt marshal: %w", err)
+	}
+	return c.appendRecord("contract_receipt", "contract_receipt:"+r.TxHash, v)
+}
+
+// ── Contract read path ────────────────────────────────────────────
+
+func (c *Cassata) GetContractCode(ctx context.Context, address string) (*ContractCodeResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, code, code_hash, created_at
+		FROM contract_code WHERE address = $1`, address)
+	var r ContractCodeResult
+	if err := row.Scan(&r.Address, &r.Code, &r.CodeHash, &r.CreatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractCode: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractStorage(ctx context.Context, address, slotHash string) (*ContractStorageResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, slot_hash, value_hash, updated_at
+		FROM contract_storage WHERE address = $1 AND slot_hash = $2`,
+		address, slotHash)
+	var r ContractStorageResult
+	if err := row.Scan(&r.Address, &r.SlotHash, &r.ValueHash, &r.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractStorage: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractStorageMeta(ctx context.Context, address, slotHash string) (*ContractStorageMetaResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, slot_hash, value_hash,
+		       last_modified_block, last_modified_tx, updated_at
+		FROM contract_storage_metadata WHERE address = $1 AND slot_hash = $2`,
+		address, slotHash)
+	var r ContractStorageMetaResult
+	if err := row.Scan(
+		&r.Address, &r.SlotHash, &r.ValueHash,
+		&r.LastModifiedBlock, &r.LastModifiedTx, &r.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractStorageMeta: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractNonce(ctx context.Context, address string) (*ContractNonceResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, nonce, updated_at
+		FROM contract_nonces WHERE address = $1`, address)
+	var r ContractNonceResult
+	if err := row.Scan(&r.Address, &r.Nonce, &r.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractNonce: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractMeta(ctx context.Context, address string) (*ContractMetaResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, code_hash, code_size, deployer_address,
+		       deployment_tx, deployment_block, raw, created_at, updated_at
+		FROM contract_metadata WHERE address = $1`, address)
+	var r ContractMetaResult
+	if err := row.Scan(
+		&r.Address, &r.CodeHash, &r.CodeSize, &r.DeployerAddress,
+		&r.DeploymentTx, &r.DeploymentBlock, &r.Raw, &r.CreatedAt, &r.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractMeta: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractReceipt(ctx context.Context, txHash string) (*ContractReceiptResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, status, gas_used,
+		       contract_address, revert_reason, logs, raw, created_at
+		FROM contract_receipts WHERE tx_hash = $1`, txHash)
+	var r ContractReceiptResult
+	if err := row.Scan(
+		&r.TxHash, &r.BlockNumber, &r.TxIndex, &r.Status, &r.GasUsed,
+		&r.ContractAddress, &r.RevertReason, &r.Logs, &r.Raw, &r.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractReceipt: %w", err)
+	}
+	return &r, nil
+}
+
+// ── Phase 2.0 bulk and alternate-key reads ───────────────────────
+
+func (c *Cassata) GetBlockByHash(ctx context.Context, hash string) (*BlockResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks WHERE block_hash = $1`, hash)
+	var b BlockResult
+	if err := row.Scan(
+		&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+		&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+		&b.CoinbaseAddr, &b.ZKVMAddr,
+		&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetBlockByHash: %w", err)
+	}
+	return &b, nil
+}
+
+func (c *Cassata) BulkGetBlocks(ctx context.Context, from, to uint64) ([]BlockResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks WHERE block_number >= $1 AND block_number <= $2
+		ORDER BY block_number ASC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.BulkGetBlocks: %w", err)
+	}
+	defer rows.Close()
+	var out []BlockResult
+	for rows.Next() {
+		var b BlockResult
+		if err := rows.Scan(
+			&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+			&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+			&b.CoinbaseAddr, &b.ZKVMAddr,
+			&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetAccountByDID(ctx context.Context, did string) (*AccountResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE did_address = $1`, did)
+	var a AccountResult
+	if err := row.Scan(
+		&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+		&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetAccountByDID: %w", err)
+	}
+	return &a, nil
+}
+
+func (c *Cassata) BulkGetAccounts(ctx context.Context, addresses []string) ([]AccountResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE address = ANY($1)`, pq.Array(addresses))
+	if err != nil {
+		return nil, fmt.Errorf("cassata.BulkGetAccounts: %w", err)
+	}
+	defer rows.Close()
+	var out []AccountResult
+	for rows.Next() {
+		var a AccountResult
+		if err := rows.Scan(
+			&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+			&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]TxResult, error) {
+	return c.ListTransactionsByBlock(ctx, blockNumber)
+}
+
+// ── Contract storage listing ──────────────────────────────────────
+
+func (c *Cassata) ListContractStorageByAddress(ctx context.Context, address string) ([]ContractStorageResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT address, slot_hash, value_hash, updated_at
+		FROM contract_storage
+		WHERE address = $1
+		ORDER BY slot_hash ASC`, address)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListContractStorageByAddress: %w", err)
+	}
+	defer rows.Close()
+	var out []ContractStorageResult
+	for rows.Next() {
+		var r ContractStorageResult
+		if err := rows.Scan(&r.Address, &r.SlotHash, &r.ValueHash, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ── Contract registry write + read path ──────────────────────────
+// Writes go through ThebeDB.Append → projector → contracts SQL table.
+// Reads query the contracts table directly.
+
+func (c *Cassata) IngestContractRegistry(ctx context.Context, r ContractRegistryResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractRegistry marshal: %w", err)
+	}
+	return c.appendRecord("contract_registry", "contract_registry:"+r.Address, v)
+}
+
+func (c *Cassata) GetContractFromRegistry(ctx context.Context, address string) (*ContractRegistryResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, deployer, name, abi, bytecode_hash,
+		       deploy_block, deploy_time, deploy_tx_hash,
+		       code_size, contract_type, state, metadata, created_at
+		FROM contracts WHERE address = $1`, address)
+	var r ContractRegistryResult
+	if err := row.Scan(
+		&r.Address, &r.Deployer, &r.Name, &r.ABI, &r.BytecodeHash,
+		&r.DeployBlock, &r.DeployTime, &r.DeployTxHash,
+		&r.CodeSize, &r.ContractType, &r.State, &r.Metadata, &r.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractFromRegistry: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) ListContractsFromRegistry(ctx context.Context, opts ListContractOptions) ([]ContractRegistryResult, error) {
+	limit := int(opts.Limit)
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// Build a simple parameterised query. We use explicit conditions rather
+	// than fmt.Sprintf to avoid SQL injection — all filtering is via $N params.
+	baseQ := `
+		SELECT address, deployer, name, abi, bytecode_hash,
+		       deploy_block, deploy_time, deploy_tx_hash,
+		       code_size, contract_type, state, metadata, created_at
+		FROM contracts
+		WHERE 1=1`
+
+	args := []interface{}{}
+	paramN := 1
+
+	if opts.Deployer != "" {
+		baseQ += fmt.Sprintf(" AND deployer = $%d", paramN)
+		args = append(args, opts.Deployer)
+		paramN++
+	}
+	if opts.FromBlock > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_block >= $%d", paramN)
+		args = append(args, opts.FromBlock)
+		paramN++
+	}
+	if opts.ToBlock > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_block <= $%d", paramN)
+		args = append(args, opts.ToBlock)
+		paramN++
+	}
+	if opts.FromTime > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_time >= $%d", paramN)
+		args = append(args, opts.FromTime)
+		paramN++
+	}
+	if opts.ToTime > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_time <= $%d", paramN)
+		args = append(args, opts.ToTime)
+		paramN++
+	}
+
+	baseQ += fmt.Sprintf(" ORDER BY deploy_time DESC LIMIT $%d OFFSET $%d", paramN, paramN+1)
+	args = append(args, limit, opts.Offset)
+
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, baseQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListContractsFromRegistry: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ContractRegistryResult
+	for rows.Next() {
+		var r ContractRegistryResult
+		if err := rows.Scan(
+			&r.Address, &r.Deployer, &r.Name, &r.ABI, &r.BytecodeHash,
+			&r.DeployBlock, &r.DeployTime, &r.DeployTxHash,
+			&r.CodeSize, &r.ContractType, &r.State, &r.Metadata, &r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) CountContracts(ctx context.Context) (uint64, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM contracts`)
+	var n uint64
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("cassata.CountContracts: %w", err)
+	}
+	return n, nil
+}
+
+// KV returns the underlying BadgerDB store for direct derived-key reads/writes.
+// Used by KVStateRepository / KVStateBatch for hot-path EVM state access.
+// Callers must NOT write to canonical log keys (use Append for that).
+func (c *Cassata) KV() kv.Store {
+	return c.db.KV
+}

@@ -152,11 +152,11 @@ func (idx *DB) EnsureReady(ctx context.Context) error {
 
 	latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("txindex: get latest block from ImmuDB: %w", err)
+		return fmt.Errorf("txindex: get latest block from ThebeDB: %w", err)
 	}
 
 	if latestBlock == 0 {
-		log.Printf("[txindex] No blocks in ImmuDB yet — nothing to index")
+		log.Printf("[txindex] No blocks in ThebeDB yet — nothing to index")
 		return nil
 	}
 

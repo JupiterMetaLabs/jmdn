@@ -18,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -343,14 +342,13 @@ func (s *CLIServer) GetTxIndexStatus(ctx context.Context, _ *emptypb.Empty) (*pb
 }
 
 // Helper function to convert database state
-func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *DB_OPs.DatabaseState) *pb.DatabaseState {
 	if state == nil {
 		return &pb.DatabaseState{}
 	}
 	return &pb.DatabaseState{
-		TxId:     state.TxId,
-		TxHash:   state.TxHash,
-		Database: state.Db,
+		TxId:   state.TxId,
+		TxHash: state.TxHash,
 	}
 }
 

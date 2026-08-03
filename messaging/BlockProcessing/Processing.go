@@ -111,7 +111,7 @@ func adoptCarriedNonce(ctx context.Context, stage *txStage, addr *common.Address
 	old := doc.Nonce
 	doc.Nonce = nonce
 	stage.put(doc)
-	logger().NamedLogger.Info(ctx, "Adopted block-carried ART nonce (identity heal)",
+	logger().Info(ctx, "Adopted block-carried ART nonce (identity heal)",
 		ion.String("account", addr.Hex()),
 		ion.Uint64("old_nonce", old),
 		ion.Uint64("new_nonce", nonce),
@@ -228,7 +228,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	defer releaseBlockLock()
 
 	// Record trace span and close it
-	span_ctx, span := logger().NamedLogger.Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
+	span_ctx, span := logger().Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -247,7 +247,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		span.SetAttributes(attribute.String("status", "already_processed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(span_ctx, "Block already processed, skipping",
+		logger().Info(span_ctx, "Block already processed, skipping",
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -280,7 +280,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		// Failover insurance: any node that later becomes the sequencer must
 		// continue the ordinal sequence past everything it has seen. Non-fatal.
 		if err := DB_OPs.BumpARTOrdinalFloor(maxCarriedOrdinal + 1); err != nil {
-			logger().NamedLogger.Warn(span_ctx, "Failed to bump ART ordinal floor (failover insurance only)",
+			logger().Warn(span_ctx, "Failed to bump ART ordinal floor (failover insurance only)",
 				ion.Uint64("floor", maxCarriedOrdinal+1),
 				ion.String("error", err.Error()),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
@@ -319,7 +319,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	span.SetAttributes(attribute.Int("sorted_transactions", len(block.Transactions)))
 
-	logger().NamedLogger.Info(span_ctx, "Starting block processing",
+	logger().Info(span_ctx, "Starting block processing",
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int64("block_number", int64(block.BlockNumber)),
 		ion.Int("transaction_count", len(block.Transactions)),
@@ -356,7 +356,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
-			logger().NamedLogger.Warn(span_ctx, "Duplicate transaction in block, skipping",
+			logger().Warn(span_ctx, "Duplicate transaction in block, skipping",
 				ion.String("tx_hash", tx.Hash.Hex()),
 				ion.Int("tx_index", i),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -373,7 +373,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		// (or an earlier attempt at this one) — in-memory set from the
 		// block-level dual-DB prefilter above.
 		if liveApplied[tx.Hash.String()] {
-			logger().NamedLogger.Warn(span_ctx, "Transaction already processed in previous block, skipping",
+			logger().Warn(span_ctx, "Transaction already processed in previous block, skipping",
 				ion.String("tx_hash", tx.Hash.Hex()),
 				ion.Int("tx_index", i),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -400,7 +400,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			// tx and keep the block" behaviour is exactly what produced fleet-wide
 			// balance divergence at matching block heights.
 			if errors.Is(Process_err, ErrStaleNonce) {
-				logger().NamedLogger.Warn(span_ctx, "Stale nonce on finalized-block tx — failing the WHOLE block for determinism (catch-up re-applies)",
+				logger().Warn(span_ctx, "Stale nonce on finalized-block tx — failing the WHOLE block for determinism (catch-up re-applies)",
 					ion.String("tx_hash", tx.Hash.Hex()),
 					ion.Int("tx_index", i),
 					ion.String("error", Process_err.Error()),
@@ -414,7 +414,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			span.RecordError(Process_err)
 			span.SetAttributes(attribute.String("status", "failed"), attribute.String("failed_tx_hash", tx.Hash.Hex()), attribute.Int("failed_tx_index", i))
 
-			logger().NamedLogger.Error(span_ctx, "Transaction failed, rolling back entire block",
+			logger().Error(span_ctx, "Transaction failed, rolling back entire block",
 				Process_err,
 				ion.String("tx_hash", tx.Hash.Hex()),
 				ion.Int("tx_index", i),
@@ -450,7 +450,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				DB_OPs.UnlockStateApply()
 				span.RecordError(revokeErr)
 				span.SetAttributes(attribute.String("status", "marker_revocation_failed"))
-				logger().NamedLogger.Error(span_ctx, "Marker revocation failed — SKIPPING balance rollback (applied+marked prefix stays consistent)",
+				logger().Error(span_ctx, "Marker revocation failed — SKIPPING balance rollback (applied+marked prefix stays consistent)",
 					revokeErr,
 					ion.Int("prefix_txs", len(successfullyProcessedTxs)),
 					ion.String("failed_tx_hash", tx.Hash.Hex()),
@@ -470,7 +470,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			DB_OPs.UnlockStateApply()
 			if rollbackError != nil {
 				span.RecordError(rollbackError)
-				logger().NamedLogger.Error(span_ctx, "Failed to rollback balances after transaction failure",
+				logger().Error(span_ctx, "Failed to rollback balances after transaction failure",
 					rollbackError,
 					ion.String("tx_hash", tx.Hash.Hex()),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -510,7 +510,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	if len(successfullyProcessedTxs) > 0 {
 		if err := DB_OPs.WriteBlockProcessedMarker(accountsClient, block.BlockHash.Hex()); err != nil {
 			span.RecordError(err)
-			logger().NamedLogger.Warn(span_ctx, "Block marker write failed (non-fatal: per-tx markers carry the replay guarantee)",
+			logger().Warn(span_ctx, "Block marker write failed (non-fatal: per-tx markers carry the replay guarantee)",
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.String("error", err.Error()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -531,7 +531,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		attribute.String("status", "success"),
 		attribute.Int("processed_transactions", len(successfullyProcessedTxs)),
 	)
-	logger().NamedLogger.Info(span_ctx, "Block processed successfully",
+	logger().Info(span_ctx, "Block processed successfully",
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int64("block_number", int64(block.BlockNumber)),
 		ion.Int("processed_transactions", len(successfullyProcessedTxs)),
@@ -559,7 +559,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 func advanceAppliedAnchor(span_ctx context.Context, accountsClient *config.PooledConnection, blockNumber uint64) {
 	anchor, advanced, err := DB_OPs.AdvanceAppliedAnchorContiguous(accountsClient, blockNumber)
 	if err != nil {
-		logger().NamedLogger.Warn(span_ctx, "Applied-anchor advance failed (safe: anchor lags, recon will catch up)",
+		logger().Warn(span_ctx, "Applied-anchor advance failed (safe: anchor lags, recon will catch up)",
 			ion.Uint64("block_number", blockNumber),
 			ion.String("error", err.Error()),
 			ion.String("topic", TOPIC),
@@ -568,7 +568,7 @@ func advanceAppliedAnchor(span_ctx context.Context, accountsClient *config.Poole
 		return
 	}
 	if advanced {
-		logger().NamedLogger.Debug(span_ctx, "Applied anchor advanced (live, contiguous)",
+		logger().Debug(span_ctx, "Applied anchor advanced (live, contiguous)",
 			ion.Uint64("anchor", anchor),
 			ion.String("topic", TOPIC),
 			ion.String("function", "BlockProcessing.advanceAppliedAnchor"),
@@ -581,7 +581,7 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 		if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
-			logger().NamedLogger.Warn(span_ctx, "Failed to clean up processing marker",
+			logger().Warn(span_ctx, "Failed to clean up processing marker",
 				ion.String("tx_hash", txHash),
 				ion.String("error", err.Error()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -598,7 +598,7 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 // rollbackState restores all affected accounts to their pre-block snapshot atomically.
 // It restores balance, TxNonce, and TxCountSent in a single write per account.
 func rollbackState(span_ctx context.Context, snapshots map[common.Address]AccountSnapshot, accountsClient *config.PooledConnection) error {
-	rollbackSpanCtx, rollbackSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackState")
+	rollbackSpanCtx, rollbackSpan := logger().Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackState")
 	defer rollbackSpan.End()
 
 	rollbackStartTime := time.Now().UTC()
@@ -620,7 +620,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 		if err := DB_OPs.UpdateAccount(accountsClient, doc); err != nil {
 			rollbackSpan.RecordError(err)
 			rollbackSpan.SetAttributes(attribute.String("status", "partial_failure"), attribute.String("failed_account", addr.Hex()))
-			logger().NamedLogger.Error(rollbackSpanCtx, "Failed to restore account state during rollback",
+			logger().Error(rollbackSpanCtx, "Failed to restore account state during rollback",
 				err,
 				ion.String("account", addr.Hex()),
 				ion.String("original_balance", snap.Balance),
@@ -632,7 +632,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 			return fmt.Errorf("failed to restore state for %s: %w", addr, err)
 		}
 		rollbackCount++
-		logger().NamedLogger.Debug(rollbackSpanCtx, "Rolled back account state to original snapshot",
+		logger().Debug(rollbackSpanCtx, "Rolled back account state to original snapshot",
 			ion.String("account", addr.Hex()),
 			ion.String("balance", snap.Balance),
 			ion.Uint64("tx_nonce", snap.TxNonce),
@@ -647,7 +647,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 		attribute.String("status", "success"),
 		attribute.Int("rolled_back_accounts", rollbackCount),
 	)
-	logger().NamedLogger.Info(rollbackSpanCtx, "Rollback completed successfully",
+	logger().Info(rollbackSpanCtx, "Rollback completed successfully",
 		ion.Int("rolled_back_accounts", rollbackCount),
 		ion.Float64("duration", duration),
 		ion.String("topic", TOPIC),
@@ -659,7 +659,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 // ProcessTransaction handles a single transaction's balance updates
 func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, accountNonces map[common.Address]uint64) error {
 	// Record trace span and close it
-	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
+	txSpanCtx, txSpan := logger().Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
 
 	txStartTime := time.Now().UTC()
@@ -685,7 +685,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		txSpan.SetAttributes(attribute.String("status", "db_connection_failed"))
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to establish database connection",
+		logger().Error(txSpanCtx, "Failed to establish database connection",
 			err,
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -695,7 +695,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		return fmt.Errorf("failed to establish database connection: %w", err)
 	}
 
-	logger().NamedLogger.Debug(txSpanCtx, "Database connection check successful",
+	logger().Debug(txSpanCtx, "Database connection check successful",
 		ion.String("tx_hash", tx.Hash.Hex()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("topic", TOPIC),
@@ -731,7 +731,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		txSpan.SetAttributes(attribute.String("status", "already_processed"))
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(txSpanCtx, "Transaction already processed in previous block, skipping",
+		logger().Info(txSpanCtx, "Transaction already processed in previous block, skipping",
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("topic", TOPIC),
@@ -751,7 +751,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 			if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
 				if time.Now().UTC().Unix()-timestamp > 300 {
 					txSpan.SetAttributes(attribute.String("processing_marker_status", "stale"), attribute.Int64("stale_timestamp", timestamp))
-					logger().NamedLogger.Warn(txSpanCtx, "Found stale processing marker, continuing with transaction",
+					logger().Warn(txSpanCtx, "Found stale processing marker, continuing with transaction",
 						ion.String("tx_hash", tx.Hash.Hex()),
 						ion.Int64("stale_timestamp", timestamp),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -760,7 +760,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 					)
 				} else {
 					txSpan.SetAttributes(attribute.String("processing_marker_status", "active"))
-					logger().NamedLogger.Warn(txSpanCtx, "Transaction is already being processed, possible duplicate",
+					logger().Warn(txSpanCtx, "Transaction is already being processed, possible duplicate",
 						ion.String("tx_hash", tx.Hash.Hex()),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 						ion.String("topic", TOPIC),
@@ -774,7 +774,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// Mark transaction as being processed
 	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().UTC().Unix()); err != nil {
-		logger().NamedLogger.Warn(txSpanCtx, "Failed to mark transaction as processing",
+		logger().Warn(txSpanCtx, "Failed to mark transaction as processing",
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("error", err.Error()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -805,7 +805,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 			duration := time.Since(txStartTime).Seconds()
 			txSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(txSpanCtx, "Failed to retrieve original balance",
+			logger().Error(txSpanCtx, "Failed to retrieve original balance",
 				err,
 				ion.String("tx_hash", tx.Hash.Hex()),
 				ion.String("account", did.Hex()),
@@ -826,7 +826,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to parse transaction",
+		logger().Error(txSpanCtx, "Failed to parse transaction",
 			err,
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -878,7 +878,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		attribute.String("zkvm_gas_fee", zkvmGasFee.String()),
 	)
 
-	logger().NamedLogger.Info(txSpanCtx, "Transaction Amount Calculated",
+	logger().Info(txSpanCtx, "Transaction Amount Calculated",
 		ion.String("tx_hash", tx.Hash.Hex()),
 		ion.String("from", tx.From.Hex()),
 		ion.String("to", tx.To.Hex()),
@@ -900,7 +900,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Sender DID does not exist",
+		logger().Error(txSpanCtx, "Sender DID does not exist",
 			errors.New("sender DID does not exist"),
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("from", tx.From.Hex()),
@@ -945,7 +945,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Recipient DID does not exist (no block-carried identity to create it from)",
+		logger().Error(txSpanCtx, "Recipient DID does not exist (no block-carried identity to create it from)",
 			errors.New("recipient DID does not exist"),
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("to", tx.To.Hex()),
@@ -983,7 +983,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 			CreatedAt:   ts,
 			UpdatedAt:   ts,
 		})
-		logger().NamedLogger.Info(txSpanCtx, "Created recipient account from block-carried identity",
+		logger().Info(txSpanCtx, "Created recipient account from block-carried identity",
 			ion.String("to", tx.To.Hex()),
 			ion.Uint64("art_nonce", carriedNonce),
 			ion.String("tx_hash", tx.Hash.Hex()),
@@ -1009,7 +1009,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to deduct from sender",
+		logger().Error(txSpanCtx, "Failed to deduct from sender",
 			err,
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("from", tx.From.Hex()),
@@ -1076,7 +1076,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "atomic_commit_failed"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		logger().NamedLogger.Error(txSpanCtx, "Failed to atomically commit transaction (no effects applied)",
+		logger().Error(txSpanCtx, "Failed to atomically commit transaction (no effects applied)",
 			err,
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.Int("staged_accounts", len(stage.staged())),
@@ -1092,7 +1092,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	duration := time.Since(txStartTime).Seconds()
 	txSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(txSpanCtx, "Transaction processed successfully",
+	logger().Info(txSpanCtx, "Transaction processed successfully",
 		ion.String("tx_hash", tx.Hash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1236,7 +1236,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	// Stage only — committed atomically with the tx marker in ApplyTxAtomic.
 	stage.put(didDoc)
 
-	logger().NamedLogger.Debug(span_ctx, "Deducted amount from sender and updated state",
+	logger().Debug(span_ctx, "Deducted amount from sender and updated state",
 		ion.String("account", fromDID.String()),
 		ion.String("amount", amount),
 		ion.String("old_balance", currentBalance.String()),
@@ -1292,7 +1292,7 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 	// Stage only — committed atomically with the tx marker in ApplyTxAtomic.
 	stage.put(didDoc)
 
-	logger().NamedLogger.Debug(span_ctx, "Added amount to recipient",
+	logger().Debug(span_ctx, "Added amount to recipient",
 		ion.String("account", ToAddress.String()),
 		ion.String("amount", amount),
 		ion.String("old_balance", currentBalance.String()),

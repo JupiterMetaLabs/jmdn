@@ -2,15 +2,17 @@
 ################################################################################
 # setup_dependencies.sh - JMDN Cross-Platform Dependency Installer
 #
-# Installs JMDN dependencies: Go, ImmuDB, Yggdrasil, Redis, GCC/build tools
+# Installs JMDN dependencies: Go, Yggdrasil, GCC/build tools, and storage services
 #
 # Usage: sudo ./setup_dependencies.sh [options]
 # Options:
 #   --go          Install Go
-#   --immudb      Install ImmuDB
 #   --yggdrasil   Install Yggdrasil
-#   --redis       Install Redis server and configure password
+#   --solidity    Install Solidity compiler (solc)
 #   --all         Install all dependencies (default if no flags provided)
+#   --storage-local   Install PostgreSQL + Redis as native services
+#   --storage-docker  Install Docker tooling and run PostgreSQL + Redis via compose
+#   --storage-none    Skip PostgreSQL/Redis setup
 #
 # Supported Platforms:
 #   - Linux (Debian/Ubuntu, RHEL/CentOS, Arch, Alpine)
@@ -25,7 +27,7 @@
 #   - 2025-03-02: Added cross-platform support for Linux, macOS, and FreeBSD
 #   - 2025-03-02: Integrated platform.sh for shared helpers and detection
 #   - 2025-03-02: Added support for pacman, apk, brew, pkg managers
-#   - 2025-03-02: Added FreeBSD Go and ImmuDB installation
+#   - 2025-03-02: Added FreeBSD Go installation
 #   - 2025-03-02: Enhanced Yggdrasil with multiple installation methods
 #   - 2025-03-02: Use JMDN_BIN for binary installation paths
 ################################################################################
@@ -45,9 +47,12 @@ source "${SCRIPT_DIR}/lib/platform.sh"
 # Config
 GO_INSTALL_DIR="/usr/local"
 # Known stable versions as fallbacks (matching current prod)
-IMMUDB_FALLBACK_VER="1.10.0"
 GO_FALLBACK_VER="1.25.3"
 YGG_FALLBACK_VER="0.5.12"
+PG_APP_USER="${PG_APP_USER:-thebedb}"
+PG_APP_PASSWORD="${PG_APP_PASSWORD:-thebedb}"
+PG_APP_DB="${PG_APP_DB:-thebedb}"
+PG_APP_PORT="${PG_APP_PORT:-5430}"
 
 ################################################################################
 # Helper: Version Comparison
@@ -57,24 +62,16 @@ ver_lt() {
 	[ "$1" = "$2" ] && return 1 || [ "$1" = "$(printf "%s\n%s" "$1" "$2" | sort -V | head -n1)" ]
 }
 
-################################################################################
-# Root check and platform validation
-################################################################################
-require_root
-
-# Map platform names for Go and ImmuDB downloads
+# Map platform names for Go downloads
 case "${PLATFORM}" in
 linux)
 	OS_GO="linux"
-	OS_IMMU="linux"
 	;;
 macos)
 	OS_GO="darwin"
-	OS_IMMU="darwin"
 	;;
 freebsd)
 	OS_GO="freebsd"
-	OS_IMMU="freebsd"
 	;;
 *)
 	log_die "Unsupported platform: ${PLATFORM}"
@@ -85,15 +82,12 @@ esac
 case "${ARCH}" in
 amd64)
 	ARCH_GO="amd64"
-	ARCH_IMMU="amd64"
 	;;
 arm64)
 	ARCH_GO="arm64"
-	ARCH_IMMU="arm64"
 	;;
 armv7)
 	ARCH_GO="armv7"
-	ARCH_IMMU="armv7"
 	;;
 *)
 	log_die "Unsupported architecture: ${ARCH} (raw: ${ARCH_RAW})"
@@ -104,28 +98,33 @@ esac
 # Parse command-line arguments
 ################################################################################
 INSTALL_GO=false
-INSTALL_IMMUDB=false
 INSTALL_YGG=false
-INSTALL_REDIS=false
+INSTALL_SOLIDITY=false
+INSTALL_STORAGE=false
+STORAGE_MODE="" # local | docker | none
+INTERACTIVE=false
 
 if [ $# -eq 0 ]; then
 	log_warn "No arguments provided."
 	echo "Usage: sudo $0 [options]"
 	echo "Options:"
 	echo "  --go          Install Go"
-	echo "  --immudb      Install ImmuDB"
 	echo "  --yggdrasil   Install Yggdrasil"
-	echo "  --redis       Install Redis"
+	echo "  --solidity    Install Solidity compiler (solc)"
 	echo "  --all         Install all dependencies"
 	exit 1
+	INTERACTIVE=true
+	INSTALL_GO=true
+	INSTALL_YGG=true
+	INSTALL_STORAGE=true
 else
 	for arg in "$@"; do
 		case $arg in
 		--go)
 			INSTALL_GO=true
 			;;
-		--immudb)
-			INSTALL_IMMUDB=true
+		--solidity)
+			INSTALL_SOLIDITY=true
 			;;
 		--yggdrasil)
 			INSTALL_YGG=true
@@ -135,9 +134,21 @@ else
 			;;
 		--all)
 			INSTALL_GO=true
-			INSTALL_IMMUDB=true
 			INSTALL_YGG=true
-			INSTALL_REDIS=true
+			INSTALL_SOLIDITY=true
+			INSTALL_STORAGE=true
+			;;
+		--storage-local)
+			INSTALL_STORAGE=true
+			STORAGE_MODE="local"
+			;;
+		--storage-docker)
+			INSTALL_STORAGE=true
+			STORAGE_MODE="docker"
+			;;
+		--storage-none)
+			INSTALL_STORAGE=true
+			STORAGE_MODE="none"
 			;;
 		*)
 			log_die "Unknown argument: $arg"
@@ -146,10 +157,68 @@ else
 	done
 fi
 
+if [[ "${INTERACTIVE}" == true ]] && [[ -t 0 ]] && [[ -z "${STORAGE_MODE}" ]]; then
+	echo ""
+	echo "Select PostgreSQL/Redis installation type:"
+	echo "  1) Local services (native packages)"
+	echo "  2) Docker-based (docker compose)"
+	echo "  3) Skip storage setup"
+	read -r -p "Enter choice [1-3] (default: 2): " storage_choice
+	case "${storage_choice:-2}" in
+	1)
+		STORAGE_MODE="local"
+		;;
+	2)
+		STORAGE_MODE="docker"
+		;;
+	3)
+		STORAGE_MODE="none"
+		;;
+	*)
+		log_warn "Invalid choice, defaulting to docker-based setup"
+		STORAGE_MODE="docker"
+		;;
+	esac
+fi
+
+prompt_storage_credentials() {
+	if [[ ! -t 0 ]]; then
+		return 0
+	fi
+
+	echo ""
+	echo "PostgreSQL setup values (press Enter to keep defaults):"
+	read -r -p "Database name [${PG_APP_DB}]: " input_db
+	read -r -p "Username [${PG_APP_USER}]: " input_user
+	read -r -p "Port [${PG_APP_PORT}]: " input_port
+	read -r -s -p "Password [hidden]: " input_pass
+	echo ""
+
+	if [[ -n "${input_db}" ]]; then
+		PG_APP_DB="${input_db}"
+	fi
+	if [[ -n "${input_user}" ]]; then
+		PG_APP_USER="${input_user}"
+	fi
+	if [[ -n "${input_port}" ]]; then
+		if [[ "${input_port}" =~ ^[0-9]+$ ]] && ((input_port >= 1 && input_port <= 65535)); then
+			PG_APP_PORT="${input_port}"
+		else
+			log_warn "Invalid port '${input_port}', keeping default/current port ${PG_APP_PORT}."
+		fi
+	fi
+	if [[ -n "${input_pass}" ]]; then
+		PG_APP_PASSWORD="${input_pass}"
+	fi
+}
+
 ################################################################################
 # 1. System Dependencies (GCC/Build Essentials)
 ################################################################################
 install_sys_deps() {
+	if [[ "${PLATFORM}" != "macos" ]]; then
+		require_root
+	fi
 	log_info "Checking system build dependencies..."
 
 	local gcc_missing=false
@@ -223,6 +292,7 @@ install_sys_deps() {
 # 2. Go Installation
 ################################################################################
 install_go() {
+	require_root
 	local target_ver="go${GO_FALLBACK_VER}"
 
 	log_info "Checking Go (Target: ${target_ver})..."
@@ -272,68 +342,11 @@ install_go() {
 }
 
 ################################################################################
-# 3. ImmuDB Installation
-################################################################################
-install_immudb() {
-	local target_ver="v${IMMUDB_FALLBACK_VER}"
-
-	log_info "Checking ImmuDB (Target: ${target_ver})..."
-	if check_command immudb; then
-		# Output: immudb 1.10.0
-		local installed_raw
-		installed_raw=$(immudb version 2>/dev/null | head -n1 | awk '{print $2}')
-		local installed_ver="v${installed_raw}"
-
-		# Clean versions for comparison (remove v)
-		local v_inst="${installed_raw}"
-		local v_targ="${target_ver#v}"
-
-		if ver_lt "$v_inst" "$v_targ"; then
-			log_warn "ImmuDB version is old (${installed_ver}). Upgrading to ${target_ver}..."
-		else
-			log_ok "ImmuDB is up-to-date or newer: ${installed_ver} (Target: ${target_ver})"
-			return 0
-		fi
-	fi
-
-	# Strip 'v' for filename construction
-	local clean_ver="${target_ver#v}"
-	local filename="immudb-v${clean_ver}-${OS_IMMU}-${ARCH_IMMU}"
-	local url="https://github.com/codenotary/immudb/releases/download/${target_ver}/${filename}"
-
-	log_info "Downloading ImmuDB ${target_ver}..."
-
-	# Ensure JMDN_BIN directory exists
-	if [[ ! -d "${JMDN_BIN}" ]]; then
-		log_info "Creating binary directory: ${JMDN_BIN}"
-		mkdir -p "${JMDN_BIN}"
-	fi
-
-	local tmp_dir
-	tmp_dir=$(mktemp -d)
-
-	if curl -L -o "$tmp_dir/immudb" "$url"; then
-		chmod +x "$tmp_dir/immudb"
-		mv "$tmp_dir/immudb" "${JMDN_BIN}/immudb"
-		rm -rf "$tmp_dir"
-		log_ok "ImmuDB installed to ${JMDN_BIN}/immudb"
-	else
-		rm -rf "$tmp_dir"
-		if [[ "${PLATFORM}" == "freebsd" ]]; then
-			log_warn "Failed to download ImmuDB binary for FreeBSD from $url"
-			log_warn "ImmuDB may not have official FreeBSD binaries."
-			log_warn "Consider building from source: https://github.com/codenotary/immudb"
-			return 1
-		else
-			log_die "Failed to download ImmuDB from $url"
-		fi
-	fi
-}
-
-################################################################################
 # 4. Yggdrasil Installation
+# 3. Yggdrasil Installation
 ################################################################################
 install_yggdrasil() {
+	require_root
 	log_info "Checking Yggdrasil (Target: ${YGG_FALLBACK_VER})..."
 
 	if check_command yggdrasil; then
@@ -501,316 +514,353 @@ _install_yggdrasil_manual() {
 }
 
 ################################################################################
-# 5. Redis Installation
+# 5. Solidity (solc) Installation
 ################################################################################
+install_solidity() {
+	if [[ "${PLATFORM}" != "macos" ]]; then
+		require_root
+	fi
+	log_info "Checking Solidity compiler (solc)..."
 
-# Where the password generated/used by this script is persisted, so reruns
-# are idempotent and a future config step can pick it up. Root-only.
-REDIS_CRED_FILE="${JMDN_ETC}/redis.env"
+	if check_command solc; then
+		log_ok "Solidity compiler is already installed: $(solc --version | grep Version | awk '{print $2}')"
+		return 0
+	fi
 
-# Resolve the systemd/openrc/rcd service (unit) name for the installed
-# package. brew/launchd is handled separately via `brew services`.
-_redis_service_name() {
-	case "${PKG_MANAGER}" in
-	apt)
-		echo "redis-server"
+	case "${PLATFORM}" in
+	linux)
+		case "${PKG_MANAGER}" in
+		apt)
+			log_info "Installing solc via apt (PPA)..."
+			# We need software-properties-common for add-apt-repository
+			pkg_install software-properties-common
+			add-apt-repository -y ppa:ethereum/ethereum
+			apt-get update
+			pkg_install solc
+			;;
+		dnf | yum)
+			log_info "Installing solc via ${PKG_MANAGER} (COPR)..."
+			if [[ "${PKG_MANAGER}" == "dnf" ]]; then
+				dnf copr enable @ethereum/solidity -y
+				dnf install -y solidity
+			else
+				yum install -y yum-plugin-copr
+				yum copr enable @ethereum/solidity -y
+				yum install -y solidity
+			fi
+			;;
+		pacman)
+			log_info "Installing solc via pacman..."
+			pacman -Sy --noconfirm solidity
+			;;
+		apk)
+			log_info "Installing solc via apk..."
+			apk add --no-cache solidity --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
+			;;
+		*)
+			log_error "Unknown package manager for Linux: ${PKG_MANAGER}. Please install solc manually."
+			return 1
+			;;
+		esac
+		;;
+	macos)
+		log_info "Installing solc via Homebrew..."
+		if check_command brew; then
+			brew install solidity
+		else
+			log_error "Homebrew not found. Cannot install solidity."
+			return 1
+		fi
+		;;
+	windows)
+		case "${PKG_MANAGER}" in
+		choco)
+			log_info "Installing solc via Chocolatey..."
+			choco install solidity -y
+			;;
+		scoop)
+			log_info "Installing solc via Scoop..."
+			scoop install solidity
+			;;
+		*)
+			log_error "No supported Windows package manager (choco/scoop) found."
+			return 1
+			;;
+		esac
 		;;
 	*)
-		echo "redis"
+		log_error "Solidity installation not supported on ${PLATFORM}"
+		return 1
+		;;
+	esac
+
+	if check_command solc; then
+		log_ok "Solidity compiler installed successfully: $(solc --version | grep Version | awk '{print $2}')"
+	else
+		log_error "Solidity installation appeared to succeed but 'solc' not found in PATH."
+		return 1
+	fi
+}
+
+################################################################################
+# 4. Storage Installation (PostgreSQL + Redis)
+################################################################################
+install_storage_local() {
+	log_info "Installing PostgreSQL + Redis locally..."
+	case "${PKG_MANAGER}" in
+	apt)
+		apt-get update
+		pkg_install postgresql postgresql-contrib redis-server
+		systemctl enable postgresql redis-server || true
+		systemctl restart postgresql redis-server || true
+		;;
+	dnf)
+		dnf install -y postgresql-server redis
+		postgresql-setup --initdb || true
+		systemctl enable postgresql redis || true
+		systemctl restart postgresql redis || true
+		;;
+	yum)
+		yum install -y postgresql-server redis
+		postgresql-setup initdb || true
+		systemctl enable postgresql redis || true
+		systemctl restart postgresql redis || true
+		;;
+	pacman)
+		pacman -Sy --noconfirm postgresql redis
+		systemctl enable postgresql redis || true
+		systemctl restart postgresql redis || true
+		;;
+	apk)
+		apk add --no-cache postgresql redis
+		rc-update add postgresql default || true
+		rc-update add redis default || true
+		rc-service postgresql start || true
+		rc-service redis start || true
+		;;
+	brew)
+		brew install postgresql@15 redis
+		brew services start postgresql@15 || true
+		brew services start redis || true
+		;;
+	pkg)
+		pkg install -y postgresql15-server redis
+		service postgresql initdb || true
+		service postgresql start || true
+		service redis start || true
+		;;
+	*)
+		log_warn "Unsupported package manager for local storage setup. Install PostgreSQL and Redis manually."
+		return 1
+		;;
+	esac
+	log_ok "Local PostgreSQL/Redis setup complete."
+	configure_postgres_local
+}
+
+postgres_exec() {
+	local sql="$1"
+	local primary_port="${PG_APP_PORT}"
+	local fallback_port="5432"
+	local detected_cluster_port=""
+
+	if [[ "${PKG_MANAGER}" == "apt" ]] && command -v pg_lsclusters >/dev/null 2>&1; then
+		detected_cluster_port="$(pg_lsclusters --no-header 2>/dev/null | awk 'NR==1 {print $3}')"
+	fi
+
+	_postgres_exec_with_port() {
+		local target_port="$1"
+		if command -v runuser >/dev/null 2>&1; then
+			runuser -u postgres -- psql -p "${target_port}" -v ON_ERROR_STOP=1 -tAc "$sql"
+		else
+			su - postgres -c "psql -p ${target_port} -v ON_ERROR_STOP=1 -tAc \"$sql\""
+		fi
+	}
+
+	# Prefer configured app port, but allow one-time fallback to default
+	# PostgreSQL port to support first-run migrations.
+	if _postgres_exec_with_port "${primary_port}"; then
+		return 0
+	fi
+
+	# Debian/Ubuntu clusters can run on non-default ports (e.g. 5433).
+	if [[ -n "${detected_cluster_port}" ]] && [[ "${detected_cluster_port}" != "${primary_port}" ]]; then
+		if _postgres_exec_with_port "${detected_cluster_port}"; then
+			return 0
+		fi
+	fi
+
+	if [[ "${primary_port}" != "${fallback_port}" ]]; then
+		_postgres_exec_with_port "${fallback_port}"
+		return $?
+	fi
+
+	return 1
+}
+
+restart_postgres_service() {
+	case "${PKG_MANAGER}" in
+	apt)
+		# Debian/Ubuntu use cluster services (postgresql@<ver>-<name>), while
+		# postgresql.service is often only an "active (exited)" wrapper unit.
+		if command -v pg_lsclusters >/dev/null 2>&1 && command -v pg_ctlcluster >/dev/null 2>&1; then
+			local clusters
+			clusters="$(pg_lsclusters --no-header 2>/dev/null || true)"
+			if [[ -n "${clusters}" ]]; then
+				while IFS= read -r line; do
+					local ver name status
+					ver="$(awk '{print $1}' <<<"${line}")"
+					name="$(awk '{print $2}' <<<"${line}")"
+					status="$(awk '{print $4}' <<<"${line}")"
+					if [[ -n "${ver}" && -n "${name}" ]]; then
+						if [[ "${status}" == "online" ]]; then
+							pg_ctlcluster "${ver}" "${name}" restart >/dev/null 2>&1 || true
+						else
+							pg_ctlcluster "${ver}" "${name}" start >/dev/null 2>&1 || true
+						fi
+					fi
+				done <<<"${clusters}"
+			else
+				systemctl restart postgresql || systemctl start postgresql || true
+			fi
+		else
+			systemctl restart postgresql || systemctl start postgresql || true
+		fi
+		;;
+	dnf | yum | pacman)
+		systemctl restart postgresql || systemctl start postgresql || true
+		;;
+	apk)
+		rc-service postgresql restart || rc-service postgresql start || true
+		;;
+	brew)
+		brew services restart postgresql@15 || brew services start postgresql@15 || true
+		;;
+	pkg)
+		service postgresql restart || service postgresql start || true
+		;;
+	*)
+		log_warn "Unknown package manager for PostgreSQL restart; restart service manually."
 		;;
 	esac
 }
 
-# Locate the active redis.conf. Uses JMDN_PREFIX (already computed by
-# platform.sh) instead of a hardcoded /usr/local guess, so this resolves
-# correctly on Apple Silicon Homebrew (/opt/homebrew) as well as Intel
-# Homebrew and FreeBSD (/usr/local).
-_redis_conf_path() {
-	local candidates=(
-		"${JMDN_PREFIX}/etc/redis.conf"
-		"/etc/redis/redis.conf"
-		"/etc/redis.conf"
-		"/etc/redis/redis-server.conf"
-	)
-	local conf
-	for conf in "${candidates[@]}"; do
-		if [[ -f "${conf}" ]]; then
-			echo "${conf}"
+configure_postgres_local() {
+	if ! check_command psql; then
+		log_warn "psql not found; skipping PostgreSQL user/database bootstrap."
+		return 0
+	fi
+
+	log_info "Configuring local PostgreSQL app user/database..."
+	log_info "Target user='${PG_APP_USER}' db='${PG_APP_DB}'"
+
+	# Ensure postgres service is reachable before attempting SQL setup.
+	if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
+		log_warn "PostgreSQL is not reachable yet; attempting service restart..."
+		restart_postgres_service
+		if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
+			log_warn "PostgreSQL service is not reachable as postgres user. Skipping DB bootstrap."
+			log_warn "Start PostgreSQL and re-run with --storage-local to apply user/database setup."
+			log_warn "Quick check: sudo -u postgres psql -p ${PG_APP_PORT} -c 'SELECT 1;'"
 			return 0
 		fi
-	done
-	return 1
-}
+	fi
 
-# Generate a strong random password. Prefers openssl (already a declared
-# dependency of this script); falls back to /dev/urandom + base64 if absent.
-_generate_redis_password() {
-	if check_command openssl; then
-		openssl rand -base64 32 | tr -d '=+/\n' | cut -c1-32
+	local current_port
+	current_port="$(postgres_exec "SHOW port;" | tr -d '[:space:]' || true)"
+	if [[ -n "${current_port}" ]] && [[ "${current_port}" != "${PG_APP_PORT}" ]]; then
+		log_info "Updating PostgreSQL port from ${current_port} to ${PG_APP_PORT}..."
+		postgres_exec "ALTER SYSTEM SET port = '${PG_APP_PORT}';" >/dev/null
+		restart_postgres_service
+		if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
+			log_warn "PostgreSQL did not become reachable on port ${PG_APP_PORT} after restart."
+			log_warn "Please verify local PostgreSQL config and service logs."
+			return 0
+		fi
+		log_ok "PostgreSQL is now configured on port ${PG_APP_PORT}"
+	fi
+
+	# Create role if missing.
+	if [[ "$(postgres_exec "SELECT 1 FROM pg_roles WHERE rolname='${PG_APP_USER}';")" != "1" ]]; then
+		postgres_exec "CREATE ROLE ${PG_APP_USER} WITH LOGIN PASSWORD '${PG_APP_PASSWORD}';"
+		log_ok "Created PostgreSQL role: ${PG_APP_USER}"
 	else
-		head -c 48 /dev/urandom | base64 | tr -d '=+/\n' | cut -c1-32
-	fi
-}
-
-# Safely apply persistence (AOF) to a running Redis without restart to avoid data loss.
-# If we simply edited redis.conf and restarted, Redis 7+ would start empty.
-# By setting CONFIG live, we trigger a BGREWRITEAOF, creating the AOF from memory.
-_live_migrate_redis_persistence() {
-	if ! check_command redis-cli; then
-		return 0
+		log_info "PostgreSQL role already exists: ${PG_APP_USER}"
 	fi
 
-	local svc="$(_redis_service_name)"
-	if ! svc_status "${svc}" >/dev/null 2>&1; then
-		return 0
-	fi
-
-	local rcli="redis-cli --no-auth-warning"
-	if [[ -f "${REDIS_CRED_FILE}" ]]; then
-		# shellcheck disable=SC1090
-		source "${REDIS_CRED_FILE}"
-		if [[ -n "${REDIS_PASSWORD:-}" ]]; then
-			rcli="redis-cli -a ${REDIS_PASSWORD} --no-auth-warning"
-		fi
-	fi
-
-	if ! ${rcli} PING >/dev/null 2>&1; then
-		log_warn "Redis is running but unreachable via redis-cli (auth mismatch?). Skipping live migration."
-		return 0
-	fi
-
-	local needs_rewrite=0
-	local val
-
-	val=$(${rcli} CONFIG GET appendonly | tail -1 | tr -d '\r')
-	if [[ "${val}" != "yes" ]]; then
-		log_info "Live migration: CONFIG SET appendonly yes"
-		${rcli} CONFIG SET appendonly yes >/dev/null 2>&1 || true
-		needs_rewrite=1
-	fi
-
-	val=$(${rcli} CONFIG GET appendfsync | tail -1 | tr -d '\r')
-	if [[ "${val}" != "everysec" ]]; then
-		log_info "Live migration: CONFIG SET appendfsync everysec"
-		${rcli} CONFIG SET appendfsync everysec >/dev/null 2>&1 || true
-		needs_rewrite=1
-	fi
-
-	val=$(${rcli} CONFIG GET maxmemory-policy | tail -1 | tr -d '\r')
-	if [[ "${val}" != "noeviction" ]]; then
-		log_info "Live migration: CONFIG SET maxmemory-policy noeviction"
-		${rcli} CONFIG SET maxmemory-policy noeviction >/dev/null 2>&1 || true
-		needs_rewrite=1
-	fi
-
-	if [[ "${needs_rewrite}" -eq 1 ]]; then
-		log_info "Live migration: CONFIG REWRITE"
-		${rcli} CONFIG REWRITE >/dev/null 2>&1 || true
-	fi
-}
-
-# Configure Redis persistence to match docker-compose CLI flags:
-#   appendonly yes, appendfsync everysec, maxmemory-policy noeviction.
-# Without these, distro-default redis.conf uses RDB-only persistence
-# (appendonly no) — a crash between RDB snapshots loses the account sync
-# stream and the balance effects it carries. This is a correctness
-# requirement for jmdn, not tuning; see DOCKER.md's Redis persistence note.
-#
-# Idempotent: each directive is checked individually. Sets
-# REDIS_CONF_CHANGED=1 if any directive was missing/changed.
-_configure_redis_persistence() {
-	local conf
-	if ! conf="$(_redis_conf_path)"; then
-		log_warn "Could not locate redis.conf — persistence NOT configured."
-		return 1
-	fi
-
-	# These mirror docker-compose.yml: --appendonly yes --appendfsync everysec
-	# --maxmemory-policy noeviction. Keep them in sync.
-	local directives=(
-		"appendonly yes"
-		"appendfsync everysec"
-		"maxmemory-policy noeviction"
-	)
-
-	local directive key
-	for directive in "${directives[@]}"; do
-		key="${directive%% *}"
-		if grep -qxF "${directive}" "${conf}"; then
-			log_ok "${key} already set in ${conf} — no change."
-		else
-			log_info "Setting ${key} in ${conf}..."
-			sed_inplace "/^${key} /d" "${conf}"
-			echo "${directive}" >>"${conf}"
-			REDIS_CONF_CHANGED=1
-		fi
-	done
-
-	log_ok "Redis persistence configured (AOF + everysec + noeviction)."
-}
-
-# Verify the RUNNING server actually has AOF enabled. The conf edit above is
-# a silent no-op if the service unit loads a different conf file than
-# _redis_conf_path found — this closes that gap by asking the live server.
-_verify_redis_persistence() {
-	if ! check_command redis-cli; then
-		log_warn "redis-cli not available — cannot verify running persistence."
-		return 1
-	fi
-
-	local redis_pass="${REDIS_PASSWORD:-}"
-	if [[ -z "${redis_pass}" && -f "${REDIS_CRED_FILE}" ]]; then
-		# shellcheck disable=SC1090
-		source "${REDIS_CRED_FILE}"
-		redis_pass="${REDIS_PASSWORD:-}"
-	fi
-	local auth_args=()
-	[[ -n "${redis_pass}" ]] && auth_args=(-a "${redis_pass}" --no-auth-warning)
-
-	local aof
-	aof="$(redis-cli "${auth_args[@]}" CONFIG GET appendonly 2>/dev/null | tail -n1)"
-	if [[ "${aof}" != "yes" ]]; then
-		log_error "Verification failed: running Redis reports appendonly='${aof:-unreadable}'."
-		return 1
-	fi
-	log_ok "Verified: running Redis has appendonly=yes."
-}
-
-# Configure Redis auth. Idempotent: if REDIS_CRED_FILE already holds a
-# password from a previous run, it's reused as-is (no silent rotation of a
-# credential that jmdn.yaml may already be configured with). REDIS_PASSWORD
-# in the environment always wins, for explicit overrides.
-#
-# Sets REDIS_CONF_CHANGED=1 only when redis.conf was actually modified, so
-# the caller can skip the service restart on no-op reruns (deploy.sh runs
-# this via --all on every deployment — an unconditional restart would bounce
-# the account-sync queue on every deploy for no reason).
-_configure_redis_password() {
-	local redis_pass="${REDIS_PASSWORD:-}"
-
-	if [[ -z "${redis_pass}" && -f "${REDIS_CRED_FILE}" ]]; then
-		# shellcheck disable=SC1090
-		source "${REDIS_CRED_FILE}"
-		redis_pass="${REDIS_PASSWORD:-}"
-		[[ -n "${redis_pass}" ]] && log_info "Reusing existing Redis password from ${REDIS_CRED_FILE}."
-	fi
-
-	if [[ -z "${redis_pass}" ]]; then
-		redis_pass="$(_generate_redis_password)"
-		log_info "Generated a new random Redis password."
-	fi
-
-	local conf
-	if ! conf="$(_redis_conf_path)"; then
-		log_warn "Could not locate redis.conf on this system. Password NOT set — Redis is running unauthenticated."
-		return 1
-	fi
-
-	# Password alphabet is [A-Za-z0-9] (base64 minus =+/), safe as a literal
-	# grep pattern with -F.
-	if grep -qxF "requirepass ${redis_pass}" "${conf}"; then
-		log_ok "Redis password already configured in ${conf} — no change."
+	# Create database if missing.
+	if [[ "$(postgres_exec "SELECT 1 FROM pg_database WHERE datname='${PG_APP_DB}';")" != "1" ]]; then
+		postgres_exec "CREATE DATABASE ${PG_APP_DB} OWNER ${PG_APP_USER};"
+		log_ok "Created PostgreSQL database: ${PG_APP_DB}"
 	else
-		log_info "Configuring Redis password in ${conf}..."
-		sed_inplace '/^requirepass /d' "${conf}"
-		echo "requirepass ${redis_pass}" >>"${conf}"
-		REDIS_CONF_CHANGED=1
+		log_info "PostgreSQL database already exists: ${PG_APP_DB}"
+		postgres_exec "ALTER DATABASE ${PG_APP_DB} OWNER TO ${PG_APP_USER};" >/dev/null || true
 	fi
 
-	ensure_dir "$(dirname "${REDIS_CRED_FILE}")" 755
-	chmod 755 "$(dirname "${REDIS_CRED_FILE}")" # ensure_dir only chmods on first creation
-	(
-		umask 077
-		cat >"${REDIS_CRED_FILE}" <<-EOF
-		# Generated by setup_dependencies.sh — do not commit.
-		export REDIS_PASSWORD="${redis_pass}"
-		export JMDN_DATABASE_REDIS_PASSWORD="${redis_pass}"
-		EOF
-	)
-	chmod 600 "${REDIS_CRED_FILE}"
-
-	log_ok "Redis password configured. Credentials saved to ${REDIS_CRED_FILE}."
+	# Minimal grants for idempotent safety.
+	postgres_exec "GRANT ALL PRIVILEGES ON DATABASE ${PG_APP_DB} TO ${PG_APP_USER};" >/dev/null
+	log_ok "PostgreSQL bootstrap completed for ${PG_APP_USER}/${PG_APP_DB}"
 }
 
-# Enable + start the Redis service via the shared svc_* abstractions in
-# lib/platform.sh, so any future service-manager fix applies here too.
-# Restarts ONLY when redis.conf changed (REDIS_CONF_CHANGED=1); an already-
-# running Redis with an unchanged config is left alone so reruns (e.g.
-# deploy.sh --all on every deployment) don't bounce the account-sync queue.
-_start_redis_service() {
-	local svc
-	svc="$(_redis_service_name)"
-
-	if [[ "${SVC_MANAGER}" == "launchd" ]]; then
-		if ! check_command brew; then
-			log_warn "Homebrew not found. Start Redis manually."
-			return 1
-		fi
-		if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
-			brew services restart redis || { log_warn "Could not restart Redis via brew services."; return 1; }
-		else
-			# Idempotent: no-op if already running.
-			brew services start redis || { log_warn "Could not start Redis via brew services."; return 1; }
-		fi
-		return 0
-	fi
-
-	if [[ -z "${SVC_MANAGER:-}" || "${SVC_MANAGER}" == "unknown" ]]; then
-		log_warn "No supported service manager detected. Start Redis manually."
+install_storage_docker() {
+	log_info "Installing Docker tooling for compose-based storage..."
+	case "${PKG_MANAGER}" in
+	apt)
+		apt-get update
+		pkg_install docker.io docker-compose-plugin
+		systemctl enable docker || true
+		systemctl restart docker || true
+		;;
+	dnf)
+		dnf install -y docker docker-compose-plugin
+		systemctl enable docker || true
+		systemctl restart docker || true
+		;;
+	yum)
+		yum install -y docker docker-compose-plugin
+		systemctl enable docker || true
+		systemctl restart docker || true
+		;;
+	pacman)
+		pacman -Sy --noconfirm docker docker-compose
+		systemctl enable docker || true
+		systemctl restart docker || true
+		;;
+	apk)
+		apk add --no-cache docker docker-cli-compose
+		rc-update add docker default || true
+		rc-service docker start || true
+		;;
+	brew)
+		brew install docker docker-compose
+		log_warn "Docker daemon on macOS is provided by Docker Desktop. Ensure it is installed and running."
+		;;
+	pkg)
+		pkg install -y docker docker-compose
+		service docker start || true
+		;;
+	*)
+		log_warn "Unsupported package manager for docker setup. Install Docker and Compose manually."
 		return 1
-	fi
+		;;
+	esac
 
-	svc_enable "${svc}" || log_warn "Could not enable ${svc} at boot."
-
-	if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
-		svc_restart "${svc}" || { log_warn "Could not restart ${svc}."; return 1; }
-	elif svc_status "${svc}" >/dev/null 2>&1; then
-		log_ok "${svc} already running with unchanged config — not restarting."
-		return 0
+	local repo_root
+	repo_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
+	if [[ -f "${repo_root}/docker-compose.yml" ]]; then
+		log_info "Starting PostgreSQL + Redis via docker compose..."
+		(
+			cd "${repo_root}" && \
+				POSTGRES_USER="${PG_APP_USER}" \
+				POSTGRES_PASSWORD="${PG_APP_PASSWORD}" \
+				POSTGRES_DB="${PG_APP_DB}" \
+				POSTGRES_PORT="${PG_APP_PORT}" \
+				docker compose up -d postgres redis
+		)
+		log_ok "Docker-based PostgreSQL/Redis services started."
 	else
-		svc_start "${svc}" || { log_warn "Could not start ${svc}."; return 1; }
+		log_warn "docker-compose.yml not found at ${repo_root}; skipping compose up."
 	fi
-
-	sleep 1
-	if ! svc_status "${svc}"; then
-		log_warn "${svc} does not appear to be running after restart."
-		return 1
-	fi
-}
-
-install_redis() {
-	log_info "Checking Redis..."
-
-	# Set by _configure_redis_persistence / _configure_redis_password when
-	# redis.conf is actually modified; _start_redis_service restarts only
-	# in that case.
-	REDIS_CONF_CHANGED=0
-
-	if check_command redis-server || check_command redis-cli; then
-		log_ok "Redis is already installed."
-	else
-		log_info "Installing Redis via ${PKG_MANAGER}..."
-
-		if [[ "${PKG_MANAGER}" == "apt" ]]; then
-			apt-get update
-		fi
-
-		if ! pkg_install "$(_map_package_name redis)"; then
-			if [[ "${PKG_MANAGER}" == "dnf" || "${PKG_MANAGER}" == "yum" ]]; then
-				log_warn "Redis package not found. On RHEL/CentOS this usually requires EPEL:"
-				log_warn "  ${PKG_MANAGER} install -y epel-release && ${PKG_MANAGER} install -y redis"
-			fi
-			log_die "Failed to install Redis."
-		fi
-	fi
-
-	_live_migrate_redis_persistence
-	_configure_redis_persistence || log_error "Redis persistence NOT configured — REQUIRED for jmdn account-sync durability. Fix before running the node."
-	_configure_redis_password || log_warn "Redis password setup incomplete — review manually before relying on it."
-	_start_redis_service || log_warn "Redis service could not be confirmed running — check manually."
-	_verify_redis_persistence || log_error "Running Redis does NOT report appendonly=yes — the edited conf may not be the one the service loads. Fix before running the node."
-
-	log_ok "Redis setup complete."
 }
 
 ################################################################################
@@ -824,16 +874,37 @@ if [[ "${INSTALL_GO}" == true ]]; then
 	install_go
 fi
 
-if [[ "${INSTALL_IMMUDB}" == true ]]; then
-	install_immudb
-fi
-
 if [[ "${INSTALL_YGG}" == true ]]; then
 	install_yggdrasil
 fi
 
-if [[ "${INSTALL_REDIS}" == true ]]; then
-	install_redis
+if [[ "${INSTALL_SOLIDITY}" == true ]]; then
+	install_solidity
+fi
+
+if [[ "${INSTALL_STORAGE}" == true ]]; then
+	if [[ "${STORAGE_MODE:-docker}" != "none" ]]; then
+		prompt_storage_credentials
+	fi
+	case "${STORAGE_MODE:-docker}" in
+	local)
+		install_storage_local
+		;;
+	docker)
+		install_storage_docker
+		;;
+	none)
+		log_info "Skipping PostgreSQL/Redis setup."
+		;;
+	*)
+		log_warn "Unknown storage mode '${STORAGE_MODE}', skipping storage setup."
+		;;
+	esac
+fi
+
+if [[ "${INSTALL_STORAGE}" == true ]] && [[ "${STORAGE_MODE:-docker}" != "none" ]]; then
+	log_info "Thebe SQL DSN:"
+	echo "postgres://${PG_APP_USER}:${PG_APP_PASSWORD}@localhost:${PG_APP_PORT}/${PG_APP_DB}?sslmode=disable"
 fi
 
 log_ok "Dependencies setup complete!"

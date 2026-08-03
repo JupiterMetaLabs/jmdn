@@ -188,7 +188,7 @@ func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, trace
 		return false, errors.New("from address is nil")
 	}
 
-	// Sender MUST exist
+	// Check Sender — must always exist.
 	sender := s.GetAccount(*tx.From)
 	if sender == nil {
 		return false, fmt.Errorf("sender account %s not found in cache", tx.From.Hex())

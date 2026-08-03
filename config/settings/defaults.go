@@ -22,38 +22,52 @@ func DefaultConfig() NodeConfig {
 			HeartbeatInterval: 10,
 		},
 		Ports: PortSettings{
-			API:       0, // disabled
-			BlockGen:  0, // disabled
-			BlockGRPC: 0, // disabled
-			CLI:       0, // disabled
-			DID:       15052,
-			Facade:    8545,
-			WS:        8546,
+			API:        0, // disabled
+			BlockGen:   0, // disabled
+			BlockGRPC:  0, // disabled
+			CLI:        0, // disabled
+			DID:        15052,
+			Facade:     8545,
+			ThebeDebug: 19090,
+			WS:         8546,
+			Geth:       15054,
+			Smart:      15056,
 
 			Metrics:  0, // disabled
 			Profiler: 0, // disabled
 		},
 		Binds: BindSettings{
-			API:       "0.0.0.0",   // Public data access
-			BlockGen:  "127.0.0.1", // Admin - Block generation
-			BlockGRPC: "0.0.0.0",   // P2P - Block propagation
-			CLI:       "127.0.0.1", // Admin - CLI control
-			DID:       "0.0.0.0",   // Identity Service
-			Facade:    "0.0.0.0",   // Public RPC
-			WS:        "0.0.0.0",   // Public WS
-			Metrics:   "127.0.0.1", // Metrics scraping (usually internal network)
-			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
+			API:        "0.0.0.0",   // Public data access
+			BlockGen:   "127.0.0.1", // Admin - Block generation
+			BlockGRPC:  "0.0.0.0",   // P2P - Block propagation
+			CLI:        "127.0.0.1", // Admin - CLI control
+			DID:        "0.0.0.0",   // Identity Service
+			Facade:     "0.0.0.0",   // Public RPC
+			ThebeDebug: "127.0.0.1", // Internal debug APIs
+			WS:         "0.0.0.0",   // Public WS
+			Geth:       "127.0.0.1", // Internal gRPC
+			Smart:      "127.0.0.1", // Internal gRPC
+			Metrics:    "127.0.0.1", // Metrics scraping (usually internal network)
+			Profiler:   "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			Address:     "localhost", // override via JMDN_DATABASE_ADDRESS for a separate immudb container
-			Port:        3322,        // override via JMDN_DATABASE_PORT
-			Username:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_USERNAME
-			Password:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_PASSWORD
 			TxIndexPath: "./DB/txindex.db",
 			Redis: RedisSettings{
 				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
 				Password: "jmdnredissync",  // optional: set if Redis requires authentication
 			},
+		},
+		Thebe: ThebeConfig{
+			// ThebeDB is the node's only storage backend post ImmuDB removal —
+			// enabled by default. DSN matches the Postgres provisioned by
+			// Scripts/install_services.sh / setup_postgres.sh (host port 5430).
+			Enabled:    true,
+			KVPath:     "./storage/thebe-kv",
+			SQLDSN:     "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable",
+			RedisURL:   "",
+			StreamName: "",
+			MaxLen:     1000,
+			GroupName:  "",
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
@@ -90,7 +104,11 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		FastSync: FastSyncSettings{
-			Enabled:           true,
+			// DISABLED pending the ThebeDB FastSync redesign (log-shipping model).
+			// The current ImmuDB-era protocol is turned off fleet-wide; flip back
+			// to true when the new engine lands. Serving + syncing + SyncMonitor
+			// are all gated by this one flag.
+			Enabled:           false,
 			EnablePulling:     true,
 			EnableCatchup:     false,
 			SyncTimeout:       10 * time.Minute,

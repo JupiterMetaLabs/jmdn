@@ -25,9 +25,9 @@ func ConvertStringToUint64(str string) (uint64, error) {
 
 // StartBlockPoller starts a background loop that polls for new blocks.
 // It stops when ctx is cancelled.
-func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval time.Duration) {
+func StartBlockPoller(ctx context.Context, DBclient *ExplorerServer, pollInterval time.Duration) {
 	// Create span for block poller initialization
-	spanCtx, span := DBclient.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartBlockPoller")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartBlockPoller")
 	defer span.End()
 
 	span.SetAttributes(
@@ -44,7 +44,7 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 			span.SetAttributes(attribute.Int64("initial_block_number", int64(latest)))
 		} else {
 			span.RecordError(err)
-			DBclient.defaultdb.Client.Logger.Error(spanCtx, "Failed to get initial latest block number",
+			logger().Error(spanCtx, "Failed to get initial latest block number",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -53,7 +53,7 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 		}
 	}
 
-	DBclient.defaultdb.Client.Logger.Info(spanCtx, "Block poller started",
+	logger().Info(spanCtx, "Block poller started",
 		ion.String("poll_interval", pollInterval.String()),
 		ion.Uint64("last_block_number", lastBlockNumber),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -67,7 +67,7 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 	for {
 		select {
 		case <-ctx.Done():
-			DBclient.defaultdb.Client.Logger.Info(spanCtx, "Block poller stopped",
+			logger().Info(spanCtx, "Block poller stopped",
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
@@ -79,12 +79,12 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 	}
 }
 
-func checkForNewBlocks(DBclient *ImmuDBServer) {
+func checkForNewBlocks(DBclient *ExplorerServer) {
 	// Create span for checking new blocks
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	spanCtx, span := DBclient.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.checkForNewBlocks")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.checkForNewBlocks")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -96,7 +96,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		DBclient.defaultdb.Client.Logger.Error(spanCtx, "Failed to get latest block number",
+		logger().Error(spanCtx, "Failed to get latest block number",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -129,7 +129,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 		attribute.Int64("blocks_to_fetch", int64(blocksToFetch)),
 	)
 
-	DBclient.defaultdb.Client.Logger.Info(spanCtx, "New blocks detected, fetching blocks",
+	logger().Info(spanCtx, "New blocks detected, fetching blocks",
 		ion.Uint64("current_block_number", currentBlockNumber),
 		ion.Uint64("latest_block_number", latestBlockNumber),
 		ion.Uint64("blocks_to_fetch", blocksToFetch),
@@ -151,7 +151,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 		if err != nil {
 			errorCount++
 			span.RecordError(err)
-			DBclient.defaultdb.Client.Logger.Error(spanCtx, "Failed to fetch block",
+			logger().Error(spanCtx, "Failed to fetch block",
 				err,
 				ion.Uint64("block_number", i),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -183,7 +183,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 			span.SetAttributes(attribute.String("status", "marshal_error"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			DBclient.defaultdb.Client.Logger.Error(spanCtx, "Failed to marshal blocks",
+			logger().Error(spanCtx, "Failed to marshal blocks",
 				err,
 				ion.Int("blocks_count", len(missingBlocks)),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -203,7 +203,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 			attribute.Int("blocks_notified", len(missingBlocks)),
 		)
 
-		DBclient.defaultdb.Client.Logger.Info(spanCtx, "New blocks notified to WebSocket clients",
+		logger().Info(spanCtx, "New blocks notified to WebSocket clients",
 			ion.Int("blocks_count", len(missingBlocks)),
 			ion.Uint64("from_block", currentBlockNumber+1),
 			ion.Uint64("to_block", latestBlockNumber),

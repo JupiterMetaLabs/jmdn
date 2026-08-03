@@ -51,47 +51,41 @@ func (al *AsyncLogger) setGlobal() (*ion.Ion, error) {
 }
 
 func (al *AsyncLogger) NamedLogger(topic string, fileName string) (*Logging, error) {
-	// Defensive nil-check
+	// Fast path: already exists
+	al.mu.RLock()
+	if al.Logging != nil {
+		if entry, ok := al.Logging[topic]; ok && entry.NamedLogger != nil {
+			al.mu.RUnlock()
+			return &entry, nil
+		}
+	}
+	al.mu.RUnlock()
+
+	// Slow path: create
+	al.mu.Lock()
+	defer al.mu.Unlock()
 	if al.Logging == nil {
 		al.Logging = make(map[string]Logging)
 	}
-	// If the named logger is already created, return the existing logger
-	if al.Logging[topic].NamedLogger != nil {
-		namedLogger, ok := al.Logging[topic]
-		if !ok {
-			return nil, fmt.Errorf("something went wrong inside duplicate check '%s' not found - this should not happen", topic)
-		}
-		return &namedLogger, nil
+	// Double-checked: another goroutine may have inserted while we waited
+	if entry, ok := al.Logging[topic]; ok && entry.NamedLogger != nil {
+		return &entry, nil
 	}
-	// Get the named logger instance
-	// Named() returns ion.Logger (interface), but we need *ion.Ion for Tracer() method
-	// Since we need *ion.Ion for Tracer() calls, we'll use the GlobalLogger directly
-	// and add the topic as a field in log calls. The Named() logger can be used for
-	// actual logging, but for Tracer() we need the *ion.Ion instance.
-	//
-	// For now, we'll store the GlobalLogger (*ion.Ion) directly so Tracer() works.
-	// The topic will be added as a field in log calls via ion.String("topic", topic)
-	namedLoggerPtr := al.GlobalLogger
-
-	// Store the logger in the map
 	al.Logging[topic] = Logging{
 		Topic:       topic,
 		FileName:    fileName,
-		NamedLogger: namedLoggerPtr,
+		NamedLogger: al.GlobalLogger,
 	}
-	namedLogger, ok := al.Logging[topic]
-	if !ok {
-		return nil, fmt.Errorf("something went wrong '%s' not found - this should not happen", topic)
-	}
-	return &namedLogger, nil
+	entry := al.Logging[topic]
+	return &entry, nil
 }
 
 func (al *AsyncLogger) GetNamedLogger(topic string) (*Logging, error) {
-	// Defensive nil-check
+	al.mu.RLock()
+	defer al.mu.RUnlock()
 	if al.Logging == nil {
 		return nil, fmt.Errorf("Logging map is not initialized")
 	}
-	// Get the named logger instance
 	namedLogger, ok := al.Logging[topic]
 	if !ok {
 		return nil, fmt.Errorf("named logger for topic '%s' not found", topic)

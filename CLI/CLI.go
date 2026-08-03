@@ -14,7 +14,6 @@ import (
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
-	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
@@ -23,12 +22,13 @@ import (
 	groMetrics "gossipnode/metrics/gro"
 	"gossipnode/node"
 	"gossipnode/seednode"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 	peerpb "gossipnode/seednode/proto"
 	"gossipnode/shutdown"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 // formatTimestamp handles both Unix seconds and nanoseconds formats
@@ -50,10 +50,17 @@ func formatTimestamp(timestamp int64) string {
 }
 
 // CommandHandler holds dependencies for CLI command execution
+// FastSyncerV2Interface is the subset of the FastsyncV2 engine used by the CLI.
+// The concrete implementation is wired in main.go once the engine is initialised.
+type FastSyncerV2Interface interface {
+	HandleSync(targetPeer string) error
+	HandleCatchUpSync(ctx context.Context, fromBlock uint64, targetPeer string) error
+	AccountSyncOnly(targetPeer string) (uint64, error)
+}
+
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
 	SeedNode        string
@@ -61,6 +68,7 @@ type CommandHandler struct {
 	ChainID         int
 	FacadePort      int
 	WSPort          int
+	FastSyncerV2    FastSyncerV2Interface
 	PullAllowed     bool
 }
 
@@ -112,11 +120,10 @@ func PrintFuncs() {
 	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
 	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
-	fmt.Println("  dbstate                           - Show current ImmuDB database state")
+	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
-	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  grometrics                        - Show GRO metrics")
 	fmt.Println("  version                           - Show current binary version")
@@ -282,8 +289,6 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleAccountSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
-	case "syncinfo":
-		h.handleSyncInfo()
 	case "getDID":
 		h.handleGetDID(parts)
 	case "dbstate":
@@ -492,7 +497,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 	logger_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Get mempool client
-	routingClient, err := Block.GetRoutingClient(logger_ctx)
+	routingClient, err := Block.GetRoutingClient()
 	if err != nil {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return
@@ -626,7 +631,7 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 
 	// Show pre-sync DB state if clients are available
 	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 		if err == nil {
 			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
 		}
@@ -643,11 +648,11 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 
 	// Show post-sync DB state if clients are available
 	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 		if err == nil {
 			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
 		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 		if err == nil {
 			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
 		}
@@ -862,61 +867,25 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 }
 
 func (h *CommandHandler) handleDBState() {
-
-	err := h.checkDBClient()
+	// Latest block via globalThebeHandle → Postgres ORDER BY block_number DESC LIMIT 1
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
 	if err != nil {
-		fmt.Printf("Database client not initialized: %v\n", err)
+		fmt.Printf("Failed to get latest block number: %v\n", err)
+		fmt.Println("  (ThebeDB handle may not be initialised yet — check jmdn.yaml thebe config)")
 		return
 	}
 
-	err = h.checkDIDClient()
-	if err != nil {
-		fmt.Printf("DID database client not initialized: %v\n", err)
-		return
-	}
+	fmt.Println("Current ThebeDB State (Postgres):")
+	fmt.Printf("  Latest Block:   %d\n", latestBlock)
 
-	// Debugging
-	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
-
-	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		fmt.Printf("Failed to get database state: %v\n", err)
-		return
-	}
-
-	fmt.Println("Current ImmuDB State:")
-	fmt.Printf("  Transaction ID: %d\n", state.TxId)
-	fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-
-	// Count entries in the database using pagination
-	const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
-	var totalKeys int
-	var lastKey string
-	var hasMoreKeys = true
-
-	for hasMoreKeys {
-		keys, err := DB_OPs.GetAllKeys(h.MainClient, lastKey)
-		if err != nil {
-			fmt.Printf("Failed to count database entries: %v\n", err)
-			hasMoreKeys = false
-			continue
-		}
-
-		count := len(keys)
-		totalKeys += count
-
-		// If we got fewer keys than our limit, we've reached the end
-		if count < maxKeysPerBatch {
-			hasMoreKeys = false
-		} else if count > 0 {
-			// Set the last key for the next batch
-			lastKey = keys[count-1]
-		} else {
-			hasMoreKeys = false
+	// Show the latest block header
+	if latestBlock > 0 {
+		block, berr := DB_OPs.GetZKBlockByNumber(nil, latestBlock)
+		if berr == nil && block != nil {
+			fmt.Printf("  Block Hash:     %s\n", block.BlockHash)
+			fmt.Printf("  Gas Used:       %d\n", block.GasUsed)
 		}
 	}
-
-	fmt.Printf("  Total Keys: %d\n", totalKeys)
 	printDashes()
 }
 

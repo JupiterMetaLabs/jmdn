@@ -9,27 +9,44 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/config/settings"
 	"gossipnode/internal/syncmonitor"
 	"gossipnode/logging"
 	"gossipnode/pkg/gatekeeper"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 type HTTPServer struct {
 	h           *Handlers
-	logger      *ion.Ion // Add logger
+	dualDB      *dualdb.DualDB
+	cassata     *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
+	logger      *ion.Ion         // Add logger
 	syncMonitor *syncmonitor.Monitor
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
 	// Initialize logger
-	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
+	l, err := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
+	if err != nil || l == nil || l.NamedLogger == nil {
+		return &HTTPServer{h: h}
+	}
 
 	return &HTTPServer{h: h, logger: l.NamedLogger}
+}
+
+func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
+	s.dualDB = d
+	return s
+}
+
+// WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
+func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
+	s.cassata = c
+	return s
 }
 
 // WithSyncMonitor attaches a SyncMonitor so the server exposes /sync/* routes.
@@ -54,13 +71,13 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
 
-	// Initialize Security via gatekeeper helper
-	secCfg := &settings.Get().Security
+	// Create HTTP server with GIN router
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	secCfg := &settings.Get().Security
 	tlsEnabled, middleware, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, s.logger)
 	if err != nil {
 		return fmt.Errorf("failed to configure secure HTTP server: %w", err)
@@ -69,7 +86,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	// Apply Gatekeeper Middleware
 	router.Use(middleware.Middleware(settings.ServiceEthRPC))
 
-	// Add JSON-RPC handler
+	// Register routes after middleware so protection applies consistently.
 	router.Any("/", s.handleJSONRPC)
 
 	// Add sync status/reconcile endpoints if a monitor is wired in
@@ -93,6 +110,19 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func (s *HTTPServer) DualDBReport(c *gin.Context) {
+	if s.dualDB == nil {
+		c.String(http.StatusServiceUnavailable, "dualdb not enabled")
+		return
+	}
+
+	c.Header("Content-Type", "application/json")
+	if err := json.NewEncoder(c.Writer).Encode(s.dualDB.Report()); err != nil {
+		c.String(http.StatusInternalServerError, "failed to encode dualdb report")
+		return
 	}
 }
 

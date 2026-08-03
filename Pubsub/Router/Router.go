@@ -6,6 +6,8 @@ import (
 
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // Router routes messages to appropriate services based on message type
@@ -38,8 +40,12 @@ func Router(message *AVCStruct.GossipMessage) error {
 	}
 	PubSub := GossipNode.PubSub
 	serviceManager := NewServiceManager(PubSub, GossipNode)
-	fmt.Printf("Router: Processing message with stage %s from peer %s\n", message.Data.ACK.Stage, message.Sender)
-	fmt.Printf("Router: GossipNode PeerID: %s, PubSub Host: %s\n", GossipNode.PeerID, PubSub.Host.ID())
+	logger().Debug(logger_ctx, "Router: Processing message",
+		ion.String("stage", message.Data.ACK.Stage),
+		ion.String("sender", message.Sender.String()))
+	logger().Debug(logger_ctx, "Router: GossipNode info",
+		ion.String("peer_id", GossipNode.PeerID.String()),
+		ion.String("host", PubSub.Host.ID().String()))
 
 	// Route to appropriate services based on the message ack type
 	switch message.Data.ACK.Stage {

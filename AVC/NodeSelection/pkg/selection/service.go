@@ -3,8 +3,8 @@ package selection
 import (
 	"context"
 	"crypto/ed25519"
-	"fmt"
 
+	"github.com/JupiterMetaLabs/ion"
 	seednode "gossipnode/seednode"
 )
 
@@ -21,20 +21,20 @@ func GetBuddyNodes(
 	// 1. Connect to peer directory
 	peerClient, err := seednode.NewClient(peerDirAddress)
 	if err != nil {
-		fmt.Println("❌ Failed to connect to peer directory:", err)
+		logger().Error(context.Background(), "Failed to connect to peer directory", err)
 		return nil, err
 	}
-	// fmt.Printf("Debugging 1\n")
+	// logger().Info(context.Background(), "Debugging 1\n")
 	defer peerClient.Close()
 
-	fmt.Println("📡 Connected to peer directory at", peerDirAddress)
+	logger().Info(context.Background(), "Connected to peer directory", ion.String("address", peerDirAddress))
 
 	// 2. Fetch buddy-eligible peers (excludes recent buddies)
-	// fmt.Printf("Debugging 2\n")
+	// logger().Info(context.Background(), "Debugging 2\n")
 	// allNodes := make([]Node, 0)
 	allNodes, err := peerClient.ListBuddyPeers(ctx)
 	if err != nil {
-		fmt.Println("⚠️ WARNING  Failed to fetch buddy peers:", err)
+		logger().Warn(context.Background(), "Failed to fetch buddy peers", ion.Err(err))
 		return nil, err
 	}
 
@@ -43,7 +43,7 @@ func GetBuddyNodes(
 	// 	fmt.Println("⚠️  Failed to fetch buddy peers, falling back to all active peers:", err)
 	// 	// Fallback to all active peers
 	// 	allNodes, err = peerClient.ListAllPeers(ctx)
-	// 	fmt.Printf("allNodes --  fallback: %+v\n", allNodes)
+	// 	logger().Info(context.Background(), "allNodes --  fallback: %+v", allNodes)
 	// 	if err != nil {
 	// 		return nil, err
 	// 	}
@@ -51,11 +51,10 @@ func GetBuddyNodes(
 
 	// Display first node in detail
 	if len(allNodes) > 0 {
-		// fmt.Println("🔍 Inspecting first node in detail:", allNodes[0])
-		fmt.Printf("%+v\n", allNodes[0])
+		logger().Info(context.Background(), "First node detail", ion.String("node_id", allNodes[0].ID))
 	}
 
-	fmt.Printf("📋 Fetched %d eligible peers\n", len(allNodes))
+	logger().Info(context.Background(), "Fetched eligible peers", ion.Int("count", len(allNodes)))
 
 	// 3. Use the nodes to select buddies
 	// The selection score is already calculated in seednode.go
@@ -94,10 +93,10 @@ func GetBuddyNodesWithNodes(
 		return nil, ErrNoPeersAvailable
 	}
 
-	// fmt.Printf("Debugging 7\n")
-	fmt.Printf("nodes: %+v\n", len(nodes))
+	// logger().Info(context.Background(), "Debugging 7\n")
+	logger().Info(context.Background(), "Candidate node count", ion.Int("count", len(nodes)))
 
-	// fmt.Printf("🔍 Filtering %d nodes for eligibility\n", len(nodes))
+	// logger().Info(context.Background(), "🔍 Filtering %d nodes for eligibility", len(nodes))
 
 	// 1. Filter eligible nodes
 	filterConfig := DefaultFilterConfig()
@@ -107,9 +106,9 @@ func GetBuddyNodesWithNodes(
 		return nil, ErrNoPeersAvailable
 	}
 
-	// fmt.Printf("✅ %d eligible nodes after filtering\n", len(eligible))
-	// fmt.Printf("Debugging 8\n")
-	fmt.Printf("eligible: %+v\n", len(eligible))
+	// logger().Info(context.Background(), "✅ %d eligible nodes after filtering", len(eligible))
+	// logger().Info(context.Background(), "Debugging 8\n")
+	logger().Info(context.Background(), "Eligible nodes after filtering", ion.Int("count", len(eligible)))
 	// 2. Create VRF selector
 	vrfConfig := &VRFConfig{
 		NetworkSalt: networkSalt,
@@ -120,10 +119,10 @@ func GetBuddyNodesWithNodes(
 	if err != nil {
 		return nil, err
 	}
-	// fmt.Printf("Debugging 9\n")
+	// logger().Info(context.Background(), "Debugging 9\n")
 	vrfSelector := selector.(*VRFSelector)
 
 	// 3. Select buddies using VRF algorithm
-	fmt.Printf("🎲 Selecting %d buddies using VRF\n", numBuddies)
+	logger().Info(context.Background(), "Selecting buddies using VRF", ion.Int("num_buddies", numBuddies))
 	return vrfSelector.SelectMultipleBuddies(ctx, nodeID, eligible, numBuddies)
 }

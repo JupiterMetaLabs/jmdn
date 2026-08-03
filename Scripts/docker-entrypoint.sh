@@ -4,27 +4,17 @@
 # Runs as root. Drops to jmdn user (via gosu) for all long-running processes.
 #
 # Startup order:
-#   1. Bootstrap check — skipped when IMMUDB_EXTERNAL=true (separate container mode).
-#                        In embedded mode only: download snapshot into /opt/jmdn/data.
-#   2. Restore paths   — root: ensure DB/, config/, certs/ exist with correct ownership.
-#   3. Wait for ImmuDB — nc loop against immudb host:port.
-#   4. gosu jmdn jmdn  — drops privilege, exec's the node process.
+#   1. Bootstrap check — download chain snapshot into /opt/jmdn if missing.
+#   2. Restore paths   — root: ensure DB/, storage/, config/, certs/ exist with
+#                        correct ownership.
+#   3. gosu jmdn jmdn  — drops privilege, exec's the node process.
 #
-# External ImmuDB mode (IMMUDB_EXTERNAL=true, default in docker-compose.yml):
-#   Bootstrap is handled by the jmdn-bootstrap profile service which mounts
-#   immudb-data:/opt/jmdn/data and writes the snapshot there. The jmdn container
-#   mounts jmdn-state:/opt/jmdn — running bootstrap here would write into the
-#   wrong volume and the data would never reach immudb.
-#   Run bootstrap once before starting the stack:
-#     docker compose run --rm jmdn-bootstrap
+# Storage: ThebeDB is embedded in the jmdn process (BadgerDB KV + SQL
+# projection under /opt/jmdn) — there is no external database to wait for.
 
 set -euo pipefail
 
 JMDN_USER="${JMDN_USER:-jmdn}"
-IMMUDB_PORT="${IMMUDB_PORT:-3322}"
-IMMUDB_DIR="${IMMUDB_DIR:-/opt/jmdn/data}"
-IMMUDB_READY_TIMEOUT="${IMMUDB_READY_TIMEOUT:-120}"
-IMMUDB_EXTERNAL="${IMMUDB_EXTERNAL:-false}"
 
 log() { echo "[entrypoint] $*"; }
 
@@ -38,25 +28,13 @@ if [ ! -f /etc/jmdn/jmdn.yaml ]; then
 fi
 
 # ── Step 1: Bootstrap sync ────────────────────────────────
-# External mode: skip — bootstrap must run via the jmdn-bootstrap service so
-# it writes into the immudb-data volume (not jmdn-state).
-# Embedded mode: run bootstrap_sync.sh before immudb starts.
-if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
-    log "External ImmuDB mode — skipping bootstrap."
-    # Guard: ensure bootstrap was run against the immudb-data volume before this
-    # container started. Without it, jmdn connects to an empty immudb and fails.
-    # immudb-data is mounted read-only at /opt/jmdn/data (see docker-compose.yml volumes).
-    # Docker overlapping mounts: jmdn-state covers /opt/jmdn; immudb-data overrides
-    # /opt/jmdn/data specifically — so the sentinel written by bootstrap is visible here.
-    SENTINEL="/opt/jmdn/data/.bootstrapped"
-    if [ ! -f "$SENTINEL" ]; then
-        log "ERROR: Bootstrap sentinel not found at $SENTINEL."
-        log "Run bootstrap first: docker compose run --rm jmdn-bootstrap"
-        exit 1
-    fi
-    log "Sentinel found — immudb-data volume is populated."
+# Populates node state from the GCS snapshot on first run.
+# bootstrap_sync.sh writes a .bootstrapped sentinel — safe to re-run.
+SENTINEL="/opt/jmdn/.bootstrapped"
+if [ -f "$SENTINEL" ]; then
+    log "Bootstrap sentinel found — node state already populated."
 else
-    log "Embedded ImmuDB mode — running bootstrap sync..."
+    log "Running bootstrap sync..."
     if ! /usr/local/bin/bootstrap_sync.sh; then
         log "ERROR: Bootstrap failed — aborting."
         exit 1
@@ -69,15 +47,15 @@ fi
 # JMDN_DATA = /opt/jmdn — matches bare-metal WorkingDirectory=${JMDN_DATA}.
 # The jmdn-state volume overlays the image filesystem at /opt/jmdn on first run,
 # so the volume starts empty and these dirs must be recreated here.
-# NOTE: /opt/jmdn/data is immudb's dir — managed by the immudb container and
-#       mounted separately (immudb-data volume). Do NOT create it here.
 mkdir -p \
     /opt/jmdn/config \
     /opt/jmdn/DB \
+    /opt/jmdn/storage \
     /opt/jmdn/certs
 chown "${JMDN_USER}:${JMDN_USER}" \
     /opt/jmdn/config \
     /opt/jmdn/DB \
+    /opt/jmdn/storage \
     /opt/jmdn/certs
 
 # TLS certs — mirrors Scripts/setup_certs.sh.
@@ -107,69 +85,7 @@ if [ ! -f /opt/jmdn/certs/ca.crt ]; then
     log "TLS certs generated."
 fi
 
-# ── Step 3: Start ImmuDB (or wait for external) ──────────
-# IMMUDB_EXTERNAL=true  → immudb runs as a separate container (docker-compose);
-#                          entrypoint just waits for JMDN_DATABASE_ADDRESS:port.
-# IMMUDB_EXTERNAL=false → entrypoint starts the embedded immudb process.
-IMMUDB_HOST="${JMDN_DATABASE_ADDRESS:-127.0.0.1}"
-IMMUDB_PID=""
-
-_shutdown() {
-    log "Shutting down..."
-    [ -n "${IMMUDB_PID}" ] && kill "${IMMUDB_PID}" 2>/dev/null || true
-}
-trap _shutdown TERM INT
-
-if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
-    # External mode: immudb runs in its own container against the immudb-data
-    # volume (ownership fixed there by the immudb-perms one-shot in
-    # docker-compose.yml). /opt/jmdn/data is mounted read-only here — do NOT
-    # chown it from this container.
-    log "External ImmuDB mode — waiting for ${IMMUDB_HOST}:${IMMUDB_PORT}..."
-else
-    # Embedded mode: this entrypoint runs as root and starts immudb as
-    # ${JMDN_USER} (3322). Ensure immudb's data dir is BOTH owned by that UID/GID
-    # and writable by the owner FIRST — immudb crash-loops with "permission
-    # denied" on its tx log if either is wrong:
-    #   - files owned by another UID (a snapshot restored out-of-band as root, or
-    #     a re-provision after the bootstrap sentinel was set so bootstrap_sync.sh
-    #     skipped its own chown); or
-    #   - files read-only for the owner (a snapshot tarball unpacked at mode
-    #     0555). immudb opens its tx log O_RDWR, so a missing owner write bit
-    #     fails EACCES even when ownership is already correct.
-    # Idempotent; guarded so a missing dir (immudb creates it) or a chown/chmod
-    # error never aborts startup.
-    if [ -d "${IMMUDB_DIR}" ]; then
-        log "Ensuring ${IMMUDB_DIR} ownership ${JMDN_USER}:${JMDN_USER} + owner write..."
-        chown -R "${JMDN_USER}:${JMDN_USER}" "${IMMUDB_DIR}" || \
-            log "WARN: chown ${IMMUDB_DIR} failed — immudb may fail to open if ownership is wrong"
-        find "${IMMUDB_DIR}" -type d -exec chmod u+rwx {} + 2>/dev/null || \
-            log "WARN: chmod dirs in ${IMMUDB_DIR} failed — immudb may fail to open if modes are read-only"
-        find "${IMMUDB_DIR}" -type f -exec chmod u+rw  {} + 2>/dev/null || \
-            log "WARN: chmod files in ${IMMUDB_DIR} failed — immudb may fail to open if modes are read-only"
-    fi
-    log "Starting embedded ImmuDB as ${JMDN_USER} (dir: ${IMMUDB_DIR})..."
-    gosu "${JMDN_USER}" immudb --dir "${IMMUDB_DIR}" &
-    IMMUDB_PID=$!
-fi
-
-log "Waiting for ImmuDB on ${IMMUDB_HOST}:${IMMUDB_PORT}..."
-elapsed=0
-until nc -z "${IMMUDB_HOST}" "${IMMUDB_PORT}" 2>/dev/null; do
-    if [ "${elapsed}" -ge "${IMMUDB_READY_TIMEOUT}" ]; then
-        log "ERROR: ImmuDB did not become ready within ${IMMUDB_READY_TIMEOUT}s"
-        log "  ImmuDB loads all databases before binding port ${IMMUDB_PORT}."
-        log "  Large snapshots can take 2-5 min. Increase timeout:"
-        log "    docker run -e IMMUDB_READY_TIMEOUT=300 ..."
-        [ -n "${IMMUDB_PID}" ] && kill "${IMMUDB_PID}" 2>/dev/null || true
-        exit 1
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-done
-log "ImmuDB ready (${elapsed}s)"
-
-# ── Step 4: Start JMDN as jmdn ───────────────────────────
+# ── Step 3: Start JMDN as jmdn ───────────────────────────
 # exec replaces this shell — SIGTERM/SIGINT forwarded to jmdn process.
 # gosu re-execs so jmdn is PID 1's direct child, not a shell child.
 log "Starting JMDN as ${JMDN_USER}..."

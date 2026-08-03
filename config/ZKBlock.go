@@ -60,7 +60,8 @@ type ZKBlock struct {
 	GasUsed       uint64         `json:"gasused"`
 	BlockNumber   uint64         `json:"blocknumber"`
 
-	// L1 finality — set after commitRollup is mined on Ethereum
+	// L1 finality — set after commitRollup is mined on Ethereum.
+	// Hydrated at read time from the append-only l1_finality table.
 	L1TxHash      string `json:"l1_tx_hash,omitempty"`
 	L1BlockNumber uint64 `json:"l1_block_number,omitempty"`
 

@@ -2,13 +2,12 @@ package Utils
 
 import (
 	"fmt"
-	"math/big"
-	"strings"
-
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
+	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -203,6 +202,7 @@ func ConvertLogsToMap(logs []config.Log) []map[string]any {
 	}
 	return logMaps
 }
+
 
 // Conversion
 func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {

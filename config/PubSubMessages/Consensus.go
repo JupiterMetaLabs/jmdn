@@ -18,6 +18,7 @@ type ConsensusMessage struct {
 	StartTime    time.Time
 	InteriumTime time.Time
 	TotalNodes   int
+	SequencerID  string
 }
 
 type Buddy_PeerMultiaddr struct {

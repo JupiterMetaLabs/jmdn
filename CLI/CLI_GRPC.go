@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
@@ -13,7 +15,6 @@ import (
 	"gossipnode/node"
 	"gossipnode/seed"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -42,8 +43,8 @@ type HandleShowStats struct {
 
 type SyncStats struct {
 	TimeTaken     time.Duration
-	MainState     *schema.ImmutableState
-	AccountsState *schema.ImmutableState
+	MainState     *DB_OPs.DatabaseState
+	AccountsState *DB_OPs.DatabaseState
 	Error         string
 }
 
@@ -198,14 +199,14 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	}
 }
 
-func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.ImmutableState, error) {
+func (h *CommandHandler) CheckDBStats() (*DB_OPs.DatabaseState, *DB_OPs.DatabaseState, error) {
 	// Get both database states before sync
-	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get main database state: %v", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get accounts database state: %v", err)
 	}
@@ -222,39 +223,7 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 }
 
 func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: fastsyncv2 <peer_multiaddr>")
-	}
-	if !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-
-	// Make sure engine exists
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
-	}
-
-	startTime := time.Now().UTC()
-	err := h.FastSyncerV2.HandleSync(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 failed: %w", err)
-	}
-
-	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
-	// for the sync itself, so guard against nil before querying.
-	var newMainState, newAccountsState *schema.ImmutableState
-	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
-	}
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
+	return SyncStats{}, fmt.Errorf("fastsync removed: use ThebeDB sync instead")
 }
 
 func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string, fromBlock uint64) (SyncStats, error) {
@@ -274,12 +243,12 @@ func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string,
 		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
 	}
 
-	var newMainState, newAccountsState *schema.ImmutableState
+	var newMainState, newAccountsState *DB_OPs.DatabaseState
 	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient)
 	}
 	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
 	}
 
 	return SyncStats{
@@ -301,14 +270,14 @@ func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
 	}
 
 	startTime := time.Now().UTC()
-	_, err := h.FastSyncerV2.AccountSyncOnly(peeraddr)
+	err := h.FastSyncerV2.HandleSync(peeraddr)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("AccountSync failed: %w", err)
 	}
 
-	var newAccountsState *schema.ImmutableState
+	var newAccountsState *DB_OPs.DatabaseState
 	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
 	}
 
 	return SyncStats{
@@ -354,25 +323,23 @@ func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool,
 	return txindex.Status(ctx)
 }
 
-func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
-	if did == "" {
-		return nil, fmt.Errorf("usage: getDID <did>")
+func (h *CommandHandler) HandleGetDID(input string) (*DB_OPs.Account, error) {
+	if input == "" {
+		return nil, fmt.Errorf("usage: getDID <did|address>")
 	}
 
-	// If the input looks like an Ethereum address, look up by address key ("address:<addr>").
-	// Otherwise fall back to DID key ("did:<did>") for full DID strings.
-	if common.IsHexAddress(did) {
-		doc, err := DB_OPs.GetAccount(h.DIDClient, common.HexToAddress(did))
+	if strings.HasPrefix(input, DB_OPs.DIDPrefix) {
+		doc, err := DB_OPs.GetAccountByDID(h.MainClient, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+			return nil, fmt.Errorf("failed to retrieve DID %s: %v", input, err)
 		}
 		return doc, nil
 	}
 
-	doc, err := DB_OPs.GetAccountByDID(h.DIDClient, did)
+	// Treat as Ethereum address
+	doc, err := DB_OPs.GetAccount(h.MainClient, common.HexToAddress(input))
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+		return nil, fmt.Errorf("failed to retrieve address %s: %v", input, err)
 	}
-
 	return doc, nil
 }

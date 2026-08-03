@@ -1,53 +1,47 @@
 // MODULE: DB_OPs/tx_markers
-// PURPOSE: Value-aware processed-marker layer + the per-tx atomic apply used by
-//          the live executor.
+// PURPOSE: Value-aware processed-marker layer + the per-tx apply used by
+//          the live executor. ThebeDB retarget of the F4 module.
 //
-// MARKER SEMANTICS (value-aware, NOT existence-based):
+// MARKER SEMANTICS (value-aware, NOT existence-based — unchanged from F4):
 //   value > 0  → applied (Unix timestamp of application)
 //   value = -1 → REVOKED: the tx's balance effects were rolled back after the
-//                marker committed. Needed because per-tx atomic commits make
-//                the prefix's markers durable before a later tx can fail the
-//                block; rollback restores balances but immudb cannot delete
-//                inside a transaction — so rollback overwrites the prefix
-//                markers with -1 and every consumer treats -1 as not-processed.
-//   unparseable → applied (legacy markers hold timestamps; treating a corrupt
-//                value as applied silently skips its effects only if those
-//                effects are also absent — the lower-risk direction).
+//                marker committed. Rollback overwrites the prefix markers with
+//                -1 and every consumer treats -1 as not-processed.
+//   unparseable → applied (the lower-risk skip direction; see markerValueApplied).
 //
-// DB PRECEDENCE (dual-read): accountsdb is authoritative when the key exists
-// there (the live path writes markers + revocations to accountsdb, atomically
-// with the balances they describe); defaultdb is consulted only for keys
-// absent from accountsdb (legacy populations: current-era defaultdb markers +
-// older history). Precedence is load-bearing: a -1 revocation in accountsdb
-// must never be overridden by a stale legacy marker for the same tx.
+// STORAGE (ThebeDB): markers live in the BadgerDB sync-state KV — the same
+// store as the canonical log, so a volume restore rolls markers back together
+// with the log that produced the balances (the projection is rebuilt from the
+// log). Mode (a) fresh-bootstrap migration: the legacy dual-population
+// (defaultdb + accountsdb) dual-read is retired — there is exactly ONE marker
+// population.
 //
-// WHY MARKERS LIVE IN accountsdb: immudb ExecAll executes on the
-// session's selected database (ExecAllRequest carries no DB field) — the ONLY
-// way a marker can commit atomically with the account balances it describes is
-// to live in the same database.
+// ORDERING (fail-direction guarantee, preserved from F4): account writes
+// commit BEFORE their marker (ApplyTxAtomic writes docs first, marker last;
+// the drain writes markers strictly after all account chunks). A crash between
+// the two fails toward bounded re-apply — NEVER toward silent skip.
+// TODO(STEP 3): move markers + accounts into one projector SQL transaction to
+// upgrade the ordering guarantee to true atomicity.
 
 package DB_OPs
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
 
 	"gossipnode/config"
-
-	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
 // MarkerRevoked is the value-aware "rolled back" sentinel. Matches the
 // convention already used for tx_processing cleanup (Processing.go).
 const MarkerRevoked = int64(-1)
 
-// maxExecAllEntries mirrors immudb embedded/store DefaultMaxTxEntries (1024).
-// Any ExecAll larger than this fails the commit outright (the previous
-// block-end marker commit wrote 2×txs+1 entries and halted on blocks >511 txs).
-const maxExecAllEntries = 1024
+// maxMarkerBatch chunks marker writes. ThebeDB's BadgerDB store has no
+// ExecAll-style 1024-entry commit cap (the C2 chain-halt class) — writes are
+// per-key — but chunking keeps failure windows small and bounded.
+const maxMarkerBatch = 500
 
 // TxProcessedKey / BlockProcessedKey build the marker keys. Formats are frozen —
 // they must match the legacy populations already on disk.
@@ -71,102 +65,96 @@ func markerValueApplied(raw []byte) bool {
 	return v != MarkerRevoked
 }
 
-// IsMarkerApplied dual-reads one marker key: accountsdb (authoritative,
-// value-aware) first, defaultdb (legacy) only when accountsdb has no key.
-// accountsConn may be the caller's accounts connection (it is used as-is);
-// the defaultdb read acquires its own pooled connection.
-// Fail direction: (false, err) — callers decide; the live guard sites keep
-// their existing behavior: err → process, and log.
-func IsMarkerApplied(accountsConn *config.PooledConnection, key string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// markerKV is the frozen marker wire form: key bytes + decimal-string value
+// bytes (identical to toBytes(int64) / the legacy markers on disk). It
+// replaces the retired immudb schema.Op with the same GetKv() surface so the
+// encoding test pins the exact same bytes.
+type markerKV struct {
+	Key   []byte
+	Value []byte
+}
 
-	// accountsdb — authoritative.
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+// GetKv preserves the schema.Op accessor shape used by TestMarkerOpEncoding.
+func (m *markerKV) GetKv() *markerKV { return m }
+
+// markerOp builds a KV op holding an int64 in the frozen marker encoding
+// (JSON int64 = decimal string bytes — matches toBytes and the legacy
+// populations on disk).
+func markerOp(key string, value int64) *markerKV {
+	return &markerKV{
+		Key:   []byte(key),
+		Value: []byte(strconv.FormatInt(value, 10)),
+	}
+}
+
+// IsMarkerApplied reads one marker key from the ThebeDB sync-state KV
+// (single authoritative population — the legacy defaultdb dual-read retired
+// with mode (a) bootstrap).
+// Fail direction: (false, err) — callers decide; the live guard sites keep
+// their historical fail-open shape (err → process) and log.
+func IsMarkerApplied(_ *config.PooledConnection, key string) (bool, error) {
+	h, err := getHandle(nil)
 	if err != nil {
 		return false, fmt.Errorf("marker %s: %w", key, err)
 	}
-	entry, aerr := conn.Client.Client.Get(ctx, []byte(key))
-	release()
-	if aerr == nil && entry != nil {
-		return markerValueApplied(entry.Value), nil
-	}
-	if aerr != nil && !isNotFoundError(aerr) {
-		return false, fmt.Errorf("marker %s (accountsdb): %w", key, aerr)
-	}
-
-	// defaultdb — legacy population.
-	mainConn, err := GetMainDBConnection(ctx)
+	raw, err := h.GetSyncKV(key)
 	if err != nil {
-		return false, fmt.Errorf("marker %s: main connection: %w", key, err)
+		return false, fmt.Errorf("marker %s: %w", key, err)
 	}
-	defer PutMainDBConnection(mainConn)
-	if err := ensureMainDBSelected(mainConn); err != nil {
-		return false, fmt.Errorf("marker %s: select defaultdb: %w", key, err)
+	if raw == nil {
+		return false, nil
 	}
-	entry, merr := mainConn.Client.Client.Get(ctx, []byte(key))
-	if merr != nil {
-		if isNotFoundError(merr) {
-			return false, nil
-		}
-		return false, fmt.Errorf("marker %s (defaultdb): %w", key, merr)
-	}
-	return markerValueApplied(entry.Value), nil
+	return markerValueApplied(raw), nil
 }
 
-// ApplyTxAtomic commits one transaction's complete effect in ONE accountsdb
-// ExecAll: every touched account document + the tx_processed marker.
-// All-or-nothing: a crash leaves either no trace of the tx or a fully-applied,
-// fully-marked tx — the partially-applied state the previous code could produce
-// (≤6 independent commits per tx) is no longer expressible.
-//
-// The transient tx_processing: advisory lock is deliberately NOT included — it
-// lives (and is read) in defaultdb and is not correctness-bearing for replay;
-// pulling its cleanup into this accountsdb ExecAll would create a new
-// split-brain marker population across the two databases.
-//
-// Entry count is len(docs)+1 — far under the 1024 ExecAll cap by
-// construction.
-func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
+// ApplyTxAtomic commits one transaction's complete effect: every touched
+// account document, then the tx_processed marker LAST. On ThebeDB the account
+// writes route through mergeAccountForWrite/storeAccount (canonical log) and
+// the marker through the sync-state KV; the marker-last ordering guarantees a
+// crash mid-apply is re-applied on replay — never silently skipped.
+// TODO(STEP 3): single projector SQL transaction for docs + marker.
+func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
 	if len(docs) == 0 {
 		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
 	}
-	if len(docs)+1 > maxExecAllEntries {
-		return fmt.Errorf("ApplyTxAtomic %s: %d entries exceeds ExecAll cap %d", txHash, len(docs)+1, maxExecAllEntries)
-	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
-	if err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
-	}
-	defer release()
-
-	ops := make([]*schema.Op, 0, len(docs)+1)
+	// Accounts first — through the single merge decision point.
+	entries := make([]struct {
+		Key   string
+		Value []byte
+	}, 0, len(docs))
 	for _, doc := range docs {
 		val, err := json.Marshal(doc)
 		if err != nil {
 			return fmt.Errorf("ApplyTxAtomic %s: marshal account %s: %w", txHash, doc.Address.Hex(), err)
 		}
-		key := fmt.Sprintf("%s%s", Prefix, doc.Address)
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(key), Value: val}}})
+		entries = append(entries, struct {
+			Key   string
+			Value []byte
+		}{Key: Prefix + doc.Address.Hex(), Value: val})
 	}
-	ops = append(ops, markerOp(TxProcessedKey(txHash), appliedAt))
+	if err := BatchRestoreAccounts(nil, nil, entries); err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: accounts: %w", txHash, err)
+	}
 
-	if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: ExecAll (%d ops): %w", txHash, len(ops), err)
+	// Marker LAST — the "done" claim only lands after the effects it describes.
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+	}
+	op := markerOp(TxProcessedKey(txHash), appliedAt)
+	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: marker: %w", txHash, err)
 	}
 	return nil
 }
 
-// WriteTxProcessedMarkers writes applied markers for a set of txs to
-// accountsdb, chunked under the ExecAll cap. Used by the drain worker for
-// RECON-applied txs: reconciliation's balance effects commit through
-// BatchRestoreAccounts, and these markers make those txs visible to the live
-// guards and to future delta exclusion — without them, a recon re-run after a
-// failed anchor advance re-applies the same deltas.
+// WriteTxProcessedMarkers writes applied markers for a set of txs.
+// Used by the drain worker for RECON-applied txs: reconciliation's balance
+// effects commit through BatchRestoreAccounts, and these markers make those
+// txs visible to the live guards and to future delta exclusion — without
+// them, a recon re-run after a failed anchor advance re-applies the same
+// deltas.
 //
 // ORDERING (enforced by the caller): markers commit strictly AFTER all
 // account chunks of the drain batch. Markers-first + a later account-chunk
@@ -174,106 +162,93 @@ func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHas
 // markers-last fails toward bounded double-apply on retry instead.
 //
 // Idempotent: re-writing the same marker value is a no-op semantically.
-func WriteTxProcessedMarkers(accountsConn *config.PooledConnection, markers map[string]int64) error {
+func WriteTxProcessedMarkers(_ *config.PooledConnection, markers map[string]int64) error {
 	if len(markers) == 0 {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("write tx markers: %w", err)
 	}
-	defer release()
-
-	const chunk = 500 // < maxExecAllEntries
-	ops := make([]*schema.Op, 0, chunk)
-	flush := func() error {
-		if len(ops) == 0 {
-			return nil
+	n := 0
+	for hash, appliedAt := range markers {
+		op := markerOp(TxProcessedKey(hash), appliedAt)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("write tx markers (%d/%d written): %w", n, len(markers), err)
 		}
-		if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-			return fmt.Errorf("write tx markers (%d ops): %w", len(ops), err)
-		}
-		ops = ops[:0]
-		return nil
+		n++
 	}
-	for h, appliedAt := range markers {
-		ops = append(ops, markerOp(TxProcessedKey(h), appliedAt))
-		if len(ops) >= chunk {
-			if err := flush(); err != nil {
-				return err
-			}
-		}
-	}
-	return flush()
+	return nil
 }
 
-// RevokeTxProcessedMarkers overwrites the given txs' markers with -1 in
-// accountsdb (rollback path). Chunked under the ExecAll cap. Runs
-// BEFORE balance restoration: a crash between revocation and restore leaves
-// revoked markers over still-applied balances → replay re-applies → bounded
-// double-apply, the repairable direction. The reverse order would leave
-// applied markers over restored balances → effects silently skipped forever.
-func RevokeTxProcessedMarkers(accountsConn *config.PooledConnection, txHashes []string) error {
+// RevokeTxProcessedMarkers overwrites the given txs' markers with -1
+// (rollback path). Runs BEFORE balance restoration: a crash between
+// revocation and restore leaves revoked markers over still-applied balances →
+// replay re-applies → bounded double-apply, the repairable direction. The
+// reverse order would leave applied markers over restored balances → effects
+// silently skipped forever.
+func RevokeTxProcessedMarkers(_ *config.PooledConnection, txHashes []string) error {
 	if len(txHashes) == 0 {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("revoke markers: %w", err)
 	}
-	defer release()
-
-	const chunk = 500 // < maxExecAllEntries
-	for i := 0; i < len(txHashes); i += chunk {
-		end := i + chunk
-		if end > len(txHashes) {
-			end = len(txHashes)
-		}
-		ops := make([]*schema.Op, 0, end-i)
-		for _, h := range txHashes[i:end] {
-			ops = append(ops, markerOp(TxProcessedKey(h), MarkerRevoked))
-		}
-		if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-			return fmt.Errorf("revoke markers [%d:%d]: %w", i, end, err)
+	for i, hash := range txHashes {
+		op := markerOp(TxProcessedKey(hash), MarkerRevoked)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("revoke markers (%d/%d revoked): %w", i, len(txHashes), err)
 		}
 	}
 	return nil
 }
 
-// WriteBlockProcessedMarker writes the block-level marker to accountsdb.
+// WriteBlockProcessedMarker writes the block-level marker.
 // This is only a fast-path hint — the per-tx markers carry the actual
 // exactly-once guarantee — but it short-circuits whole-block replays cheaply.
-func WriteBlockProcessedMarker(accountsConn *config.PooledConnection, blockHash string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+func WriteBlockProcessedMarker(_ *config.PooledConnection, blockHash string) error {
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("block marker %s: %w", blockHash, err)
 	}
-	defer release()
-
-	ops := []*schema.Op{markerOp(BlockProcessedKey(blockHash), time.Now().UTC().Unix())}
-	if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-		return fmt.Errorf("block marker %s: ExecAll: %w", blockHash, err)
+	op := markerOp(BlockProcessedKey(blockHash), time.Now().UTC().Unix())
+	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+		return fmt.Errorf("block marker %s: %w", blockHash, err)
 	}
 	return nil
 }
 
-// markerOp builds a KV op holding an int64 in the frozen marker encoding
-// (JSON int64 = decimal string bytes — matches toBytes and the legacy
-// populations on disk).
-func markerOp(key string, value int64) *schema.Op {
-	return &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{
-		Key:   []byte(key),
-		Value: []byte(strconv.FormatInt(value, 10)),
-	}}}
+// FilterProcessedTxMarkers returns which of txHashes carry an APPLIED
+// tx_processed marker (value-aware: -1 revoked = not processed). Used by
+// reconciliation's delta exclusion (I2: never re-apply live-applied txs).
+//
+// FAIL-CLOSED: any storage error returns (nil, err) — the caller must abort
+// delta computation rather than proceed with a partial view, because a
+// partial "not processed" answer re-applies live-applied txs (double-count).
+//
+// ThebeDB: exactly ONE marker population (sync-state KV) — the legacy
+// defaultdb dual-read died with mode (a) fresh bootstrap.
+func FilterProcessedTxMarkers(txHashes []string) (map[string]bool, error) {
+	processed := make(map[string]bool, len(txHashes))
+	if len(txHashes) == 0 {
+		return processed, nil
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("marker filter: %w", err)
+	}
+	for _, hash := range txHashes {
+		raw, err := h.GetSyncKV(TxProcessedKey(hash))
+		if err != nil {
+			return nil, fmt.Errorf("marker filter %s: %w", hash, err) // fail-closed
+		}
+		if raw == nil {
+			continue
+		}
+		if markerValueApplied(raw) {
+			processed[hash] = true
+		}
+	}
+	return processed, nil
 }

@@ -1,6 +1,10 @@
 package logging
 
-import "github.com/JupiterMetaLabs/ion"
+import (
+	"sync"
+
+	"github.com/JupiterMetaLabs/ion"
+)
 
 type LoggingInterface interface {
 	SetGlobal() error
@@ -15,6 +19,7 @@ type LoggingInterface interface {
 type AsyncLogger struct {
 	GlobalLogger *ion.Ion
 	Logging      map[string]Logging
+	mu           sync.RWMutex
 }
 
 type Logging struct {
