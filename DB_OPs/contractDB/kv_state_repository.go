@@ -142,6 +142,9 @@ func (r *KVStateRepository) GetContractMetadata(_ context.Context, addr common.A
 
 // GetReceipt reads from SQL via cassata — receipts are indexed there for block queries.
 func (r *KVStateRepository) GetReceipt(ctx context.Context, txHash common.Hash) ([]byte, error) {
+	if r.cas == nil {
+		return nil, nil // repository constructed without cassata — receipts unavailable
+	}
 	res, err := r.cas.GetContractReceipt(ctx, txHash.Hex())
 	if err != nil {
 		if isNotFound(err) {

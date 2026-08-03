@@ -20,11 +20,11 @@ func TestJMDNProfile_Namespaces(t *testing.T) {
 	p := thebeprofile.NewJMDNProfile()
 	ns := p.Namespaces()
 
-	if len(ns) != 7 {
-		t.Errorf("Namespaces count: want 7, got %d: %v", len(ns), ns)
+	if len(ns) != 8 {
+		t.Errorf("Namespaces count: want 8, got %d: %v", len(ns), ns)
 	}
 
-	required := []string{"account", "block", "snapshot", "tx", "zk", "l1_finality", "contract_receipt"}
+	required := []string{"account", "block", "snapshot", "tx", "zk", "l1_finality", "contract_receipt", "contract_registry"}
 	nsSet := make(map[string]bool, len(ns))
 	for _, n := range ns {
 		nsSet[n] = true

@@ -63,7 +63,7 @@ func (m *mockDIDClient) setBalance(addr common.Address, balance *big.Int) {
 // newTestDB returns a ContractDB backed by MemKVStore — no disk, no network.
 func newTestDB(t *testing.T, did *mockDIDClient) *ContractDB {
 	t.Helper()
-	repo := NewKVStateRepository(NewMemKVStore())
+	repo := NewKVStateRepository(NewMemKVStore(), nil)
 	return NewContractDB(did, repo)
 }
 
@@ -178,7 +178,7 @@ func TestCommitAndReload(t *testing.T) {
 	did := newMockDIDClient()
 
 	// Instance 1 — write
-	db1 := NewContractDB(did, NewKVStateRepository(kvStore))
+	db1 := NewContractDB(did, NewKVStateRepository(kvStore, nil))
 	addr := common.HexToAddress("0x7777777777777777777777777777777777777777")
 	key := common.HexToHash("0x01")
 	val := common.HexToHash("0xabcdef0000000000000000000000000000000000000000000000000000000000")
@@ -193,7 +193,7 @@ func TestCommitAndReload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Instance 2 — reload via new ContractDB sharing the same MemStore.
-	db2 := NewContractDB(did, NewKVStateRepository(kvStore))
+	db2 := NewContractDB(did, NewKVStateRepository(kvStore, nil))
 
 	assert.Equal(t, code, db2.GetCode(addr), "code should survive CommitToDB")
 	assert.Equal(t, val, db2.GetState(addr, key), "storage should survive CommitToDB")

@@ -90,13 +90,13 @@ func (m *spyCache) Get(_ context.Context, key string) ([]byte, error) {
 	return v, nil
 }
 
-func (m *spyCache) Delete(_ context.Context, _ ...string) error               { return nil }
-func (m *spyCache) Exists(_ context.Context, _ string) (bool, error)          { return false, nil }
+func (m *spyCache) Delete(_ context.Context, _ ...string) error      { return nil }
+func (m *spyCache) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
 func (m *spyCache) Keys(_ context.Context, _ string, _ int64) ([]string, error) {
 	return nil, nil
 }
 func (m *spyCache) TTL(_ context.Context, _ string) (time.Duration, error) { return 0, nil }
-func (m *spyCache) Close() error                                             { return nil }
+func (m *spyCache) Close() error                                           { return nil }
 
 func (m *spyCache) setCallCount() int {
 	m.mu.Lock()
@@ -274,6 +274,16 @@ func (m *spyGateway) SetTxProcessing(_ context.Context, txHash string) error {
 }
 func (m *spyGateway) ClearTxProcessing(_ context.Context, txHash string) error {
 	return m.rec("ClearTxProcessing", txHash)
+}
+
+// Sync-state KV methods (markers / latest_block) — inert for worker tests;
+// they exist to satisfy the merged thebegateway.ThebeGateway interface.
+func (m *spyGateway) PutSyncKV(key string, value []byte) error {
+	return m.rec("PutSyncKV", key)
+}
+
+func (m *spyGateway) GetSyncKV(key string) ([]byte, error) {
+	return nil, nil // absent — matches the interface contract
 }
 
 func (m *spyGateway) callCount() int {

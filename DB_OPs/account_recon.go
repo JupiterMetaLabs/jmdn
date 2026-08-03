@@ -38,7 +38,6 @@ import (
 
 	"gossipnode/config"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -243,11 +242,6 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	conn, release, err := withAccountsConn(ctx, accountsConn)
-	if err != nil {
-		return false, fmt.Errorf("recon block %d: accounts connection: %w", blockNumber, err)
-	}
-	defer release()
 
 	pendingSet := make(map[string]bool, len(pendingTx))
 	for _, h := range pendingTx {
@@ -271,16 +265,16 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 		}
 		deltas := ComputeBlockDeltas(blk, skip)
 
-		if err := commitReconGroup(ctx, conn, blockNumber, deltas, groupTxs, updatedAt, appliedAt); err != nil {
+		if err := commitReconGroup(ctx, accountsConn, blockNumber, deltas, groupTxs, updatedAt, appliedAt); err != nil {
 			return false, err
 		}
 	}
 	return true, nil
 }
 
-// reconGroupOpBudget bounds one group's ExecAll: distinct account documents +
-// tx markers, with headroom under the ExecAll entry cap. Nearly every block
-// forms a single group; only blocks touching hundreds of accounts split.
+// reconGroupOpBudget bounds one group's commit batch: distinct account
+// documents + tx markers. Nearly every block forms a single group; only
+// blocks touching hundreds of accounts split.
 const reconGroupOpBudget = 1000
 
 // partitionReconGroups splits a block's PENDING txs (block order preserved)
@@ -326,48 +320,58 @@ func partitionReconGroups(blk *config.ZKBlock, pendingSet map[string]bool, budge
 	return groups
 }
 
-// commitReconGroup writes one tx group's account documents and its tx markers
-// in a single ExecAll: the group's effects and the markers asserting them are
-// inseparable.
+// commitReconGroup writes one tx group's account documents, then its tx
+// markers LAST — the same crash-consistency contract as the live path
+// (ApplyTxAtomic): the "done" claim only lands after the effects it
+// describes.
+//
+// ATOMICITY NOTE (vs the ImmuDB original): the original committed documents
+// and markers in one ExecAll. The ThebeDB path has no mixed account+sync-KV
+// batch primitive, so a crash between the account writes and the marker
+// writes re-applies the group on replay — a BOUNDED double-apply through the
+// mergeAccountForWrite LWW decision point, which is the failure direction
+// this codebase explicitly prefers over a silent skip (see the marker-revoke
+// commentary in messaging/BlockProcessing). If stricter atomicity is needed,
+// route the group through ThebeDB's builder 2PC (tracked in
+// docs/RECONCILE-thebe-sc.md).
 func commitReconGroup(ctx context.Context, conn *config.PooledConnection, blockNumber uint64,
 	deltas map[string]*BlockAccountDelta, groupTxs []string, updatedAtNanos, appliedAt int64) error {
 
-	// Deterministic account order (stable ops layout across retries).
+	h, err := getHandle(conn)
+	if err != nil {
+		return fmt.Errorf("recon block %d: handle: %w", blockNumber, err)
+	}
+
+	// Deterministic account order (stable commit layout across retries).
 	addrs := make([]string, 0, len(deltas))
 	for a := range deltas {
 		addrs = append(addrs, a)
 	}
 	sort.Strings(addrs)
 
-	// Prefetch stored bases in one GetAll. Key format must match
-	// GetAccount/ApplyTxAtomic exactly: fmt.Sprintf("%s%s", Prefix, address)
-	// with the checksummed stringer.
+	// Prefetch stored bases. Key format must match GetAccount/ApplyTxAtomic
+	// exactly: fmt.Sprintf("%s%s", Prefix, address) with the checksummed
+	// stringer. Absent accounts are nil bases (applyDeltaToAccount creates
+	// them); a real read error must fail closed — treating accounts as absent
+	// would zero their bases.
 	existing := make(map[string]*Account, len(addrs))
-	if len(addrs) > 0 {
-		prefetch := make([][]byte, 0, len(addrs))
-		for _, a := range addrs {
-			prefetch = append(prefetch, []byte(fmt.Sprintf("%s%s", Prefix, common.HexToAddress(a))))
-		}
-		entries, gerr := conn.Client.Client.GetAll(ctx, prefetch)
+	for _, a := range addrs {
+		addr := common.HexToAddress(a)
+		key := fmt.Sprintf("%s%s", Prefix, addr)
+		sa, gerr := h.GetAccount(ctx, addr.Hex())
 		if gerr != nil {
-			// immudb GetAll tolerates missing keys; a real error must fail
-			// closed — treating accounts as absent would zero their bases.
-			return fmt.Errorf("recon block %d: prefetch: %w", blockNumber, gerr)
+			return fmt.Errorf("recon block %d: prefetch %s: %w", blockNumber, addr.Hex(), gerr)
 		}
-		if entries != nil {
-			for _, e := range entries.Entries {
-				if e == nil || e.Value == nil {
-					continue
-				}
-				var acc Account
-				if json.Unmarshal(e.Value, &acc) == nil {
-					existing[string(e.Key)] = &acc
-				}
-			}
+		if sa != nil {
+			existing[key] = storeAccountFromStore(sa)
 		}
 	}
 
-	ops := make([]*schema.Op, 0, len(addrs)+len(groupTxs))
+	// Materialize the absolute post-group documents.
+	entries := make([]struct {
+		Key   string
+		Value []byte
+	}, 0, len(addrs))
 	for _, a := range addrs {
 		addr := common.HexToAddress(a)
 		key := fmt.Sprintf("%s%s", Prefix, addr)
@@ -386,19 +390,25 @@ func commitReconGroup(ctx context.Context, conn *config.PooledConnection, blockN
 		if merr != nil {
 			return fmt.Errorf("recon block %d: marshal %s: %w", blockNumber, addr.Hex(), merr)
 		}
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(key), Value: val}}})
+		entries = append(entries, struct {
+			Key   string
+			Value []byte
+		}{Key: key, Value: val})
 	}
-	for _, h := range groupTxs {
-		ops = append(ops, markerOp(TxProcessedKey(h), appliedAt))
+
+	// Accounts first — through the single merge decision point.
+	if len(entries) > 0 {
+		if err := BatchRestoreAccounts(ctx, nil, entries); err != nil {
+			return fmt.Errorf("recon block %d: accounts (%d docs): %w", blockNumber, len(entries), err)
+		}
 	}
-	if len(ops) == 0 {
-		return nil
-	}
-	if len(ops) > maxExecAllEntries {
-		return fmt.Errorf("recon block %d: group has %d ops > ExecAll cap %d", blockNumber, len(ops), maxExecAllEntries)
-	}
-	if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-		return fmt.Errorf("recon block %d: ExecAll (%d ops): %w", blockNumber, len(ops), err)
+
+	// Markers LAST.
+	for _, txh := range groupTxs {
+		op := markerOp(TxProcessedKey(txh), appliedAt)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("recon block %d: marker %s: %w", blockNumber, txh, err)
+		}
 	}
 	return nil
 }
