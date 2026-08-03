@@ -70,9 +70,9 @@ where their original ImmuDB implementations were deleted.
    Phase 7 (drop immudb dep + dualdb/ + thebe_shadow.go; `go mod tidy`).
 2. Committed junk to delete: `migrate_immudb_to_thebe` binary (references ThebeDB pkg/events,
    which no longer exists), stale `gETH/.../ImmuDB.log`, grafana immudb dashboard.
-3. cc000e4 fastsync fleet-wide disable is on this branch (defaults.go "DISABLED pending the
-   ThebeDB FastSync redesign") — decide before rollout; main's session machinery
-   (sync_session.go, DeferLatestBlockAdvance) is merged and functional.
+3. cc000e4 fastsync fleet-wide disable: **DECIDED 2026-08-04 — stays disabled** until the
+   Thebe-backed path passes end-to-end validation (docs/PHASE-B-CHECKLIST.md B4); main's
+   session machinery (sync_session.go, DeferLatestBlockAdvance) is merged and unit-tested.
 4. ADR-001 flow diagram still shows broadcast-then-apply; re-anchor to apply-before-broadcast
    (semantics compatible: deployments known before broadcast).
 5. Redis live AOF migration port into setup_dependencies `--storage-local` (see above).
