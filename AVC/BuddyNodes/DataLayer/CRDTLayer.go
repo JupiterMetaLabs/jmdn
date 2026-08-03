@@ -143,7 +143,6 @@ func applyMergedCRDT(engine *crdt.Engine, key string, crdt crdt.CRDT) {
 	engine.ApplyMergedCRDT(key, crdt)
 }
 
-
 // logger returns the ion logger instance for CRDT layer
 func logger(namedLogger string) *ion.Ion {
 	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")

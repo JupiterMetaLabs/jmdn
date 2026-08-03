@@ -7,11 +7,11 @@ import (
 	"gossipnode/SmartContract/internal/evm"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
@@ -65,8 +65,8 @@ func (m *MockStateDB) GetNonce(addr common.Address) uint64 {
 func (m *MockStateDB) SetNonce(addr common.Address, nonce uint64, reason tracing.NonceChangeReason) {
 	m.nonces[addr] = nonce
 }
-func (m *MockStateDB) GetCodeHash(addr common.Address) common.Hash     { return common.Hash{} }
-func (m *MockStateDB) GetCode(addr common.Address) []byte              { return m.code[addr] }
+func (m *MockStateDB) GetCodeHash(addr common.Address) common.Hash { return common.Hash{} }
+func (m *MockStateDB) GetCode(addr common.Address) []byte          { return m.code[addr] }
 func (m *MockStateDB) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
 	m.code[addr] = code
 	return code
@@ -137,14 +137,14 @@ func (m *MockStateDB) GetTransientState(addr common.Address, key common.Hash) co
 }
 func (m *MockStateDB) SetTransientState(addr common.Address, key, value common.Hash) {}
 
-func (m *MockStateDB) SelfDestruct(addr common.Address)                              {}
-func (m *MockStateDB) HasSelfDestructed(addr common.Address) bool                    { return false }
-func (m *MockStateDB) Selfdestruct6780(addr common.Address)                          {}
-func (m *MockStateDB) CreateContract(addr common.Address)                            {}
-func (m *MockStateDB) GetStorageRoot(addr common.Address) common.Hash                { return common.Hash{} }
-func (m *MockStateDB) GetSelfDestruction(addr common.Address) bool                   { return false }
-func (m *MockStateDB) Witness() *stateless.Witness                                   { return nil }
-func (m *MockStateDB) AccessEvents() *state.AccessEvents                             { return nil }
+func (m *MockStateDB) SelfDestruct(addr common.Address)               {}
+func (m *MockStateDB) HasSelfDestructed(addr common.Address) bool     { return false }
+func (m *MockStateDB) Selfdestruct6780(addr common.Address)           {}
+func (m *MockStateDB) CreateContract(addr common.Address)             {}
+func (m *MockStateDB) GetStorageRoot(addr common.Address) common.Hash { return common.Hash{} }
+func (m *MockStateDB) GetSelfDestruction(addr common.Address) bool    { return false }
+func (m *MockStateDB) Witness() *stateless.Witness                    { return nil }
+func (m *MockStateDB) AccessEvents() *state.AccessEvents              { return nil }
 
 type witness interface {
 	Witness() *stateless.Witness
@@ -160,26 +160,26 @@ func main() {
 	zero := big.NewInt(0)
 	zeroTime := uint64(0)
 	chainConfig := &params.ChainConfig{
-		ChainID:                       big.NewInt(int64(chainID)),
-		HomesteadBlock:                zero,
-		DAOForkBlock:                  zero,
-		DAOForkSupport:                true,
-		EIP150Block:                   zero,
-		EIP155Block:                   zero,
-		EIP158Block:                   zero,
-		ByzantiumBlock:                zero,
-		ConstantinopleBlock:           zero,
-		PetersburgBlock:               zero,
-		IstanbulBlock:                 zero,
-		MuirGlacierBlock:              zero,
-		BerlinBlock:                   zero,
-		LondonBlock:                   zero,
-		ArrowGlacierBlock:             zero,
-		GrayGlacierBlock:              zero,
-		MergeNetsplitBlock:            zero,
-		TerminalTotalDifficulty:       big.NewInt(0),
-		ShanghaiTime:                  &zeroTime, // ENABLED
-		CancunTime:                    nil,       // DISABLED
+		ChainID:                 big.NewInt(int64(chainID)),
+		HomesteadBlock:          zero,
+		DAOForkBlock:            zero,
+		DAOForkSupport:          true,
+		EIP150Block:             zero,
+		EIP155Block:             zero,
+		EIP158Block:             zero,
+		ByzantiumBlock:          zero,
+		ConstantinopleBlock:     zero,
+		PetersburgBlock:         zero,
+		IstanbulBlock:           zero,
+		MuirGlacierBlock:        zero,
+		BerlinBlock:             zero,
+		LondonBlock:             zero,
+		ArrowGlacierBlock:       zero,
+		GrayGlacierBlock:        zero,
+		MergeNetsplitBlock:      zero,
+		TerminalTotalDifficulty: big.NewInt(0),
+		ShanghaiTime:            &zeroTime, // ENABLED
+		CancunTime:              nil,       // DISABLED
 	}
 
 	executor := &evm.EVMExecutor{

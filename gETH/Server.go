@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"gossipnode/gETH/common"
 	"gossipnode/config/GRO"
+	"gossipnode/gETH/common"
 	"gossipnode/gETH/proto"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -21,7 +21,9 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 )
+
 var LocalGRO interfaces.LocalGoroutineManagerInterface
+
 // Server implements the gRPC Chain service
 type Server struct {
 	proto.UnimplementedChainServer

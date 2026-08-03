@@ -89,7 +89,7 @@ type ContractCodeResult struct {
 }
 
 type ContractStorageResult struct {
-	Address   string    `json:"address"`   // CHAR(42)
+	Address   string    `json:"address"`    // CHAR(42)
 	SlotHash  string    `json:"slot_hash"`  // CHAR(66)
 	ValueHash string    `json:"value_hash"` // CHAR(66) zero hash = empty slot
 	UpdatedAt time.Time `json:"updated_at"`
@@ -131,7 +131,7 @@ type ContractRegistryResult struct {
 	ABI          string          `json:"abi"`           // JSON ABI string
 	BytecodeHash string          `json:"bytecode_hash"` // CHAR(66)
 	DeployBlock  uint64          `json:"deploy_block"`
-	DeployTime   uint64          `json:"deploy_time"`   // unix seconds
+	DeployTime   uint64          `json:"deploy_time"`    // unix seconds
 	DeployTxHash string          `json:"deploy_tx_hash"` // CHAR(66)
 	CodeSize     uint64          `json:"code_size"`
 	ContractType string          `json:"contract_type"` // erc20, erc721, custom, …
@@ -152,11 +152,11 @@ type ListContractOptions struct {
 }
 
 type ContractReceiptResult struct {
-	TxHash          string          `json:"tx_hash"`          // CHAR(66) PK
+	TxHash          string          `json:"tx_hash"` // CHAR(66) PK
 	BlockNumber     uint64          `json:"block_number"`
 	TxIndex         uint64          `json:"tx_index"`
-	Status          int16           `json:"status"` // 1=success 0=fail
-	GasUsed         string          `json:"gas_used"` // NUMERIC(78,0) string
+	Status          int16           `json:"status"`           // 1=success 0=fail
+	GasUsed         string          `json:"gas_used"`         // NUMERIC(78,0) string
 	ContractAddress string          `json:"contract_address"` // CHAR(42), empty if not deploy
 	RevertReason    string          `json:"revert_reason"`
 	Logs            json.RawMessage `json:"logs"`

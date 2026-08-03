@@ -3,10 +3,10 @@ package rpc
 import "encoding/json"
 
 type Request struct {
-	Jsonrpc string        `json:"jsonrpc"`
-	Method  string        `json:"method"`
-	Params  []any         `json:"params"`
-	ID      any           `json:"id"`
+	Jsonrpc string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  []any  `json:"params"`
+	ID      any    `json:"id"`
 }
 
 // Response follows JSON-RPC 2.0.

@@ -578,7 +578,6 @@ func (u *UnifiedDB) CountConnectedPeers() (int, error) {
 	return count, nil
 }
 
-
 // logger returns the ion logger instance for sqlops package
 func sqllogger(namedLogger string) *ion.Ion {
 	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")

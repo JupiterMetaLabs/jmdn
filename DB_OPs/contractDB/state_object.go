@@ -193,8 +193,8 @@ func (s *stateObject) loadStorage(key common.Hash) common.Hash {
 // Flags
 // ============================================================================
 
-func (s *stateObject) markDirty() { s.dirty = true }
-func (s *stateObject) isDirty() bool  { return s.dirty }
+func (s *stateObject) markDirty()    { s.dirty = true }
+func (s *stateObject) isDirty() bool { return s.dirty }
 
 func (s *stateObject) isEmpty() bool {
 	return s.data.Nonce == 0 &&

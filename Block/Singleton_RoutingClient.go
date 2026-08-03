@@ -3,9 +3,9 @@ package Block
 import (
 	"context"
 	"fmt"
-	"time"
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/logging"
+	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"

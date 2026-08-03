@@ -73,24 +73,24 @@ type BlockRecord struct {
 // TransactionRecord maps to the `transactions` SQL table.
 // Derived from config.Transaction + caller-supplied block context.
 type TransactionRecord struct {
-	TxHash             string         `json:"tx_hash"`              // CHAR(66)
-	BlockNumber        uint64         `json:"block_number"`         // BIGINT
-	TxIndex            int16          `json:"tx_index"`             // SMALLINT
-	FromAddr           string         `json:"from_addr"`            // CHAR(42)
-	ToAddr             *string        `json:"to_addr"`              // CHAR(42) nullable — nil = contract creation
-	ValueWei           string         `json:"value_wei"`            // NUMERIC(78,0) as string
-	Nonce              string         `json:"nonce"`                // NUMERIC(78,0) as string
-	Type               int16          `json:"type"`                 // SMALLINT — 0=Legacy, 1=AccessList, 2=DynamicFee
-	GasLimit           string         `json:"gas_limit"`            // VARCHAR(30)
-	GasPriceWei        string         `json:"gas_price_wei"`        // VARCHAR(30)
-	MaxFeeWei          string         `json:"max_fee_wei"`          // VARCHAR(30)
-	MaxPriorityFeeWei  string         `json:"max_priority_fee_wei"` // VARCHAR(30)
-	GasFeeWei          string         `json:"gas_fee_wei"`          // NUMERIC(78,0) — recorded fee charged to sender (gasLimit × effective price at ingest)
-	Data               []byte         `json:"data"`                 // BYTEA
-	AccessList         map[string]any `json:"access_list"`          // JSONB
-	SigV               uint64         `json:"sig_v"`                // BIGINT — int16 overflows for chainID > 16383 (EIP-155)
-	SigR               string         `json:"sig_r"`                // CHAR(66)
-	SigS               string         `json:"sig_s"`                // CHAR(66)
+	TxHash            string         `json:"tx_hash"`              // CHAR(66)
+	BlockNumber       uint64         `json:"block_number"`         // BIGINT
+	TxIndex           int16          `json:"tx_index"`             // SMALLINT
+	FromAddr          string         `json:"from_addr"`            // CHAR(42)
+	ToAddr            *string        `json:"to_addr"`              // CHAR(42) nullable — nil = contract creation
+	ValueWei          string         `json:"value_wei"`            // NUMERIC(78,0) as string
+	Nonce             string         `json:"nonce"`                // NUMERIC(78,0) as string
+	Type              int16          `json:"type"`                 // SMALLINT — 0=Legacy, 1=AccessList, 2=DynamicFee
+	GasLimit          string         `json:"gas_limit"`            // VARCHAR(30)
+	GasPriceWei       string         `json:"gas_price_wei"`        // VARCHAR(30)
+	MaxFeeWei         string         `json:"max_fee_wei"`          // VARCHAR(30)
+	MaxPriorityFeeWei string         `json:"max_priority_fee_wei"` // VARCHAR(30)
+	GasFeeWei         string         `json:"gas_fee_wei"`          // NUMERIC(78,0) — recorded fee charged to sender (gasLimit × effective price at ingest)
+	Data              []byte         `json:"data"`                 // BYTEA
+	AccessList        map[string]any `json:"access_list"`          // JSONB
+	SigV              uint64         `json:"sig_v"`                // BIGINT — int16 overflows for chainID > 16383 (EIP-155)
+	SigR              string         `json:"sig_r"`                // CHAR(66)
+	SigS              string         `json:"sig_s"`                // CHAR(66)
 }
 
 // SnapshotRecord maps to the `snapshots` SQL table.
@@ -133,20 +133,20 @@ type ContractNonceRecord struct {
 // Merged: slot value + modification metadata in one entry.
 // Key uses binary concat: contract:storage: + addr_20_bytes + slot_32_bytes
 type ContractStorageRecord struct {
-	Address           string `json:"address"`              // 0x-prefixed hex (for logging only — key uses raw bytes)
-	Slot              string `json:"slot"`                 // 0x-prefixed 32-byte hex
-	ValueHash         string `json:"value_hash"`           // 0x-prefixed 32-byte hex (Keccak256 of value)
+	Address           string `json:"address"`    // 0x-prefixed hex (for logging only — key uses raw bytes)
+	Slot              string `json:"slot"`       // 0x-prefixed 32-byte hex
+	ValueHash         string `json:"value_hash"` // 0x-prefixed 32-byte hex (Keccak256 of value)
 	LastModifiedBlock uint64 `json:"last_modified_block"`
-	LastModifiedTx    string `json:"last_modified_tx"`     // 0x-prefixed tx hash
-	UpdatedAt         int64  `json:"updated_at"`           // Unix nanoseconds
+	LastModifiedTx    string `json:"last_modified_tx"` // 0x-prefixed tx hash
+	UpdatedAt         int64  `json:"updated_at"`       // Unix nanoseconds
 }
 
 // ContractMetaRecord — KV PutWorm (immutable after deploy)
 type ContractMetaRecord struct {
 	Address      string    `json:"address"`
-	CodeHash     string    `json:"code_hash"`     // 0x-prefixed keccak256
+	CodeHash     string    `json:"code_hash"` // 0x-prefixed keccak256
 	CodeSize     int       `json:"code_size"`
-	Deployer     string    `json:"deployer"`      // 0x-prefixed address
+	Deployer     string    `json:"deployer"` // 0x-prefixed address
 	DeployTxHash string    `json:"deploy_tx_hash"`
 	DeployBlock  uint64    `json:"deploy_block"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -158,10 +158,10 @@ type ContractReceiptRecord struct {
 	TxHash          string    `json:"tx_hash"`
 	BlockNumber     uint64    `json:"block_number"`
 	TxIndex         int16     `json:"tx_index"`
-	Status          int16     `json:"status"`            // 1=success 0=fail
-	GasUsed         string    `json:"gas_used"`          // NUMERIC(78,0) as string
-	ContractAddress *string   `json:"contract_address"`  // NULL for non-deploys
-	Logs            []byte    `json:"logs"`              // raw JSON array
+	Status          int16     `json:"status"`           // 1=success 0=fail
+	GasUsed         string    `json:"gas_used"`         // NUMERIC(78,0) as string
+	ContractAddress *string   `json:"contract_address"` // NULL for non-deploys
+	Logs            []byte    `json:"logs"`             // raw JSON array
 	RevertReason    string    `json:"revert_reason"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -171,9 +171,9 @@ type ContractReceiptRecord struct {
 // OutboxWorker dispatches on Namespace. Method is informational only (logging/debugging).
 type OutboxEntry struct {
 	ID          int64     `json:"id"`
-	Namespace   Namespace `json:"namespace"`     // dispatch key — use Namespace* constants
-	Method      string    `json:"method"`        // informational only — ThebeGateway method name for logs
-	Payload     []byte    `json:"payload"`       // JSON-serialized domain record
+	Namespace   Namespace `json:"namespace"` // dispatch key — use Namespace* constants
+	Method      string    `json:"method"`    // informational only — ThebeGateway method name for logs
+	Payload     []byte    `json:"payload"`   // JSON-serialized domain record
 	Attempts    int       `json:"attempts"`
 	NextRetryAt time.Time `json:"next_retry_at"`
 	CreatedAt   time.Time `json:"created_at"`

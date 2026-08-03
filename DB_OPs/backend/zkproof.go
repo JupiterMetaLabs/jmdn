@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"gossipnode/config"
 	"gossipnode/DB_OPs/thebegateway"
+	"gossipnode/config"
 )
 
 // MODULE: DB_OPs/backend/zkproof.go

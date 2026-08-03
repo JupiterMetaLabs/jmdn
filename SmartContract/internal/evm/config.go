@@ -15,26 +15,26 @@ func NewChainConfig(chainID int) *params.ChainConfig {
 	zeroTime := uint64(0)
 
 	return &params.ChainConfig{
-		ChainID:                       big.NewInt(int64(chainID)),
-		HomesteadBlock:                zero,
-		DAOForkBlock:                  zero,
-		DAOForkSupport:                true,
-		EIP150Block:                   zero,
-		EIP155Block:                   zero,
-		EIP158Block:                   zero,
-		ByzantiumBlock:                zero,
-		ConstantinopleBlock:           zero,
-		PetersburgBlock:               zero,
-		IstanbulBlock:                 zero,
-		MuirGlacierBlock:              zero,
-		BerlinBlock:                   zero,
-		LondonBlock:                   zero,
-		ArrowGlacierBlock:             zero,
-		GrayGlacierBlock:              zero,
-		MergeNetsplitBlock:            zero,          // The Merge
-		TerminalTotalDifficulty:       big.NewInt(0), // Required for Merge to be active at genesis
-		ShanghaiTime:                  &zeroTime,     // Enable Shanghai (PUSH0)
-		CancunTime:                    nil,           // Disable Cancun to avoid blob gas issues
+		ChainID:                 big.NewInt(int64(chainID)),
+		HomesteadBlock:          zero,
+		DAOForkBlock:            zero,
+		DAOForkSupport:          true,
+		EIP150Block:             zero,
+		EIP155Block:             zero,
+		EIP158Block:             zero,
+		ByzantiumBlock:          zero,
+		ConstantinopleBlock:     zero,
+		PetersburgBlock:         zero,
+		IstanbulBlock:           zero,
+		MuirGlacierBlock:        zero,
+		BerlinBlock:             zero,
+		LondonBlock:             zero,
+		ArrowGlacierBlock:       zero,
+		GrayGlacierBlock:        zero,
+		MergeNetsplitBlock:      zero,          // The Merge
+		TerminalTotalDifficulty: big.NewInt(0), // Required for Merge to be active at genesis
+		ShanghaiTime:            &zeroTime,     // Enable Shanghai (PUSH0)
+		CancunTime:              nil,           // Disable Cancun to avoid blob gas issues
 	}
 }
 

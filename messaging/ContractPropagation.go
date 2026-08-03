@@ -32,7 +32,7 @@ type ContractMessage struct {
 	ID              string         `json:"id"`
 	Sender          string         `json:"sender"`
 	Timestamp       int64          `json:"timestamp"`
-	Type            string         `json:"type"`            // "contract_deployed"
+	Type            string         `json:"type"` // "contract_deployed"
 	Hops            int            `json:"hops"`
 	ContractAddress common.Address `json:"contract_address"`
 	Deployer        common.Address `json:"deployer"`
@@ -253,7 +253,7 @@ func forwardContract(h host.Host, msg ContractMessage) {
 			return nil
 		}, local.AddToWaitGroup(GRO.ContractForwardWG)); err != nil {
 			contractLogger().Error(context.Background(), "ContractPropagation: failed to start forwarding goroutine", err,
-			ion.String("peer", p.String()))
+				ion.String("peer", p.String()))
 		}
 	}
 

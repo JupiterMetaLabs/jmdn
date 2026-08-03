@@ -23,4 +23,3 @@ func broadcastLogger() *ion.Ion {
 	}
 	return logInstance.GetNamedLogger()
 }
-

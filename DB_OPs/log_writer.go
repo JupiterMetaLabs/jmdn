@@ -30,9 +30,10 @@ var GlobalLogWriter = &LogWriter{
 // fans the log out to all active subscribers (non-blocking; drops if channel full).
 //
 // Key schema
-//   Primary:   log:{blockNumber}:{txIndex}:{logIndex}
-//   By addr:   logaddr:{addrHex}:{blockNumber}:{logIndex}
-//   By topic:  logtopic:{topicHex}:{blockNumber}:{logIndex}   (one per topic)
+//
+//	Primary:   log:{blockNumber}:{txIndex}:{logIndex}
+//	By addr:   logaddr:{addrHex}:{blockNumber}:{logIndex}
+//	By topic:  logtopic:{topicHex}:{blockNumber}:{logIndex}   (one per topic)
 func (lw *LogWriter) Write(logs []*ethtypes.Log) error {
 	if len(logs) == 0 {
 		return nil

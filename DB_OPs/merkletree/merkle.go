@@ -1,11 +1,11 @@
 package merkletree
 
 import (
-	log "gossipnode/logging"
 	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	log "gossipnode/logging"
 	"math"
 
 	"gossipnode/DB_OPs"

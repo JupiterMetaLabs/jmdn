@@ -58,7 +58,6 @@ func WeightAggregation(weight float64, correct bool, alpha float64, beta float64
 	return 1 / (1 + math.Exp(-logValue))
 }
 
-
 // logger returns the ion logger instance for vote module
 func logger(namedLogger string) *ion.Ion {
 	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")

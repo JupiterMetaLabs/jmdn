@@ -6,9 +6,9 @@ import (
 
 	log "gossipnode/logging"
 
-	"github.com/JupiterMetaLabs/ion"
 	"errors"
 	"fmt"
+	"github.com/JupiterMetaLabs/ion"
 	"math/big"
 	"strings"
 	"sync"
@@ -247,8 +247,6 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, "0x"+big.NewInt(int64(g)).Text(16), nil)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
-
-
 
 	case "eth_sendRawTransaction":
 		if len(req.Params) < 1 {

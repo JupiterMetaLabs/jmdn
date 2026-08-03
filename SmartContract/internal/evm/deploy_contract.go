@@ -8,10 +8,10 @@ import (
 	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/config"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/JupiterMetaLabs/ion"
 
 	"gossipnode/DB_OPs"
 )

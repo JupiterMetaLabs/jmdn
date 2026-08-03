@@ -203,7 +203,6 @@ func ConvertLogsToMap(logs []config.Log) []map[string]any {
 	return logMaps
 }
 
-
 // Conversion
 func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 	// First Compute the Receipts

@@ -29,19 +29,19 @@ import (
 // contractRegistryRecord is the DTO carried in the CanonicalRecord value bytes.
 // Must match cassata.ContractRegistryResult field names exactly.
 type contractRegistryRecord struct {
-	Address       string          `json:"address"`
-	Deployer      string          `json:"deployer"`
-	Name          string          `json:"name"`
-	ABI           string          `json:"abi"`
-	BytecodeHash  string          `json:"bytecode_hash"`
-	DeployBlock   uint64          `json:"deploy_block"`
-	DeployTime    uint64          `json:"deploy_time"`
-	DeployTxHash  string          `json:"deploy_tx_hash"`
-	CodeSize      uint64          `json:"code_size"`
-	ContractType  string          `json:"contract_type"`
-	State         string          `json:"state"`
-	Metadata      json.RawMessage `json:"metadata"`
-	CreatedAt     time.Time       `json:"created_at"`
+	Address      string          `json:"address"`
+	Deployer     string          `json:"deployer"`
+	Name         string          `json:"name"`
+	ABI          string          `json:"abi"`
+	BytecodeHash string          `json:"bytecode_hash"`
+	DeployBlock  uint64          `json:"deploy_block"`
+	DeployTime   uint64          `json:"deploy_time"`
+	DeployTxHash string          `json:"deploy_tx_hash"`
+	CodeSize     uint64          `json:"code_size"`
+	ContractType string          `json:"contract_type"`
+	State        string          `json:"state"`
+	Metadata     json.RawMessage `json:"metadata"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 const sqlUpsertContractRegistry = `

@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	log "gossipnode/logging"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
+	log "gossipnode/logging"
 )
 
 // < -- Singleton Pattern for gloabl variables -- >

@@ -6,10 +6,10 @@ import (
 	"encoding/binary"
 	"sort"
 
-	log "gossipnode/logging"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	log "gossipnode/logging"
 )
 
 // ConsistantHashing picks one peer deterministically from the given Peers map using SHA-256 hashing

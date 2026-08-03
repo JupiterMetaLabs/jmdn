@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	pb "gossipnode/Block/proto"
 	BlockCommon "gossipnode/Block/common"
+	pb "gossipnode/Block/proto"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -28,7 +28,9 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
+
 var LocalGRO interfaces.LocalGoroutineManagerInterface
+
 // BlockServer implements the gRPC BlockService
 type BlockServer struct {
 	pb.UnimplementedBlockServiceServer

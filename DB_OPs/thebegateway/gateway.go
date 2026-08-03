@@ -51,7 +51,7 @@ var _ ThebeGateway = (*thebeGateway)(nil)
 
 type thebeGateway struct {
 	appender ThebeAppender
-	kv       ThebeKVStore  // direct KV writes for contract data
+	kv       ThebeKVStore // direct KV writes for contract data
 	cache    cache.Cache
 	outbox   OutboxStore
 }

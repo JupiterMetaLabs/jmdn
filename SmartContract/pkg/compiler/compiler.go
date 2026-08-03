@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 )
 
 // CompiledContract holds compilation results

@@ -67,7 +67,7 @@ type createObjectChange struct {
 	account *common.Address
 }
 
-func (ch createObjectChange) revert(s *ContractDB) { delete(s.stateObjects, *ch.account) }
+func (ch createObjectChange) revert(s *ContractDB)     { delete(s.stateObjects, *ch.account) }
 func (ch createObjectChange) dirtied() *common.Address { return ch.account }
 
 // ----
@@ -143,7 +143,7 @@ type refundChange struct {
 	prev uint64
 }
 
-func (ch refundChange) revert(s *ContractDB) { s.refund = ch.prev }
+func (ch refundChange) revert(s *ContractDB)     { s.refund = ch.prev }
 func (ch refundChange) dirtied() *common.Address { return nil }
 
 // ----

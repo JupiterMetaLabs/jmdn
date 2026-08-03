@@ -7,7 +7,6 @@ import (
 	"gossipnode/config/utils"
 	"strings"
 	"time"
-
 )
 
 // GetReceiptByHash retrieves a transaction receipt by its hash

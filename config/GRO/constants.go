@@ -15,17 +15,17 @@ const (
 	MainLM = "local:main"
 
 	// Sequencer/Triggers/Triggers.go
-	SequencerTriggerLocal   = "local:sequencer:trigger"
-	SequencerConsensusLocal = "local:sequencer:consensus"
-	SeedLocal               = "local:seed"
-	PubsubSubscribeLocal    = "local:pubsub:subscription"
-	PubsubPublishLocal      = "local:pubsub:publish"
-	PubsubChannelLocal      = "local:pubsub:channel"
-	NodeLocal               = "local:node"
-	MessagingLocal          = "local:messaging"
-	DIDPropagationLocal        = "local:did:propagation"
-	ContractPropagationLocal   = "local:contract:propagation"
-	BroadcastLocal          = "local:direct:msg"
+	SequencerTriggerLocal    = "local:sequencer:trigger"
+	SequencerConsensusLocal  = "local:sequencer:consensus"
+	SeedLocal                = "local:seed"
+	PubsubSubscribeLocal     = "local:pubsub:subscription"
+	PubsubPublishLocal       = "local:pubsub:publish"
+	PubsubChannelLocal       = "local:pubsub:channel"
+	NodeLocal                = "local:node"
+	MessagingLocal           = "local:messaging"
+	DIDPropagationLocal      = "local:did:propagation"
+	ContractPropagationLocal = "local:contract:propagation"
+	BroadcastLocal           = "local:direct:msg"
 
 	BlockPropagationLocal = "local:block:propagation"
 

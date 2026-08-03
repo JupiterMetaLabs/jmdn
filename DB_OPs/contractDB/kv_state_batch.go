@@ -153,4 +153,3 @@ func (b *KVStateBatch) SaveReceipt(txHash common.Hash, data []byte) error {
 	})
 	return nil
 }
-

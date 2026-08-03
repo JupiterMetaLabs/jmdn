@@ -1,7 +1,6 @@
 package NodeInfo
 
 import (
-
 	fastsync_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 
 	"gossipnode/DB_OPs"

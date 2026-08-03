@@ -426,7 +426,6 @@ func (r *thebeReader) GetLatestTransactionsByAddress(ctx context.Context, addres
 	return results, nil
 }
 
-
 // GetTransactionsByAddressInRange returns all transactions where address is
 // sender or receiver within [fromBlock, toBlock] inclusive, ordered ascending.
 // Backed by idx_txn_from_addr_block / idx_txn_to_addr_block composite indexes.
@@ -451,7 +450,6 @@ func (r *thebeReader) GetTransactionsByAddressInRange(ctx context.Context, addre
 	return results, nil
 }
 
-
 // GetL1FinalityForBlock returns the most recent L1 finality record covering
 // the given L2 block number, or sql.ErrNoRows-wrapped error when the block
 // has not yet been committed to L1. Uses the GIN index on block_numbers.
@@ -469,7 +467,6 @@ func (r *thebeReader) GetL1FinalityForBlock(ctx context.Context, blockNumber uin
 	}
 	return &rec, nil
 }
-
 
 // GetBlocksByRewardAddress returns blocks in [fromBlock, toBlock] where the
 // address is the coinbase or ZKVM (gas fee recipient). Used by historical

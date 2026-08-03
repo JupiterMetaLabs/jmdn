@@ -32,9 +32,9 @@ func TestNormalizeUpdatedAtNanos_Tiers(t *testing.T) {
 // must compare equal-ish (same second), NOT 9 orders of magnitude apart. The
 // pre-fix code (time.Unix(0, seconds)) put the live write in 1970.
 func TestNormalizedUnixTime_LWWOrdering(t *testing.T) {
-	instant := int64(1_700_000_050)                      // a real second
-	liveSeconds := instant                               // live executor stamp
-	syncNanos := instant*int64(time.Second) + 123        // sync stamp, same instant +123ns
+	instant := int64(1_700_000_050)               // a real second
+	liveSeconds := instant                        // live executor stamp
+	syncNanos := instant*int64(time.Second) + 123 // sync stamp, same instant +123ns
 
 	live := NormalizedUnixTime(liveSeconds)
 	sync := NormalizedUnixTime(syncNanos)

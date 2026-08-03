@@ -14,4 +14,3 @@ func logger() *ion.Ion {
 	}
 	return logInstance.GetNamedLogger()
 }
-

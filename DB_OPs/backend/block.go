@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/config"
 	"gossipnode/DB_OPs/thebegateway"
+	"gossipnode/config"
 )
 
 // StoreBlock converts a config.ZKBlock to a thebegateway.BlockRecord and writes it.
@@ -73,15 +73,15 @@ func (b *thebeBackend) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*t
 // Field-by-field mapping documented inline.
 func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 	rec := &thebegateway.BlockRecord{
-		BlockNumber: b.BlockNumber,                    // direct field
-		BlockHash:   b.BlockHash.Hex(),                // common.Hash → 0x-prefixed hex string
-		ParentHash:  b.PrevHash.Hex(),                 // ZKBlock.PrevHash → BlockRecord.ParentHash
+		BlockNumber: b.BlockNumber,                   // direct field
+		BlockHash:   b.BlockHash.Hex(),               // common.Hash → 0x-prefixed hex string
+		ParentHash:  b.PrevHash.Hex(),                // ZKBlock.PrevHash → BlockRecord.ParentHash
 		Timestamp:   time.Unix(b.Timestamp, 0).UTC(), // int64 epoch-seconds → time.Time
-		TxsRoot:     b.TxnsRoot,                       // ZKBlock.TxnsRoot → BlockRecord.TxsRoot
-		StateRoot:   b.StateRoot.Hex(),                // common.Hash → hex string
-		LogsBloom:   b.LogsBloom,                      // []byte → []byte direct
-		GasLimit:    b.GasLimit,                       // uint64 direct
-		GasUsed:     b.GasUsed,                        // uint64 direct
+		TxsRoot:     b.TxnsRoot,                      // ZKBlock.TxnsRoot → BlockRecord.TxsRoot
+		StateRoot:   b.StateRoot.Hex(),               // common.Hash → hex string
+		LogsBloom:   b.LogsBloom,                     // []byte → []byte direct
+		GasLimit:    b.GasLimit,                      // uint64 direct
+		GasUsed:     b.GasUsed,                       // uint64 direct
 	}
 
 	// CoinbaseAddr: nil pointer → empty string; present → 0x-prefixed hex

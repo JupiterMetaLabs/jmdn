@@ -100,10 +100,10 @@ func (h *histHandle) GetTransactionsByBlock(_ context.Context, bn uint64) ([]*th
 func setupHist(t *testing.T) {
 	t.Helper()
 	h := &histHandle{balances: map[string]string{
-		userAddr:     "880",  // 1000 − 100 (value) − 20 (gas)
-		peerAddr:     "600",  // 500 + 100
-		coinbaseAddr: "10",   // 0 + 10
-		zkvmAddr:     "10",   // 0 + 10
+		userAddr:     "880", // 1000 − 100 (value) − 20 (gas)
+		peerAddr:     "600", // 500 + 100
+		coinbaseAddr: "10",  // 0 + 10
+		zkvmAddr:     "10",  // 0 + 10
 	}}
 	DB_OPs.SetGlobalHandle(h)
 	t.Cleanup(func() { DB_OPs.SetGlobalHandle(nil) })

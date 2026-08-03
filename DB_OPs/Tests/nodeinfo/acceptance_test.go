@@ -23,8 +23,8 @@ import (
 // acceptHandle backs the three acceptance tests.
 type acceptHandle struct {
 	store.ThebeHandle
-	accounts map[uint64]*store.Account          // nonce → account
-	txs      []*thebegateway.TransactionRecord  // range-query result
+	accounts map[uint64]*store.Account                 // nonce → account
+	txs      []*thebegateway.TransactionRecord         // range-query result
 	l1       map[uint64]*thebegateway.L1FinalityRecord // L2 block → finality
 }
 

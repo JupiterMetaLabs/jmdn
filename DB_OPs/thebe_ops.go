@@ -112,7 +112,6 @@ func Update(key string, value interface{}) error {
 	return nil
 }
 
-
 // GetDatabaseState returns the current state of the database.
 // ImmuDB removed — returns a zeroed DatabaseState.
 func GetDatabaseState(_ *config.PooledConnection) (*DatabaseState, error) {
@@ -156,7 +155,6 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	}
 	return nil
 }
-
 
 // StoreL1CommitRange records that L1 transaction l1TxHash (mined in Ethereum
 // block l1BlockNumber) committed L2 blocks [fromBlock..toBlock].

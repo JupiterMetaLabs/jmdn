@@ -128,7 +128,6 @@ func (pc *PooledConnection) GetContext() context.Context {
 	return context.Background()
 }
 
-
 // NewConnectionPool creates a new connection pool backed by ThebeDB.
 // factory is called once per pool slot to create a store.ThebeHandle (returned as io.Closer).
 func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig, logger *ion.Ion, poolingConfig *PoolingConfig, factory HandleFactory) *ConnectionPool {
@@ -566,7 +565,6 @@ func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *Poole
 		_ = conn.Handle.Close()
 	}
 	// Close the legacy ImmuDB client if present.
-
 
 	p.Logger.Debug(spanCtx, "Closed ThebeDB handle",
 		ion.String("database", conn.Database),

@@ -103,7 +103,6 @@ func ClearNodeManagerInterface() {
 	NodeManagerInterface = nil
 }
 
-
 // NewNodeManager creates a new node manager for the host
 func NewNodeManager(node *config.Node) (*NodeManager, error) {
 	return NewNodeManagerWithLogger(node)
