@@ -7,10 +7,10 @@ import (
 
 	"gossipnode/config"
 
-	log "gossipnode/logging"
 	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+	log "gossipnode/logging"
 )
 
 // A libp2p host must have exactly ONE GossipSub router: creating a second one

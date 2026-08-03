@@ -34,14 +34,14 @@ import (
 	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
-	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/txindex"
-	"gossipnode/FastsyncV2"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -891,7 +891,6 @@ func main() {
 		Str("group_name", cfg.Thebe.GroupName).
 		Msg("Resolved Thebe config")
 
-
 	// Chain ID global initialization — must happen before any Security validation.
 	// Setting this globally here (rather than only inside Block/Server.go, gated behind
 	// BlockGen > 0) keeps expectedChainID set on non-sequencer nodes. All nodes need it because
@@ -995,23 +994,23 @@ func main() {
 			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
 			cancel()
 
-		// 2. Shutdown profiler concurrently with other cleanups (with timeout)
-		if profilerServer != nil {
-			if logger := mainLogger(); logger != nil {
-				logger.Info(ctx, "Shutting down profiler server...")
-			}
-			// Give it 5 seconds to finish active profiles/requests
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+			// 2. Shutdown profiler concurrently with other cleanups (with timeout)
+			if profilerServer != nil {
 				if logger := mainLogger(); logger != nil {
-					logger.Error(ctx, "Profiler server forced to shutdown", err)
+					logger.Info(ctx, "Shutting down profiler server...")
 				}
-			} else {
-				if logger := mainLogger(); logger != nil {
-					logger.Info(ctx, "Profiler server stopped gracefully")
+				// Give it 5 seconds to finish active profiles/requests
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+					if logger := mainLogger(); logger != nil {
+						logger.Error(ctx, "Profiler server forced to shutdown", err)
+					}
+				} else {
+					if logger := mainLogger(); logger != nil {
+						logger.Info(ctx, "Profiler server stopped gracefully")
+					}
 				}
-			}
 			}
 
 			// 3. Stop the tx-address index: refuse new async work, cancel any
@@ -1678,7 +1677,6 @@ func main() {
 		PullAllowed:     cfg.FastSync.EnablePulling,
 		FastSyncerV2:    fastSyncerV2,
 	}
-
 
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)

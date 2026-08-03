@@ -19,8 +19,8 @@
 package profiler
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"

@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"

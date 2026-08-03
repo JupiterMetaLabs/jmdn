@@ -46,6 +46,7 @@ func SetLatestBlockAdvanceHook(fn func(uint64)) {
 	defer latestBlockMu.Unlock()
 	onAdvance = fn
 }
+
 // LatestBlockMarkerKey is the sync-state key holding the data-complete tip.
 const LatestBlockMarkerKey = "latest_block"
 
