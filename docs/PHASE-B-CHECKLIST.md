@@ -15,7 +15,7 @@ redis AOF) with `../ThebeDB` sibling; exercise explorer reads via docs/THEBE_DEB
 → Verify: `go test ./...` green with infra up; node boots with `thebe.enabled=true`; debug routes
 return projected data; outbox drains after an induced SQL failure.
 
-## B2 — Migration Phase 7: remove DualDB + ImmuDB dependency — **DONE (pending operator gate)**
+## B2 — Migration Phase 7: remove DualDB + ImmuDB dependency — **DONE ✓ (gate green 2026-08-04, cc0a015+f926706+8fb9102)**
 Source: docs/phases/thebedb-primary-migration.md §Phase 7 (status open); tracker follow-up #1.
 Delete `DB_OPs/dualdb/`, `DB_OPs/thebe_shadow.go`, `DB_OPs/thebe_gateway_adapter.go`; drop
 `codenotary/immudb` from go.mod (`go mod tidy`); remove the `SetThebeShadowWriter` wiring
