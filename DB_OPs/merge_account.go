@@ -110,6 +110,27 @@ func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	if incoming.TxCountSent < existing.TxCountSent {
 		incoming.TxCountSent = existing.TxCountSent
 	}
+	// 7. Preserve Balance on a placeholder/sync write. The authoritative balance
+	// writers — live execution (ApplyTxAtomic) and reconciliation
+	// (ApplyBlockRecon) — commit directly under the state-apply lock and never
+	// reach this merge. The writes that DO reach it are account-sync, restore,
+	// and DID propagation, which carry Balance "0" as a placeholder that
+	// reconciliation is expected to fill. Letting that "0" win LWW would
+	// overwrite a real balance with zero — a silent, non-healing divergence.
+	// Treat an incoming zero/empty balance as "no balance information" and keep
+	// the stored value, exactly like the sparse-field preserves above. A real
+	// (nonzero) incoming balance is still applied, so legitimate balance updates
+	// that route through this path are unaffected.
+	if isZeroBalanceString(incoming.Balance) && !isZeroBalanceString(existing.Balance) {
+		incoming.Balance = existing.Balance
+	}
 
 	return incoming, true
+}
+
+// isZeroBalanceString reports whether bal carries no balance information
+// ("" or "0") — the placeholder shape produced by account-sync, restore and
+// DID-propagation writers.
+func isZeroBalanceString(bal string) bool {
+	return bal == "" || bal == "0"
 }

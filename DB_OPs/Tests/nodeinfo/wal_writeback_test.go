@@ -33,6 +33,25 @@ type captureHandle struct {
 	mu     sync.Mutex
 	blocks []uint64
 	txs    int
+	syncKV map[string][]byte
+}
+
+// Sync-state KV — the data writer's marker-advance tail (latest_block) reads
+// and writes these after a successful batch.
+func (c *captureHandle) GetSyncKV(key string) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.syncKV[key], nil // nil when absent, per the interface contract
+}
+
+func (c *captureHandle) PutSyncKV(key string, value []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.syncKV == nil {
+		c.syncKV = make(map[string][]byte)
+	}
+	c.syncKV[key] = append([]byte(nil), value...)
+	return nil
 }
 
 func (c *captureHandle) StoreBlock(_ context.Context, b *config.ZKBlock) error {

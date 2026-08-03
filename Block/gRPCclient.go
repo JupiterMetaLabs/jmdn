@@ -10,8 +10,8 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 	// "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -107,7 +107,7 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 	}
 
 	if !resp.Success {
-		logger().Warn(ctx, "Mempool rejected transaction", ion.Err(fmt.Errorf(resp.Error)), ion.String("hash", resp.Hash))
+		logger().Warn(ctx, "Mempool rejected transaction", ion.Err(fmt.Errorf("%s", resp.Error)), ion.String("hash", resp.Hash))
 		return fmt.Errorf("mempool rejected transaction: %s", resp.Error)
 	}
 
@@ -154,7 +154,7 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 
 	if !resp.Success {
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
-		logger().Warn(ctx, "Mempool rejected transaction batch", ion.Err(fmt.Errorf(resp.Error)))
+		logger().Warn(ctx, "Mempool rejected transaction batch", ion.Err(fmt.Errorf("%s", resp.Error)))
 		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)
 	}
 

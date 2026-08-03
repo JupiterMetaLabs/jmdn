@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+
 	pbdid "gossipnode/DID/proto"
 )
 
@@ -60,10 +62,23 @@ func (m *mockDIDClient) setBalance(addr common.Address, balance *big.Int) {
 	}
 }
 
-// newTestDB returns a ContractDB backed by MemKVStore — no disk, no network.
+// newTestKVStore returns a real ThebeDB Badger store rooted in t.TempDir() —
+// the repository takes kv.Store (canonical-log interface), which the local
+// in-memory MemKVStore does not implement.
+func newTestKVStore(t *testing.T) kv.Store {
+	t.Helper()
+	s, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("badger test store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// newTestDB returns a ContractDB backed by a temp-dir Badger store — no network.
 func newTestDB(t *testing.T, did *mockDIDClient) *ContractDB {
 	t.Helper()
-	repo := NewKVStateRepository(NewMemKVStore(), nil)
+	repo := NewKVStateRepository(newTestKVStore(t), nil)
 	return NewContractDB(did, repo)
 }
 
@@ -170,11 +185,11 @@ func TestLogCapture(t *testing.T) {
 }
 
 // ============================================================================
-// Persistence round-trip: commit → reload from shared MemStore
+// Persistence round-trip: commit → reload from the shared Badger store
 // ============================================================================
 
 func TestCommitAndReload(t *testing.T) {
-	kvStore := NewMemKVStore()
+	kvStore := newTestKVStore(t)
 	did := newMockDIDClient()
 
 	// Instance 1 — write
@@ -192,7 +207,7 @@ func TestCommitAndReload(t *testing.T) {
 	_, err := db1.CommitToDB(false)
 	require.NoError(t, err)
 
-	// Instance 2 — reload via new ContractDB sharing the same MemStore.
+	// Instance 2 — reload via new ContractDB sharing the same store.
 	db2 := NewContractDB(did, NewKVStateRepository(kvStore, nil))
 
 	assert.Equal(t, code, db2.GetCode(addr), "code should survive CommitToDB")

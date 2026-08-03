@@ -79,7 +79,7 @@ func PutAccountsConnection(_ *config.PooledConnection) {}
 // GetAccountsConnections returns nil as the accounts pool no longer exists.
 //
 // Deprecated: remove callers.
-func GetAccountsConnections(_ context.Context) (*config.PooledConnection, error) { 
+func GetAccountsConnections(_ context.Context) (*config.PooledConnection, error) {
 	return nil, fmt.Errorf("GetAccountsConnections: ImmuDB accounts pool removed — use getHandle(nil) instead")
 }
 
@@ -163,6 +163,15 @@ func SaveAccount(conn *config.PooledConnection, acc *Account) error {
 // EnsureDBConnection verifies the storage backend is reachable. ThebeDB: the
 // embedded handle is process-wide — reachable iff the handle is installed.
 // The conn parameter is accepted for call-site compatibility and unused.
+// InitAccountsPool is a compat shim: pool construction is factory-based now
+// (config.SetGlobalHandleFactory at ThebeDB init). Legacy tests call it before
+// exercising account paths; those paths surface their own errors when no
+// handle/DB is available, which the tests treat as skip conditions.
+func InitAccountsPool() error { return nil }
+
+// InitMainDBPool is a compat shim — see InitAccountsPool.
+func InitMainDBPool(_ *config.ConnectionPoolConfig) error { return nil }
+
 func EnsureDBConnection(_ *config.PooledConnection) error {
 	if _, err := getHandle(nil); err != nil {
 		return fmt.Errorf("EnsureDBConnection: %w", err)
