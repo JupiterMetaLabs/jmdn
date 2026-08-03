@@ -83,5 +83,26 @@ where their original ImmuDB implementations were deleted.
 
 ## Verification status
 
+Done in-session (2026-08-03):
 - Textual: 0 conflict markers tree-wide; all 35 files resolved with rationale above.
-- Build/test: **pending** — CGO_ENABLED=1 build with ../ThebeDB sibling; see merge commit notes.
+- Syntax: `gofmt` parsed every .go file in the repo with **0 errors** (Go 1.24.9 parser);
+  merge-resolved files reformatted in the follow-up style commit.
+- Semantic survival audit: 18/18 discriminating symbols present — one per critical main-side
+  commit (apply-before-broadcast, block-bound BLS, fail-closed VerifyCertificate,
+  EnrichBlockAccountNonces + carried-nonce sentinel, NormalizePropagatedAccountState port,
+  stats seed, DeferLatestBlockAdvance port, SeedAuthorityBLSPub, MaxMainPeers=7, DID v2,
+  register-on-read removal, DID no-peers error) and per branch-side wiring point
+  (SmartContract server, JMDN profile, handle factory, contract protocols, Thebe markers).
+
+Pending — run on a machine with disk headroom (sandbox verified toolchain/network/credentials
+but hit a hard 9.6G disk ceiling mid-module-download):
+
+    cd jmdn   # with ../ThebeDB checked out (replace directive)
+    git checkout feat/thebe-sc-layer
+    CGO_ENABLED=1 go build ./...
+    CGO_ENABLED=1 go test -short ./...      # unit gate; integration tests need live infra
+    go vet ./...
+    go mod tidy                              # prunes the union-merged go.sum superset
+    golangci-lint run --new-from-rev=main    # lint only the merge delta
+
+Phase A gate holds only after build + unit tests are green. Phase B does not start before that.
