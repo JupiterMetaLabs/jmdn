@@ -574,8 +574,8 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 		mu.Unlock()
 
 		// Total transactions: SQLite tx-address index first (local
-		// COUNT(DISTINCT tx_hash) — no immudb round trip). Falls back to the
-		// immudb "tx:" prefix Count when the index is uninitialised or
+		// COUNT(DISTINCT tx_hash) — no main-DB round trip). Falls back to the
+		// legacy "tx:" prefix Count when the index is uninitialised or
 		// mid-rebuild (IsReady false → txindex.CountTransactions errors by
 		// design, so a truncated table never reports a partial total).
 		if sqlCount, sqlErr := txindex.CountTransactions(ctx); sqlErr == nil {
@@ -596,7 +596,7 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
 	// Get total DIDs/accounts from the maintained sqlite counter only (O(1)).
-	// Deliberately does NOT fall back to the immudb prefix Count on the request
+	// Deliberately does NOT fall back to the KV prefix Count on the request
 	// path: that Count is O(n) and can exceed its deadline on a large accounts DB,
 	// which would fail the whole stats response. Until the one-time background
 	// seed populates the counter, report 0 (transient) rather than erroring.

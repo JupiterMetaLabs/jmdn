@@ -188,7 +188,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 
 	// ── Phase 3: DataSync ─────────────────────────────────────────────────
 	// Scan local blocks to find which ones are missing NonHeaders data.
-	// StarkProof is written ONLY by DataSync (immudb_data_writer.go) — absent or
+	// StarkProof is written ONLY by DataSync (thebe_data_writer.go) — absent or
 	// empty means the block needs DataSync regardless of whether HeaderSync ran.
 	// Blocks written only by PubSub/HeaderSync will have StarkProof==nil.
 	log.Printf("[CatchUpSync] phase 3: scanning for data-missing blocks [%d..%d]", fromBlock, remoteTip)
@@ -394,7 +394,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 	log.Printf("[CatchUpSync] done in %s", time.Since(catchUpStart).Round(time.Millisecond))
 
 	// Refresh the tx-address index with all blocks written during this catchup.
-	// EnsureReady detects the gap between last_indexed_block and ImmuDB latest,
+	// EnsureReady detects the gap between last_indexed_block and the DB latest,
 	// so it only scans what was actually synced — no redundant work.
 	if err := txindex.EnsureReady(ctx); err != nil {
 		log.Printf("[CatchUpSync] txindex catchup warning: %v", err)
@@ -426,7 +426,7 @@ const catchUpBatchSize = 500
 //
 // Two conditions trigger a re-fetch:
 //  1. StarkProof is empty — DataSync has never written ZK proof data for this
-//     block. StarkProof is set ONLY by DataSync (immudb_data_writer.go:59).
+//     block. StarkProof is set ONLY by DataSync (thebe_data_writer.go).
 //  2. GasUsed > 0 but Transactions is empty — the block consumed gas so it
 //     must have transactions, but none were stored. This catches blocks where a
 //     previous DataSync run set StarkProof but failed to persist transactions

@@ -57,7 +57,7 @@ func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
 		ConnectionTimeout:  30 * time.Second,
 		IdleTimeout:        5 * time.Minute,
 		MaxLifetime:        30 * time.Minute,
-		TokenMaxLifetime:   24 * time.Hour, // Default immudb token lifetime
+		TokenMaxLifetime:   24 * time.Hour, // legacy default token lifetime (unused on the Thebe path)
 		TokenRefreshBuffer: 5 * time.Minute,
 	}
 
@@ -564,7 +564,7 @@ func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *Poole
 	if conn.Handle != nil {
 		_ = conn.Handle.Close()
 	}
-	// Close the legacy ImmuDB client if present.
+	// Close the legacy client handle if present.
 
 	p.Logger.Debug(spanCtx, "Closed ThebeDB handle",
 		ion.String("database", conn.Database),

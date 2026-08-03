@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// Account ImmuClient constants
+// Accounts DB key constants
 
 const (
 	Prefix    = "address:"
 	DIDPrefix = "did:"
 )
 
-// Immuclient constants
+// Main DB key constants
 const (
 	DEFAULT_PREFIX_TX      = "tx:"
 	PREFIX_BLOCK           = "block:"

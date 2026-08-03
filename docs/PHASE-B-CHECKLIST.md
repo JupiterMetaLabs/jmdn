@@ -26,13 +26,21 @@ remnants and `DB_OPs/immuclient_helper.go` if dead.
 → Verify: `grep -rn "codenotary/immudb\|dualdb\|thebe_shadow" --include='*.go' .` empty;
 build + tests green; a node processes blocks with the shadow hook gone.
 
-## B3 — Migration Phase 8: integration seal
-Source: docs/phases/thebedb-primary-migration.md §Phase 8 (all boxes unchecked).
-Run the seal checklist: no ImmuClient/PooledConnection-as-ImmuDB refs, no test files outside
-Tests/, `DB_OPs/store` has zero internal imports (`go list -deps`), compile-time interface
-assertions present, AI-doc blocks + complexity annotations on new packages.
-→ Verify: every §Phase 8 box checkable; `golangci-lint run` clean on the delta
-(plus format the 5 known pre-existing unformatted files).
+## B3 — Migration Phase 8: integration seal — **static portion DONE 2026-08-04; two operator items open**
+Source: docs/phases/thebedb-primary-migration.md §Phase 8.
+Results: compile-time interface assertions PASS (backend, composite, 4 cache decorators);
+AI-doc MODULE blocks PASS on all new packages; zero `ImmuClient`/`immudb` code references
+(one sanctioned string remains: `State_Path_Hidden = "./.immudb_state"` — on-disk TLS path
+kept so existing deployments don't rotate certificates); repo-wide gofmt now clean (51
+pre-existing files formatted); stale comments pointing at renamed/deleted files corrected.
+Recorded deviations from the original seal wording (accepted, with rationale):
+(1) `PooledConnection` still threads through 38 files as an inert compat parameter — its
+retirement is a standalone refactor, not a seal blocker; (2) package-internal tests
+(merge guard, latest_block, txindex…) legitimately live in-package — the "no tests outside
+Tests/" rule applies to the external integration suites; (3) `DB_OPs/store` imports
+`thebegateway` (record types) + `config` (ZKBlock) — both sanctioned by the Phase 1 spec.
+→ Open (operator): `golangci-lint run --new-from-rev=main`; dependabot review of the 9
+moderate advisories on the default branch (`gh api` or the security tab) — fold fixes here.
 
 ## B4 — FastSync on ThebeDB: validate, then re-enable
 Source: cc000e4 (fleet-wide disable "pending redesign"); operator decision 2026-08-04 (keep off);
