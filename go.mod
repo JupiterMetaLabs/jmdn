@@ -2,9 +2,19 @@ module gossipnode
 
 go 1.25.0
 
+// Local, dev-integration-only link to the standalone AVC consensus module.
+// The spec permits a local `replace` for developer integration testing (a
+// tagged version is required only for production). This maps the avc module
+// to the sibling working copy so the A3 adapter + parity test can build
+// against the real avc code without a published release. Both repos live
+// side by side (~/Block/avc and ~/Block/jmdn), so ../avc resolves in dev and
+// in the sandbox. Do NOT ship this replace to production — pin a tag instead.
+replace github.com/JupiterMetaLabs/avc => ../avc
+
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624070201-0e662a93ce62
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
+	github.com/JupiterMetaLabs/avc v0.0.0
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.4.2
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -194,11 +204,11 @@ require (
 	golang.org/x/arch v0.20.0 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
-	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
+	golang.org/x/telemetry v0.0.0-20260603145448-488200d49c17 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
