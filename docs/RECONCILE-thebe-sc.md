@@ -105,4 +105,10 @@ but hit a hard 9.6G disk ceiling mid-module-download):
     go mod tidy                              # prunes the union-merged go.sum superset
     golangci-lint run --new-from-rev=main    # lint only the merge delta
 
-Phase A gate holds only after build + unit tests are green. Phase B does not start before that.
+**PHASE A GATE CLOSED — 2026-08-04:** `CGO_ENABLED=1 go build ./...` green and
+`go test -short ./...` fully green (operator run, Go 1.26.4/darwin-arm64) after
+three fix rounds on top of the merge: 9c7c74e (merge) → b2c4fa9 (equivocation +
+account-recon Thebe ports, otelsetup fallback, interface-drift test repairs) →
+1eaffd8 (balance-clobber guard #7 port, captureHandle sync-KV, Badger-backed
+contractDB tests, pool-init shims, vet format strings). Integration tests
+(live ImmuDB→ThebeDB infra, seed node) remain to be exercised separately.
