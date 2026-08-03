@@ -109,6 +109,16 @@ type NetworkSettings struct {
 	Mempool           string `mapstructure:"mempool"            yaml:"mempool"`
 	Yggdrasil         bool   `mapstructure:"yggdrasil"          yaml:"yggdrasil"`
 	HeartbeatInterval int    `mapstructure:"heartbeat_interval" yaml:"heartbeat_interval"`
+
+	// Environment names which network this node is part of: "mainnet" or
+	// "testnet". This is a SAFETY GATE, not just metadata — Features.AvcValidation
+	// (the avc consensus-adapter rollout) refuses to run unless this is exactly
+	// "testnet", regardless of the AvcValidation.Enabled flag. Defaults to
+	// "mainnet" (see DefaultConfig) so an operator who never sets this field gets
+	// the safe behavior: the new validation path stays off everywhere until
+	// explicitly opted into on a testnet node. Empty or any other value is
+	// treated as "not testnet" (fail-closed), never as an implicit yes.
+	Environment string `mapstructure:"environment" yaml:"environment"`
 }
 
 // PortSettings groups all port/address assignments.
@@ -219,6 +229,38 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+
+	// AvcValidation controls the staged rollout of the avc-based consensus
+	// validator (consensus/adapters) alongside jmdn's existing
+	// Security.CheckZKBlockValidation. See AvcValidationSettings for the
+	// mode semantics and NetworkSettings.Environment for the testnet-only gate.
+	AvcValidation AvcValidationSettings `mapstructure:"avc_validation" yaml:"avc_validation"`
+}
+
+// AvcValidationSettings controls the staged rollout described in the A3
+// adapter work: shadow mode (compare, don't act) -> feature-flagged enforce
+// (per-node opt-in) -> full cutover (flip the default). Both stages are the
+// SAME code path here; "full cutover" is simply flipping this config's
+// default in DefaultConfig() once shadow mode has run clean for the agreed
+// period — no further code change needed for that step.
+//
+// SAFETY: even with Enabled=true, the validator only runs when
+// NetworkSettings.Environment == "testnet" (see EvaluateShadow in
+// consensus/adapters/shadow.go). This lets ops enable it per-node via yaml
+// without a redeploy, restricted to testnet nodes only, exactly matching the
+// "gradually enable on a few validators, testnet only" rollout plan.
+type AvcValidationSettings struct {
+	// Enabled is the master per-node switch. Default false — opt-in only.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// Mode is "shadow" (default/safe: run the new validator, log any
+	// disagreement with the legacy decision, but the legacy decision still
+	// determines the actual vote) or "enforce" (the new validator's verdict
+	// BECOMES the vote decision; an internal error in this mode fails closed
+	// — rejects the block — rather than silently falling back to legacy).
+	// Any value other than "enforce" (including empty/unrecognized) is
+	// treated as "shadow" — the safe default.
+	Mode string `mapstructure:"mode" yaml:"mode"`
 }
 
 // FastSyncSettings controls FastSync V2 behaviour for this node.

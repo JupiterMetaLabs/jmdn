@@ -1,4 +1,4 @@
-package adapters
+package adapters_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/JupiterMetaLabs/avc/validation"
 
 	"gossipnode/config"
+	"gossipnode/consensus/adapters"
 )
 
 // These tests prove the ADAPTER correctly carries a real jmdn block through
@@ -19,11 +20,12 @@ import (
 //
 // IMPORTANT SCOPE: the stateless/stateful checkers here are STUBS. They prove
 // the PLUMBING — that jmdn's data reaches each phase correctly — NOT the real
-// signature/balance/nonce logic, which jmdn has not implemented yet (those are
-// interfaces.StatelessTxChecker / StatefulTxChecker, injected in a later step).
-// So: "Phase 1 & 2 receive and process jmdn's transactions correctly" is
-// PROVEN here. "Phase 1 & 2 actually verify signatures/balances" is NOT — no
-// real checker exists to test yet.
+// signature/balance/nonce logic (that's covered by checker_test.go's real
+// StatelessChecker/StatefulChecker tests).
+//
+// Package adapters_test (external), not adapters: this file shares the
+// tx()/realBlock() helpers defined in parity_test.go, which itself must be
+// external to avoid an import cycle (see parity_test.go's doc comment).
 
 // recordingStateless records the hex hash of every tx it is asked to check,
 // so the test can prove the adapter delivered exactly the block's transactions.
@@ -82,7 +84,7 @@ func equalOrdered(a, b []string) bool {
 func TestFullFlow_AdapterFeedsAllThreeStages(t *testing.T) {
 	txs := []config.Transaction{tx(0xAA), tx(0xBB), tx(0xCC)}
 	blk := realBlock(txs)
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
 	stateless := &recordingStateless{}
 	stateful := &recordingStateful{}
@@ -98,9 +100,6 @@ func TestFullFlow_AdapterFeedsAllThreeStages(t *testing.T) {
 	}
 
 	want := wantHashes(txs)
-	// Phase 1 must have seen every transaction (order not required — it's
-	// parallel — so compare as sets by length + membership via ordered compare
-	// after avc's deterministic feed; here we just assert count + membership).
 	if len(stateless.seen) != len(want) {
 		t.Fatalf("Phase 1 saw %d txs, want %d — adapter did not deliver all transactions",
 			len(stateless.seen), len(want))
@@ -124,7 +123,7 @@ func TestFullFlow_AdapterFeedsAllThreeStages(t *testing.T) {
 // stops the flow — Phase 2 (the mutating stateful stage) never runs.
 func TestFullFlow_Phase1FailureVetoesBeforePhase2(t *testing.T) {
 	blk := realBlock([]config.Transaction{tx(0xAA), tx(0xBB)})
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
 	stateless := &recordingStateless{failAll: true}
 	stateful := &recordingStateful{}
@@ -149,7 +148,7 @@ func TestFullFlow_Phase1FailureVetoesBeforePhase2(t *testing.T) {
 // vetoed with the stateful reason.
 func TestFullFlow_Phase2FailureVetoes(t *testing.T) {
 	blk := realBlock([]config.Transaction{tx(0xAA), tx(0xBB)})
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
 	v := validation.NewFullValidator(&recordingStateless{}, &recordingStateful{failAll: true}, 0)
 
@@ -166,11 +165,10 @@ func TestFullFlow_Phase2FailureVetoes(t *testing.T) {
 }
 
 // TestFullFlow_NilCheckersFailClosed: DepthFull with no real checkers injected
-// (jmdn's current state) must REJECT, not silently approve or fall back to
-// structural-only. This is the correct behaviour until jmdn supplies checkers.
+// must REJECT, not silently approve or fall back to structural-only.
 func TestFullFlow_NilCheckersFailClosed(t *testing.T) {
 	blk := realBlock([]config.Transaction{tx(0xAA)})
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
 	v := validation.NewFullValidator(nil, nil, 0)
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthFull)

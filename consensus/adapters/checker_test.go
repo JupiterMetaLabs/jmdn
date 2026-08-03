@@ -1,4 +1,4 @@
-package adapters
+package adapters_test
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/config"
+	"gossipnode/consensus/adapters"
 )
 
 // These tests exercise the REAL jmdn validation logic through the checkers:
@@ -22,6 +23,10 @@ import (
 // real SecurityCache populated in-memory with RegisterAccount (no DB). They
 // prove Phase 1 (signature/chainID/hash/value) and Phase 2 (balance/nonce/
 // address) actually verify — not just that the plumbing carries data.
+//
+// Package adapters_test (external): checkerChainID/newKey/signedTxTo/iface/
+// fundedCache are shared with chainid_config_test.go, which needs the
+// external package to avoid the import cycle described in parity_test.go.
 
 var checkerChainID = big.NewInt(1337)
 
@@ -56,7 +61,7 @@ func signedTxTo(t *testing.T, key *ecdsa.PrivateKey, to common.Address, nonce ui
 	}
 }
 
-func iface(tx config.Transaction) interfaces.Transaction { return txAdapter{tx: tx} }
+func iface(tx config.Transaction) interfaces.Transaction { return adapters.NewTxAdapter(tx) }
 
 func fundedCache(entries map[common.Address]struct {
 	balance string
@@ -72,7 +77,7 @@ func fundedCache(entries map[common.Address]struct {
 // --- StatelessChecker --------------------------------------------------------
 
 func TestStatelessChecker_ValidSignedTxPasses(t *testing.T) {
-	sc, err := NewStatelessChecker(checkerChainID)
+	sc, err := adapters.NewStatelessChecker(checkerChainID)
 	if err != nil {
 		t.Fatalf("new checker: %v", err)
 	}
@@ -83,7 +88,7 @@ func TestStatelessChecker_ValidSignedTxPasses(t *testing.T) {
 }
 
 func TestStatelessChecker_WrongChainIDFails(t *testing.T) {
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	tx := signedTxTo(t, newKey(t), common.HexToAddress("0x00000000000000000000000000000000000000ff"), 0, 1)
 	tx.ChainID = big.NewInt(9999) // does not match the checker's configured chain id
 	if err := sc.CheckTx(context.Background(), iface(tx)); err == nil {
@@ -92,7 +97,7 @@ func TestStatelessChecker_WrongChainIDFails(t *testing.T) {
 }
 
 func TestStatelessChecker_TamperedHashFails(t *testing.T) {
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	tx := signedTxTo(t, newKey(t), common.HexToAddress("0x00000000000000000000000000000000000000ff"), 0, 1)
 	tx.Hash = common.HexToHash("0xdeadbeef") // no longer matches the content hash
 	if err := sc.CheckTx(context.Background(), iface(tx)); err == nil {
@@ -101,7 +106,7 @@ func TestStatelessChecker_TamperedHashFails(t *testing.T) {
 }
 
 func TestStatelessChecker_BadSignatureFails(t *testing.T) {
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	tx := signedTxTo(t, newKey(t), common.HexToAddress("0x00000000000000000000000000000000000000ff"), 0, 1)
 	// Corrupt the sender so the recovered signer no longer matches From.
 	other := common.HexToAddress("0x000000000000000000000000000000000000dEaD")
@@ -112,7 +117,7 @@ func TestStatelessChecker_BadSignatureFails(t *testing.T) {
 }
 
 func TestStatelessChecker_NegativeValueFails(t *testing.T) {
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	tx := signedTxTo(t, newKey(t), common.HexToAddress("0x00000000000000000000000000000000000000ff"), 0, 1)
 	tx.Value = big.NewInt(-5) // value gate must reject
 	if err := sc.CheckTx(context.Background(), iface(tx)); err == nil {
@@ -121,17 +126,17 @@ func TestStatelessChecker_NegativeValueFails(t *testing.T) {
 }
 
 func TestStatelessChecker_NonJmdnBackedFailsClosed(t *testing.T) {
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	if err := sc.CheckTx(context.Background(), foreignTx{}); err == nil {
 		t.Fatal("a non-jmdn-backed transaction must be rejected fail-closed")
 	}
 }
 
 func TestNewStatelessChecker_RejectsZeroChainID(t *testing.T) {
-	if _, err := NewStatelessChecker(big.NewInt(0)); err == nil {
+	if _, err := adapters.NewStatelessChecker(big.NewInt(0)); err == nil {
 		t.Fatal("chain id 0 must be refused")
 	}
-	if _, err := NewStatelessChecker(nil); err == nil {
+	if _, err := adapters.NewStatelessChecker(nil); err == nil {
 		t.Fatal("nil chain id must be refused")
 	}
 }
@@ -149,7 +154,7 @@ func TestStatefulChecker_SufficientFundsPassesAndApplies(t *testing.T) {
 		from: {"1000000000000000000", 0},
 		to:   {"0", 0},
 	})
-	sfc, err := NewStatefulChecker(cache)
+	sfc, err := adapters.NewStatefulChecker(cache)
 	if err != nil {
 		t.Fatalf("new checker: %v", err)
 	}
@@ -178,7 +183,7 @@ func TestStatefulChecker_InsufficientFundsFails(t *testing.T) {
 		from: {"5", 0}, // nowhere near value+gas
 		to:   {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 	tx := signedTxTo(t, key, to, 0, 100)
 	if err := sfc.CheckAndApply(context.Background(), iface(tx)); err == nil {
 		t.Fatal("an underfunded tx must be rejected")
@@ -196,7 +201,7 @@ func TestStatefulChecker_StaleNonceFails(t *testing.T) {
 		from: {"1000000000000000000", 5}, // account already at nonce 5
 		to:   {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 	tx := signedTxTo(t, key, to, 3, 1) // nonce 3 < expected 5
 	if err := sfc.CheckAndApply(context.Background(), iface(tx)); err == nil {
 		t.Fatal("a stale (too-low) nonce must be rejected")
@@ -213,7 +218,7 @@ func TestStatefulChecker_MissingSenderFails(t *testing.T) {
 	}{
 		to: {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 	tx := signedTxTo(t, key, to, 0, 1)
 	if err := sfc.CheckAndApply(context.Background(), iface(tx)); err == nil {
 		t.Fatal("a tx from an unknown sender must be rejected")
@@ -235,7 +240,7 @@ func TestStatefulChecker_IntraBlockDoubleSpendCaught(t *testing.T) {
 		from: {"30000", 0},
 		to:   {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 
 	first := signedTxTo(t, key, to, 0, 1)
 	if err := sfc.CheckAndApply(context.Background(), iface(first)); err != nil {
@@ -249,14 +254,14 @@ func TestStatefulChecker_IntraBlockDoubleSpendCaught(t *testing.T) {
 
 func TestStatefulChecker_NonJmdnBackedFailsClosed(t *testing.T) {
 	cache := Security.NewSecurityCache()
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 	if err := sfc.CheckAndApply(context.Background(), foreignTx{}); err == nil {
 		t.Fatal("a non-jmdn-backed transaction must be rejected fail-closed")
 	}
 }
 
 func TestNewStatefulChecker_RejectsNilCache(t *testing.T) {
-	if _, err := NewStatefulChecker(nil); err == nil {
+	if _, err := adapters.NewStatefulChecker(nil); err == nil {
 		t.Fatal("a nil cache must be refused")
 	}
 }
@@ -282,9 +287,9 @@ func TestEndToEnd_RealBlockRealCheckersApproves(t *testing.T) {
 		signedTxTo(t, key, to, 1, 1),
 	}
 	blk := realBlock(txs)
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	cache := fundedCache(map[common.Address]struct {
 		balance string
 		nonce   uint64
@@ -292,7 +297,7 @@ func TestEndToEnd_RealBlockRealCheckersApproves(t *testing.T) {
 		from: {"1000000000000000000", 0},
 		to:   {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 
 	v := validation.NewFullValidator(sc, sfc, 0)
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthFull)
@@ -317,9 +322,9 @@ func TestEndToEnd_UnderfundedBlockRejected(t *testing.T) {
 		signedTxTo(t, key, to, 1, 1),
 	}
 	blk := realBlock(txs)
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
-	sc, _ := NewStatelessChecker(checkerChainID)
+	sc, _ := adapters.NewStatelessChecker(checkerChainID)
 	cache := fundedCache(map[common.Address]struct {
 		balance string
 		nonce   uint64
@@ -327,7 +332,7 @@ func TestEndToEnd_UnderfundedBlockRejected(t *testing.T) {
 		from: {"25000", 0}, // enough for one transfer (~21001), not two
 		to:   {"0", 0},
 	})
-	sfc, _ := NewStatefulChecker(cache)
+	sfc, _ := adapters.NewStatefulChecker(cache)
 
 	v := validation.NewFullValidator(sc, sfc, 0)
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthFull)

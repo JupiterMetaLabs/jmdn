@@ -1,4 +1,4 @@
-package adapters
+package adapters_test
 
 import (
 	"strings"
@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"gossipnode/config"
+	"gossipnode/consensus/adapters"
 	"gossipnode/messaging"
 )
 
@@ -21,6 +22,14 @@ import (
 // until it is green again. jmdn's generators
 // (messaging.RecomputeBlockHashFromTxs / messaging.RecomputeTxnsRoot) are pure
 // functions over the transaction list (no DB), so this runs standalone.
+//
+// NOTE: this file lives in package adapters_test (external test package), not
+// package adapters, SPECIFICALLY to avoid an import cycle: this file imports
+// gossipnode/messaging, and messaging imports gossipnode/Vote, which (as of
+// the A3 wiring) imports gossipnode/consensus/adapters. Putting this test in
+// the same internal package as adapters would make the test binary's import
+// graph cyclic. Using the external adapters_test package breaks the cycle
+// because adapters (the production package) itself never imports messaging.
 
 // tx builds a config.Transaction with a deterministic 32-byte hash from a seed
 // byte, mirroring how the block generator populates Transaction.Hash upstream.
@@ -53,7 +62,7 @@ func TestParity_BlockHash_AvcMatchesJmdn(t *testing.T) {
 	}
 	for i, txs := range cases {
 		blk := realBlock(txs)
-		ad := NewZKBlockAdapter(blk)
+		ad := adapters.NewZKBlockAdapter(blk)
 
 		jmdnHash := blk.BlockHash.Hex() // jmdn's generator output
 		avcHash := validation.RecomputeBlockHashFromTxs(ad.Transactions())
@@ -74,7 +83,7 @@ func TestParity_TxnsRoot_AvcMatchesJmdn(t *testing.T) {
 	}
 	for i, txs := range cases {
 		blk := realBlock(txs)
-		ad := NewZKBlockAdapter(blk)
+		ad := adapters.NewZKBlockAdapter(blk)
 
 		jmdnRoot := blk.TxnsRoot // jmdn's generator output
 		avcRoot := validation.RecomputeTxnsRoot(ad.Transactions())
@@ -91,7 +100,7 @@ func TestParity_TxnsRoot_AvcMatchesJmdn(t *testing.T) {
 // path a buddy node would take. A self-consistent jmdn block must be approved.
 func TestParity_StructuralValidatorAcceptsRealBlock(t *testing.T) {
 	blk := realBlock([]config.Transaction{tx(0xAA), tx(0xBB), tx(0xCC)})
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 
 	v := validation.NewStructuralValidator()
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthStructural)
@@ -117,7 +126,7 @@ func TestParity_StructuralValidatorRejectsTamperedBlock(t *testing.T) {
 	// sequencer substituting a body would produce.
 	blk.Transactions[2] = tx(0xDD)
 
-	ad := NewZKBlockAdapter(blk)
+	ad := adapters.NewZKBlockAdapter(blk)
 	v := validation.NewStructuralValidator()
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthStructural)
 	if err != nil {
@@ -138,7 +147,7 @@ func TestParity_TypedNilBlockIsRejectedNotPanic(t *testing.T) {
 			t.Fatalf("typed-nil block must be rejected, not panic: %v", r)
 		}
 	}()
-	ad := NewZKBlockAdapter(nil)
+	ad := adapters.NewZKBlockAdapter(nil)
 	v := validation.NewStructuralValidator()
 	verdict, err := v.ValidateBlock(ad, interfaces.DepthStructural)
 	if err != nil {

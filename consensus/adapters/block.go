@@ -49,6 +49,12 @@ func (t txAdapter) TxHashBytes() []byte {
 // the host-agnostic boundary is preserved.
 func (t txAdapter) JMDNTransaction() config.Transaction { return t.tx }
 
+// NewTxAdapter wraps a single config.Transaction as an interfaces.Transaction.
+// Exported so callers (including tests in package adapters_test, which cannot
+// see the unexported txAdapter type) can build one transaction's adapter
+// directly, without going through a whole ZKBlockAdapter.
+func NewTxAdapter(tx config.Transaction) interfaces.Transaction { return txAdapter{tx: tx} }
+
 // jmdnBacked is implemented by any interfaces.Transaction that wraps a real
 // config.Transaction (i.e. txAdapter). The checkers assert to this to recover
 // the concrete transaction; a value that does not implement it is rejected

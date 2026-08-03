@@ -9,11 +9,13 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Security"
+	"gossipnode/consensus/adapters"
 
 	"time"
 
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
+	"gossipnode/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -96,6 +98,13 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 	// Check the Three security checks from the Security Module
 	status, err := Security.CheckZKBlockValidation(zkBlock)
+
+	// A3 wiring: optionally run the avc-based validator alongside (shadow) or
+	// in place of (enforce) the check above. EvaluateShadow is a strict no-op
+	// — returns status/err completely unchanged — unless this node has
+	// explicitly opted in via config (Features.AvcValidation.Enabled=true AND
+	// Network.Environment=="testnet"). See consensus/adapters/shadow.go.
+	status, err = adapters.EvaluateShadow(spanCtx, settings.Get(), zkBlock, status, err)
 
 	if !status || err != nil {
 		// VOTE REJECTED (-1)

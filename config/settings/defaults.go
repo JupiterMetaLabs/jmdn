@@ -20,6 +20,10 @@ func DefaultConfig() NodeConfig {
 			Mempool:           "",
 			Yggdrasil:         true,
 			HeartbeatInterval: 10,
+			// Fail-safe default: an operator who never sets this gets "mainnet",
+			// which keeps Features.AvcValidation off regardless of its own
+			// Enabled flag (see AvcValidationSettings doc comment).
+			Environment: "mainnet",
 		},
 		Ports: PortSettings{
 			API:       0, // disabled
@@ -88,6 +92,12 @@ func DefaultConfig() NodeConfig {
 		Features: FeatureSettings{
 			UseLegacyBFT: false,
 			GROTrack:     false,
+			// Off by default everywhere; opt in per-node via yaml, and only takes
+			// effect on a node whose Network.Environment is "testnet".
+			AvcValidation: AvcValidationSettings{
+				Enabled: false,
+				Mode:    "shadow",
+			},
 		},
 		FastSync: FastSyncSettings{
 			Enabled:           true,
