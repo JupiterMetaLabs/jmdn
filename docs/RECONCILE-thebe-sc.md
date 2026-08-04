@@ -64,6 +64,22 @@ where their original ImmuDB implementations were deleted.
 | DB_OPs/Accounts_helper.go | stats seed helpers (52aec00) | Deleted; no external callers (CountBuilder duplicated by branch's count_builder.go; seed uses ported CountAccountsWithTimeout) |
 | DB_OPs/Nodeinfo/immudb_data_writer.go | c010de1 fastsync apply consistency | Tail ported into **thebe_data_writer.go**: didWriteBlock/highestWritten tracking, `DeferLatestBlockAdvance` during FastSync sessions, single MONOTONIC latest_block advance, notify only after real writes |
 
+## Post-merge resolution corrections (found during Phase B, both fixed)
+
+1. **blockPropagation hunk-3 resolution dropped the branch's `PrefetchMissingContracts`
+   call** (receive-path pull-on-demand hook, remove/immudb:326). Zero callers remained —
+   a Type-2 call on a node missing the bytecode would have fallen through to the transfer
+   path. Restored at the same point in the v2 flow (after admitZKBlock, before
+   ProcessBlockTransactions) in 3fb140e.
+2. **Compat pool shims contradicted their doc contract** — bodies always returned an
+   error, so three resolutions that trusted the documented "synthetic nil-conn" behavior
+   (main.go boot acquisition, receive-goroutine acquisition, Security.AllChecks) would
+   have failed at runtime, invisible to unit tests. Shims now return (nil, nil) — the
+   codebase-wide "use the process ThebeHandle" sentinel — and the dead acquisitions were
+   removed (409ed52).
+
+Lesson recorded: for merged-in compat layers, verify the BODY, not the doc comment.
+
 ## Follow-ups (non-blocking, tracked for Phase B)
 
 1. `DB_OPs/account_recon.go` still imports codenotary/immudb → port, then complete migration
