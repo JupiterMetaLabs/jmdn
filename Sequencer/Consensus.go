@@ -297,9 +297,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 	}
 
-	if len(MainCandidates) < config.MaxMainPeers {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
-			len(MainCandidates), config.MaxMainPeers, len(reachablePeers), len(stats.GetUnreachablePeers()))
+	// FORM AT QUORUM, NOT AT FULL STRENGTH. Voting needs ByzantineQuorum(n); demanding
+	// all n here made one absent member halt the chain (see Sequencer/committee_quorum.go).
+	requiredPeers := requiredMainPeers()
+	if len(MainCandidates) < requiredPeers {
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need at least %d (BFT quorum; committee cap %d). Connected: %d, Unreachable: %d",
+			len(MainCandidates), requiredPeers, config.MaxMainPeers, len(reachablePeers), len(stats.GetUnreachablePeers()))
 
 		splitSpan.RecordError(fmt.Errorf("%s", ErrorMessage))
 		splitSpan.SetAttributes(
@@ -1144,9 +1147,10 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 		ion.Int("expected_peers", config.MaxMainPeers),
 		ion.String("function", "Consensus.VerifySubscriptions"))
 
-	// Verify that we have the expected number of subscribers
-	if len(verifiedPeerIDs) != config.MaxMainPeers {
-		err := fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), config.MaxMainPeers)
+	// Verify we have at least a BFT quorum of subscribers (not the full committee —
+	// see Sequencer/committee_quorum.go).
+	if minVerified := requiredMainPeers(); len(verifiedPeerIDs) < minVerified {
+		err := fmt.Errorf("insufficient verified peers: got %d, need at least %d (BFT quorum; committee cap %d)", len(verifiedPeerIDs), minVerified, config.MaxMainPeers)
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "count_mismatch"))
 		duration := time.Since(startTime).Seconds()

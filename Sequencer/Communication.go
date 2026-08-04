@@ -203,8 +203,9 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	mainPeersCount := len(consensus.PeerList.MainPeers)
 	backupPeersCount := len(consensus.PeerList.BackupPeers)
 
-	if mainPeersCount+backupPeersCount < config.MaxMainPeers {
-		return fmt.Errorf("not enough peers to achieve consensus: got %d main + %d backup = %d total, need at least %d (MaxMainPeers)", mainPeersCount, backupPeersCount, mainPeersCount+backupPeersCount, config.MaxMainPeers)
+	// Quorum, not full strength — see Sequencer/committee_quorum.go.
+	if minPeers := requiredMainPeers(); mainPeersCount+backupPeersCount < minPeers {
+		return fmt.Errorf("not enough peers to achieve consensus: got %d main + %d backup = %d total, need at least %d (BFT quorum; committee cap %d)", mainPeersCount, backupPeersCount, mainPeersCount+backupPeersCount, minPeers, config.MaxMainPeers)
 	}
 
 	// First, try main peers (MaxMainPeers)
@@ -315,8 +316,9 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 				totalAccepted,
 			)
 
-			// Ensure we have enough subscribers (allow over-subscription, deny under-subscription)
-			if totalAccepted < config.MaxMainPeers {
+			// Ensure we have at least a BFT quorum of subscribers (allow
+			// over-subscription; see Sequencer/committee_quorum.go).
+			if minSubs := requiredMainPeers(); totalAccepted < minSubs {
 				// Get accepted peer IDs from tracker
 				acceptedPeers := tracker.GetBuddyNodes()
 
@@ -327,7 +329,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 				}
 				peerIDsStr := strings.Join(peerIDStrings, "\n")
 
-				return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d MaxMainPeers (1 creator + MaxMainPeers subscribers).\nAccepted peer IDs:\n%s", totalAccepted, config.MaxMainPeers, peerIDsStr)
+				return fmt.Errorf("insufficient subscribers for consensus: got %d, need at least %d (BFT quorum; committee cap %d).\nAccepted peer IDs:\n%s", totalAccepted, minSubs, config.MaxMainPeers, peerIDsStr)
 			}
 
 			// Handle over-subscription case (log warning, but proceed)
@@ -356,8 +358,9 @@ func setFinalConsensusPeers(consensus *Consensus, finalPeers []peer.ID) {
 	if consensus == nil {
 		return
 	}
-	if len(finalPeers) != config.MaxMainPeers {
-		// Defensive: only set when we have the exact final committee size.
+	if len(finalPeers) < requiredMainPeers() || len(finalPeers) > config.MaxMainPeers {
+		// Defensive: accept any committee between the BFT quorum and the cap
+		// (see Sequencer/committee_quorum.go); reject anything outside that band.
 		return
 	}
 
@@ -591,9 +594,14 @@ func askPeersForSubscription(
 // Final buddy nodes are selected by trying main candidates first, then filling from backup candidates
 // After selection, only the final connected peers are kept (no backup peers stored separately)
 func ValidateConsensusConfiguration(consensus *Consensus) error {
-	// Check main peers count (should be exactly MaxMainPeers - these are the final connected buddy nodes)
-	if len(consensus.PeerList.MainPeers) != config.MaxMainPeers {
-		return fmt.Errorf("main peers count must be exactly %d (final buddy nodes), got %d", config.MaxMainPeers, len(consensus.PeerList.MainPeers))
+	// Main peers must be between the BFT quorum and the committee cap — a round
+	// formed at quorum is valid (see Sequencer/committee_quorum.go).
+	minMain := requiredMainPeers()
+	if len(consensus.PeerList.MainPeers) < minMain {
+		return fmt.Errorf("main peers count must be at least %d (BFT quorum; committee cap %d), got %d", minMain, config.MaxMainPeers, len(consensus.PeerList.MainPeers))
+	}
+	if len(consensus.PeerList.MainPeers) > config.MaxMainPeers {
+		return fmt.Errorf("main peers count must not exceed %d (committee cap), got %d", config.MaxMainPeers, len(consensus.PeerList.MainPeers))
 	}
 
 	// Backup peers are now optional/empty - they're only used during selection, not stored separately
@@ -630,10 +638,11 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		allPeers[peerID] = true
 	}
 
-	// Total peers validation: only check main peers (backup peers may be empty)
+	// Total peers validation: only check main peers (backup peers may be empty).
+	// Band, not equality — see Sequencer/committee_quorum.go.
 	totalPeers := len(consensus.PeerList.MainPeers)
-	if totalPeers != config.MaxMainPeers {
-		return fmt.Errorf("total main peers count must be exactly %d (final buddy nodes), got %d", config.MaxMainPeers, totalPeers)
+	if totalPeers < minMain || totalPeers > config.MaxMainPeers {
+		return fmt.Errorf("total main peers count must be between %d (BFT quorum) and %d (committee cap), got %d", minMain, config.MaxMainPeers, totalPeers)
 	}
 
 	log.Printf("Consensus configuration validated: %d final buddy nodes (main peers), %d backup peers (1 creator + %d active = %d total allowed)",
