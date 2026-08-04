@@ -4,28 +4,24 @@ import (
 	"fmt"
 
 	avccfg "github.com/JupiterMetaLabs/avc/config"
+	"github.com/JupiterMetaLabs/avc/engine"
+	"github.com/JupiterMetaLabs/avc/interfaces"
 
 	blssigner "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config/settings"
 )
 
-// BLOCKER for runtime engine construction (BuildEngine, intentionally NOT in
-// this file yet): importing avc/engine pulls github.com/JupiterMetaLabs/avc/bft/proto,
-// which registers a protobuf file named "bft.proto" — the SAME file name jmdn's
-// own gossipnode/AVC/BFT/proto already registers. Two packages registering the
-// same proto path in one binary panics at init:
-//
-//	proto: file "bft.proto" is already registered
-//	  previously from: "github.com/JupiterMetaLabs/avc/bft/proto"
-//	  currently from:  "gossipnode/AVC/BFT/proto"
-//
-// This is a LINK/INIT-time collision, so no runtime feature flag can gate around
-// it: the moment a jmdn binary imports avc/engine, it crashes on startup. It
-// must be resolved first by giving avc's bft proto a UNIQUE file path + proto
-// package + go_package and regenerating (parity plan A1 "regenerate protobuf
-// from one canonical source"). Until then, avc's config can be assembled here
-// (BuildAVCConfig, below — no proto import) but the engine cannot be constructed
-// inside the jmdn binary.
+// RESOLVED BLOCKER (kept for history): importing avc/engine used to pull
+// github.com/JupiterMetaLabs/avc/bft/proto, which registers a protobuf file
+// "bft.proto" — the same name jmdn's gossipnode/AVC/BFT/proto registers — and
+// panicked at init ("proto: file bft.proto is already registered"). That link is
+// now severed: the live avc path (engine -> sequencer/trigger) takes its quorum
+// math from the proto-free github.com/JupiterMetaLabs/avc/quorum package and no
+// longer imports package bft, so avc/engine no longer transitively links
+// bft/proto. BuildEngine below can therefore be constructed inside the jmdn
+// binary. (A full A1 proto regen — unique namespaces for avc's own bft.proto —
+// is still worthwhile if the dormant bft gRPC engine is ever wired, but is no
+// longer required for this integration.)
 
 // This file is the single assembly point where the avc consensus module is
 // configured to MATCH jmdn's live consensus, closing three parity-audit
@@ -100,11 +96,40 @@ func BuildAVCConfigFromSettings(networkSalt string) (avccfg.Config, error) {
 	return BuildAVCConfig(blssigner.DomainChainID(), committeeSize, networkSalt, cfg.Network.SeedNode)
 }
 
-// NOTE: BuildEngine (constructing *engine.Engine with the host adapters and
-// SetValidationDepth for #5) is deliberately omitted until the bft.proto
-// namespace collision above is resolved — see the package-level blocker comment.
-// Once avc's bft proto is regenerated under a unique namespace, BuildEngine
-// becomes a small function: engine.New(cfg, pubSub, node, peerLister,
-// seedClient, sink, validator) + eng.SetValidationDepth(depth), gated behind
-// Features.AvcValidation. It is scoped out here so this package still links and
-// tests cleanly inside the jmdn binary today.
+// BuildEngine assembles a ready-to-Start avc engine from the host adapters.
+//
+// seedClient MUST surface AUTHORITY-VERIFIED committee BLS keys (use
+// *SeedNodeAdapter) — that is what makes Fix #2's committee authorization real.
+// validationDepth selects the pre-vote check: interfaces.DepthStructural
+// (hash/merkle only) or interfaces.DepthFull.
+//
+// DEPTHFULL CAVEAT (#5 stateful checks): DepthFull requires a validator that
+// runs stateful (balance/nonce) checks against a PER-BLOCK account cache loaded
+// from ImmuDB. StatefulChecker (stateful_checker.go) implements the checks, but
+// its cache must be (re)loaded per block, which a single injected BlockValidator
+// does not do on its own. Passing DepthFull with a structural-only validator
+// silently runs only structural checks; passing it with a FullValidator whose
+// cache is not per-block-loaded fails closed (rejects). Real stateful validation
+// therefore still needs a per-block validator/cache lifecycle (the
+// runFullValidatorAgainstDB pattern in shadow.go). Pass DepthStructural until
+// that lifecycle is wired.
+//
+// Nothing here starts consensus; activation stays gated behind
+// Features.AvcValidation (Enabled + Mode + Network.Environment=="testnet").
+func BuildEngine(
+	cfg avccfg.Config,
+	pubSub interfaces.PubSubPublisher,
+	node interfaces.NodeConfigProvider,
+	peerLister interfaces.PeerLister,
+	seedClient interfaces.SeedNodeClient,
+	sink interfaces.VoteResultSink,
+	validator interfaces.BlockValidator,
+	validationDepth interfaces.ValidationDepth,
+) (*engine.Engine, error) {
+	if seedClient == nil {
+		return nil, fmt.Errorf("adapters.BuildEngine: nil seedClient (need verified-committee source for Fix #2 authorization)")
+	}
+	eng := engine.New(cfg, pubSub, node, peerLister, seedClient, sink, validator)
+	eng.SetValidationDepth(validationDepth)
+	return eng, nil
+}
