@@ -1,8 +1,15 @@
 # ADR-001: Contract Address Propagation — Sequencer-Initiated, Post-Consensus
 
-**Status:** Proposed  
-**Date:** 2026-04-14  
+**Status:** Superseded by Amendment 1 (pull-on-demand) — 2026-08-04  
+**Date:** 2026-04-14 (original) / 2026-08-04 (amendment)  
 **Deciders:** SmartContract / BlockProcessing / Messaging owners
+
+> The original decision below (sequencer-initiated push after consensus) was
+> never shipped: it depended on `ProcessBlockTransactions` returning
+> `[]ContractDeploymentInfo`, and main's per-tx-atomic rewrite of
+> `Processing.go` (AVC v2 line) removed that return path. The implemented
+> design is **pull-on-demand** — see Amendment 1 at the end of this document.
+> The original text is retained unchanged for historical context.
 
 ---
 
@@ -270,3 +277,75 @@ if err := messaging.InitContractPropagation(); err != nil {
 - [ ] Register `HandleContractStream` + call `InitContractPropagation` in `main.go`
 - [ ] Smoke test: deploy via Node A (sequencer), verify `GetContractCode` returns ABI on Node B without re-deployment
 - [ ] **[Phase 2]** Design and implement pull-on-demand fallback for nodes that miss the propagation window (sequencer offline, partition, etc.)
+
+
+---
+
+## Amendment 1 — Pull-on-Demand (implemented design), 2026-08-04
+
+### Why the push model was retired
+
+Two main-line changes invalidated the original plan's mechanics:
+
+1. `messaging/BlockProcessing/Processing.go` was rewritten for per-tx-atomic
+   apply (staged mutations + marker-last commit). `processTransaction` no
+   longer returns `ContractDeploymentInfo`, so there is nothing for the
+   sequencer to collect and push (see the `NOTE(F4 merge)` in
+   `messaging/ContractPropagation.go`).
+2. Apply-before-broadcast (7a0b56f) reordered the sequencer flow the original
+   call diagram assumed (broadcast-then-apply). With local apply first, every
+   node that processes the block executes the deployment EVM code itself and
+   stores the bytecode locally — push propagation of bytecode became largely
+   redundant; only the registry/ABI layer and missed-block catch-up remain.
+
+### What is actually implemented
+
+Components (all in `messaging/ContractPropagation.go`, wired in `main.go`):
+
+| Piece | Protocol | Role |
+|---|---|---|
+| `HandleContractPullStream` / `buildPullResponse` | `/gossipnode/contract/pull/1.0.0` | Serves bytecode + deployer + txHash + blockNumber + ABI for a requested address from the local store/registry |
+| `PullContractIfMissing` | (client side of pull) | Shuffled peer order, 3 s dial timeout per peer, 25 MB response cap; stores **bytecode first** (`StoreCodeBytes` → `HasCode` becomes true so execution can proceed), then registry metadata best-effort (`RegisterContractFromGossip`) |
+| `PrefetchMissingContracts` | — | Receive-path hook: scans a block's Type-2 txs and pulls any missing contract **before** `ProcessBlockTransactions` (restored in 3fb140e after being dropped in a merge-resolution hunk) |
+| `HandleContractStream` / `forwardContract` | `/gossipnode/contract/1.0.0` | RELAY-ONLY gossip: bloom-filter dedup, hop-limited re-forward, registry write. Nothing originates these messages anymore — the only `NewStream` on this protocol is the relay's own re-forward |
+
+Flow on the receive path (post-7a0b56f ordering):
+
+```
+HandleBlockStream
+  └─► admitZKBlock gate (hash recompute, certificate 2f+1, equivocation)
+        └─► forward (gated)                     [unchanged v2 flow]
+        └─► process goroutine
+              ├─► PrefetchMissingContracts      ◄── pull for any Type-2 tx
+              │     └─► PullContractIfMissing → peers until Found
+              │           ├─ StoreCodeBytes (bytecode FIRST)
+              │           └─ RegisterContractFromGossip (metadata, best-effort)
+              └─► ProcessBlockTransactions (EVM executes; deployments write
+                  bytecode locally on every processing node)
+```
+
+### Failure direction to watch
+
+If a pull finds no peer with the contract, `PrefetchMissingContracts` logs and
+continues — the Type-2 tx then executes without local bytecode and falls
+through to the regular transfer path. That is the divergence class this
+mechanism exists to prevent, and the primary assertion of the validation
+below. (Fail-closed alternative — reject the block when a pull exhausts all
+peers — is the documented follow-up if validation shows fall-through in
+practice.)
+
+### Two-node validation (gates closing checklist item B5)
+
+1. Node A (sequencer) + Node B up on the Thebe stack, connected.
+2. Deploy `SmartContract/example/HelloWorld.sol` via node A's gRPC
+   (`SmartContract/grpcurl_commands.txt`); note the contract address.
+3. On node B after the block applies: `GetContractCode` must return the
+   bytecode and the registry must hold the ABI (pull or local execution both
+   acceptable sources).
+4. Cold-catch-up case: start node C AFTER the deployment block; let it sync;
+   submit a call tx to the contract routed through C. Assert C's log shows
+   `ContractPull: pre-fetching missing contract` (or `HasCode` already true via
+   sync) and the call executes as a contract call — never as a value transfer.
+5. Negative probe: isolate a node from all peers holding the code, replay the
+   call block, and confirm the fall-through log fires — this documents the
+   current fail-open behavior explicitly.
