@@ -1,5 +1,13 @@
 # Architectural Decisions: StateDB Integration
 
+> **Storage backend note (2026-08-04, feat/thebe-sc-layer):** contract code and
+> storage persist through `DB_OPs/contractDB` (`KVStateRepository` /
+> `kv_state_batch`) into **ThebeDB's KV store (BadgerDB)** — receipts and the
+> contract registry project through `cassata`/`thebegateway`. References to
+> **PebbleDB** (and ImmuDB global state) below are from the original design and
+> are retained as historical context; no Pebble code path exists on this branch.
+
+
 ## Decision Summary
 
 **Date:** 2026-01-30  
@@ -32,7 +40,7 @@ Adopt **Ethereum-style StateDB** architecture as the single source of truth for 
 3. **Journal-Based Reverts**: In-memory snapshots and rollbacks, no database rollbacks
 4. **Separation of Storage**:
    - Account data (balances, nonces) → DID Service via gRPC
-   - Contract data (code, storage) → PebbleDB
+   - Contract data (code, storage) → ThebeDB KV (originally PebbleDB — see note above)
 5. **Consensus-Ready**: `commitToDB` flag enables sequencer vs buddy node modes
 
 ## Architecture

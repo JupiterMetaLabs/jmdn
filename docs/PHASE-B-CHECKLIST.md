@@ -42,7 +42,7 @@ Tests/" rule applies to the external integration suites; (3) `DB_OPs/store` impo
 → Open (operator): `golangci-lint run --new-from-rev=main`; dependabot review of the 9
 moderate advisories on the default branch (`gh api` or the security tab) — fold fixes here.
 
-## B4 — FastSync on ThebeDB: validate, then re-enable
+## B4 — FastSync on ThebeDB: validate, then re-enable — **SKIPPED by operator (2026-08-04); FastSync remains disabled. Revisit before any re-enable.**
 Source: cc000e4 (fleet-wide disable "pending redesign"); operator decision 2026-08-04 (keep off);
 main's c010de1 machinery (sync_session.go, DeferLatestBlockAdvance, thebe_data_writer tail).
 Two-node sync test on the Thebe backend: fresh node fastsyncs from a seeded node; session
@@ -51,7 +51,7 @@ reconciliation converges balances (watch the transient-negative warning path in 
 → Verify: synced node's statefingerprint matches the source at equal height; then flip the
 default in config/settings/defaults.go on its own commit.
 
-## B5 — Contract propagation: validate pull-on-demand + amend ADR-001
+## B5 — Contract propagation — **ADR-001 amended + prefetch regression fixed (3fb140e, 0e31040); two-node validation pending infra**
 Source: docs/ADR-001 (status Proposed, push model) — superseded in-branch by
 messaging/ContractPropagation.go (F4 note: push retired, pull-on-demand via
 ContractPullProtocol; RegisterContractFromGossip fills registry+ABI).
@@ -60,7 +60,7 @@ double-registration; apply-before-broadcast ordering (7a0b56f) holds around depl
 → Verify: two-node deploy/call/pull test green; ADR-001 updated to Superseded/Amended with the
 pull design + post-7a0b56f call flow.
 
-## B6 — Smart-contract layer hardening pass
+## B6 — Smart-contract layer hardening — **doc refresh DONE (storage-reality banners, ThebeDB participant); live EVM E2E pending infra**
 Source: SmartContract/README.md, architecture.md, processing_changes.md, smart_contract_flow.md.
 End-to-end EVM paths on a live node: deploy (HelloWorld/SimpleToken), call, payable transfer,
 receipt + logs via gETH; contract state through contractDB→Thebe KV (no Pebble); StateDB

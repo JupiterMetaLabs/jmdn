@@ -1,5 +1,13 @@
 # Smart Contract Consensus Architecture
 
+> **Storage backend note (2026-08-04, feat/thebe-sc-layer):** contract code and
+> storage persist through `DB_OPs/contractDB` (`KVStateRepository` /
+> `kv_state_batch`) into **ThebeDB's KV store (BadgerDB)** — receipts and the
+> contract registry project through `cassata`/`thebegateway`. References to
+> **PebbleDB** (and ImmuDB global state) below are from the original design and
+> are retained as historical context; no Pebble code path exists on this branch.
+
+
 This document outlines the lifecycle of a smart contract transaction within the JMZK Decentralized Network. It details how the network achieves consensus on smart contract execution and precisely how "payable" value transfers are handled.
 
 ## 1. High-Level Flow (Mermaid Diagram)
@@ -12,7 +20,7 @@ sequenceDiagram
     participant Seq as Sequencer
     participant BP as Block Processing (All Nodes)
     participant VM as EVM Executor
-    participant State as Global State (ImmuDB)
+    participant State as Global State (ThebeDB)
 
     Note over User, API: 1. Submission Phase
     User->>API: Submit Signed Tx (Data + Value)

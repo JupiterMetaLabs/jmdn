@@ -1,5 +1,13 @@
 # Smart Contract Module
 
+> **Storage backend note (2026-08-04, feat/thebe-sc-layer):** contract code and
+> storage persist through `DB_OPs/contractDB` (`KVStateRepository` /
+> `kv_state_batch`) into **ThebeDB's KV store (BadgerDB)** — receipts and the
+> contract registry project through `cassata`/`thebegateway`. References to
+> **PebbleDB** (and ImmuDB global state) below are from the original design and
+> are retained as historical context; no Pebble code path exists on this branch.
+
+
 ## Overview
 
 The Smart Contract module provides **Ethereum-compatible smart contract execution** for the JMZK Decentralized Network. It implements a full EVM (Ethereum Virtual Machine) with Ethereum-style state management, enabling deployment and execution of Solidity contracts with proper consensus verification.
