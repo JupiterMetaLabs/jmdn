@@ -226,11 +226,11 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAcceptedCount, mainFailed, mainTotalCount)
 
-	// If we have exactly MaxMainPeers main peers, we're done
-	if mainAcceptedCount >= config.MaxMainPeers {
-		log.Printf("Perfect! Got %d MaxMainPeers for consensus (1 creator + MaxMainPeers subscribers)", mainAcceptedCount)
+	// A BFT quorum of main peers is enough to proceed — see Sequencer/committee_quorum.go.
+	if mainAcceptedCount >= requiredMainPeers() {
+		log.Printf("Got %d main peers for consensus (quorum %d, committee cap %d)", mainAcceptedCount, requiredMainPeers(), config.MaxMainPeers)
 		// Verify with global tracker
-		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
+		if tracker.HasRequiredSubscriptions(requiredMainPeers()) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 
 			// Move setFinalConsensusPeers AFTER validation passes
@@ -339,8 +339,8 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 			log.Printf("Successfully achieved consensus: 1 creator + %d MaxMainPeers subscribers", totalAccepted)
 
-			// Verify with global tracker
-			if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
+			// Verify with global tracker (quorum, not full committee)
+			if tracker.HasRequiredSubscriptions(requiredMainPeers()) {
 				log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 
 				// Set final peers only after all checks pass
@@ -351,7 +351,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		}
 	}
 
-	return fmt.Errorf("global tracker validation failed: got %d, need %d", tracker.GetActiveCount(), config.MaxMainPeers)
+	return fmt.Errorf("global tracker validation failed: got %d, need at least %d (BFT quorum; committee cap %d)", tracker.GetActiveCount(), requiredMainPeers(), config.MaxMainPeers)
 }
 
 func setFinalConsensusPeers(consensus *Consensus, finalPeers []peer.ID) {
