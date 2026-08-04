@@ -343,16 +343,11 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
 			// Rejected notices and certificate verification already ran in the
 			// fail-closed admitZKBlock gate BEFORE forward/process (v2 receive path).
-			// Acquire the pooled Thebe-backed handle for block processing.
-			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to create main DB client", err)
-				return fmt.Errorf("failed to create main DB client: %w", err)
-			}
+			// Storage resolves through the process-wide ThebeHandle (nil conn).
 
 			// Process all transactions in the block atomically with rollback capability.
 			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
-			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, mainDBClient); err != nil {
+			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, nil); err != nil {
 				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("block processing failed - not storing block: %w", err)

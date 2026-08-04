@@ -1288,33 +1288,9 @@ func main() {
 		}()
 	}
 
-	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
-	}
-	defer func() {
-		if mainDBClient != nil {
-			DB_OPs.PutMainDBConnection(mainDBClient)
-		}
-	}()
-
-	// Debugging
-	// fmt.Println("Getting accounts database connection from pool")
-
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
-	}
-
-	// Debugging
-	// fmt.Println("Got accounts database connection from pool", didDBClient)
-
-	defer func() {
-		if didDBClient != nil {
-			DB_OPs.PutAccountsConnection(didDBClient)
-		}
-	}()
+	// Legacy pool-client acquisition removed: storage goes through the
+	// process-wide ThebeHandle (config.SetGlobalHandleFactory above); helpers
+	// take a nil conn and resolve getHandle(nil) internally.
 
 	// fastsync V1 retired — FastsyncV2 only.
 	// Initialize FastsyncV2 service

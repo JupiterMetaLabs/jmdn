@@ -38,13 +38,17 @@ type DatabaseState struct {
 // MainDB connection pool shims (were in MainDB_Connections.go)
 // ---------------------------------------------------------------------------
 
-// GetMainDBConnectionandPutBack returns a synthetic PooledConnection whose
-// Client field is nil. Legacy call-sites that need an ImmuDB connection
-// will observe a nil Client and should fall back to getHandle().
+// GetMainDBConnectionandPutBack returns a nil connection WITHOUT error.
+// The nil conn is the codebase-wide "use the process handle" sentinel: every
+// storage helper passes it to getHandle(conn), which resolves the global
+// ThebeHandle (and fails loud there if Thebe is not initialized). Returning an
+// error here instead would break every legacy call-site that treats
+// acquisition failure as fatal (node boot, block receive path, tx validation)
+// even though those paths no longer need a pooled connection at all.
 //
 // Deprecated: migrate callers to use getHandle() directly.
 func GetMainDBConnectionandPutBack(_ context.Context) (*config.PooledConnection, error) {
-	return nil, fmt.Errorf("GetMainDBConnectionandPutBack: ImmuDB pool removed — use getHandle(nil) instead")
+	return nil, nil
 }
 
 // PutMainDBConnection is a no-op: the ThebeDB-backed connection pool does not
@@ -62,12 +66,12 @@ func ensureMainDBSelected(_ *config.PooledConnection) error { return nil }
 // Accounts DB connection pool shims (were in Account_Connections.go)
 // ---------------------------------------------------------------------------
 
-// GetAccountConnectionandPutBack returns an error: the accounts ImmuDB pool
-// no longer exists. Callers should use getHandle() for all account operations.
+// GetAccountConnectionandPutBack returns a nil connection WITHOUT error —
+// same contract as GetMainDBConnectionandPutBack (nil conn = process handle).
 //
 // Deprecated: migrate callers to use getHandle() directly.
 func GetAccountConnectionandPutBack(_ context.Context) (*config.PooledConnection, error) {
-	return nil, fmt.Errorf("GetAccountConnectionandPutBack: ImmuDB accounts pool removed — use getHandle(nil) instead")
+	return nil, nil
 }
 
 // PutAccountsConnection is a no-op: the ThebeDB-backed handle does not require
@@ -80,7 +84,7 @@ func PutAccountsConnection(_ *config.PooledConnection) {}
 //
 // Deprecated: remove callers.
 func GetAccountsConnections(_ context.Context) (*config.PooledConnection, error) {
-	return nil, fmt.Errorf("GetAccountsConnections: ImmuDB accounts pool removed — use getHandle(nil) instead")
+	return nil, nil
 }
 
 // storeAccountToDBOps converts a *store.Account to *Account.
