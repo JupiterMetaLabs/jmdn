@@ -71,6 +71,9 @@ jmdn2
 *.db-wal
 *.db-shm
 DB_OPs/sqlops/test.db
-DB_OPs/sqlops/sqlops_test.log
-*.db
 DB_OPs/sqlops/test.db
+
+# Go workspace files (local dev only)
+go.work
+go.work.sum
+
