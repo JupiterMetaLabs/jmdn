@@ -345,8 +345,15 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// fail-closed admitZKBlock gate BEFORE forward/process (v2 receive path).
 			// Storage resolves through the process-wide ThebeHandle (nil conn).
 
+			// Pull-on-demand: ensure contract bytecode/metadata is present BEFORE
+			// execution, so a missed ContractMessage gossip (e.g. sequencer went
+			// offline before propagation completed) cannot make a Type-2 call
+			// fall through to the regular transfer path.
+			if h := getHostInstance(); h != nil {
+				PrefetchMissingContracts(ctx, h, msg.Block.Transactions)
+			}
+
 			// Process all transactions in the block atomically with rollback capability.
-			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
 			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, nil); err != nil {
 				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
