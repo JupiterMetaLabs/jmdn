@@ -139,10 +139,10 @@ Keeps: `dualdb/dualdb.go` (metrics + dual-write orchestration), `dualdb/metrics.
     );
     CREATE INDEX IF NOT EXISTS idx_outbox_next_retry
         ON thebe_outbox(next_retry_at ASC)
-        WHERE attempts < 10;
+        WHERE attempts < 3;
     ```
   - Access pattern: sequential drain (`SELECT ... WHERE next_retry_at <= now() ORDER BY next_retry_at ASC LIMIT N`), O(1) insert, O(1) delete by id.
-  - Bound: unbounded rows; entries deleted on Ack. Max attempts = 10 (configurable); entries with attempts >= 10 left in table for operator inspection (not retried).
+  - Bound: unbounded rows; entries deleted on Ack. Max attempts = 3 (`thebegateway.MaxOutboxAttempts`); exhausted entries are left in table for operator inspection (not retried).
 - **Retry backoff:** `nextRetryAt = now + min(2^attempts * 1s, 5min)`
 - **Inputs:** Phase 1.1 complete (OutboxEntry type exists), SQLite connection available
 - **Done when:** `sqliteOutboxStore` satisfies `OutboxStore`; table created on init; `go build` passes
@@ -164,7 +164,7 @@ Keeps: `dualdb/dualdb.go` (metrics + dual-write orchestration), `dualdb/metrics.
   - For each entry: deserialize payload → call correct `ThebeGateway` method by `entry.Namespace`
   - On success: `OutboxStore.Ack(ctx, entry.ID)`
   - On failure: `OutboxStore.IncrementAttempts(ctx, entry.ID, backoff(entry.Attempts))`
-  - Entries with `attempts >= 10`: skip (left for operator)
+  - Entries with `attempts >= MaxOutboxAttempts` (3): skip (left for operator)
   - Graceful shutdown via `stop chan struct{}`
 - **Dispatch inside worker:** `switch entry.Namespace` → typed deserialize + gateway call. This is the ONE place a switch/case on namespace is acceptable — the worker is the retry executor, not a generic dispatcher.
 - **Inputs:** Phase 3.0 (OutboxStore impl), Phase 5.0 (ThebeGateway impl — can be stubbed for unit test)

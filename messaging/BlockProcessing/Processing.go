@@ -25,9 +25,11 @@ const (
 )
 
 // ErrStaleNonce is returned when a transaction's nonce is lower than the
-// account's current DB nonce. This is a skippable condition — it means the
-// tx was valid at security-check time but the account moved on before
-// ProcessBlockLocally ran (race between vote validation and execution).
+// account's current DB nonce: the tx was valid at security-check time but the
+// account moved on before ProcessBlockLocally ran (race between vote
+// validation and execution). NOT skippable on a finalized block — the apply
+// loop fails the WHOLE block for determinism (see the DETERMINISM comment in
+// ProcessBlockTransactions); catch-up re-applies it.
 var ErrStaleNonce = errors.New("stale nonce")
 
 // AccountSnapshot captures the mutable state of an account before block processing begins.
