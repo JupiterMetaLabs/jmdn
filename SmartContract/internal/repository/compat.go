@@ -15,5 +15,3 @@ type StateBatch = contractDB.StateBatch
 type StorageMetadata = contractDB.StorageMetadata
 
 // ---- Constructor aliases ----
-
-var NewThebeStateRepository = contractDB.NewThebeStateRepository

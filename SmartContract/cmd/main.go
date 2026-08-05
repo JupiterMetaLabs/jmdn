@@ -127,8 +127,11 @@ func main() {
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
 
-	// 7. ContractDB (StateDB)
-	repo := contractDB.NewThebeStateRepository(cas)
+	// 7. ContractDB (StateDB) — same repository the node wires
+	// (SmartContract/server_integration.go): hot contract state in ThebeDB KV,
+	// receipts via cassata. The retired ThebeStateRepository wrote namespaces
+	// the JMDN profile never projected (silent non-persistence; review R3).
+	repo := contractDB.NewKVStateRepository(cas.KV(), cas)
 	contractDB.SetSharedStateRepository(repo)
 	stateDB := contractDB.NewContractDB(didClient, repo)
 
