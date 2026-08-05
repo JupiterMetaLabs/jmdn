@@ -150,8 +150,17 @@ func (w *OutboxWorker) dispatch(ctx context.Context, entry OutboxEntry) error {
 		}
 		return w.gateway.WriteL1Finality(ctx, &r)
 
+	case NamespaceContractReceipt:
+		var r ContractReceiptRecord
+		if err := json.Unmarshal(entry.Payload, &r); err != nil {
+			return fmt.Errorf("dispatch contract_receipt: unmarshal: %w", err)
+		}
+		return w.gateway.WriteContractReceipt(ctx, &r)
+
 	default:
-		// Unknown namespace — ack to drain it; leaving it causes infinite retry
+		// Unknown namespace — ack to drain it; leaving it causes infinite retry.
+		// Every namespace the gateway enqueues MUST have a case above, or its
+		// retries are silently discarded here (review finding R6).
 		return nil
 	}
 }

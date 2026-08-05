@@ -1139,6 +1139,14 @@ func main() {
 		}
 		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
 
+		// Drain the outbox: any 2PC write failure is enqueued as a WAL row and
+		// MUST be retried by this worker — without it, failed writes are
+		// recorded and then never replayed (silent permanent write loss under
+		// DB pressure; review finding R2).
+		outboxWorker := thebegateway.NewOutboxWorker(outbox, gw, 5*time.Second)
+		outboxWorker.Start()
+		defer outboxWorker.Stop()
+
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
