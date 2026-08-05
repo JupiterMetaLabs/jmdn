@@ -83,3 +83,29 @@ setup_dependencies `--storage-local` for in-place upgrades. (c) Fix doc drift in
 docs (deletion manifest vs tree). (d) Consider ThebeDB builder-2PC for commitReconGroup's
 account+marker batch (current: accounts-first/marker-last, bounded double-apply on crash).
 → Verify: per item; each is its own commit.
+
+
+---
+
+## Review triage — 2026-08-05 deep review, findings verified independently
+
+| # | Verdict | Disposition |
+|---|---|---|
+| R1 (missing quorum fixes) | Confirmed in substance (commits lived on fix/committee-quorum-formation, not main) | **Resolved by operator merge 76cfb26**; v2 verifier + quorum gates both verified present post-merge |
+| R2 (outbox worker never started) | **Confirmed** — Start() only in tests | **Fixed 931f002**: worker started in main.go (5s), graceful Stop |
+| R3 (broken cassata contract path in cmd binary) | **Confirmed** — namespaces unprojected by the profile | **Fixed d12fbc1**: cmd wires KVStateRepository (same as node); ThebeStateRepository + ThebeBatch deleted |
+| R4 (CommitToDB atomicity + no state root) | Partially confirmed with corrected mechanism: staging is safe (nothing lands pre-Commit); the real defects are (a) KVStateBatch.Commit flushes ops one-by-one — a mid-commit failure leaves partial state, (b) obj.commitState() marks memory clean BEFORE the flush succeeds, (c) empty state root = no cryptographic commitment | Filed as **ThebeDB task**: atomic derived-write batch primitive on kv.Store (per reconciliation stop-condition: no ThebeDB changes from jmdn). jmdn follow-up: state-root commitment design for validating-node determinism |
+| R5 (contract pull fail-open) | Already documented (ADR-001 Amendment 1) | Open operator decision before mainnet; fail-closed alternative named in the ADR |
+| R6 (contract_receipt dispatch missing) | **Confirmed** — default acked + discarded | **Fixed 931f002** |
+| R7 (migration unsealed, immudb imported, stale binary) | **STALE** — codenotary importers 0, binary deleted, Phase 7 sealed (cc0a015); true residue: live-infra integration tests unrun (= B1) | No action beyond B1 |
+| R8 (builder SQL-commit-then-KV-commit window) | Confirmed as narrow window: KV-prepare → SQL-commit → KV-commit; a KV-commit failure orphans one SQL row | Filed as **ThebeDB task**: compensation record or commit-order rework in pkg/builder |
+| R9 (doc drift: attempts 10 vs 3, ErrStaleNonce comment) | **Confirmed** | **Fixed 8a4f1d4** |
+
+Review's KB correction (projection = synchronous 2PC Profile, not CDC) matches this branch's
+reality; the CDC pipeline is separate downstream analytics gated by cfg.Thebe.CDC.
+
+### ThebeDB tasks filed from this triage (sibling repo, out of jmdn scope)
+1. kv.Store: atomic batch primitive for derived writes (Badger WriteBatch) so
+   contractDB.CommitToDB can flush all-or-nothing (R4a).
+2. pkg/builder: close the SQL-committed/KV-commit-failed window (compensation
+   record or order rework) (R8).
