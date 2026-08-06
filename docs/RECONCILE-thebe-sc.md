@@ -4,9 +4,25 @@ Merge of `origin/remove/immudb` (cc000e4, 273 commits: ThebeDB migration + smart
 into `main` (cfb4eef, 22 commits: AVC v2 consensus, apply-before-broadcast, block-carried ART nonce).
 Merge-base: f8fd577 (2026-07-14). 35 conflicted files. Executed 2026-08-03.
 
-**Operator decision:** ThebeDB is the only storage backend (no ImmuDB selectability). Main's
-consensus/state-consistency semantics are preserved everywhere and ported onto the Thebe path
-where their original ImmuDB implementations were deleted.
+**Operator decision (explicit, recorded — not a silent override):** On 2026-08-03, before any
+conflict was resolved, the reconciliation presented the dual-backend question directly to the
+operator (Doc / saishibu@jupitermeta.io) with the recon document's recommendation attached
+(Option A: keep main's ImmuDB code behind `thebe.enabled`, ImmuDB default). The operator's
+answer — verbatim: "remove immudb wire to thebe" — overrode that recommendation deliberately:
+ThebeDB is the only storage backend, no ImmuDB selectability. Every conflict resolution and the
+Phase 7 removal (cc0a015) flow from that decision. Consequence accepted with it: no ImmuDB
+fallback exists if ThebeDB has a production incident — which is why B1's live-infra validation
+(incl. induced 2PC failure) is the master gate. Merge-to-main sign-off should REAFFIRM this
+decision; it does not need to be made, only re-confirmed at the merge boundary.
+
+Main's consensus/state-consistency semantics are preserved everywhere and ported onto the Thebe
+path where their original ImmuDB implementations were deleted.
+
+**Correction (2026-08-06, from external divergence review):** the recon-phase note that
+ThebeDB's `OpFilter` gap was "stale" overstated it — the planner dispatches `OpFilter` to
+`execFilter`, but `execFilter` unconditionally returns `ErrOpNotSupported` (planner.go:149).
+Dispatch exists; implementation doesn't. No jmdn path depends on it; filed in the ThebeDB
+task list.
 
 ## Resolution rules applied
 

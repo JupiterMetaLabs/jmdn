@@ -104,8 +104,10 @@ account+marker batch (current: accounts-first/marker-last, bounded double-apply 
 Review's KB correction (projection = synchronous 2PC Profile, not CDC) matches this branch's
 reality; the CDC pipeline is separate downstream analytics gated by cfg.Thebe.CDC.
 
-### ThebeDB tasks filed from this triage (sibling repo, out of jmdn scope)
+### ThebeDB tasks filed from this triage (recorded in the ThebeDB repo: docs/TASKS-from-jmdn-reconciliation.md)
 1. kv.Store: atomic batch primitive for derived writes (Badger WriteBatch) so
    contractDB.CommitToDB can flush all-or-nothing (R4a).
 2. pkg/builder: close the SQL-committed/KV-commit-failed window (compensation
    record or order rework) (R8).
+3. pkg/query: implement execFilter — OpFilter dispatch exists but the body is an
+   unconditional ErrOpNotSupported stub (external-review correction, 2026-08-06).
