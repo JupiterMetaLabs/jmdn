@@ -2,7 +2,9 @@ package contractDB
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -165,4 +167,18 @@ func isKVNotFound(err error) bool {
 		return false
 	}
 	return err == kv.ErrKeyNotFound || strings.Contains(strings.ToLower(err.Error()), "key not found")
+}
+
+// isNotFound reports whether err is a not-found condition from the SQL/cassata
+// read path. (Recovered from the deleted thebe_adapter.go — its only surviving
+// caller is GetReceipt above.)
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no rows") || strings.Contains(msg, "not found")
 }

@@ -107,7 +107,6 @@ func GetBalanceAtBlock(addr common.Address, atBlock uint64) (*big.Int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GetBalanceAtBlock: reward blocks: %w", err)
 	}
-	two := big.NewInt(2)
 	for _, blk := range rewardBlocks {
 		isCoinbase := strings.ToLower(blk.CoinbaseAddr) == addrLower
 		isZKVM := strings.ToLower(blk.ZKVMAddr) == addrLower
@@ -121,13 +120,21 @@ func GetBalanceAtBlock(addr common.Address, atBlock uint64) (*big.Int, error) {
 		for _, r := range txRecs {
 			tx := txRecordToConfig(r)
 			gasFee := gasFeeForTx(r.GasFeeWei, tx)
-			half := new(big.Int).Div(gasFee, two)
-			remainder := new(big.Int).Mod(gasFee, two)
-			if isCoinbase {
-				delta.Add(delta, new(big.Int).Add(half, remainder))
-			}
+			// Centralized split (config.SplitFee) — the inline half/remainder
+			// copy here was exactly the divergent-fee-formula pattern behind
+			// the pre-patch divergence incident (KB review, 2026-08-06).
+			// LIMITATION: BlockRecord does not carry FeeRecipients, so this
+			// query attributes the whole coinbase share to CoinbaseAddr; for
+			// FeeRecipients-era blocks the per-recipient attribution needs the
+			// recipients loaded (tracked in PHASE-B-CHECKLIST B8).
+			zkvmShare, credits := config.SplitFee(gasFee, common.HexToAddress(blk.CoinbaseAddr), nil)
 			if isZKVM {
-				delta.Add(delta, half)
+				delta.Add(delta, zkvmShare)
+			}
+			if isCoinbase {
+				for _, c := range credits {
+					delta.Add(delta, c.Amount)
+				}
 			}
 		}
 	}
