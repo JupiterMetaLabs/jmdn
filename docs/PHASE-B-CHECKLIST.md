@@ -111,3 +111,31 @@ reality; the CDC pipeline is separate downstream analytics gated by cfg.Thebe.CD
    record or order rework) (R8).
 3. pkg/query: implement execFilter — OpFilter dispatch exists but the body is an
    unconditional ErrOpNotSupported stub (external-review correction, 2026-08-06).
+
+
+---
+
+## KB-evaluation triage — 2026-08-08, knowledge-base lens (double-apply / fee-formula invariants)
+
+A KB-context evaluator audited the branch against the fleet's operational memory (the
+FastSync double-apply incident, fee-formula centralization, PRE-1..4 gates). Findings were
+independently re-verified before action; this round was compiled and tested IN-SESSION
+(`go vet ./...` green tree-wide; DB_OPs, contractDB, BlockProcessing, FastsyncV2, Tests/*,
+config suites green).
+
+| Finding | Verdict | Disposition |
+|---|---|---|
+| Authoritative writers behind the LWW gate → recon deltas silently dropped, markers still written | **Confirmed** (systematic: stored docs carry wall-clock UpdatedAt, authoritative docs carry block-ts) | **Fixed**: BatchPutAccountsAuthoritative raw path + regression tests |
+| Same gate could drop live ApplyTxAtomic writes | **Confirmed** (narrower window) | **Fixed** (same change) |
+| False safety comments (bypass claim, one-ExecAll atomicity) | **Confirmed** | **Fixed** — comments truthful again |
+| Recon crash window (accounts-first/markers-last) double-credits on replay, not bounded-by-filter | **Confirmed** | **Mitigated**: recon_intent guard fails LOUD on replay-after-crash; full fix = ThebeDB builder-2PC task. Live-path window (one tx) remains accepted until 2PC |
+| To==nil deployment txs nil-panic block apply | **Confirmed** (2 deref sites) | **Fixed**: guards; deployments carry no recipient account |
+| historical_balance.go inline fee-split copy, ignores FeeRecipients | **Confirmed** (read-only path) | **Fixed**: config.SplitFee; FeeRecipients-era per-recipient attribution → B8 (BlockRecord lacks the field) |
+| Fee centralization otherwise | **HOLDS** — config.GasFee/EffectiveGasPrice/SplitFee single mutation-path formula, parity tests present; SC EVM computes no fees |
+| PRE-2 intra-block ordering | **HOLDS** (live: sequencer order; recon: block-order groups, commutative deltas) |
+| PRE-4 fee-split-only balance effect at the store | **HOLDS** — CommitToDB never persists balances; GetBalanceChanges has zero consumers. **Open operator decision:** EVM-internal value movements (payable forwarding, selfdestruct) are discarded — decide persist-through-central-apply vs reject value-bearing contract calls BEFORE any payable contract ships |
+| Fee-grid health check vs FeeRecipients | Advisory: weighted splits put fee credits off the clean per-tx wei grid by construction — update the fleet's integer-multiple triage tooling before FeeRecipients activates |
+
+Also fixed in-session: `isNotFound` helper lost with the R3 adapter deletion (surfaced by the
+first full in-session compile — inherited static-only greens are exactly what the divergence
+review warned about).

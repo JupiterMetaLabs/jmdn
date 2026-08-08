@@ -96,6 +96,14 @@ task list.
 
 Lesson recorded: for merged-in compat layers, verify the BODY, not the doc comment.
 
+3. **The Thebe port put both authoritative balance writers behind the LWW merge gate**
+   (ApplyTxAtomic + commitReconGroup via BatchRestoreAccounts) — old-block recon deltas were
+   silently dropped while their markers were written. Found by the KB-lens evaluation
+   (2026-08-08); fixed with the raw BatchPutAccountsAuthoritative path + regression tests
+   (see PHASE-B-CHECKLIST KB-triage table). Second lesson: 'route everything through the
+   single merge decision point' sounds safer than it is — the merge gate exists for
+   uncoordinated writers; coordinated lock-holding writers must win unconditionally.
+
 ## Follow-ups (non-blocking, tracked for Phase B)
 
 1. `DB_OPs/account_recon.go` still imports codenotary/immudb → port, then complete migration
