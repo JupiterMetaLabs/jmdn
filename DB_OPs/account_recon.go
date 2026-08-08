@@ -222,6 +222,22 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 	LockStateApply()
 	defer UnlockStateApply()
 
+	// CRASH-WINDOW GUARD: commitReconGroup writes accounts first, markers
+	// last (no cross-store atomicity until the ThebeDB builder-2PC task
+	// lands). A crash between the two would make a naive replay recompute
+	// deltas on the ALREADY-MUTATED base — a silent double-credit. The intent
+	// record turns that into a LOUD stop requiring operator resolution.
+	ih, ihErr := getHandle(accountsConn)
+	if ihErr != nil {
+		return false, fmt.Errorf("recon block %d: handle: %w", blockNumber, ihErr)
+	}
+	intentKey := fmt.Sprintf("recon_intent:%d", blockNumber)
+	if raw, gerr := ih.GetSyncKV(intentKey); gerr == nil && string(raw) == "pending" {
+		return false, fmt.Errorf(
+			"recon block %d: crash-window detected — a previous reconciliation of this block stopped between account writes and markers (sync-state key %q is 'pending'); balances may be partially applied. Manual resolution required: verify the block's account balances, then overwrite the key with 'done' to re-enable recon for this block",
+			blockNumber, intentKey)
+	}
+
 	hashes := make([]string, 0, len(blk.Transactions))
 	for i := range blk.Transactions {
 		hashes = append(hashes, blk.Transactions[i].Hash.String())
@@ -251,6 +267,10 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 	updatedAt := blk.Timestamp * int64(time.Second) // nanos, block-derived (matches live)
 	appliedAt := time.Now().UTC().Unix()
 
+	if err := ih.PutSyncKV(intentKey, []byte("pending")); err != nil {
+		return false, fmt.Errorf("recon block %d: intent write (fail closed): %w", blockNumber, err)
+	}
+
 	for _, groupTxs := range partitionReconGroups(blk, pendingSet, reconGroupOpBudget) {
 		// Deltas for EXACTLY this group: skip everything outside it.
 		skip := make(map[string]bool, len(blk.Transactions))
@@ -268,6 +288,13 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 		if err := commitReconGroup(ctx, accountsConn, blockNumber, deltas, groupTxs, updatedAt, appliedAt); err != nil {
 			return false, err
 		}
+	}
+
+	if err := ih.PutSyncKV(intentKey, []byte("done")); err != nil {
+		// Accounts + markers are fully committed; only the intent record is
+		// stale. Fail loud anyway so the operator clears it — a 'pending'
+		// leftover blocks the next recon of this block by design.
+		return false, fmt.Errorf("recon block %d: applied fully but intent-clear failed (key %q stuck 'pending'): %w", blockNumber, intentKey, err)
 	}
 	return true, nil
 }
@@ -396,9 +423,12 @@ func commitReconGroup(ctx context.Context, conn *config.PooledConnection, blockN
 		}{Key: key, Value: val})
 	}
 
-	// Accounts first — through the single merge decision point.
+	// Accounts first — RAW authoritative write (merge-bypassing): these are
+	// absolute post-group docs computed from the stored base under
+	// LockStateApply and must win unconditionally (see authoritative_write.go;
+	// KB-review findings 1-2).
 	if len(entries) > 0 {
-		if err := BatchRestoreAccounts(ctx, nil, entries); err != nil {
+		if err := BatchPutAccountsAuthoritative(entries); err != nil {
 			return fmt.Errorf("recon block %d: accounts (%d docs): %w", blockNumber, len(entries), err)
 		}
 	}

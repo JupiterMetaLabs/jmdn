@@ -118,7 +118,10 @@ func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, a
 		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
 	}
 
-	// Accounts first — through the single merge decision point.
+	// Accounts first — RAW authoritative write (merge-bypassing). The stage was
+	// built from the stored base under LockStateApply, so these absolute docs
+	// must win unconditionally; the LWW merge gate is for uncoordinated sync
+	// writers only (see DB_OPs/authoritative_write.go).
 	entries := make([]struct {
 		Key   string
 		Value []byte
@@ -133,7 +136,7 @@ func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, a
 			Value []byte
 		}{Key: Prefix + doc.Address.Hex(), Value: val})
 	}
-	if err := BatchRestoreAccounts(nil, nil, entries); err != nil {
+	if err := BatchPutAccountsAuthoritative(entries); err != nil {
 		return fmt.Errorf("ApplyTxAtomic %s: accounts: %w", txHash, err)
 	}
 

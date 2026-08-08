@@ -296,7 +296,9 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// First, collect all affected DIDs from the block
 	for _, tx := range block.Transactions {
 		affectedAccounts[*tx.From] = true
-		affectedAccounts[*tx.To] = true
+		if tx.To != nil { // nil for contract deployments — no recipient account
+			affectedAccounts[*tx.To] = true
+		}
 	}
 	affectedAccounts[*block.CoinbaseAddr] = true
 	affectedAccounts[*block.ZKVMAddr] = true
@@ -788,7 +790,10 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// Store original state for rollback if needed
 	originalState := make(map[common.Address]AccountSnapshot)
-	affectedDIDs := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
+	affectedDIDs := []common.Address{*tx.From, coinbaseAddr, zkvmAddr}
+	if tx.To != nil { // nil for contract deployments — no recipient account
+		affectedDIDs = append(affectedDIDs, *tx.To)
+	}
 
 	for _, did := range affectedDIDs {
 		doc, err := DB_OPs.GetAccount(accountsClient, did)
@@ -960,11 +965,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		return fmt.Errorf("recipient DID %s does not exist and no block-carried identity is available to create it", tx.To)
 	}
 
-	// All account mutations for this tx are STAGED in memory and then
-	// committed in ONE accountsdb ExecAll together with the tx_processed marker
-	// (ApplyTxAtomic below). Either the whole tx lands — balances AND marker —
-	// or none of it does, so a crash cannot leave partially-applied
-	// balances that a replay would double-apply.
+	// All account mutations for this tx are STAGED in memory and committed by
+	// ApplyTxAtomic below: accounts first (raw authoritative batch), the
+	// tx_processed marker LAST. On ThebeDB this is two writes, not one atomic
+	// transaction — a crash between them re-applies the tx on replay (marker
+	// absent → not skipped), a bounded double-apply for ONE tx's accounts.
+	// The single-ExecAll atomicity of the ImmuDB era returns with the ThebeDB
+	// builder-2PC task (see docs/RECONCILE-thebe-sc.md follow-ups).
 	stage := newTxStage(accountsClient)
 
 	// Create the missing recipient IN-STAGE from the block-carried identity.

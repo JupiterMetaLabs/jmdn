@@ -28,7 +28,8 @@
 // balance is NOT this mutex — it is mergeAccountForWrite's last-writer-wins
 // comparison on UpdatedAt, plus the zero-balance guard (isZeroBalanceString).
 // Every unlocked write goes through that merge; the two locked writers bypass
-// it and commit raw KV.
+// it via BatchPutAccountsAuthoritative (raw write — restored 2026-08-06 after
+// a port regression routed them through the merge; see authoritative_write.go).
 //
 // The practical consequence: balance safety against the sync path depends on
 // UpdatedAt ordering being correct. That is a weaker guarantee than mutual
@@ -38,7 +39,7 @@
 //
 // Making BatchRestoreAccounts take this lock has been checked and is
 // deadlock-free — no current holder reaches it. It is deliberately NOT done
-// yet: BatchRestoreAccounts performs a GetAll plus a chunked ExecAll over a
+// yet: BatchRestoreAccounts performs a per-entry read+merge+write over a
 // whole batch, so putting it under this mutex would extend hold time
 // significantly, and the contention cost of the CURRENT holders has not been
 // measured under load. Measure first, then decide.
@@ -49,7 +50,8 @@
 //   - Never nest: none of the holders call each other. This is a plain
 //     sync.Mutex and is NOT reentrant — a second acquire on the same goroutine
 //     deadlocks. Verify the call graph before adding a holder.
-//   - Lock hold time is bounded by one ImmuDB ExecAll (worst case ~15 s under
+//   - Lock hold time is bounded by one commit batch (historically one ImmuDB
+//     ExecAll, worst case ~15 s under
 //     load). Both paths were already DB-serialized in practice; consistency
 //     is worth the serialization.
 
