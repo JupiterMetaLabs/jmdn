@@ -144,11 +144,21 @@ func committeeSizeLimit() int {
 	return 0
 }
 
-// eligibleMembers returns the authenticated eligible committee: the live buddy
-// set from the configured source, MINUS the block_buddy blocklist. FAIL CLOSED:
-// no source wired, a source error, or an empty result yields an error naming
-// the defect. Callers MUST treat an error as "no one is eligible".
-func eligibleMembers() (map[string]string, error) {
+// eligibleMembersUncapped returns the authenticated eligible committee: the live
+// buddy set from the configured source, MINUS the block_buddy blocklist, and
+// WITHOUT the consensus.max_validators cap.
+//
+// This is the pool committee selection draws from. The cap is applied by
+// eligibleMembers (the legacy path) but NOT here, because seed-ranked selection
+// replaces it: SelectCommitteeWithSize takes k = consensus.max_validators and
+// draws k members from this whole pool, which preserves the property the cap
+// existed for - every node computes the same n, and therefore the same
+// threshold - while adding the rotation an alphabetical prefix could never have.
+// See committee_v2.go and finding F2.
+//
+// FAIL CLOSED: no source wired, a source error, or an empty result yields an
+// error naming the defect. Callers MUST treat an error as "no one is eligible".
+func eligibleMembersUncapped() (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -182,12 +192,29 @@ func eligibleMembers() (map[string]string, error) {
 	if len(eligible) == 0 {
 		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
 	}
+	return eligible, nil
+}
+
+// eligibleMembers is eligibleMembersUncapped with the consensus.max_validators
+// hard cap applied. This is the LEGACY committee: the alphabetical prefix.
+//
+// It remains the source for VerifyCertificate while JMDN_COMMITTEE_V2 is off,
+// so behaviour with the flag down is unchanged. Under v2 the cap is not used -
+// see eligibleMembersUncapped.
+func eligibleMembers() (map[string]string, error) {
+	eligible, err := eligibleMembersUncapped()
+	if err != nil {
+		return nil, err
+	}
 
 	// Hard cap on the number of validators (buddy nodes) counted toward
 	// consensus. Trim deterministically by sorted peer_id so every node computes
 	// the SAME capped committee (and therefore the SAME 2f+1 threshold). 0 = no
 	// cap. This bounds the threshold so it can never be sized over more validators
 	// than intended (e.g. main+backup=10 requiring 7 while only 5 main vote).
+	//
+	// DETERMINISTIC BUT FROZEN: sorting by peer_id means the same k peers vote at
+	// every height forever. That is finding F2, and it is what v2 replaces.
 	if lim := committeeSizeLimit(); lim > 0 && len(eligible) > lim {
 		ids := make([]string, 0, len(eligible))
 		for pid := range eligible {

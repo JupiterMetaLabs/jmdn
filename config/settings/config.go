@@ -52,7 +52,25 @@ type ConsensusSettings struct {
 	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
+	//
+	// WALL CLOCK. It selects which committee SNAPSHOT the seed node serves. It
+	// must never be used to derive a selection seed - see CommitteeEpochBlocks.
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+
+	// CommitteeEpochBlocks is the selection-epoch length in BLOCKS, used by
+	// messaging.EpochForHeight to map a height to the epoch that is hashed into
+	// the committee seed.
+	//
+	// This is consensus-critical and must be identical network-wide: two nodes
+	// with different values derive different seeds for the same block, seat
+	// different committees, and reject each other's certificates. Change it only
+	// as a coordinated fleet-wide flip.
+	//
+	// 0 (the default) means "one epoch" - every height maps to epoch 0. That is
+	// correct for Stage 1, where the seed source is a fixed salt that ignores the
+	// epoch and the draw already rotates on height and prev_hash. Stage 2
+	// (RANDAO + VDF) keys its beacon on this epoch and needs a real value.
+	CommitteeEpochBlocks int64 `mapstructure:"committee_epoch_blocks" yaml:"committee_epoch_blocks"`
 
 	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
 	// consensus. The certificate verifier trims the eligible committee to this many

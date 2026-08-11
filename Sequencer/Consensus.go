@@ -180,7 +180,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// CLOSED — if the eligible set is unavailable while pinned, abort the round
 	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
 	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
-		eligible, eligErr := messaging.EligibleCommitteePeerIDs()
+		// WarmupPeerIDs, not EligibleCommitteePeerIDs: under JMDN_COMMITTEE_V2 the
+		// seated committee rotates across the WHOLE uncapped pool every height, so
+		// the sequencer must be connected to all of it, not to the capped prefix it
+		// used to seat. With the flag off this returns the capped set exactly as
+		// before.
+		eligible, eligErr := messaging.WarmupPeerIDs()
 		if eligErr != nil {
 			return fmt.Errorf("CONSENSUSERROR.WARMUP: pinned committee eligibility unavailable (fail-closed): %w", eligErr)
 		}
@@ -2067,12 +2072,17 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
-	// Block hash + height this round's votes must be bound to.
+	// Block hash + height this round's votes must be bound to, plus the round
+	// context the committee is seated from. All three come from the same block,
+	// so the sequencer and every verifier derive the same committee.
 	blockHashHex := ""
 	var blockHeight uint64
+	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
-		blockHashHex = consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-		blockHeight = consensus.ZKBlockData.GetZKBlock().BlockNumber
+		blk := consensus.ZKBlockData.GetZKBlock()
+		blockHashHex = blk.BlockHash.Hex()
+		blockHeight = blk.BlockNumber
+		roundCtx = messaging.RoundContextForBlock(blk)
 	}
 
 	for _, r := range blsResults {
@@ -2186,7 +2196,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// authenticated committee size (never the old strict majority of the fixed
 	// MaxMainPeers, and never a majority of whoever responded). The loop above
 	// is retained only for per-vote alerting/observability.
-	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex, blockHeight)
+	certRes, certErr := messaging.VerifyCertificateForRound(blsResults, blockHashHex, blockHeight, roundCtx)
 	if certErr != nil {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(

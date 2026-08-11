@@ -3,6 +3,8 @@ package Sequencer
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
@@ -275,6 +277,52 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 
 	// Clear the zkblock data
 	consensus.ZKBlockData = nil
+
+	// F1: the peers ASKED to vote must be the peers the verifier will COUNT.
+	//
+	// Without this, `buddies` is whatever the per-node VRF shuffle returned while
+	// VerifyCertificateForRound tallies against messaging.SelectCommittee - two
+	// sources, and at pool > k they disagree. Every seated member could sign and
+	// the certificate would still fall short, because the signers were never the
+	// seated ones. That is the observed halt.
+	//
+	// Under v2 the seated set decides. A seated member with no known multiaddr is
+	// dropped from the wire list but still counts toward n, which is the correct
+	// BFT reading: quorum is 2f+1 of the committee, not of whoever was reachable.
+	if messaging.CommitteeV2Enabled {
+		seated, selErr := messaging.SeatedPeerIDs(messaging.RoundContextForBlock(zkblock))
+		if selErr != nil {
+			// Fail closed. Falling back to the shuffle here would reintroduce the
+			// exact two-source split this replaces.
+			return fmt.Errorf("committee selection failed (fail closed): %w", selErr)
+		}
+		kept := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(buddies))
+		reachable := make(map[string]struct{}, len(buddies))
+		for _, b := range buddies {
+			pid := b.PeerID.String()
+			if _, ok := seated[pid]; !ok {
+				continue
+			}
+			kept = append(kept, b)
+			reachable[pid] = struct{}{}
+		}
+		if len(kept) < len(seated) {
+			missing := make([]string, 0, len(seated)-len(reachable))
+			for pid := range seated {
+				if _, ok := reachable[pid]; !ok {
+					missing = append(missing, pid)
+				}
+			}
+			sort.Strings(missing)
+			logger().NamedLogger.Warn(context.Background(),
+				"committee v2: seated members have no known multiaddr and cannot be asked to vote",
+				ion.Int("seated", len(seated)),
+				ion.Int("dialable", len(kept)),
+				ion.String("missing", strings.Join(missing, ",")),
+				ion.String("function", "Consensus.SetZKBlockData"))
+		}
+		buddies = kept
+	}
 
 	var err error
 	consensus.ZKBlockData, err = helper.AddBuddyNodesToPeerList(zkblock, buddies)

@@ -24,8 +24,14 @@ func wireEligibility(t *testing.T, n int) {
 		}
 		return out, nil
 	})
+	// Restore the harness default, NOT nil. TestMain installs
+	// defaultTestEligibility once for the whole package and other files rely on
+	// it still being there; clearing it here made TestEquivocationSurvivesRestart
+	// and TestWithoutStore_RestartLosesRecord fail, because validateRemoteBlock
+	// routes through the certificate verifier and that fails closed with no
+	// source. Package-global state must be handed back as it was found.
 	t.Cleanup(func() {
-		SetCommitteeEligibilitySource(nil)
+		SetCommitteeEligibilitySource(defaultTestEligibility)
 		beaconSource = nil
 	})
 }
@@ -266,7 +272,7 @@ func TestF3_FlagOffIsInert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := verifyCertificateLegacy(nil, "0xabc", 1000)
+	want, err := VerifyCertificate(nil, "0xabc", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +287,10 @@ func TestF3_FlagOffIsInert(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSelectCommitteeFailsClosed(t *testing.T) {
+	// Deliberately unwire the source, then hand it back. Without the Cleanup this
+	// leaks a nil source into every test that runs after it in the package.
 	SetCommitteeEligibilitySource(nil)
+	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
 	if _, err := selectN(round(1, 0), testSeats); err == nil {
 		t.Fatal("selected a committee with no eligibility source configured")
 	}

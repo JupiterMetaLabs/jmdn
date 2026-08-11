@@ -724,7 +724,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
 		// authenticated committee size (never a simple majority of whoever
 		// responded).
-		res, err := VerifyCertificate(blsResults, block.BlockHash.Hex(), block.BlockNumber)
+		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.BlockNumber,
+			RoundContextForBlock(block))
 		if err != nil {
 			log.Error().Err(err).Str("block_hash", block.BlockHash.Hex()).
 				Msg("refusing consensus participation (fail closed): committee eligibility source invalid")

@@ -625,7 +625,12 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber)
+	// Routed through VerifyCertificateForRound so the tally can run against the
+	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
+	// byte-identical to the previous VerifyCertificate call. The round context
+	// comes from the block, never the clock - see RoundContextForBlock.
+	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber,
+		RoundContextForBlock(msg.Block))
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

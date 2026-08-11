@@ -126,6 +126,9 @@ func DefaultConfig() NodeConfig {
 			BlockBuddy:            nil,
 			SeedAuthorityBLSPub:   "",
 			CommitteeEpochSeconds: 3600,
+			// 0 = one selection epoch (epoch is always 0). Stage 1 ignores the
+			// epoch; Stage 2 must set this network-wide. See config.go.
+			CommitteeEpochBlocks: 0,
 			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
 			P2P:                   1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
 		},
