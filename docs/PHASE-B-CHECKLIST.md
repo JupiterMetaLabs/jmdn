@@ -189,3 +189,23 @@ The audit's core process critique is correct and I own my share: I inherited num
 advisories" vs 32 reachable), reported green from scoped runs, and filed the ThebeDB tasks as a repo
 doc that the auditor could not see was real until this session created it. The lesson — verify
 against executed code, not documents — is exactly right.
+
+
+### Safe one-liner round (2026-08-11, operator-greenlit; build+vet+tests green on touched pkgs)
+| Finding | Sev | Fix |
+|---|---|---|
+| CON-05 | CRITICAL | signature verified before checkAndMarkSeq, PREPARE + COMMIT (63f0e89) — closes the unauthenticated seq-censor. NOTE: still inert until CON-07 (engine never constructed); fixing it now means it's correct when CON-07 lands |
+| NET-02 | CRITICAL | channel send+close serialized under mu, buffered 256 (ecb3376) — closes send-on-closed process death |
+| CON-08 | HIGH | durable equivocation read error rejects (fail closed) (0167cd2) |
+| STO-11 | MEDIUM | marker read error fails the block instead of re-applying (0167cd2) |
+| SYN-08(a) | MEDIUM | recon_intent read error fails closed (0167cd2). SYN-08(b) wedge-forever still open — needs scoped-intent redesign, not a flip |
+| P4 doc drift | LOW | ErrStaleNonce return-site + MaxOutboxAttempts(3) comments |
+
+STOPPING HERE for review per operator decision. Deliberately NOT touched (need your decision /
+design review): SEC-01 (operator key rotation — logged), CON-01..04/06/12 consensus trust model,
+EVM-01..20 integration, STO-02/03/09 storage-atomicity semantics, SYN-01..07/09 fastsync
+(B4-gated off), NET-03..06 gossip, API-01..08. All verified real and registered above.
+
+Verification honesty: these gates were run in-session against ThebeDB @ 02f802e with the go1.26.5
+toolchain; the full-binary link exceeds sandbox disk, so a full `go build ./... && go test ./...`
+on the host is still the authoritative gate before merge.
