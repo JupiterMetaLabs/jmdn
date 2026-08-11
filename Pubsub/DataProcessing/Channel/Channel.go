@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	ChannelBuffer = make(chan PubSubMessages.GossipMessage) // small buffer prevents blocking
+	ChannelBuffer = make(chan PubSubMessages.GossipMessage, 256) // buffered: decouples producers from the listener (audit NET-02)
 	isStarted     bool
 	mu            sync.Mutex
 )
@@ -31,6 +31,7 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 		}
 	}
 	mu.Lock()
+	defer mu.Unlock()
 	if !isStarted {
 		isStarted = true
 		LocalGRO.Go(GRO.PubsubChannelThread, func(ctx context.Context) error {
@@ -38,8 +39,11 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 			return nil
 		})
 	}
-	mu.Unlock()
 
+	// Send under mu: closeChannel closes and reassigns ChannelBuffer under the
+	// SAME lock, so the send can never race a close (send-on-closed is an
+	// uncatchable panic in the stream goroutine — audit NET-02). Non-blocking,
+	// so holding mu here cannot deadlock.
 	select {
 	case ChannelBuffer <- *message:
 	default:
@@ -88,17 +92,17 @@ func startMessageListener() {
 }
 
 func closeChannel() {
+	// Close + reassign under mu so a concurrent AppendMessage (which sends
+	// under the same lock) cannot send on the closed channel (audit NET-02).
+	mu.Lock()
+	defer mu.Unlock()
 	select {
 	case <-ChannelBuffer: // drain one if needed
 	default:
 	}
-	defer func() {
-		recover() // ignore panic if already closed
-	}()
-
 	close(ChannelBuffer)
 	isStarted = false
-	ChannelBuffer = make(chan PubSubMessages.GossipMessage) // recreate new channel for next use
+	ChannelBuffer = make(chan PubSubMessages.GossipMessage, 256) // recreate for next use
 
 	logger().Debug(context.Background(), "Channel closed and reset")
 }
