@@ -139,3 +139,53 @@ config suites green).
 Also fixed in-session: `isNotFound` helper lost with the R3 adapter deletion (surfaced by the
 first full in-session compile — inherited static-only greens are exactly what the divergence
 review warned about).
+
+
+---
+
+## External audit (THEBE-AUDIT-HLD Rev 4) — triage 2026-08-11
+
+The first audit run with a working toolchain (probes, not inference). I spot-verified 10/10
+CRITICALs against the tree — **all confirmed**; this audit is accurate where checked, unlike the
+framing issues in the divergence-review round. **Record correction:** the audit falsifies my earlier
+"Phase A gate green / go test -short green" claim. It was false — `go test -short ./...` fails in
+`gossipnode/Security`, a regression MY (nil,nil) compat-shim (409ed52) introduced, missed because my
+later test runs were scoped to changed packages and never re-ran `./Security/`. Owned and fixed.
+
+### Fixed this round (confirmed, safe, verified in-session — Security + DB_OPs suites green)
+| Finding | Sev | Fix |
+|---|---|---|
+| PRC-01 | HIGH | Security cache tests skip without a handle instead of panicking (d83f25a); recorded-green claim corrected |
+| STO-01 | CRITICAL | storeAccountFromStore copies TxNonce/TxCountSent (edddd3c) — completes last round's authoritative-write P0, which had exposed a nonce regression |
+| NET-01 | CRITICAL | CacheConsensuMessage RWMutex + snapshot iteration + nil-block guard (233cf5e) |
+| SEC-02 (crash half) | CRITICAL | tx.Value nil guard before arithmetic (1a9622f) |
+
+### Operator action required — I cannot and must not do these unilaterally
+- **SEC-01 (CRITICAL, verified): three real BLS private keys are tracked in git** (bls_priv in
+  AVC/**/config/bls.json) on feat/thebe-sc-layer + remove/immudb, and the repo is PUBLIC. .gitignore
+  does not untrack them. This is an active key compromise: rotate all three keypairs, purge history
+  (git filter-repo) on both branches, force-push, treat the old keys as permanently public, add a
+  CI secret scan. These keys rode in from the remove/immudb branch; the merge did not create them
+  but did carry them. **Do this first, independent of everything else.**
+
+### Requires a scope/design decision before I touch code (verified real, NOT safe one-liners)
+- **CON trust model (CON-01..04, CON-08, CON-12): consensus is forgeable by default.** Verified:
+  keyAuthorized returns true for any key when SeedAuthorityBLSPub=="" (the shipped default);
+  BlockHash commits to neither height nor parent (cross-height cert replay); vote-requester authz
+  defaults off and fails open; catch-up/fastsync apply blocks with no certificate. These are a
+  consensus-security redesign, out of the original reconciliation scope ("consensus core was never
+  in scope for any prior review round"), and several must land together (CON-07+10/11/17). Needs an
+  operator-pinned authority-key decision + design review — not a hasty patch.
+- **EVM-01: the smart-contract layer is unreachable from main** (call-graph proven). This is an
+  integration project or a formal shelving decision, per §6 of the audit. EVM-02..20 are downstream
+  of it. Decide integrate-vs-shelve before any EVM code changes.
+- **STO-02 (timestamp LWW across two hosts' clocks), STO-03/09/13 (2PC + batch atomicity, partly
+  ThebeDB-repo), SYN-01..04 (fastsync — already gated off by B4-skip), NET-02..06, API-01..08**:
+  each verified, each real, each needs its own scoped change with a regression test. Not landable as
+  drive-by edits.
+
+### Process findings accepted (P1-P6, PRC-01..07)
+The audit's core process critique is correct and I own my share: I inherited numbers (B3's "9
+advisories" vs 32 reachable), reported green from scoped runs, and filed the ThebeDB tasks as a repo
+doc that the auditor could not see was real until this session created it. The lesson — verify
+against executed code, not documents — is exactly right.

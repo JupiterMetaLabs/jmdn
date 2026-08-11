@@ -6,11 +6,11 @@ Guidance for working in this repository.
 
 `jmdn` is a peer-to-peer blockchain node. A node discovers
 peers over libp2p, propagates and validates blocks, participates in committee-based
-consensus, persists chain and account state in ImmuDB, and exposes Ethereum-compatible
+consensus, persists chain and account state in ThebeDB (ImmuDB removed on feat/thebe-sc-layer), and exposes Ethereum-compatible
 and node-management APIs over gRPC/HTTP.
 
 - Language: Go (see `go.mod` for the toolchain version).
-- Build tag: CGO is required (`CGO_ENABLED=1`) because of ImmuDB and go-ethereum dependencies.
+- Build tag: CGO is required (`CGO_ENABLED=1`) because of the go-ethereum dependency (ImmuDB removed on feat/thebe-sc-layer).
 - Produced binary: `jmdn` (built from the root `main.go`).
 
 ## Build, run, test
