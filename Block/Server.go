@@ -232,6 +232,14 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 	span.SetAttributes(attribute.Bool("security_checks_passed", true))
 
 	// Basic transaction validation
+	// Guard tx.Value == nil BEFORE arithmetic: a remote submission can omit
+	// value entirely, and both the signed and internal-deployment paths reach
+	// here (SEC-02). A nil deref here is a remote unauthenticated node crash.
+	if tx.Value == nil {
+		span.RecordError(errors.New("transaction value is nil"))
+		span.SetAttributes(attribute.String("status", "validation_failed"))
+		return "", errors.New("transaction value must not be nil")
+	}
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
 		if len(tx.Data) == 0 || tx.Data == nil {
 			span.RecordError(errors.New("value is 0/empty AND data is 0/empty"))
