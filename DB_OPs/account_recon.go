@@ -232,7 +232,14 @@ func ApplyBlockRecon(accountsConn *config.PooledConnection, blockNumber uint64, 
 		return false, fmt.Errorf("recon block %d: handle: %w", blockNumber, ihErr)
 	}
 	intentKey := fmt.Sprintf("recon_intent:%d", blockNumber)
-	if raw, gerr := ih.GetSyncKV(intentKey); gerr == nil && string(raw) == "pending" {
+	raw, gerr := ih.GetSyncKV(intentKey)
+	if gerr != nil {
+		// Fail closed (audit SYN-08): a read error here is exactly the
+		// store-unhealthy condition that produces the crash this guard exists
+		// for. Do not skip the guard on error.
+		return false, fmt.Errorf("recon block %d: intent read (fail closed): %w", blockNumber, gerr)
+	}
+	if string(raw) == "pending" {
 		return false, fmt.Errorf(
 			"recon block %d: crash-window detected — a previous reconciliation of this block stopped between account writes and markers (sync-state key %q is 'pending'); balances may be partially applied. Manual resolution required: verify the block's account balances, then overwrite the key with 'done' to re-enable recon for this block",
 			blockNumber, intentKey)

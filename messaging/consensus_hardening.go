@@ -565,8 +565,12 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 		prev, found, err := equivocationStore.FirstSeenHash(number)
 		switch {
 		case err != nil:
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable read failed; using in-memory only")
+			// Fail closed: after a restart the in-memory seenHeights map is
+			// empty, so the durable read is the ONLY equivocation defence. A
+			// read error must reject, not fall through to "first sighting" —
+			// matching linkageDecision's tip_unreadable (audit CON-08).
+			return reject("equivocation_unreadable",
+				"durable equivocation read failed at height %d: %v (fail closed)", number, err)
 		case found:
 			seenHeights[number] = prev // warm the in-memory cache
 			if prev != hashHex {

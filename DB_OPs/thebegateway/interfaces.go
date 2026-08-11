@@ -111,7 +111,7 @@ type ThebeReader interface {
 }
 
 // OutboxStore — WAL persistence for failed ThebeGateway writes.
-// Entries retried by OutboxWorker with exponential backoff. Max 10 attempts.
+// Entries retried by OutboxWorker with exponential backoff. Max MaxOutboxAttempts (3) attempts.
 type OutboxStore interface {
 	Enqueue(ctx context.Context, entry OutboxEntry) error
 	Next(ctx context.Context, limit int) ([]OutboxEntry, error)

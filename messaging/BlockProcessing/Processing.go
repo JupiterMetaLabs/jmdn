@@ -245,7 +245,13 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// legacy) — the old Exists→Read path only ever saw defaultdb.
 	blockKey := DB_OPs.BlockProcessedKey(block.BlockHash.Hex())
 	processed, err := DB_OPs.IsMarkerApplied(accountsClient, blockKey)
-	if err == nil && processed {
+	if err != nil {
+		// Fail closed: a marker read error means we cannot prove the block is
+		// NOT already applied. Proceeding would re-apply on a transient storage
+		// error → double credit (audit STO-11). Abort; retried when healthy.
+		return fmt.Errorf("block-processed marker read failed (fail closed): %w", err)
+	}
+	if processed {
 		span.SetAttributes(attribute.String("status", "already_processed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
@@ -731,7 +737,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// re-check under the tx lock — the block-level prefilter can be stale if a
 	// concurrent path (PoTS replay) applied this tx after the prefilter ran.
 	processed, err := DB_OPs.IsMarkerApplied(accountsClient, DB_OPs.TxProcessedKey(tx.Hash.String()))
-	if err == nil && processed {
+	if err != nil {
+		// Fail closed (audit STO-11): a marker read error under the tx lock
+		// cannot be treated as "not processed" — that re-applies on a storage
+		// blip → double credit. Fail the tx (and thus the whole block).
+		return fmt.Errorf("tx-processed marker read failed (fail closed): %w", err)
+	}
+	if processed {
 		txSpan.SetAttributes(attribute.String("status", "already_processed"))
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))
@@ -1205,7 +1217,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	}
 
 	// Foolproof execution-time nonce check (prevents same-block replay).
-	// Returns ErrStaleNonce so the caller can skip this tx rather than rolling
+	// Returns ErrStaleNonce so the caller must fail the whole block (determinism; see the DETERMINISM comment above) rather than rolling
 	// back the entire block — the tx was valid at security-check time but the
 	// account nonce advanced before ProcessBlockLocally ran.
 	if tx.Nonce < didDoc.TxNonce {
