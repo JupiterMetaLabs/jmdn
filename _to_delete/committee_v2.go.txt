@@ -49,7 +49,6 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
-	"gossipnode/config"
 	"gossipnode/config/settings"
 )
 
@@ -96,76 +95,6 @@ type RoundContext struct {
 	// instead of retrying the same members. Callers that do not yet track
 	// timeouts pass 0; see the migration note on VerifyCertificateForRound.
 	Period uint64
-}
-
-// ---------------------------------------------------------------------------
-// Round context from a block
-// ---------------------------------------------------------------------------
-
-// RoundContextForBlock is the ONE place a RoundContext is built from a block.
-//
-// Every certificate call site goes through it, for the same reason
-// SelectCommittee is the only committee producer: a second derivation is a
-// second source of truth, and the two would eventually disagree.
-//
-// The proposer's own vote path and every verifier reach identical values here,
-// because every field is read from the block itself. Nothing is read from the
-// clock. See EpochForHeight for why that matters.
-func RoundContextForBlock(b *config.ZKBlock) RoundContext {
-	if b == nil {
-		return RoundContext{}
-	}
-	return RoundContext{
-		Epoch:    EpochForHeight(b.BlockNumber),
-		PrevHash: b.PrevHash.Bytes(),
-		Height:   b.BlockNumber,
-		// Period is 0 until the round loop tracks timeouts. See the migration
-		// note on VerifyCertificateForRound: with Period pinned at 0 a timed-out
-		// round re-draws the same members, so a stalled committee stalls the
-		// height. The seed already accounts for Period; only the plumbing is
-		// missing.
-		Period: 0,
-	}
-}
-
-// EpochForHeight maps a block height to the selection epoch.
-//
-// IT IS DERIVED FROM THE BLOCK, NEVER FROM THE CLOCK. This is not a style
-// preference. The epoch is hashed into the seed, so if two nodes compute
-// different epochs for the same block they derive different seeds, seat
-// different committees, and reject each other's votes - the exact failure this
-// package exists to remove. A verifier replaying a block an hour later, or a
-// node whose clock has drifted, must land on the same value as the proposer.
-//
-// Note the contrast with seednode/committee.EpochForTime, which IS wall-clock
-// (unix / committee_epoch_seconds). That one selects WHICH SNAPSHOT the seed
-// node serves. This one selects the seed. They are different clocks on purpose,
-// and EpochForTime must never be fed into a RoundContext.
-//
-// consensus.committee_epoch_blocks == 0 (the default) means "one epoch": every
-// height maps to epoch 0. That is deliberate and safe at Stage 1, where the
-// SeedSource is a fixed salt and ignores the epoch entirely - Height and
-// PrevHash already rotate the draw every block. Stage 2 needs a real epoch
-// length, because that is the unit the RANDAO round and the beacon are keyed
-// on; set it then, network-wide, as a coordinated change.
-func EpochForHeight(height uint64) uint64 {
-	n := epochLengthBlocks()
-	if n == 0 {
-		return 0
-	}
-	return height / n
-}
-
-// epochLengthBlocks reads consensus.committee_epoch_blocks, tolerating an
-// unloaded settings singleton the way blockedBuddies and committeeSizeLimit do.
-func epochLengthBlocks() uint64 {
-	if !settings.IsLoaded() {
-		return 0
-	}
-	if n := settings.Get().Consensus.CommitteeEpochBlocks; n > 0 {
-		return uint64(n)
-	}
-	return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -234,77 +163,6 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 	return committee.CommitteeFor(seed, snap, k)
 }
 
-// ErrCommitteeNotPinned is returned when consensus.require_pinned_committee is
-// set but the wired eligibility source cannot serve a specific selection epoch.
-//
-// Fail closed rather than silently substituting the current set: substituting is
-// precisely the W1 defect, and it is invisible until two nodes disagree.
-var ErrCommitteeNotPinned = errors.New(
-	"committee: consensus.require_pinned_committee is set but the eligibility source " +
-		"cannot serve a specific selection epoch (fail closed; see W1 pool pinning)")
-
-// pinnedEligibleForEpoch resolves the candidate pool for one selection epoch.
-//
-// # THIS IS THE W1 SEAM. Read this before changing anything below it.
-//
-// The seed a committee is ranked with is derived from the BLOCK
-// (RoundContextForBlock -> DeriveSeed). The pool it ranks is, today, read LIVE
-// from the eligibility source — so two nodes that resolve the pool either side
-// of a membership change rank the same seed over different candidates, seat
-// different committees, and compute different n (hence different
-// T = ceil(2n/3)). Live: a certificate one node finalises, another rejects.
-// Retroactively: "who was seated at block 95?" changes every time membership
-// changes, so a syncing node cannot re-derive a committee that has already
-// voted.
-//
-// Two things keep that latent right now, and both are about to be removed:
-//  1. JMDN_COMMITTEE_V2 is off, so this function is not on the live path;
-//  2. MaxValidators(7) >= pool(7), so SelectCommitteeWithSize takes the
-//     seat-everyone branch and the draw is a no-op. Onboarding validator #8
-//     arms it.
-//
-// The fix is to resolve the pool from the epoch's FROZEN authority-signed
-// snapshot. The artifact already exists and is self-describing: the signed
-// canonical bytes are "jmdt/committee/v1|<epoch>|<seed>|<peer_id:bls_pub,...>",
-// so a stored snapshot proves which epoch it belongs to from its signature
-// alone. What is missing is only storage/retrieval:
-//   - the seed node serving GetCommitteeSnapshot(epoch) for a PAST epoch, or
-//   - jmdn persisting each epoch's snapshot WITH its signature and re-verifying
-//     on read (an unsigned local cache would be unauthenticated state defining
-//     history permanently — do not do that).
-//
-// Until one of those exists, require_pinned_committee stays false and this
-// returns the live set, which is byte-identical to the previous behaviour.
-// Turning it on before a source can serve epochs fails every round closed,
-// loudly, which is the intended failure direction.
-//
-// NOTE also: with consensus.committee_epoch_blocks == 0, EpochForHeight returns
-// 0 for every height, so "pin per epoch" pins all of history to a single
-// snapshot. Setting a real epoch length is a prerequisite for this to mean
-// anything, and is itself a coordinated fleet-wide change.
-func pinnedEligibleForEpoch(epoch uint64) (map[string]string, error) {
-	if !requirePinnedCommittee() {
-		// UNPINNED — current behaviour, preserved exactly. The pool is whatever
-		// the source considers current; the epoch argument is not consulted.
-		return eligibleMembersUncapped()
-	}
-	eligible, err := eligibleMembersUncappedForEpoch(epoch, true)
-	if err != nil {
-		return nil, fmt.Errorf("%w: epoch %d: %v", ErrCommitteeNotPinned, epoch, err)
-	}
-	return eligible, nil
-}
-
-// requirePinnedCommittee reports consensus.require_pinned_committee, tolerating
-// an unloaded settings singleton the way blockedBuddies and committeeSizeLimit
-// do. Default false => today's behaviour.
-func requirePinnedCommittee() bool {
-	if !settings.IsLoaded() {
-		return false
-	}
-	return settings.Get().Consensus.RequirePinnedCommittee
-}
-
 // committeeSnapshotFor builds the pure-package snapshot from the authenticated
 // eligible set, WITHOUT the alphabetical cap.
 //
@@ -312,7 +170,7 @@ func requirePinnedCommittee() bool {
 // the same n and therefore the same threshold; seed-ranked selection preserves
 // that property exactly, and adds rotation the cap could never have.
 func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
-	eligible, err := pinnedEligibleForEpoch(epoch)
+	eligible, err := eligibleMembersUncapped()
 	if err != nil {
 		return committee.Snapshot{}, err
 	}
@@ -386,54 +244,6 @@ func SetBeaconSource(b *committee.BeaconSource) { beaconSource = b }
 
 func activeBeacon() *committee.BeaconSource { return beaconSource }
 
-// WarmupPeerIDs returns the peers the sequencer must have a live connection to
-// before a round can reach quorum.
-//
-// This is NOT the committee. It is the connectivity pool the committee is drawn
-// from, and under v2 the two are deliberately different sizes.
-//
-// WHY IT CANNOT JUST BE EligibleCommitteePeerIDs: that returns the CAPPED set -
-// the k alphabetically-first peers. Under v2 the seated committee is drawn from
-// the whole uncapped pool and rotates every height, so warming up only the
-// capped prefix would leave the sequencer unable to dial the peers it is about
-// to seat. They would never receive a vote request, never sign, and the
-// certificate would sit below threshold: a halt, produced by a warmup that
-// looked correct.
-//
-// With v2 off this returns exactly what it returned before - the capped set -
-// so the warmup path is unchanged until the flag flips.
-func WarmupPeerIDs() (map[string]struct{}, error) {
-	if !CommitteeV2Enabled {
-		return EligibleCommitteePeerIDs()
-	}
-	pool, err := eligibleMembersUncapped()
-	if err != nil {
-		return nil, err
-	}
-	set := make(map[string]struct{}, len(pool))
-	for pid := range pool {
-		set[pid] = struct{}{}
-	}
-	return set, nil
-}
-
-// SeatedPeerIDs returns the seated committee for a round as a lookup set.
-//
-// The sequencer uses it to decide which buddies to put on the wire, so the
-// peers ASKED to vote are the peers the verifier will COUNT. That identity is
-// the whole of F1.
-func SeatedPeerIDs(rc RoundContext) (map[string]struct{}, error) {
-	seated, err := SelectCommittee(rc)
-	if err != nil {
-		return nil, err
-	}
-	set := make(map[string]struct{}, len(seated))
-	for _, m := range seated {
-		set[m.PeerID] = struct{}{}
-	}
-	return set, nil
-}
-
 // DialTargetsForRound is the node-local view: the seated committee minus this
 // node. Selection is global and self-included; only dialling excludes self.
 // That split is the fix for FilterEligible (avc/nodeselection/.../filter.go:39),
@@ -504,10 +314,7 @@ func VerifyCertificateForRound(
 	rc RoundContext,
 ) (CertificateResult, error) {
 	if !CommitteeV2Enabled {
-		// Byte-identical to today: the legacy verifier over the alphabetically
-		// capped eligible set. rc is ignored on this path by design - the legacy
-		// selection has no notion of a round.
-		return VerifyCertificate(responses, blockHashHex, height)
+		return verifyCertificateLegacy(responses, blockHashHex, height)
 	}
 
 	seated, err := SelectCommittee(rc)

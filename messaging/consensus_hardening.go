@@ -95,9 +95,25 @@ var (
 //
 // Wired at node startup via SetCommitteeEligibilitySource (only the sequencer
 // can legitimately call getBuddy). nil => FAIL CLOSED.
+// The (epoch, pinned) parameters exist for W1 pool pinning:
+//
+//	pinned == false  "whatever the source considers CURRENT" — the legacy/live
+//	                 read; epoch is ignored. Every caller does this today, which
+//	                 is why behaviour is unchanged by this commit.
+//	pinned == true   "the snapshot for exactly this selection epoch" — the read a
+//	                 verifier needs to re-derive a historical block's committee.
+//	                 A source that cannot serve that epoch EXACTLY must fail
+//	                 closed rather than substitute the current one.
+//
+// Plain builtins rather than a shared struct type, deliberately: seednode does
+// not import messaging today and this keeps it that way. And explicitly NOT
+// "epoch 0 means current" — the seed's wire protocol uses that convention, but a
+// block-derived selection epoch 0 is a REAL epoch (with committee_epoch_blocks=0
+// it is currently the ONLY one), so overloading 0 would silently mean "current"
+// forever: a fix that compiles, reads correctly, and changes nothing.
 var (
 	committeeEligibilityMu sync.RWMutex
-	committeeEligibilityFn func() (map[string]string, error)
+	committeeEligibilityFn func(epoch uint64, pinned bool) (map[string]string, error)
 )
 
 // SetCommitteeEligibilitySource wires the live committee-eligibility source. The
@@ -107,7 +123,7 @@ var (
 // (legacy getBuddy source with no committee snapshot) — the peer_id↔bls_pub
 // binding is only ENFORCED when the value is non-empty. Pass nil to clear
 // (forces fail-closed). Safe to call concurrently.
-func SetCommitteeEligibilitySource(fn func() (map[string]string, error)) {
+func SetCommitteeEligibilitySource(fn func(epoch uint64, pinned bool) (map[string]string, error)) {
 	committeeEligibilityMu.Lock()
 	committeeEligibilityFn = fn
 	committeeEligibilityMu.Unlock()
@@ -159,6 +175,17 @@ func committeeSizeLimit() int {
 // FAIL CLOSED: no source wired, a source error, or an empty result yields an
 // error naming the defect. Callers MUST treat an error as "no one is eligible".
 func eligibleMembersUncapped() (map[string]string, error) {
+	return eligibleMembersUncappedForEpoch(0, false)
+}
+
+// eligibleMembersUncappedForEpoch is eligibleMembersUncapped with an explicit
+// epoch reference. See committeeEligibilityFn for the meaning of (epoch, pinned).
+//
+// pinned=false reproduces eligibleMembersUncapped exactly; pinned=true is the W1
+// path and is only reachable once consensus.require_pinned_committee is set AND
+// the wired source can serve a specific epoch. Callers MUST treat an error as
+// "no one is eligible" — never as "fall back to current".
+func eligibleMembersUncappedForEpoch(epoch uint64, pinned bool) (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -166,7 +193,7 @@ func eligibleMembersUncapped() (map[string]string, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("committee eligibility source not configured (fail closed): call messaging.SetCommitteeEligibilitySource at startup")
 	}
-	buddies, err := fn()
+	buddies, err := fn(epoch, pinned)
 	if err != nil {
 		return nil, fmt.Errorf("committee eligibility source failed: %w", err)
 	}

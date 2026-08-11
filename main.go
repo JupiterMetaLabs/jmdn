@@ -1307,6 +1307,7 @@ func main() {
 				seednode.SeedAuthPinPath(),
 				cfg.Network.SeedNode,
 				60*time.Second,
+				cfg.Consensus.CommitteeStrictBoundary,
 			))
 			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}

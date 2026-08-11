@@ -220,6 +220,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
 	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
 	v.SetDefault("consensus.committee_epoch_blocks", d.Consensus.CommitteeEpochBlocks)
+	v.SetDefault("consensus.require_pinned_committee", d.Consensus.RequirePinnedCommittee)
+	v.SetDefault("consensus.committee_strict_boundary", d.Consensus.CommitteeStrictBoundary)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)
 

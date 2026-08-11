@@ -39,7 +39,7 @@ var _ interfaces.SeedNodeClient = (*SeedNodeAdapter)(nil)
 // authorize nobody, rather than falling back to unauthenticated votes.
 type SeedNodeAdapter struct {
 	client     *seednode.Client
-	eligibleFn func() (map[string]string, error)
+	eligibleFn func(epoch uint64, pinned bool) (map[string]string, error)
 }
 
 // NewSeedNodeAdapter builds the adapter.
@@ -51,7 +51,7 @@ type SeedNodeAdapter struct {
 // signature or epoch freshness, which would defeat the entire point of Fix #2.
 // A nil eligibleFn is rejected so the adapter can never silently degrade to
 // "no authorization".
-func NewSeedNodeAdapter(client *seednode.Client, eligibleFn func() (map[string]string, error)) (*SeedNodeAdapter, error) {
+func NewSeedNodeAdapter(client *seednode.Client, eligibleFn func(epoch uint64, pinned bool) (map[string]string, error)) (*SeedNodeAdapter, error) {
 	if client == nil {
 		return nil, fmt.Errorf("avc seednode adapter: nil seednode client")
 	}
@@ -70,7 +70,10 @@ func NewSeedNodeAdapter(client *seednode.Client, eligibleFn func() (map[string]s
 // with its verified key, because addresses are a dial/liveness concern, not an
 // authorization one.
 func (a *SeedNodeAdapter) GetPeers(ctx context.Context) ([]interfaces.Node, error) {
-	eligible, err := a.eligibleFn()
+	// (0, false) = the CURRENT authenticated committee. This adapter feeds avc's
+	// own VRF selection, a separate consumer from messaging's W1 pinned path; it
+	// wants "who is the committee now", not a specific past epoch.
+	eligible, err := a.eligibleFn(0, false)
 	if err != nil {
 		return nil, fmt.Errorf("avc seednode adapter: verified committee unavailable (fail-closed): %w", err)
 	}

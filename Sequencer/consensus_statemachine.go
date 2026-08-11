@@ -111,7 +111,12 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
 	// verifier enforces peer_id membership only — the key binding is available
 	// only via the authenticated snapshot below.
-	legacyBuddySource := func() (map[string]string, error) {
+	// (epoch, pinned) are ignored here: the legacy source is a per-node live view
+	// with no epoch concept at all. That is exactly why v2 refuses to run on it
+	// (ErrLegacySourceUnderV2) — seed-ranking a set the nodes already disagree
+	// about would still diverge. A pinned request cannot be honoured by this
+	// source, so require_pinned_committee must not be set alongside it.
+	legacyBuddySource := func(_ uint64, _ bool) (map[string]string, error) {
 		if main := c.PeerList.MainPeers; len(main) > 0 {
 			set := make(map[string]string, len(main))
 			for _, pid := range main {
@@ -158,7 +163,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
 		} else {
 			initErr := err
-			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {
+			messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
 			})
 		}

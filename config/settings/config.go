@@ -72,6 +72,42 @@ type ConsensusSettings struct {
 	// (RANDAO + VDF) keys its beacon on this epoch and needs a real value.
 	CommitteeEpochBlocks int64 `mapstructure:"committee_epoch_blocks" yaml:"committee_epoch_blocks"`
 
+	// RequirePinnedCommittee makes committee selection resolve its candidate pool
+	// from the FROZEN snapshot of the block's selection epoch, instead of reading
+	// the current one live (W1 pool pinning).
+	//
+	// Unpinned, the seed is derived from the block but the pool is not: two nodes
+	// resolving the pool either side of a membership change seat different
+	// committees and compute different n, hence different T = ceil(2n/3). Live
+	// that is a split; retroactively it means a synced node cannot re-derive the
+	// committee that already voted on an old block.
+	//
+	// FAIL CLOSED: with this set, an eligibility source that cannot serve a
+	// specific epoch returns messaging.ErrCommitteeNotPinned and the round is
+	// refused. Do NOT enable until the seed node can serve GetCommitteeSnapshot
+	// for a PAST epoch, or jmdn persists each epoch's snapshot with its signature.
+	//
+	// Also requires committee_epoch_blocks to be non-zero — at 0 every height maps
+	// to epoch 0, so "pin per epoch" pins all history to a single snapshot.
+	//
+	// Default false = today's behaviour, unchanged.
+	RequirePinnedCommittee bool `mapstructure:"require_pinned_committee" yaml:"require_pinned_committee"`
+
+	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
+	// committee snapshot when the seed is unreachable.
+	//
+	// The snapshot freshness window is ±1 epoch, so just after an epoch boundary a
+	// node serving its cached previous-epoch set still passes freshness while a
+	// node that fetched successfully uses the new set — different sets, different
+	// n, different T, and each believes it is right. Bridging WITHIN an epoch is
+	// unaffected; that is what the cache is for.
+	//
+	// Trade: a stalled node rejoins cleanly, a split node does not. Becomes
+	// important once membership actually rotates per epoch.
+	//
+	// Default false = today's behaviour, unchanged.
+	CommitteeStrictBoundary bool `mapstructure:"committee_strict_boundary" yaml:"committee_strict_boundary"`
+
 	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
 	// consensus. The certificate verifier trims the eligible committee to this many
 	// peers (deterministically, by sorted peer_id) BEFORE computing the 2f+1
