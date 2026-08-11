@@ -99,20 +99,37 @@ func (consensusMessage *ConsensusMessage) GetStartTime() time.Time {
 }
 
 func (consensusMessage *ConsensusMessage) SetGloalVarCacheConsensusMessage() *ConsensusMessage {
+	if consensusMessage.ZKBlock == nil {
+		return consensusMessage // never key on a nil block (audit NET-01 deref)
+	}
+	cacheMu.Lock()
 	CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()] = consensusMessage
+	cacheMu.Unlock()
 	return consensusMessage
 }
 
 func (consensusMessage *ConsensusMessage) GetGloalVarCacheConsensusMessage() *ConsensusMessage {
+	if consensusMessage.ZKBlock == nil {
+		return nil
+	}
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()]
 }
 
 func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() *ConsensusMessage {
+	if consensusMessage.ZKBlock == nil {
+		return consensusMessage
+	}
+	cacheMu.Lock()
 	delete(CacheConsensuMessage, consensusMessage.ZKBlock.BlockHash.String())
+	cacheMu.Unlock()
 	return consensusMessage
 }
 
 func (consensusMessage *ConsensusMessage) ClearGloalVarCacheConsensusMessage() *ConsensusMessage {
+	cacheMu.Lock()
 	CacheConsensuMessage = make(map[string]*ConsensusMessage)
+	cacheMu.Unlock()
 	return consensusMessage
 }

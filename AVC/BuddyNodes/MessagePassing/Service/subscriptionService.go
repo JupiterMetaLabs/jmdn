@@ -804,7 +804,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// sequencer at round start for exactly this purpose ("so voters know where
 	// to send votes"). Used when pubSubNode has no buddy list (common on buddy nodes).
 	if !found {
-		for _, msg := range AVCStruct.CacheConsensuMessage {
+		for _, msg := range AVCStruct.SnapshotConsensusMessages() {
 			if msg == nil || msg.SequencerID == "" {
 				continue
 			}

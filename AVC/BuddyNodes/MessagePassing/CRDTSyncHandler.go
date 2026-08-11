@@ -47,7 +47,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		logger().Info(context.Background(), "⚠️ Buddy list empty at CRDT sync; attempting to populate from consensus cache")
 		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
 		count := 0
-		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+		for _, consensusMsg := range AVCStruct.SnapshotConsensusMessages() {
 			if consensusMsg == nil || consensusMsg.Buddies == nil {
 				continue
 			}
@@ -424,7 +424,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 
 	// Source 1: Use consensus cache with explicit multiaddrs
 	cacheAdded := 0
-	for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+	for _, consensusMsg := range AVCStruct.SnapshotConsensusMessages() {
 		if consensusMsg == nil || consensusMsg.Buddies == nil {
 			continue
 		}

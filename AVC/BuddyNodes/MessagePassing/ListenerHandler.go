@@ -1603,7 +1603,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		logger().Info(context.Background(), "⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache")
 		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
 		count := 0
-		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+		for _, consensusMsg := range AVCStruct.SnapshotConsensusMessages() {
 			if consensusMsg == nil || consensusMsg.Buddies == nil {
 				continue
 			}
