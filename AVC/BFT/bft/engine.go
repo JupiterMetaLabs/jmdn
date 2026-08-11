@@ -278,11 +278,10 @@ func (e *engine) validatePrepare(msg *PrepareMessage) error {
 		return fmt.Errorf("stale timestamp")
 	}
 
-	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
-		return fmt.Errorf("replay/seq error: %w", err)
-	}
-
-	// Signature verification
+	// Signature verification MUST precede checkAndMarkSeq: marking the sequence
+	// first lets an unauthenticated forgery with a max Seq advance
+	// lastSeqSeen[victim] and censor the victim's genuine PREPARE for the round
+	// (audit CON-05). Verify identity, THEN consume the sequence.
 	if e.config.RequireSignatures {
 		if len(msg.Signature) == 0 {
 			return fmt.Errorf("missing signature")
@@ -291,6 +290,10 @@ func (e *engine) validatePrepare(msg *PrepareMessage) error {
 		if !ed25519.Verify(buddy.PublicKey, digest, msg.Signature) {
 			return fmt.Errorf("invalid signature")
 		}
+	}
+
+	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
+		return fmt.Errorf("replay/seq error: %w", err)
 	}
 
 	return nil
@@ -315,11 +318,7 @@ func (e *engine) validateCommit(msg *CommitMessage) error {
 		return fmt.Errorf("stale timestamp")
 	}
 
-	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
-		return fmt.Errorf("replay/seq error: %w", err)
-	}
-
-	// Signature verification for Commit
+	// Signature verification BEFORE checkAndMarkSeq (audit CON-05, COMMIT path).
 	if e.config.RequireSignatures {
 		if len(msg.Signature) == 0 {
 			return fmt.Errorf("missing commit signature")
@@ -328,6 +327,10 @@ func (e *engine) validateCommit(msg *CommitMessage) error {
 		if !ed25519.Verify(buddy.PublicKey, digest, msg.Signature) {
 			return fmt.Errorf("invalid commit signature")
 		}
+	}
+
+	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
+		return fmt.Errorf("replay/seq error: %w", err)
 	}
 
 	// Validate proof has enough supporting votes
