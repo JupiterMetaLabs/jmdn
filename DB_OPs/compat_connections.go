@@ -88,7 +88,6 @@ func GetAccountsConnections(_ context.Context) (*config.PooledConnection, error)
 }
 
 // storeAccountToDBOps converts a *store.Account to *Account.
-// TxNonce and TxCountSent will be zero until store.Account adds those fields (Task #26).
 func storeAccountToDBOps(a *store.Account) *Account {
 	return &Account{
 		DIDAddress:  a.DIDAddress,

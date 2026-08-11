@@ -61,7 +61,10 @@ func getHandle(conn *config.PooledConnection) (store.ThebeHandle, error) {
 }
 
 // storeAccountFromStore converts a store.Account to a DB_OPs Account.
-// TxNonce and TxCountSent are not in store.Account; they default to zero.
+// Copies ALL fields including TxNonce and TxCountSent (store.Account has both —
+// see store/types.go). The prior "they default to zero" comment was false and
+// silently regressed nonces on the authoritative recon path, which reads its
+// base through this converter and then writes it merge-bypassing (STO-01).
 // Used by BulkGetAccounts.go and any ThebeDB-backed account retrieval path.
 func storeAccountFromStore(a *store.Account) *Account {
 	if a == nil {
@@ -72,6 +75,8 @@ func storeAccountFromStore(a *store.Account) *Account {
 		Address:     a.Address,
 		Balance:     a.Balance,
 		Nonce:       a.Nonce,
+		TxNonce:     a.TxNonce,
+		TxCountSent: a.TxCountSent,
 		AccountType: a.AccountType,
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
