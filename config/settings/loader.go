@@ -36,12 +36,31 @@ func Load() (*NodeConfig, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("reading config file: %w", err)
 		}
+		fmt.Println("No configuration file found, using defaults and environment variables")
+	} else {
+		fmt.Printf("Configuration loaded from: %s\n", v.ConfigFileUsed())
 	}
 
 	// 6. Environment variables (Highest priority after flags)
 	v.SetEnvPrefix("JMDN")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
+	// Explicitly support non-prefixed Thebe env vars.
+	if err := v.BindEnv("thebe.sql_dsn", "THEBE_SQL_DSN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_SQL_DSN: %w", err)
+	}
+	if err := v.BindEnv("thebe.redis_url", "THEBE_REDIS_URL"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_REDIS_URL: %w", err)
+	}
+	if err := v.BindEnv("thebe.stream_name", "THEBE_STREAM_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_STREAM_NAME: %w", err)
+	}
+	if err := v.BindEnv("thebe.max_len", "THEBE_MAX_LEN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_MAX_LEN: %w", err)
+	}
+	if err := v.BindEnv("thebe.group_name", "THEBE_GROUP_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_GROUP_NAME: %w", err)
+	}
 
 	// Bind the selection secrets to their explicit, documented env var names
 	// (these differ from the auto-derived JMDN_SELECTION_* names, so bind them
@@ -54,6 +73,7 @@ func Load() (*NodeConfig, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
+	normalizeThebeConfig(&cfg)
 
 	// 7. Generic Map Merge for Services
 	// Fix Viper's map unmarshaling bug: it replaces map values entirely instead of deep merging.
@@ -116,7 +136,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ports.cli", d.Ports.CLI)
 	v.SetDefault("ports.did", d.Ports.DID)
 	v.SetDefault("ports.facade", d.Ports.Facade)
+	v.SetDefault("ports.thebe_debug", d.Ports.ThebeDebug)
 	v.SetDefault("ports.ws", d.Ports.WS)
+	v.SetDefault("ports.geth", d.Ports.Geth)
+	v.SetDefault("ports.smart", d.Ports.Smart)
 	v.SetDefault("ports.metrics", d.Ports.Metrics)
 	v.SetDefault("ports.profiler", d.Ports.Profiler)
 
@@ -127,18 +150,26 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.cli", d.Binds.CLI)
 	v.SetDefault("binds.did", d.Binds.DID)
 	v.SetDefault("binds.facade", d.Binds.Facade)
+	v.SetDefault("binds.thebe_debug", d.Binds.ThebeDebug)
 	v.SetDefault("binds.ws", d.Binds.WS)
+	v.SetDefault("binds.geth", d.Binds.Geth)
+	v.SetDefault("binds.smart", d.Binds.Smart)
 	v.SetDefault("binds.metrics", d.Binds.Metrics)
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 
 	// Database
-	v.SetDefault("database.address", d.Database.Address)
-	v.SetDefault("database.port", d.Database.Port)
-	v.SetDefault("database.username", d.Database.Username)
-	v.SetDefault("database.password", d.Database.Password)
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
 	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)
+
+	// Thebe
+	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
+	v.SetDefault("thebe.kv_path", d.Thebe.KVPath)
+	v.SetDefault("thebe.sql_dsn", d.Thebe.SQLDSN)
+	v.SetDefault("thebe.redis_url", d.Thebe.RedisURL)
+	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
+	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
+	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -230,6 +261,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("alerts.api_key", d.Alerts.APIKey)
 	v.SetDefault("alerts.chat_id", d.Alerts.ChatID)
 	v.SetDefault("alerts.http_timeout", d.Alerts.HTTPTimeout)
+
+	// Orchestrator callback (consensus-rejection reports)
+	v.SetDefault("orchestrator.url", d.Orchestrator.URL)
+	v.SetDefault("orchestrator.api_key", d.Orchestrator.APIKey)
+	v.SetDefault("orchestrator.http_timeout", d.Orchestrator.HTTPTimeout)
+	v.SetDefault("orchestrator.max_attempts", d.Orchestrator.MaxAttempts)
 }
 
 // mergeStructs merges src into dest generically.
@@ -245,4 +282,21 @@ func mergeStructs[T any](dest, src T) T {
 		}
 	}
 	return dest
+}
+
+func normalizeThebeConfig(cfg *NodeConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Thebe.StreamName = strings.TrimSpace(cfg.Thebe.StreamName)
+	if cfg.Thebe.StreamName == "" {
+		cfg.Thebe.StreamName = "thebedb.events"
+	}
+	cfg.Thebe.GroupName = strings.TrimSpace(cfg.Thebe.GroupName)
+	if cfg.Thebe.GroupName == "" {
+		cfg.Thebe.GroupName = "projector"
+	}
+	if cfg.Thebe.MaxLen <= 0 {
+		cfg.Thebe.MaxLen = 1000
+	}
 }

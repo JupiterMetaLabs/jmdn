@@ -60,18 +60,16 @@ func (p RangePayload) Validate() error {
 // found=false (with err=nil) means the block does not exist locally yet —
 // expected for a peer that hasn't synced that far, and callers should treat
 // it as non-fatal rather than an error.
+// THEBEDB: blocks rows are append-only (immutable), so L1 finality is stored
+// in the dedicated l1_finality table (DB_OPs.StoreL1CommitRange) rather than
+// by mutating the block record. Block reads hydrate L1TxHash/L1BlockNumber
+// from that table (GetZKBlockByNumber), so consumers see the same fields.
 func ApplyCommit(conn *config.PooledConnection, p CommitPayload) (found bool, err error) {
-	block, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber)
-	if err != nil {
-		return false, nil
+	if _, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber); err != nil {
+		return false, nil // block not synced locally yet — non-fatal
 	}
-
-	block.L1TxHash = p.L1TxHash
-	block.L1BlockNumber = p.L1BlockNumber
-
-	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, p.BlockNumber)
-	if err := DB_OPs.Update(blockKey, block); err != nil {
-		return true, fmt.Errorf("update block %d: %w", p.BlockNumber, err)
+	if err := DB_OPs.StoreL1CommitRange(p.L1TxHash, p.L1BlockNumber, p.BlockNumber, p.BlockNumber); err != nil {
+		return true, fmt.Errorf("store l1 commit for block %d: %w", p.BlockNumber, err)
 	}
 	return true, nil
 }
@@ -81,22 +79,27 @@ func ApplyCommit(conn *config.PooledConnection, p CommitPayload) (found bool, er
 // locally — a peer may not have synced that far yet. Callers must call
 // p.Validate() first; ApplyRange itself does not re-check MaxRangeSpan.
 func ApplyRange(conn *config.PooledConnection, p RangePayload) (updated, skipped int) {
+	// Determine which blocks in the range exist locally — the l1_finality row
+	// covers exactly those; blocks synced later hydrate from the same row, so
+	// a skipped block self-heals on the next ApplyRange gossip replay.
+	var present []uint64
 	for blockNum := p.StartBlock; blockNum <= p.EndBlock; blockNum++ {
-		block, err := DB_OPs.GetZKBlockByNumber(conn, blockNum)
-		if err != nil {
+		if _, err := DB_OPs.GetZKBlockByNumber(conn, blockNum); err != nil {
 			skipped++
 			continue
 		}
-
-		block.L1TxHash = p.L1TxHash
-		block.L1BlockNumber = p.L1BlockNumber
-
-		blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, blockNum)
-		if err := DB_OPs.Update(blockKey, block); err != nil {
-			skipped++
-			continue
-		}
-		updated++
+		present = append(present, blockNum)
 	}
+	if len(present) == 0 {
+		return 0, skipped
+	}
+	// One append-only l1_finality record for the whole confirmed range —
+	// StoreL1CommitRange records every block in [start, end]; reads join on
+	// block_numbers containment, so blocks missing locally today are covered
+	// the moment they sync.
+	if err := DB_OPs.StoreL1CommitRange(p.L1TxHash, p.L1BlockNumber, p.StartBlock, p.EndBlock); err != nil {
+		return 0, skipped + len(present)
+	}
+	updated = len(present)
 	return updated, skipped
 }

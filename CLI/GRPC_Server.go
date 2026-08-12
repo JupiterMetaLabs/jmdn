@@ -18,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -210,6 +209,14 @@ func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequ
 
 	addr := common.HexToAddress(req.PublicKey)
 
+	// GATED out-of-band creation (operator RPC): a manually created account exists
+	// on this node only, with a locally minted ART nonce. Accounts are created at
+	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
+	// re-enables this path for emergencies.
+	if !DB_OPs.AllowLocalAccountCreate {
+		return &pb.OperationResponse{Success: false, Message: DB_OPs.ErrLocalAccountCreateDisabled.Error()}, nil
+	}
+
 	if err := DB_OPs.CreateAccount(nil, req.Did, addr, nil); err != nil {
 		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to create account: %v", err)}, nil
 	}
@@ -335,14 +342,13 @@ func (s *CLIServer) GetTxIndexStatus(ctx context.Context, _ *emptypb.Empty) (*pb
 }
 
 // Helper function to convert database state
-func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *DB_OPs.DatabaseState) *pb.DatabaseState {
 	if state == nil {
 		return &pb.DatabaseState{}
 	}
 	return &pb.DatabaseState{
-		TxId:     state.TxId,
-		TxHash:   state.TxHash,
-		Database: state.Db,
+		TxId:   state.TxId,
+		TxHash: state.TxHash,
 	}
 }
 

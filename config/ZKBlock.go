@@ -60,9 +60,32 @@ type ZKBlock struct {
 	GasUsed       uint64         `json:"gasused"`
 	BlockNumber   uint64         `json:"blocknumber"`
 
-	// L1 finality — set after commitRollup is mined on Ethereum
+	// L1 finality — set after commitRollup is mined on Ethereum.
+	// Hydrated at read time from the append-only l1_finality table.
 	L1TxHash      string `json:"l1_tx_hash,omitempty"`
 	L1BlockNumber uint64 `json:"l1_block_number,omitempty"`
+
+	// AccountNonces carries the canonical ART identity nonce for every distinct
+	// sender and receiver this block touches, stamped by the sequencer before
+	// consensus (DB_OPs.EnrichBlockAccountNonces). At apply, every node uses it to
+	// (a) create accounts the block itself funds — deterministically, so all nodes
+	// mint the identical identity — and (b) adopt the sequencer's nonce when a
+	// stored account carries a different one (heals historical per-node mints).
+	//
+	// ADVISORY, NOT CONSENSUS-HASHED: the canonical block hash is computed from
+	// transaction contents only (Security.RecomputeBlockHashFromContents), so this
+	// field does not change BlockHash, and nodes on older builds simply ignore it
+	// on JSON unmarshal — mixed fleets stay wire-compatible. It must therefore
+	// never be treated as certificate-verified data: it is identity metadata whose
+	// safety comes from the uniqueness/monotonicity rules in DB_OPs/art_ordinal.go.
+	AccountNonces []AccountNonce `json:"account_nonces,omitempty"`
+}
+
+// AccountNonce binds one account address to its canonical ART identity nonce
+// for Fastsync AccountSync routing. See ZKBlock.AccountNonces.
+type AccountNonce struct {
+	Address common.Address `json:"address"`
+	Nonce   uint64         `json:"nonce"`
 }
 
 // ParsedZKTransaction is a helper struct with parsed numeric fields

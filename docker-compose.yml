@@ -1,18 +1,21 @@
 # JMDN Node — Docker Compose
 #
 # Services:
-#   immudb         — tamper-proof append-only ledger
+#   postgres       — ThebeDB SQL projection (wal_level=logical for CDC)
 #   redis          — account sync worker queue (Redis Streams)
 #   jmdn           — the JMDN node process (non-root via gosu)
 #   jmdn-bootstrap — one-time GCS snapshot download (profile-gated)
 #
+# Storage: ThebeDB KV (BadgerDB) is embedded in the jmdn process; the SQL
+# projection lives in the postgres service.
+#
 # Volume layout (mirrors bare-metal install_services.sh):
-#   immudb-data → /opt/jmdn/data   immudb --dir /opt/jmdn/data (systemdb, defaultdb, accountsdb)
-#   jmdn-state  → /opt/jmdn        jmdn WorkingDirectory (DB/, config/, certs/)
-#   redis-data  → /data            Redis AOF log
+#   postgres-data → /var/lib/postgresql/data   ThebeDB SQL projection
+#   jmdn-state    → /opt/jmdn                  jmdn WorkingDirectory (DB/, storage/, config/, certs/)
+#   redis-data    → /data                      Redis AOF log
 #
 # First run:
-#   docker compose run --rm jmdn-bootstrap   # populate immudb-data volume once
+#   docker compose run --rm jmdn-bootstrap   # populate chain data once
 #   docker compose up -d
 #
 # Subsequent runs:
@@ -43,90 +46,37 @@
 
 services:
 
-  # ── ImmuDB ────────────────────────────────────────────────────────────────
-  # Tamper-proof append-only ledger. Runs as a separate service.
-  # jmdn connects via gRPC on port 3322 (Docker internal DNS: immudb:3322).
-  # Data directory: /opt/jmdn/data — matches bare-metal immudb --dir ${JMDN_DATA}/data.
-  #
-  # Credentials: IMMUDB_ADMIN_PASSWORD is set from .env on every start.
-  # --force-admin-password ensures the password is always applied, even on an
-  # existing database. Bootstrap snapshots come pre-initialized with a baked-in
-  # password — without this flag, immudb ignores IMMUDB_ADMIN_PASSWORD on restart
-  # and jmdn cannot connect on first deploy.
-  # ── ImmuDB volume permissions (one-shot init) ───────────────────────────────
-  # immudb below runs as UID 3322 in a distroless image with no-new-privileges,
-  # so it has no shell and cannot fix its own data. Two conditions crash-loop it
-  # with "permission denied: open .../systemdb/tx/00000000.tx" (node never serves
-  # RPC, empty :8545):
-  #   1. files owned by another UID — a snapshot copied in as root, or a
-  #      bootstrap that skipped its chown; or
-  #   2. files READ-ONLY for the owner — a snapshot tarball unpacked at mode 0555
-  #      (dirs and files). immudb opens its tx log O_RDWR, so a missing owner
-  #      write bit fails EACCES even when ownership is already correct 3322.
-  # This one-shot runs as root and fixes BOTH: sets ownership to 3322:3322 and
-  # restores owner write (u+rwx on dirs, u+rw on files), then exits; immudb waits
-  # for it to complete. Idempotent, safe on every `up`. Reuses the jmdn image so
-  # no extra image is pulled.
-  immudb-perms:
-    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
-    container_name: jmdn-immudb-perms
-    user: "0:0"
-    entrypoint: ["/bin/sh", "-c"]
-    command: ['chown -R 3322:3322 /opt/jmdn/data && find /opt/jmdn/data -type d -exec chmod u+rwx {} + && find /opt/jmdn/data -type f -exec chmod u+rw {} + && echo "[immudb-perms] ownership 3322:3322 + owner write restored on /opt/jmdn/data"']
-    volumes:
-      - immudb-data:/opt/jmdn/data
-    restart: "no"
-
-  immudb:
-    image: codenotary/immudb:1.10.0
-    container_name: jmdn-immudb
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  # ThebeDB SQL projection target. wal_level=logical is required for the
+  # ThebeDB CDC (WAL consumer). Host port 5430 matches Scripts tooling.
+  postgres:
+    image: postgres:16-alpine
+    container_name: jmdn-postgres
     restart: unless-stopped
-    # Wait for the one-shot perms init to fix volume ownership before starting —
-    # immudb (UID 3322, distroless, no-new-privileges) cannot chown itself.
-    depends_on:
-      immudb-perms:
-        condition: service_completed_successfully
-    # Docker's default stop grace is 10s, then SIGKILL. systemd's default is
-    # 90s. An append-only ledger flushing large tx logs must never be
-    # SIGKILLed mid-write — give it the room a bare-metal install gets.
+    # Docker's default stop grace is 10s, then SIGKILL. A database flushing
+    # WAL segments must never be SIGKILLed mid-write (main's hardening,
+    # retargeted from immudb to postgres).
     stop_grace_period: 120s
-    # immudb runs as UID 3322 from the first instruction (no root phase, no
-    # setuid) — nothing in this container ever needs to gain privileges.
     security_opt:
       - no-new-privileges:true
-    command: ["--force-admin-password"]
     environment:
-      IMMUDB_DIR: /opt/jmdn/data
-      IMMUDB_ADMIN_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
+      POSTGRES_USER: jmdn
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jmdndefault}"
+      POSTGRES_DB: jmdn
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    ports:
+      - "5430:5432"
     volumes:
-      - immudb-data:/opt/jmdn/data
-
-    # No health check. The image is distroless — only the immudb/immuadmin
-    # binaries plus CA certs, no shell — so exec-based `test:` commands can't
-    # run at all. The image's own baked-in `HEALTHCHECK immuadmin status` is
-    # also unusable: `immuadmin status` requires an authenticated login before
-    # it may query the server, so it always fails on a fresh container.
-    # Startup ordering is handled by the jmdn entrypoint instead, which waits
-    # for port 3322 (`nc -z immudb 3322`) before starting the node.
-
-    # Resource governance — bare-metal immudb.service has no LimitNOFILE
-    # override either (inherits systemd default), but Docker's per-host
-    # default isn't guaranteed, so we pin it explicitly. LSM-tree storage
-    # opens many small segment files under write load.
-    #
-    # Limits scale with the host via .env (see DOCKER.md §4 sizing table);
-    # defaults suit an entry-level 8-16 GB VM. Set a value to 0 for
-    # unlimited. Leave host RAM unallocated on purpose — immudb reads go
-    # through the OS page cache, which lives outside these limits.
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-      nproc: 32768
-    mem_limit: "${IMMUDB_MEM_LIMIT:-2g}"
-    cpus: "${IMMUDB_CPU_LIMIT:-1.0}"
-    pids_limit: 2048
-
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jmdn -d jmdn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     logging:
       driver: json-file
       options:
@@ -136,7 +86,7 @@ services:
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   # Account sync worker queue (Redis Streams XADD/XREADGROUP/XACK).
-  # Decouples WriteAccounts from ImmuDB's ~15s commit latency.
+  # Decouples WriteAccounts from synchronous DB commit latency.
   redis:
     image: redis:7-alpine
     container_name: jmdn-redis
@@ -185,8 +135,7 @@ services:
         compress: "true"
 
   # ── Bootstrap (one-time) ──────────────────────────────────────────────────
-  # Downloads the chain snapshot from GCS and populates /opt/jmdn/data.
-  # Mounts the immudb-data volume — bootstrap writes into immudb's directory.
+  # Downloads the chain snapshot from GCS and populates node state.
   # Guard: writes .bootstrapped sentinel — safe to call again (skips if done).
   #   docker compose run --rm jmdn-bootstrap
   jmdn-bootstrap:
@@ -202,7 +151,7 @@ services:
       - no-new-privileges:true
     entrypoint: ["/usr/local/bin/bootstrap_sync.sh"]
     volumes:
-      - immudb-data:/opt/jmdn/data
+      - jmdn-state:/opt/jmdn
     environment:
       # Snapshot location. Defaults point at the 2026-07-26 snapshot
       # (chain tip 13449). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
@@ -232,9 +181,8 @@ services:
 
   # ── JMDN Node ─────────────────────────────────────────────────────────────
   # Entrypoint runs as root (creates dirs, generates certs), then gosu-drops
-  # to jmdn user. Connects to immudb via gRPC (IMMUDB_EXTERNAL=true) — does
-  # NOT mount immudb files. Writes its own state (DB/, config/, certs/) under
-  # /opt/jmdn (jmdn-state volume).
+  # to jmdn user. ThebeDB KV (BadgerDB) lives in the node's state volume;
+  # the SQL projection connects to the postgres service via THEBE_SQL_DSN.
   #
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
@@ -267,8 +215,8 @@ services:
     # Docker does not restart jmdn — jmdn's immudb client reconnects over
     # gRPC on its own.
     depends_on:
-      immudb:
-        condition: service_started   # distroless image — no health check possible
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -313,16 +261,11 @@ services:
       # - "8090:8090"
 
     environment:
-      # Docker-mode routing — tells jmdn to connect to the immudb container
-      # rather than localhost. All other config lives in jmdn.yaml.
-      IMMUDB_EXTERNAL: "true"
-      JMDN_DATABASE_ADDRESS: "immudb"   # Docker internal DNS → immudb service
-      JMDN_DATABASE_PORT: "3322"
+      # ThebeDB SQL projection — Docker internal DNS to the postgres service.
+      # Overrides the yaml sql_dsn (Viper env > yaml).
+      THEBE_SQL_DSN: "postgres://jmdn:${POSTGRES_PASSWORD:-jmdndefault}@postgres:5432/jmdn?sslmode=disable"
 
-      # Passwords — synced from .env so operators only set them once.
-      # immudb container reads IMMUDB_PASSWORD directly; jmdn reads it here via Viper.
       # Redis container reads REDIS_PASSWORD directly; jmdn reads it here via Viper.
-      JMDN_DATABASE_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
       JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
 
       # Explorer API key — forwarded into the container so the health check curl
@@ -334,17 +277,9 @@ services:
       # Node config — jmdn.yaml must exist next to this file (see DOCKER.md Step 3).
       - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
 
-      # Node state: DB/gossipnode.db, config/peer.json, certs/.
+      # Node state: DB/gossipnode.db, storage/thebe-kv/, config/peer.json, certs/.
       # Matches bare-metal WorkingDirectory=${JMDN_DATA} = /opt/jmdn.
-      # jmdn resolves ./DB/ and ./config/ relative to this mount point.
       - jmdn-state:/opt/jmdn
-
-      # immudb data — read-only so the entrypoint can verify the bootstrap sentinel
-      # (/opt/jmdn/data/.bootstrapped) before starting the node.
-      # Docker overlapping mounts: jmdn-state covers /opt/jmdn; this more-specific
-      # mount overrides /opt/jmdn/data with immudb-data (read-only).
-      # jmdn never writes here — immudb owns this directory exclusively.
-      - immudb-data:/opt/jmdn/data:ro
 
       # Production TLS certs (optional — self-signed generated on first run):
       # - ./certs:/opt/jmdn/certs:ro
@@ -396,9 +331,9 @@ services:
         compress: "true"
 
 volumes:
-  immudb-data:  # immudb database files at /opt/jmdn/data (systemdb, defaultdb, accountsdb)
+  postgres-data: # ThebeDB SQL projection
     driver: local
-  jmdn-state:   # jmdn node state at /opt/jmdn (DB/, config/, certs/)
+  jmdn-state:   # jmdn node state at /opt/jmdn (DB/, storage/, config/, certs/)
     driver: local
   redis-data:   # Redis AOF log
     driver: local

@@ -13,6 +13,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Alerts"
+	"gossipnode/Sequencer/RejectionReport"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
@@ -201,7 +202,7 @@ func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_
 	Maps.ClearVoteResults()
 	Cache.ClearCache()
 
-	logger().NamedLogger.Info(ctx, "Cleared previous round vote results at start of consensus round",
+	logger().Info(ctx, "Cleared previous round vote results at start of consensus round",
 		ion.String("function", "Consensus.warmup"))
 
 	buddies, errMSG := helper.QueryBuddyNodes()
@@ -209,14 +210,14 @@ func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_
 		return nil, fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
-	logger().NamedLogger.Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
+	logger().Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
 		ion.Int("candidates", len(buddies)),
 		ion.String("function", "Consensus.warmup"))
 
 	// Deduplicate buddies by peer.ID (buddies may have multiple multiaddrs per peer)
 	candidates := helper.GetUniqueBuddyPeers(buddies)
 
-	logger().NamedLogger.Info(ctx, "got candidates after deduplication",
+	logger().Info(ctx, "got candidates after deduplication",
 		ion.Int("candidates", len(candidates)),
 		ion.String("function", "Consensus.warmup"))
 
@@ -407,14 +408,14 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// direction (producer ahead, fleet catches up), unlike the old order that
 		// could leave the producer behind.
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-			logger().NamedLogger.Warn(ctx, "Block applied locally but broadcast to peers failed; peers will reconcile via catch-up",
+			logger().Warn(ctx, "Block applied locally but broadcast to peers failed; peers will reconcile via catch-up",
 				ion.String("error", err.Error()),
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.Int64("block_number", int64(block.BlockNumber)),
 				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 		}
 
-		logger().NamedLogger.Info(ctx, "Applied block locally and broadcast to peers",
+		logger().Info(ctx, "Applied block locally and broadcast to peers",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
@@ -434,13 +435,13 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// applied locally. The alert from VerifyConsensusWithBLS already notifies
 		// about the failed vote, so a broadcast error here is not propagated.
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-			logger().NamedLogger.Warn(ctx, "Failed to broadcast rejected-block notice to peers",
+			logger().Warn(ctx, "Failed to broadcast rejected-block notice to peers",
 				ion.String("error", err.Error()),
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.Int64("block_number", int64(block.BlockNumber)),
 				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 		}
-		logger().NamedLogger.Info(ctx, "Broadcasted rejected block",
+		logger().Info(ctx, "Broadcasted rejected block",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
@@ -466,6 +467,18 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			ab = ab.Label("buddy_rejections", detail)
 		}
 		ab.Send()
+
+		// Tell the orchestrator its transactions did NOT land. It marked them
+		// "included" the moment /api/process-block returned, which happens
+		// before any vote is requested — so without this report a rejected
+		// block's transactions stay mislabelled as included in its
+		// failed-transaction table.
+		//
+		// Safe to call under consensus.mu: the payload is snapshotted
+		// synchronously and delivered on a background sender. Disabled (no-op)
+		// unless orchestrator.url + orchestrator.api_key are configured, and it
+		// can never block or fail this round.
+		RejectionReport.Send(block, reason, detail)
 	}
 
 	return nil
@@ -485,18 +498,18 @@ func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 
 	// Unsubscribe from consensus channel
 	if err := Subscription.Unsubscribe(gps, config.PubSub_ConsensusChannel); err != nil {
-		logger().NamedLogger.Warn(ctx, "Failed to unsubscribe from consensus channel",
+		logger().Warn(ctx, "Failed to unsubscribe from consensus channel",
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	} else {
-		logger().NamedLogger.Info(ctx, "Cleaned up consensus channel subscription",
+		logger().Info(ctx, "Cleaned up consensus channel subscription",
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 
 	// Unsubscribe from CRDT sync channel
 	if err := Subscription.Unsubscribe(gps, config.Pubsub_CRDTSync); err != nil {
 		// This may fail if we never subscribed - that's OK
-		logger().NamedLogger.Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
+		logger().Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}

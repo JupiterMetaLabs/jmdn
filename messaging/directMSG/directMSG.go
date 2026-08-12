@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -485,7 +485,28 @@ func logMessageEvent(event MessageEvent) {
 	}
 }
 
-func init() {
-	// Initialize the logger
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: io.Discard})
-}
+// log is this package's OWN logger.
+//
+// It used to be the process-wide zerolog logger, silenced in an init():
+//
+//	func init() {
+//	    log.Logger = log.Output(zerolog.ConsoleWriter{Out: io.Discard})
+//	}
+//
+// That reassigned the GLOBAL logger from github.com/rs/zerolog/log, so every
+// global-zerolog line anywhere in the binary was discarded — most damagingly
+// all of messaging/DIDPropagation.go, whose success AND failure logging uses
+// that same global logger. DID propagation could fail to reach a single peer
+// and emit nothing at all, which is why a receiver account silently missing
+// from the consensus committee's caches was undiagnosable from the logs.
+//
+// The intent was only ever to quiet THIS package's chatty Yggdrasil
+// message-event logging, so the scope is now this package. Warn and above are
+// kept: silencing listener errors was never the goal, and an unreachable
+// Yggdrasil listener should not be invisible.
+var log = zerolog.New(os.Stderr).
+	Level(zerolog.WarnLevel).
+	With().
+	Timestamp().
+	Str("component", "directMSG").
+	Logger()

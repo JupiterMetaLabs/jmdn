@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -15,11 +16,11 @@ import (
 	GROHelper "gossipnode/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
@@ -60,7 +61,7 @@ func StartBlockPropagationCleanup() {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
 	}
@@ -76,12 +77,9 @@ func StartBlockPropagationCleanup() {
 // Initialize the host when starting the node
 func InitBlockPropagation(h host.Host) error {
 	globalHost = h // Save the host reference
-	fmt.Println("Block propagation system initialized")
 	var initErr error
 	immuClientOnce.Do(func() {
-		// Block propagation system initialized - will get connections on-demand
-		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
-		log.Info().Msg("Block propagation system initialized")
+		broadcastLogger().Info(context.Background(), "Block propagation system initialized - connections will be obtained on-demand")
 	})
 
 	// Wire the durable equivocation store on EVERY node — equivocation
@@ -143,10 +141,7 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	defer peerTimeoutMutex.Unlock()
 
 	peerTimeouts[peerID] = time.Now().UTC().Add(duration)
-	log.Info().
-		Str("peer", peerID).
-		Dur("duration", duration).
-		Msg("Peer timed out for sending duplicate block")
+	broadcastLogger().Info(context.Background(), "Peer timed out for sending duplicate block", ion.String("peer", peerID), ion.String("duration", duration.String()))
 }
 
 // isMessageProcessed checks if this message has already been processed
@@ -159,8 +154,8 @@ func markMessageProcessed(messageID string) {
 	messageFilter.Add([]byte(messageID))
 }
 
-// storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
-func storeMessageInImmuDB(msg config.BlockMessage) error {
+// storeMessageInDB stores a message in ImmuDB using the appropriate key
+func storeMessageInDB(msg config.BlockMessage) error {
 	// Determine the key - focus on ZK blocks
 	var key string
 	if msg.Type == "zkblock" && msg.Block != nil {
@@ -173,17 +168,17 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 	// Store the message
 	if err := DB_OPs.Create(nil, key, msg); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
+		broadcastLogger().Error(context.Background(), "Failed to store message in ThebeDB", err, ion.String("key", key))
 		return err
 	}
 
 	// Update message set
 	if err := updateMessageSet(key); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
+		broadcastLogger().Error(context.Background(), "Failed to update message set", err, ion.String("key", key))
 		return err
 	}
 
-	log.Debug().Str("key", key).Str("type", msg.Type).Msg("Message stored in ImmuDB")
+	broadcastLogger().Debug(context.Background(), "Message stored in ThebeDB", ion.String("key", key), ion.String("type", msg.Type))
 	return nil
 }
 
@@ -224,7 +219,7 @@ func HandleBlockStream(stream network.Stream) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
 	}
@@ -232,7 +227,7 @@ func HandleBlockStream(stream network.Stream) {
 
 	remotePeer := stream.Conn().RemotePeer().String()
 	if isPeerTimedOut(remotePeer) {
-		log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed-out peer")
+		broadcastLogger().Debug(context.Background(), "Ignoring message from timed-out peer", ion.String("peer", remotePeer))
 		return
 	}
 
@@ -244,14 +239,14 @@ func HandleBlockStream(stream network.Stream) {
 	reader := bufio.NewReader(io.LimitReader(stream, maxBlockStreamBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil && err != io.EOF {
-		log.Error().Err(err).Msg("Failed to read message bytes")
+		broadcastLogger().Error(context.Background(), "Failed to read message bytes", err)
 		return
 	}
 
 	// Parse the message
 	var msg config.BlockMessage
 	if err := json.Unmarshal(messageBytes, &msg); err != nil {
-		log.Error().Err(err).Msg("Failed to unmarshal block message")
+		broadcastLogger().Error(context.Background(), "Failed to unmarshal block message", err)
 		return
 	}
 
@@ -272,7 +267,8 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
 		// a bare peer id for a direct-stream copy. This is the dropped (second)
 		// copy of a block delivered over both transports.
-		log.Debug().Str("message_id", messageID).Str("from", remotePeer).Msg("Duplicate message received")
+		broadcastLogger().Debug(context.Background(), "Duplicate message received",
+			ion.String("message_id", messageID), ion.String("from", remotePeer))
 		timeoutPeer(remotePeer, 20*time.Second)
 		return
 	}
@@ -290,20 +286,18 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 	// certificate is mandatory. Nothing about an unvalidated remote block may
 	// cross into forwarding or state mutation.
 	if msg.Type == "zkblock" && msg.Block != nil {
-		log.Info().
-			Str("block_hash", msg.Block.BlockHash.Hex()).
-			Uint64("block_number", msg.Block.BlockNumber).
-			Int("txn_count", len(msg.Block.Transactions)).
-			Str("from", remotePeer). // transport tag: "gossip:<peer>" = gossip, bare id = direct
-			Msg("Received ZK block from peer")
+		broadcastLogger().Info(context.Background(), "Received ZK block from peer",
+			ion.String("block_hash", msg.Block.BlockHash.Hex()),
+			ion.Uint64("block_number", msg.Block.BlockNumber),
+			ion.Int("txn_count", len(msg.Block.Transactions)),
+			ion.String("from", remotePeer)) // transport tag: "gossip:<peer>" = gossip, bare id = direct
 
 		// A consensus REJECTION notice carries no block to apply. Discard it
 		// without processing, and without forwarding an unauthenticated
 		// rejection.
 		if status, ok := msg.Data["status"]; ok && status == "rejected" {
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Msg("Received consensus REJECTION for block - discarding")
+			broadcastLogger().Info(context.Background(), "Received consensus REJECTION for block - discarding",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 			helper.NotifyBroadcast(msg)
 			return
 		}
@@ -312,13 +306,12 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		// success admitZKBlock marks the block processed (validate-before-cache);
 		// on failure the hash never enters the dedup cache.
 		if rej := admitZKBlock(context.Background(), msg, messageID); rej != nil {
-			log.Warn().
-				Err(rej.err).
-				Str("reason", rej.reason).
-				Str("peer", remotePeer).
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Rejecting invalid remote block before forward/process/persist")
+			broadcastLogger().Warn(context.Background(), "Rejecting invalid remote block before forward/process/persist",
+				ion.Err(rej.err),
+				ion.String("reason", rej.reason),
+				ion.String("peer", remotePeer),
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber))
 			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
 			timeoutPeer(remotePeer, 30*time.Second)
 			return // no forward, no mutation, no persistence, NOT cached
@@ -332,64 +325,46 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		if forward && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
-				log.Info().
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Uint64("block_number", msg.Block.BlockNumber).
-					Int("hops", msg.Hops).
-					Msg("Forwarding validated ZK block to peers")
+				broadcastLogger().Info(context.Background(), "Forwarding validated ZK block to peers",
+					ion.String("block_hash", msg.Block.BlockHash.Hex()),
+					ion.Uint64("block_number", msg.Block.BlockNumber),
+					ion.Int("hops", msg.Hops))
 
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 					forwardBlock(globalHost, msg)
 					return nil
 				})
 			} else {
-				log.Error().Msg("Cannot forward block: global host not initialized")
+				broadcastLogger().Error(context.Background(), "Cannot forward block: global host not initialized", errors.New("global host not initialized"))
 			}
 		}
 
 		// PROCESS AND PERSIST — only reachable after the gate has passed.
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
-			// Create DB clients for processing
+			// Rejected notices and certificate verification already ran in the
+			// fail-closed admitZKBlock gate BEFORE forward/process (v2 receive path).
+			// Acquire the pooled Thebe-backed handle for block processing.
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
-				log.Error().Err(err).Msg("Failed to create main DB client")
+				broadcastLogger().Error(ctx, "Failed to create main DB client", err)
 				return fmt.Errorf("failed to create main DB client: %w", err)
 			}
 
-			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to create accounts DB client")
-				return fmt.Errorf("failed to create accounts DB client: %w", err)
-			}
-			defer func() {
-				DB_OPs.PutMainDBConnection(mainDBClient)
-				DB_OPs.PutAccountsConnection(accountsClient)
-			}()
-
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Processing block transactions")
-
-			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(ctx, msg.Block, accountsClient); err != nil {
-				log.Error().
-					Err(err).
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Block processing failed - not storing block")
+			// Process all transactions in the block atomically with rollback capability.
+			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
+			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, mainDBClient); err != nil {
+				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
+					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("block processing failed - not storing block: %w", err)
 			}
 
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Msg("All transactions processed successfully - storing block")
+			broadcastLogger().Info(ctx, "All transactions processed successfully - storing block",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 
 			// Store the validated and processed block in main DB
-			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
-				log.Error().
-					Err(err).
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Failed to store block in database")
+			if err := DB_OPs.StoreZKBlock(nil, msg.Block); err != nil {
+				broadcastLogger().Error(ctx, "Failed to store block in database", err,
+					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("failed to store block in database: %w", err)
 			}
 
@@ -397,8 +372,9 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// Monotonic: a replayed/out-of-order block can never regress it.
 			// StoreZKBlock no longer writes the marker itself (skeleton safety).
 			if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(msg.Block.BlockNumber); err != nil {
-				log.Warn().Err(err).Uint64("block_number", msg.Block.BlockNumber).
-					Msg("latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)")
+				broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+					ion.String("error", err.Error()),
+					ion.Uint64("block_number", msg.Block.BlockNumber))
 			}
 
 			// Index the block's txs into the SQLite address index. Non-sequencer
@@ -409,21 +385,21 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			txindex.IndexBlockAsync(msg.Block)
 
 			// Store block message metadata
-			if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
-				log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
+			if err := storeMessageInDB(msg); err != nil { // msg is a copy, but it's fine
+				broadcastLogger().Error(ctx, "Failed to store block message in ThebeDB", err)
 			}
 
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Block processed and stored successfully")
+			broadcastLogger().Info(ctx, "Block processed and stored successfully",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber))
 			return nil
 		})
 
-		// Print to console
-		fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ",
-			msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(),
-			len(msg.Block.Transactions))
+		broadcastLogger().Info(context.Background(), "ZKBlock received",
+			ion.String("sender", msg.Sender),
+			ion.Uint64("block_number", msg.Block.BlockNumber),
+			ion.String("block_hash", msg.Block.BlockHash.Hex()),
+			ion.Int("txn_count", len(msg.Block.Transactions)))
 	} else {
 		// Non-consensus message types have no validation gate here, so mark
 		// processed on receipt to preserve duplicate/loop suppression. Only
@@ -650,7 +626,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
 	}
@@ -659,7 +635,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Convert message to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal block message")
+		broadcastLogger().Error(context.Background(), "Failed to marshal block message", err)
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -669,7 +645,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	var successMutex sync.Mutex
 	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create waitgroup for block forwarding")
+		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block forwarding", err)
 		return
 	}
 
@@ -685,13 +661,13 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
+				broadcastLogger().Debug(ctx, "Failed to open stream", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
 			defer stream.Close()
 
 			if _, err := stream.Write(msgBytes); err != nil {
-				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")
+				broadcastLogger().Debug(ctx, "Failed to write message", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
 
@@ -702,15 +678,14 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
-			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block forwarding")
+			broadcastLogger().Error(context.Background(), "Failed to start goroutine for block forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
 		}
 	}
 
 	wg.Wait()
 
-	log.Info().
-		Str("type", msg.Type).
-		Int("success", successCount).
-		Int("total", len(peers)-1).
-		Msg("Block forwarded to peers")
+	broadcastLogger().Info(context.Background(), "Block forwarded to peers",
+		ion.String("type", msg.Type),
+		ion.Int("success", successCount),
+		ion.Int("total", len(peers)-1))
 }

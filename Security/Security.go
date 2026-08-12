@@ -112,30 +112,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		attribute.String("block_hash", zkBlock.BlockHash.Hex()),
 	)
 
-	// Get connections ONCE for all transaction validations
-	// This reduces connection usage from N×2 to just 2 per block validation
-	ctx, cancelConn := context.WithTimeout(traceCtx, 60*time.Second)
-	defer cancelConn()
-
-	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get accounts connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get accounts connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutAccountsConnection(accountsConn)
-
-	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get main DB connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get main DB connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBConn)
+	// Connections managed by global ThebeDB handle — no pool acquisition needed.
 
 	/*
 		// Load all the accounts into the cache
@@ -159,7 +136,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	}
 
 	// Load all accounts into the cache at once — fail-closed on error.
-	if err := security_cache.LoadAccounts(txValidationCtx, accountsConn, accountsSet); err != nil {
+	if err := security_cache.LoadAccounts(txValidationCtx, nil, accountsSet); err != nil {
 		txValidationSpan.RecordError(err)
 		txValidationSpan.End()
 		span.RecordError(err)
@@ -177,7 +154,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		)
 
 		// Pass SecurityCache instead of accountsConn
-		status, err := allChecksWithConn(&tx, security_cache, mainDBConn, txSpanCtx)
+		status, err := allChecksWithConn(&tx, security_cache, nil, txSpanCtx)
 		if err != nil {
 			txSpan.RecordError(err)
 			txSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -282,10 +259,14 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	startTime := time.Now().UTC()
 
 	if tx != nil {
+		toAttr := "<contract creation>"
+		if tx.To != nil {
+			toAttr = tx.To.Hex()
+		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", tx.To.Hex()),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -330,55 +311,22 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	}
 
 	// Fail-closed: a DB error here must not be mistaken for "account not found".
-	if err := security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet); err != nil {
+	if err := security_cache.LoadAccounts(loggerCtx, nil, accountsSet); err != nil {
 		span.RecordError(err)
 		logger().Error(traceCtx, "Failed to load accounts into security cache", err,
 			ion.String("function", "Security.AllChecks"))
 		return false, fmt.Errorf("failed to load accounts for validation: %w", err)
 	}
 
-	// Submit-tx only: if receiver is unknown, add an in-cache placeholder so the
-	// address-existence and balance-simulation checks inside allChecksWithConn pass.
-	// We do NOT write to DB yet — we only persist after the tx clears ALL checks,
-	// so rejected txs (bad nonce, insufficient balance, etc.) never create DB entries.
-	receiverIsNew := toAddress != nil && security_cache.GetAccount(*toAddress) == nil
-	if receiverIsNew {
-		now := time.Now().UTC().UnixNano()
-		security_cache.RegisterAccount(*toAddress, &DB_OPs.Account{
-			Nonce:       DB_OPs.GenerateARTNonce(),
-			DIDAddress:  "did:jmdt:metamask:" + toAddress.Hex(),
-			Address:     *toAddress,
-			Balance:     "0",
-			TxNonce:     0,
-			TxCountSent: 0,
-			AccountType: "user",
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		})
-	}
-
+	// NOTE: submit-time receiver auto-registration is GONE. It created the
+	// receiver on THIS node only (with a locally minted ART nonce) and relied on
+	// DID propagation to reach the committee before the vote — the race behind
+	// the receiver-not-found consensus failures. An unknown receiver now passes
+	// validation via AllowNewReceiverAccounts (CheckAddressExistWithCache) and is
+	// created at BLOCK APPLY on every node from the block-carried identity
+	// stamped by the sequencer (DB_OPs.EnrichBlockAccountNonces) — one canonical
+	// identity, no propagation dependency, no DB write for rejected txs.
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
-
-	// Persist receiver only if the tx passed every check.
-	// Reload from DB after creation so the cache holds the canonical doc
-	// (correct ARTNonce + timestamps) rather than the hand-built placeholder.
-	if result && err == nil && receiverIsNew {
-		did := "did:jmdt:metamask:" + toAddress.Hex()
-		if createErr := DB_OPs.CreateAccount(accountsConn, did, *toAddress, nil); createErr != nil {
-			logger().Error(traceCtx, "Failed to persist auto-registered receiver", createErr,
-				ion.String("address", toAddress.Hex()),
-				ion.String("function", "Security.AllChecks"))
-			// Non-fatal: block processing will create the account at apply time.
-		} else {
-			if actual, getErr := DB_OPs.GetAccount(accountsConn, *toAddress); getErr == nil && actual != nil {
-				security_cache.RegisterAccount(*toAddress, actual)
-			}
-			logger().Info(traceCtx, "Auto-registered receiver account on submit",
-				ion.String("address", toAddress.Hex()),
-				ion.String("did", did),
-				ion.String("function", "Security.AllChecks"))
-		}
-	}
 
 	duration := time.Since(startTime).Seconds()
 	if err != nil {
@@ -420,24 +368,15 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
-	if mainDBConn == nil || mainDBConn.Client == nil {
-		err := errors.New("main DB connection is nil or invalid")
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().Error(spanCtx, "Main DB connection is nil or invalid", err,
-			ion.String("function", "Security.allChecksWithCache"))
-		return false, err
-	}
-
 	if tx != nil {
-		toAddr := "nil" // contract deployment
+		toAttr := "<contract creation>"
 		if tx.To != nil {
-			toAddr = tx.To.Hex()
+			toAttr = tx.To.Hex()
 		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", toAddr),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -674,7 +613,7 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		span.SetAttributes(attribute.String("to_address", tx.To.Hex()))
 	}
 
-	// To is nil for contract deployments — only require From + signature fields.
+	// tx.To is intentionally nil for contract creation transactions; do not require it here.
 	if tx.From == nil || tx.V == nil || tx.R == nil || tx.S == nil {
 		err := errors.New("transaction missing required signature fields (From, V, R, or S)")
 		span.RecordError(err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -24,17 +25,19 @@ type EnhancedPublisherMetrics struct {
 
 // EnhancedPublisher represents an enhanced message publisher
 type EnhancedPublisher struct {
-	topic   *pubsub.Topic
-	metrics *EnhancedPublisherMetrics
-	gps     *PubSubMessages.GossipPubSub
+	topic     *pubsub.Topic
+	topicName string // retained for re-join on closed-topic errors
+	metrics   *EnhancedPublisherMetrics
+	gps       *PubSubMessages.GossipPubSub
 }
 
 // NewEnhancedPublisher creates a new EnhancedPublisher instance
-func NewEnhancedPublisher(topic *pubsub.Topic, gps *PubSubMessages.GossipPubSub) *EnhancedPublisher {
+func NewEnhancedPublisher(topicName string, topic *pubsub.Topic, gps *PubSubMessages.GossipPubSub) *EnhancedPublisher {
 	return &EnhancedPublisher{
-		topic:   topic,
-		metrics: &EnhancedPublisherMetrics{},
-		gps:     gps,
+		topic:     topic,
+		topicName: topicName,
+		metrics:   &EnhancedPublisherMetrics{},
+		gps:       gps,
 	}
 }
 
@@ -86,13 +89,14 @@ func PublishEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 
 	// Use enhanced publishing if GossipSub is available
 	if gps.GossipSubPS != nil {
-		// Get or join the topic first
-		topic, err := gps.GetOrJoinTopic(topic)
+		// Get or join the topic — use a separate variable to avoid shadowing
+		// the `topic` string parameter above.
+		joinedTopic, err := gps.GetOrJoinTopic(topic)
 		if err != nil {
 			return fmt.Errorf("failed to get or join topic: %w", err)
 		}
 
-		enhancedPublisher := NewEnhancedPublisher(topic, gps)
+		enhancedPublisher := NewEnhancedPublisher(topic, joinedTopic, gps)
 		return enhancedPublisher.publishWithRetry(context.Background(), messageBytes, 3)
 	} else {
 		// Fall back to custom gossip
@@ -103,7 +107,9 @@ func PublishEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 	return nil
 }
 
-// publishWithRetry publishes a message with retry logic
+// publishWithRetry publishes a message with retry logic.
+// On "topic is closed" errors it evicts the stale handle and re-joins the
+// topic immediately — exponential backoff is pointless against a dead handle.
 func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes []byte, maxRetries int) error {
 	var lastErr error
 
@@ -112,8 +118,18 @@ func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes 
 			lastErr = err
 			log.Printf("⚠️ Publish attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
 
+			// A closed topic will never self-recover — evict and re-join.
+			if strings.Contains(err.Error(), "closed") && ep.gps != nil && ep.topicName != "" {
+				_ = ep.gps.CloseTopic(ep.topicName) // remove stale handle from cache
+				if fresh, joinErr := ep.gps.GetOrJoinTopic(ep.topicName); joinErr == nil {
+					ep.topic = fresh
+					log.Printf("🔄 Re-joined topic %q after closed error, retrying immediately", ep.topicName)
+					continue // retry at once with the live handle
+				}
+			}
+
 			if attempt < maxRetries {
-				// Exponential backoff
+				// Exponential backoff for transient (non-closed) errors
 				backoff := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 				select {
 				case <-ctx.Done():
@@ -152,7 +168,7 @@ func PublishBatchEnhanced(gps *PubSubMessages.GossipPubSub, topicName string, me
 		return fmt.Errorf("failed to get or join topic: %w", err)
 	}
 
-	enhancedPublisher := NewEnhancedPublisher(topic, gps)
+	enhancedPublisher := NewEnhancedPublisher(topicName, topic, gps)
 	return enhancedPublisher.publishBatch(context.Background(), messages, metadata)
 }
 

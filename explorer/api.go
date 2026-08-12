@@ -12,9 +12,7 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
@@ -32,8 +30,8 @@ const (
 // JWT token expiration time (24 hours)
 const JWT_EXPIRATION = 1 * time.Hour
 
-// ImmuDBServer represents the ImmuDB API server
-type ImmuDBServer struct {
+// ExplorerServer represents the Explorer API server
+type ExplorerServer struct {
 	defaultdb  config.PooledConnection
 	accountsdb config.PooledConnection
 	router     *gin.Engine
@@ -41,8 +39,8 @@ type ImmuDBServer struct {
 	tlsLoader  *gatekeeper.TLSLoader
 }
 
-// NewImmuDBServer creates a new ImmuDB API server
-func NewImmuDBServer() (*ImmuDBServer, error) {
+// NewExplorerServer creates a new Explorer API server
+func NewExplorerServer() (*ExplorerServer, error) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -50,19 +48,11 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	// For now, we'll use the defaultdb logger after connection
 	startTime := time.Now().UTC()
 
-	// Create ImmuDB client
-	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		return nil, err
-	}
+	// Connections are now managed by the global ThebeDB handle (getHandle).
+	// No pool acquisition needed here.
 
 	// Create span for server initialization
-	spanCtx, span := defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewImmuDBServer")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewExplorerServer")
 	defer span.End()
 
 	span.SetAttributes(
@@ -75,7 +65,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 	// Initialize Security Components
 	secCfg := &settings.Get().Security
-	logger := defaultdb.Client.Logger
+	ionLog := logger()
 
 	// Rate Limiter
 	rl, err := gatekeeper.NewRateLimiter(secCfg, secCfg.IPCacheSize)
@@ -83,15 +73,13 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 		return nil, err
 	}
 	// Middleware
-	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger)
+	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, ionLog)
 
 	// TLS Loader
-	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger)
+	tlsLoader := gatekeeper.NewTLSLoader(secCfg, ionLog)
 
 	// Create server instance
-	server := &ImmuDBServer{
-		defaultdb:  *defaultdb,
-		accountsdb: *accountsdb,
+	server := &ExplorerServer{
 		router:     router,
 		gatekeeper: middleware,
 		tlsLoader:  tlsLoader,
@@ -103,26 +91,24 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 
-	defaultdb.Client.Logger.Info(spanCtx, "ImmuDB API server created successfully",
+	logger().Info(spanCtx, "Explorer API server created successfully",
 		ion.String("database", config.DBName),
 		ion.String("accounts_database", config.AccountsDBName),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
-		ion.String("function", "ExplorerAPI.NewImmuDBServer"))
+		ion.String("function", "ExplorerAPI.NewExplorerServer"))
 
 	return server, nil
 }
 
-func CloseImmuDBServer(server *ImmuDBServer) {
-	DB_OPs.PutMainDBConnection(&server.defaultdb)
-	DB_OPs.PutAccountsConnection(&server.accountsdb)
+func CloseExplorerServer(server *ExplorerServer) {
 	server.Close()
 }
 
 // setupRoutes configures the API routes
-func (s *ImmuDBServer) setupRoutes() {
+func (s *ExplorerServer) setupRoutes() {
 	gin.DefaultWriter = os.Stdout
 	gin.DefaultErrorWriter = os.Stderr
 
@@ -261,14 +247,14 @@ func (s *ImmuDBServer) setupRoutes() {
 
 // Start runs the HTTP server until it exits.
 // Prefer StartWithContext in long-running processes so shutdown can be graceful.
-func (s *ImmuDBServer) Start(addr string) error {
+func (s *ExplorerServer) Start(addr string) error {
 	return s.StartWithContext(context.Background(), addr)
 }
 
 // StartWithContext runs the HTTP server and shuts it down when ctx is cancelled.
-func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error {
+func (s *ExplorerServer) StartWithContext(ctx context.Context, addr string) error {
 	// Create span for server start
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartWithContext")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartWithContext")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -288,14 +274,15 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 		attribute.String("bind_address", bindAddr),
 	)
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server",
+	logger().Info(spanCtx, "Starting Explorer API server",
 		ion.String("bind_address", bindAddr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "ExplorerAPI.StartWithContext"))
 
-	log.Info().Str("addr", bindAddr).Msg("Starting ImmuDB API server")
+	logger().Info(spanCtx, "Starting Explorer API server (zerolog fallback)",
+		ion.String("bind_address", bindAddr))
 
 	// Use http.Server for explicit control over binding
 	srv := &http.Server{
@@ -309,16 +296,16 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 	config, err := s.tlsLoader.LoadServerTLS(settings.ServiceExplorerAPI)
 	if err != nil {
 		// FAIL HARD: If TLS is enabled in policy but fails to load, we must not start insecurely.
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to load TLS config for Explorer API", err)
+		logger().Error(spanCtx, "Failed to load TLS config for Explorer API", err)
 		return fmt.Errorf("failed to load TLS config for Explorer API: %w", err)
 	}
 
 	// If TLS config is present, use it
 	if config != nil {
 		srv.TLSConfig = config
-		s.defaultdb.Client.Logger.Info(spanCtx, "TLS Enabled for Explorer API")
+		logger().Info(spanCtx, "TLS Enabled for Explorer API")
 	} else {
-		s.defaultdb.Client.Logger.Warn(spanCtx, "TLS Disabled for Explorer API (Configuration)", ion.String("service", settings.ServiceExplorerAPI))
+		logger().Warn(spanCtx, "TLS Disabled for Explorer API (Configuration)", ion.String("service", settings.ServiceExplorerAPI))
 	}
 
 	errCh := make(chan error, 1)
@@ -355,11 +342,11 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 }
 
 // Close cleans up resources
-func (s *ImmuDBServer) Close() {
-	if s.defaultdb.Client != nil {
+func (s *ExplorerServer) Close() {
+	if s.defaultdb.Handle != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
+		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
 		defer span.End()
 
 		span.SetAttributes(
@@ -367,32 +354,12 @@ func (s *ImmuDBServer) Close() {
 			attribute.String("function", "ExplorerAPI.Close"),
 		)
 
-		s.defaultdb.Client.Logger.Info(spanCtx, "Closing the MainDB Connection in the API.go File",
+		logger().Info(spanCtx, "Closing the ExplorerAPI server",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ExplorerAPI.Close"))
-		DB_OPs.PutAccountsConnection(&s.defaultdb)
-	}
-	if s.accountsdb.Client != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		spanCtx, span := s.accountsdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
-		defer span.End()
-
-		span.SetAttributes(
-			attribute.String("database", config.AccountsDBName),
-			attribute.String("function", "ExplorerAPI.Close"),
-		)
-
-		s.accountsdb.Client.Logger.Info(spanCtx, "Closing the AccountsDB Connection in the API.go File",
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ExplorerAPI.Close"))
-		DB_OPs.PutMainDBConnection(&s.accountsdb)
 	}
 }
 
@@ -421,9 +388,9 @@ func cors() gin.HandlerFunc {
 }
 
 // generateToken creates a JWT token when provided with a valid API key
-func (s *ImmuDBServer) generateToken(c *gin.Context) {
+func (s *ExplorerServer) generateToken(c *gin.Context) {
 	// Create span for token generation
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.generateToken")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.generateToken")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -474,13 +441,12 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to generate JWT token",
+		logger().Error(spanCtx, "Failed to generate JWT token",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ExplorerAPI.generateToken"))
-		log.Error().Err(err).Msg("Failed to generate JWT token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
@@ -489,7 +455,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "JWT token generated successfully",
+	logger().Info(spanCtx, "JWT token generated successfully",
 		ion.Int("expires_in_seconds", int(JWT_EXPIRATION.Seconds())),
 		ion.Int64("expires_at", now.Add(JWT_EXPIRATION).Unix()),
 		ion.Float64("duration", duration),
@@ -507,9 +473,9 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 }
 
 // getVersion returns the current version information
-func (s *ImmuDBServer) getVersion(c *gin.Context) {
+func (s *ExplorerServer) getVersion(c *gin.Context) {
 	// Create span for version endpoint
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getVersion")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getVersion")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -519,7 +485,7 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Version information retrieved",
+	logger().Info(spanCtx, "Version information retrieved",
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -533,7 +499,7 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 // Returns the Ethereum-standard client version string (e.g. "JMDN/v1.1.0/linux-amd64/go1.25.1")
 // rather than the full VersionInfo struct — health probes need "alive + identity", not build metadata.
 // For detailed build info (commit, branch, build time), use GET /api/v1/node/version.
-func (s *ImmuDBServer) rootHealth(c *gin.Context) {
+func (s *ExplorerServer) rootHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"service": "jmdn",

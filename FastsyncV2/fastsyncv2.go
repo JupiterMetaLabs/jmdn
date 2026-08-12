@@ -77,7 +77,7 @@ type FastsyncV2 struct {
 	PoTSRouter        *pots.PoTS
 	AccountSyncRouter accountsync.AccountSync_router
 
-	// blockInfoAdapter is the ImmuDB-backed implementation of types.BlockInfo.
+	// blockInfoAdapter is the ThebeDB-backed implementation of types.BlockInfo.
 	// Used for local block queries, header/data writes, and account management.
 	blockInfoAdapter types.BlockInfo
 
@@ -293,6 +293,13 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	ctx, cancel := context.WithTimeout(context.Background(), fs.syncTimeout)
 	defer cancel()
 
+	// Hold latest_block for the duration of this sync: live application at
+	// the synced tip must not begin until this run's reconciliation effects
+	// are committed and confirmed. endSyncSession advances the marker to the
+	// proven-applied head on every exit (see sync_session.go).
+	NodeInfo.BeginSyncSession()
+	defer fs.endSyncSession()
+
 	// --- 0. Pre-sync reconciliation ---
 	// Ensure our local block marker is accurate before starting
 	log.Printf("[FastsyncV2] Reconciling local block marker before sync...")
@@ -466,6 +473,11 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 				log.Printf("[FastsyncV2] Phase 4.5 warning: FetchAccounts failed: %v", err)
 			} else if resp != nil && len(resp.GetAccounts()) > 0 {
 				accounts := protoAccountsToTypes(resp.GetAccounts())
+				// Tagged accounts carry identity only: their balances are
+				// derived locally by applying the range's blocks, so the
+				// peer's current values (which already include the range)
+				// must not seed the local base.
+				normalizeFetchedTaggedAccounts(accounts)
 				if err := accountMgr.WriteAccounts(accounts); err != nil {
 					log.Printf("[FastsyncV2] Phase 4.5 warning: WriteAccounts failed: %v", err)
 				} else {
@@ -493,29 +505,20 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		if reconFrom > localBlockNum+1 {
 			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already applied)", localBlockNum+1, reconFrom)
 		}
-		deltas, appliedHashes, deltaErr := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
-		if deltaErr != nil {
-			// Fail closed: applying partial deltas (or deltas computed without the
-			// tx_processed exclusion filter) risks double-apply. Skip; anchor stays.
-			log.Printf("[FastsyncV2] Phase 5 skipped: delta computation failed (fail closed): %v", deltaErr)
-		} else {
-			log.Printf("[FastsyncV2] Phase 5: computed deltas for %d accounts", len(deltas))
-			reconciledCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
-			if err != nil {
-				log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
-			}
-			log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
-			if len(failedAccounts) > 0 {
-				log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
-			}
-			// Markers follow the balance enqueue for a CLEAN recon,
-			// independent of anchor verification — the deltas are on the queue
-			// and WILL be applied by the drain either way.
-			if err == nil && len(failedAccounts) == 0 {
-				fs.enqueueReconTxMarkers(appliedHashes, "Phase 5")
-			}
-			fs.advanceReconAnchorIfProven(err, len(failedAccounts), reconFrom, remoteBlockNum, "Phase 5")
+		// Hand each outstanding block to the exactly-once apply path
+		// (DB_OPs.ApplyBlockRecon via the account sync queue): deltas are
+		// recomputed from the stored block at apply time and each block's
+		// balances + tx markers commit atomically, so retries and live
+		// interleavings cannot double- or skip-apply.
+		handedOff, failedBlocks, reconErr := fs.reconcileBlocksLocally(reconFrom, remoteBlockNum)
+		if reconErr != nil {
+			log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", reconErr)
 		}
+		log.Printf("[FastsyncV2] Phase 5 complete: %d block(s) handed off, %d failed", handedOff, len(failedBlocks))
+		if len(failedBlocks) > 0 {
+			log.Printf("[FastsyncV2] Failed blocks: %v", failedBlocks)
+		}
+		fs.advanceReconAnchorIfProven(reconErr, len(failedBlocks), reconFrom, remoteBlockNum, "Phase 5")
 	}
 
 	// =========================================================================
@@ -586,8 +589,10 @@ func (fs *FastsyncV2) executePoTS(
 		log.Printf("[FastsyncV2] PoTS WAL contains %d buffered blocks", len(potsBlocksMap))
 	}
 
-	// Ask the remote what blocks we're missing relative to our latest synced state.
-	latestSyncedBlock := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+	// Ask the remote what blocks we're missing relative to our latest synced
+	// state. Uses the true written head: while a sync session holds the
+	// latest_block marker back, the marker trails what DataSync has written.
+	latestSyncedBlock := fs.trueLocalHead()
 
 	potsReq := potsrequesthelper.NewPoTSRequestBuilder().
 		AddMap(potsBlocksMap).
@@ -630,27 +635,19 @@ func (fs *FastsyncV2) executePoTS(
 				// Fetch latest block before effectiveReconRange so toBlock is concrete.
 				// Previously math.MaxUint64 was passed, meaning skip was never triggered
 				// even when the entire PoTS range was already reconciled.
-				potsLatest := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+				// True written head: the latest_block marker trails during a
+				// sync session, so the marker alone would truncate the range.
+				potsLatest := fs.trueLocalHead()
 				potsReconFrom, potsReconSkip := fs.effectiveReconRange(potsFromBlock, potsLatest)
 				if potsReconSkip {
 					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled up to %d", potsLatest)
 				} else {
-					potsDeltas, potsAppliedHashes, potsDeltaErr := fs.computeAccountDeltas(potsReconFrom, potsLatest)
-					if potsDeltaErr != nil {
-						// Fail closed — see Phase 5 rationale.
-						log.Printf("[FastsyncV2] PoTS reconciliation skipped: delta computation failed (fail closed): %v", potsDeltaErr)
-					} else {
-						log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
-						reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
-						if err != nil {
-							log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
-						}
-						log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
-						if err == nil && len(failed) == 0 {
-							fs.enqueueReconTxMarkers(potsAppliedHashes, "PoTS")
-						}
-						fs.advanceReconAnchorIfProven(err, len(failed), potsReconFrom, potsLatest, "PoTS")
+					handedOff, failedBlocks, reconErr := fs.reconcileBlocksLocally(potsReconFrom, potsLatest)
+					if reconErr != nil {
+						log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", reconErr)
 					}
+					log.Printf("[FastsyncV2] PoTS: %d block(s) handed off, %d failed", handedOff, len(failedBlocks))
+					fs.advanceReconAnchorIfProven(reconErr, len(failedBlocks), potsReconFrom, potsLatest, "PoTS")
 				}
 			}
 		}
@@ -761,23 +758,60 @@ func legacySQLiteRecon() uint64 {
 	return last
 }
 
-// enqueueReconTxMarkers enqueues tx_processed markers for the txs whose deltas
-// a CLEAN ReconcileWithDeltas just enqueued. Called strictly AFTER the
-// balance enqueue: stream FIFO plus the drain's markers-last ordering guarantee
-// the markers never commit before the balances they describe.
-//
-// Failure is logged, never fatal — a missing marker fails toward re-apply on
-// the next recon (bounded double-apply, the repairable direction), never
-// toward skip.
-func (fs *FastsyncV2) enqueueReconTxMarkers(hashes []string, phase string) {
-	if len(hashes) == 0 {
+// trueLocalHead returns the highest locally written head: the latest_block
+// marker, or the sync session's deferred write high-water mark when a session
+// is holding the marker back (see sync_session.go).
+func (fs *FastsyncV2) trueLocalHead() uint64 {
+	head := fs.blockInfoAdapter.GetBlockNumber()
+	if tip := NodeInfo.PeekSyncSessionTip(); tip > head {
+		head = tip
+	}
+	return head
+}
+
+// endSyncSession closes the session latch and advances latest_block to the
+// highest value proven safe: the contiguous stored head, capped by the
+// applied anchor (balances committed and confirmed). Runs on every sync exit
+// path. When a run's proven path (catch-up phase 8) already advanced the
+// marker, this is a monotonic no-op; on failed or partial runs the marker
+// stays at the proven-applied point so tip blocks keep routing through
+// catch-up until reconciliation completes — the self-healing direction.
+func (fs *FastsyncV2) endSyncSession() {
+	deferred := NodeInfo.EndSyncSession()
+
+	anchor, found, err := DB_OPs.GetAppliedAnchor(nil)
+	if err != nil || !found {
+		log.Printf("[syncsession] latest_block not advanced (deferred tip %d): applied anchor unavailable (found=%v err=%v)", deferred, found, err)
 		return
 	}
-	if err := NodeInfo.EnqueueAppliedTxMarkers(hashes, time.Now().UTC().Unix()); err != nil {
-		log.Printf("[FastsyncV2] %s: tx marker enqueue failed (%v) — safe direction: next recon may re-apply (bounded), never skips", phase, err)
-		return
+
+	// Ratchet the marker up to min(contiguous stored head, applied anchor).
+	// The contiguous-head scan reads ahead a bounded window from the CURRENT
+	// marker, so after each successful advance the next scan sees further;
+	// loop until no more progress. Every advance is monotonic and never
+	// exceeds what is both stored contiguously and proven balance-applied.
+	for i := 0; i < 1000; i++ { // hard cap: 1000 × scan window ≥ any realistic session
+		head := fs.reconcileLocalLatestBlock() // read-only contiguous head
+		target := head
+		if anchor < target {
+			target = anchor
+		}
+		if target == 0 {
+			return
+		}
+		marker, advanced, uerr := DB_OPs.UpdateLatestBlockMonotonic(target)
+		if uerr != nil {
+			log.Printf("[syncsession] latest_block advance to %d failed: %v", target, uerr)
+			return
+		}
+		if !advanced {
+			return
+		}
+		log.Printf("[syncsession] latest_block advanced to %d (stored head %d, applied anchor %d, deferred tip %d)", marker, head, anchor, deferred)
+		if marker >= anchor {
+			return // anchor is the binding cap — no further progress possible
+		}
 	}
-	log.Printf("[FastsyncV2] %s: enqueued %d recon-applied tx markers", phase, len(hashes))
 }
 
 // tombstoneLegacySQLiteRecon overwrites the legacy SQLite watermark with an
@@ -835,7 +869,9 @@ func (fs *FastsyncV2) reconAnchor() uint64 {
 const drainConfirmTimeout = 90 * time.Second
 
 // markReconComplete advances the accounts-applied anchor to toBlock, capped at
-// the locally verified tip and monotonic (never backwards).
+// the locally verified tip and monotonic (never backwards). Returns true when
+// the anchor covers toBlock afterwards (advanced now or already there) — the
+// signal callers use before letting latest_block reach the range tip.
 //
 // The cap fixes a legacy bug: HandleSync substitutes math.MaxUint64 when a
 // legacy peer reports BlockHeight 0 — the old SQLite code persisted that value,
@@ -846,37 +882,39 @@ const drainConfirmTimeout = 90 * time.Second
 // applied. Advancing while entries are still queued lets a Redis loss (crash
 // without AOF, eviction, flush) strand an anchor that claims ranges whose
 // effects never reached the database: silent permanent skip. The anchor
-// now advances only once the drain worker has applied AND ACKed every account
+// advances only once the drain worker has applied AND ACKed every account
 // stream entry this process enqueued (high-water mark ≥ capture point). Every
 // wait failure — timeout, worker restart, queue offline — skips the advance:
 // anchor lags, recon re-covers, markers prevent double-apply.
-func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
-	tip := fs.blockInfoAdapter.GetBlockNumber()
+func (fs *FastsyncV2) markReconComplete(toBlock uint64) bool {
+	// True written head: while the sync session holds the latest_block marker
+	// back, the marker alone would cap the anchor below the synced range.
+	tip := fs.trueLocalHead()
 	if capped := DB_OPs.CapAnchorTarget(toBlock, tip); capped != toBlock {
 		log.Printf("[FastsyncV2] applied anchor: capping target %d at local tip %d", toBlock, tip)
 		toBlock = capped
 	}
 
-	// Capture AFTER all of this recon's enqueues (balances via
-	// ReconcileWithDeltas, markers via enqueueReconTxMarkers) — both happen
-	// before any markReconComplete call site. "" = nothing went through the
-	// queue (direct-write fallback): trivially confirmed.
+	// Capture AFTER all of this recon's enqueues — every call site runs after
+	// the block hand-off. "" = nothing went through the queue (direct-apply
+	// fallback): trivially confirmed.
 	target := NodeInfo.LastAccountEnqueueID()
 	waitCtx, cancel := context.WithTimeout(context.Background(), drainConfirmTimeout)
 	defer cancel()
 	if err := NodeInfo.WaitForAccountQueueDrain(waitCtx, target); err != nil {
 		log.Printf("[FastsyncV2] applied anchor: advance to %d SKIPPED — recon effects not confirmed in DB: %v (safe: anchor lags, next clean recon retries)", toBlock, err)
-		return
+		return false
 	}
 
 	anchor, advanced, err := DB_OPs.AdvanceAppliedAnchorTo(nil, toBlock)
 	if err != nil {
 		log.Printf("[FastsyncV2] applied anchor: advance to %d failed: %v (safe: anchor lags)", toBlock, err)
-		return
+		return false
 	}
 	if advanced {
 		log.Printf("[FastsyncV2] applied anchor advanced to %d (reconciliation proven + drain-confirmed)", anchor)
 	}
+	return anchor >= toBlock
 }
 
 // advanceReconAnchorIfProven is the single anchor-advancement gate for
@@ -884,13 +922,14 @@ func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
 // phase 5, PoTS). It re-scans the range via buildDataMissingTag before
 // advancing — the anchor only ever states what is PROVEN applied.
 // HandleCatchUpSync uses its own phase-8 verification instead.
-func (fs *FastsyncV2) advanceReconAnchorIfProven(reconErr error, failedCount int, fromBlock, toBlock uint64, phase string) {
-	tip := fs.blockInfoAdapter.GetBlockNumber()
+func (fs *FastsyncV2) advanceReconAnchorIfProven(reconErr error, failedCount int, fromBlock, toBlock uint64, phase string) bool {
+	// True written head: the latest_block marker trails during a sync session.
+	tip := fs.trueLocalHead()
 	if toBlock > tip {
 		toBlock = tip
 	}
 	if toBlock < fromBlock {
-		return
+		return false
 	}
 	verifyPassed := false
 	if reconErr == nil && failedCount == 0 {
@@ -904,9 +943,9 @@ func (fs *FastsyncV2) advanceReconAnchorIfProven(reconErr error, failedCount int
 	if !DB_OPs.ShouldAdvanceReconAnchor(reconErr, failedCount, verifyPassed) {
 		log.Printf("[FastsyncV2] %s: anchor NOT advanced (reconErr=%v failed=%d verified=%v)",
 			phase, reconErr, failedCount, verifyPassed)
-		return
+		return false
 	}
-	fs.markReconComplete(toBlock)
+	return fs.markReconComplete(toBlock)
 }
 
 // Close tears down all routers and flushes WALs.

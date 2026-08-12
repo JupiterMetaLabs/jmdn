@@ -154,16 +154,24 @@ func EffectiveGasPrice(txType uint8, gasPrice, maxFee, maxPriorityFee *big.Int) 
 	return big.NewInt(FallbackGasPriceWei)
 }
 
+// EffectiveGasLimit returns the gas limit actually charged for a transaction:
+// the declared value, or FallbackTxGasLimit when it is 0. Exported so callers
+// that need to report the charged limit (trace attributes, log lines) can do so
+// without re-implementing the fallback — duplicating it is how the fee formula
+// drifted before.
+func EffectiveGasLimit(gasLimit uint64) uint64 {
+	if gasLimit == 0 {
+		return FallbackTxGasLimit
+	}
+	return gasLimit
+}
+
 // GasFee returns gasLimit × EffectiveGasPrice with the FallbackTxGasLimit
 // applied when gasLimit == 0. This is the total fee deducted from the sender
 // and split between coinbase and ZKVM.
 func GasFee(txType uint8, gasLimit uint64, gasPrice, maxFee, maxPriorityFee *big.Int) *big.Int {
-	gl := gasLimit
-	if gl == 0 {
-		gl = FallbackTxGasLimit
-	}
 	return new(big.Int).Mul(
-		new(big.Int).SetUint64(gl),
+		new(big.Int).SetUint64(EffectiveGasLimit(gasLimit)),
 		EffectiveGasPrice(txType, gasPrice, maxFee, maxPriorityFee),
 	)
 }

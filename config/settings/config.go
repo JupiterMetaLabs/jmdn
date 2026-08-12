@@ -10,18 +10,20 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node      NodeSettings      `mapstructure:"node"`
-	Network   NetworkSettings   `mapstructure:"network"`
-	Ports     PortSettings      `mapstructure:"ports"`
-	Binds     BindSettings      `mapstructure:"binds"`
-	Database  DatabaseSettings  `mapstructure:"database"`
-	Logging   LoggingSettings   `mapstructure:"logging"`
-	Features  FeatureSettings   `mapstructure:"features"`
-	Security  SecurityConfig    `mapstructure:"security"`
-	Alerts    AlertsConfig      `mapstructure:"alerts"`
-	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
-	Selection SelectionSettings `mapstructure:"selection"`
-	Consensus ConsensusSettings `mapstructure:"consensus"`
+	Node         NodeSettings       `mapstructure:"node"`
+	Network      NetworkSettings    `mapstructure:"network"`
+	Ports        PortSettings       `mapstructure:"ports"`
+	Binds        BindSettings       `mapstructure:"binds"`
+	Database     DatabaseSettings   `mapstructure:"database"`
+	Thebe        ThebeConfig        `mapstructure:"thebe"`
+	Logging      LoggingSettings    `mapstructure:"logging"`
+	Features     FeatureSettings    `mapstructure:"features"`
+	Security     SecurityConfig     `mapstructure:"security"`
+	Alerts       AlertsConfig       `mapstructure:"alerts"`
+	Orchestrator OrchestratorConfig `mapstructure:"orchestrator"`
+	FastSync     FastSyncSettings   `mapstructure:"fastsync"`
+	Selection    SelectionSettings  `mapstructure:"selection"`
+	Consensus    ConsensusSettings  `mapstructure:"consensus"`
 }
 
 // ConsensusSettings holds operator-controlled consensus policy.
@@ -177,29 +179,35 @@ type NetworkSettings struct {
 
 // PortSettings groups all port/address assignments.
 type PortSettings struct {
-	API       int `mapstructure:"api"       yaml:"api"`
-	BlockGen  int `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       int `mapstructure:"cli"       yaml:"cli"`
-	DID       int `mapstructure:"did"       yaml:"did"`
-	Facade    int `mapstructure:"facade"    yaml:"facade"`
-	WS        int `mapstructure:"ws"        yaml:"ws"`
-	Metrics   int `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  int `mapstructure:"profiler"  yaml:"profiler"`
+	API        int `mapstructure:"api"       yaml:"api"`
+	BlockGen   int `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        int `mapstructure:"cli"       yaml:"cli"`
+	DID        int `mapstructure:"did"       yaml:"did"`
+	Facade     int `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug int `mapstructure:"thebe_debug" yaml:"thebe_debug"`
+	WS         int `mapstructure:"ws"        yaml:"ws"`
+	Geth       int `mapstructure:"geth"      yaml:"geth"`
+	Smart      int `mapstructure:"smart"     yaml:"smart"`
+	Metrics    int `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   int `mapstructure:"profiler"  yaml:"profiler"`
 }
 
 // BindSettings groups all bind address configurations.
 // Defaults: Admin ports = 127.0.0.1, Public ports = 0.0.0.0
 type BindSettings struct {
-	API       string `mapstructure:"api"       yaml:"api"`
-	BlockGen  string `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       string `mapstructure:"cli"       yaml:"cli"`
-	DID       string `mapstructure:"did"       yaml:"did"`
-	Facade    string `mapstructure:"facade"    yaml:"facade"`
-	WS        string `mapstructure:"ws"        yaml:"ws"`
-	Metrics   string `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
+	API        string `mapstructure:"api"       yaml:"api"`
+	BlockGen   string `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        string `mapstructure:"cli"       yaml:"cli"`
+	DID        string `mapstructure:"did"       yaml:"did"`
+	Facade     string `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug string `mapstructure:"thebe_debug" yaml:"thebe_debug"`
+	WS         string `mapstructure:"ws"        yaml:"ws"`
+	Geth       string `mapstructure:"geth"      yaml:"geth"`
+	Smart      string `mapstructure:"smart"     yaml:"smart"`
+	Metrics    string `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
 // RedisSettings controls the Redis connection used by the account sync worker.
@@ -212,16 +220,31 @@ type RedisSettings struct {
 	Password string `mapstructure:"password" yaml:"password"`
 }
 
+// ThebeConfig controls the ThebeDB storage backend (the node's only DB).
+type ThebeConfig struct {
+	Enabled    bool           `mapstructure:"enabled" yaml:"enabled"`         // default true — ThebeDB is the only storage backend
+	KVPath     string         `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
+	SQLDSN     string         `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
+	RedisURL   string         `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
+	StreamName string         `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
+	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
+	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
+	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+}
+
+type ThebeCDCConfig struct {
+	Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
+	SlotName    string `mapstructure:"slot_name" yaml:"slot_name"`
+	Publication string `mapstructure:"publication" yaml:"publication"`
+	LogPath     string `mapstructure:"log_path" yaml:"log_path"`
+	DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
+	MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
+}
+
 // DatabaseSettings controls ImmuDB and Redis connection parameters.
 // Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
-	// ImmuDB connection — override to point at a separate immudb container.
-	Address string `mapstructure:"address" yaml:"address"`
-	Port    int    `mapstructure:"port"    yaml:"port"`
-
-	Username string        `mapstructure:"username"      yaml:"username"`
-	Password string        `mapstructure:"password"      yaml:"password"`
-	Redis    RedisSettings `mapstructure:"redis"         yaml:"redis"`
+	Redis RedisSettings `mapstructure:"redis" yaml:"redis"`
 
 	// TxIndexPath is the path to the SQLite address→tx index file.
 	// Defaults to "txindex.db" in the working directory if empty.

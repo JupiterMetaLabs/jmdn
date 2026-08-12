@@ -9,12 +9,9 @@ import (
 	"sync"
 	"time"
 
-	// log "gossipnode/logging"
-
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
@@ -69,11 +66,10 @@ func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress stri
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
-	return DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	return nil, nil
 }
 
 func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {
-	DB_OPs.PutAccountsConnection(conn)
 }
 
 // Account and DID Server implements the DIDService
@@ -102,7 +98,7 @@ func NewAccountServer(h host.Host) *AccountServer {
 	// Test connection but don't hold it
 	conn, err := AccountServer.Initialize()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to initialize Account server database. Running in standalone mode.")
+		logger().Warn(context.Background(), "Failed to initialize Account server database. Running in standalone mode.", ion.Err(err))
 		AccountServer.standalone = true
 		return AccountServer
 	} else {
@@ -113,7 +109,7 @@ func NewAccountServer(h host.Host) *AccountServer {
 	AccountServer.accountsClient = &conn
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.Client.Logger.Info(loggerCtx, "Successfully connected to the Accounts Pool",
+	logger().Info(loggerCtx, "Successfully connected to the Accounts Pool",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -125,13 +121,13 @@ func (s *AccountServer) Initialize() (config.PooledConnection, error) {
 	// Just test the connection to verify we can connect
 	conn, err := s.db.GetAccountsConnection()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to get accounts database connection. Running in standalone mode.")
+		logger().Warn(context.Background(), "Failed to get accounts database connection. Running in standalone mode.", ion.Err(err))
 		s.standalone = true
 		return config.PooledConnection{}, err
 	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn.Client.Logger.Info(loggerCtx, "Successfully connected to the Accounts Pool",
+	logger().Info(loggerCtx, "Successfully connected to the Accounts Pool",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -146,7 +142,7 @@ func (s *AccountServer) Close() {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s.accountsClient.Client.Logger.Info(loggerCtx, "Client Connection is returned to the Pool",
+	logger().Info(loggerCtx, "Client Connection is returned to the Pool",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -158,6 +154,13 @@ func (s *AccountServer) Close() {
 
 // storeAccount stores a Account either in the database or in memory
 func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
+	// GATED out-of-band creation: a DID-service account exists only on the nodes
+	// the registration reached, with a locally minted ART nonce — the fleet
+	// divergence removed by block-carried identities. Accounts are created at
+	// block apply; DID metadata for EXISTING accounts is unaffected by this gate.
+	if !DB_OPs.AllowLocalAccountCreate {
+		return DB_OPs.ErrLocalAccountCreateDisabled
+	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	loggerCtx, cancel := context.WithCancel(context.Background())
@@ -166,7 +169,7 @@ func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, 
 	err := s.db.CreateAccount(s.accountsClient, DIDAddress, Address, metadata)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to store Account",
+		logger().Error(loggerCtx, "Failed to store Account",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -175,7 +178,7 @@ func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, 
 		return err
 	}
 
-	s.accountsClient.Client.Logger.Info(loggerCtx, "Account stored successfully",
+	logger().Info(loggerCtx, "Account stored successfully",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -193,7 +196,7 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 	if strings.HasPrefix(AccountID, "did:") {
 		// It's a DID, use GetAccountByDID
 
-		s.accountsClient.Client.Logger.Info(loggerCtx, "Retrieving account by DID",
+		logger().Info(loggerCtx, "Retrieving account by DID",
 			ion.String("did", AccountID),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -204,7 +207,7 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 		// It's an address, use GetAccount
 		TempAccountAddress := common.HexToAddress(AccountID)
 
-		s.accountsClient.Client.Logger.Info(loggerCtx, "Retrieving account by address",
+		logger().Info(loggerCtx, "Retrieving account by address",
 			ion.String("address", AccountID),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -224,7 +227,7 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 	data, err := s.db.ListAllAccounts(s.accountsClient, limit)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to list Accounts",
+		logger().Error(loggerCtx, "Failed to list Accounts",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -233,7 +236,7 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 		return nil, err
 	}
 
-	s.accountsClient.Client.Logger.Info(loggerCtx, "Accounts listed successfully",
+	logger().Info(loggerCtx, "Accounts listed successfully",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -257,7 +260,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 			Tempmetadata = []byte("{}")
 		}
 
-		s.accountsClient.Client.Logger.Info(loggerCtx, "Given account already exists",
+		logger().Info(loggerCtx, "Given account already exists",
 			ion.String("address", existingAccount.Address.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -283,7 +286,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	err = s.storeAccount(req.Did, common.HexToAddress(req.PublicKey), nil)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to store account",
+		logger().Error(loggerCtx, "Failed to store account",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -296,7 +299,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	account, err := s.getAccount(req.PublicKey)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to retrieve account",
+		logger().Error(loggerCtx, "Failed to retrieve account",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -320,7 +323,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 		})
 		if err != nil {
 
-			s.accountsClient.Client.Logger.Warn(loggerCtx, "Failed to propagate DID to network",
+			logger().Warn(loggerCtx, "Failed to propagate DID to network",
 				ion.String("error", err.Error()),
 				ion.String("did", req.Did),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -329,7 +332,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 				ion.String("function", "DID.RegisterDID"))
 		}
 
-		s.accountsClient.Client.Logger.Info(loggerCtx, "Successfully propagated DID to network",
+		logger().Info(loggerCtx, "Successfully propagated DID to network",
 			ion.String("did", req.Did),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -362,7 +365,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 	didDoc, err := s.getAccount(req.Did)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to retrieve account",
+		logger().Error(loggerCtx, "Failed to retrieve account",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -382,7 +385,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 	Tempmetadata, err = json.Marshal(didDoc.Metadata)
 	if err != nil {
 
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to convert metadata to string",
+		logger().Error(loggerCtx, "Failed to convert metadata to string",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -391,7 +394,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 		Tempmetadata = []byte("{}")
 	}
 
-	s.accountsClient.Client.Logger.Info(loggerCtx, "Successfully converted metadata to string",
+	logger().Info(loggerCtx, "Successfully converted metadata to string",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -424,7 +427,7 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		s.accountsClient.Client.Logger.Error(loggerCtx, "Failed to list accounts",
+		logger().Error(loggerCtx, "Failed to list accounts",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -448,7 +451,7 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.accountsClient.Client.Logger.Info(loggerCtx, "Successfully listed accounts",
+	logger().Info(loggerCtx, "Successfully listed accounts",
 		ion.String("count", fmt.Sprintf("%d", len(pbDids))),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -483,7 +486,7 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 		// Try to initialize a new client
 		conn, err := server.Initialize()
 		if err != nil {
-			log.Warn().Err(err).Msg("Failed to initialize DID server database. Running in standalone mode.")
+			logger().Warn(ctx, "Failed to initialize DID server database. Running in standalone mode.", ion.Err(err))
 			return err
 		}
 		server.accountsClient = &conn
@@ -493,7 +496,7 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 	var ionLogger *ion.Ion
 	// We try to use existing client logger if available, else create async logger
 	if remainingClient := existingClient; remainingClient != nil {
-		ionLogger = remainingClient.Client.Logger
+		ionLogger = logger()
 	} else {
 		ionLogger = logger()
 	}
@@ -514,10 +517,9 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 	// Register reflection service
 	reflection.Register(grpcServer)
 
-	log.Info().
-		Str("address", address).
-		Bool("standalone", server.standalone).
-		Msg("Starting DID gRPC server")
+	logger().Info(ctx, "Starting DID gRPC server",
+		ion.String("address", address),
+		ion.Bool("standalone", server.standalone))
 
 	errCh := make(chan error, 1)
 	go func() {

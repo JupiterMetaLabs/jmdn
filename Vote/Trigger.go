@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/Security"
 	"gossipnode/consensus/adapters"
 
@@ -81,7 +83,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 	logger_ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tracer := logger().NamedLogger.Tracer("Vote")
+	tracer := logger().Tracer("Vote")
 	spanCtx, span := tracer.Start(logger_ctx, "Vote.SubmitVote")
 	defer span.End()
 
@@ -128,7 +130,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 			span.RecordError(err)
 
 			// 🔴 DETAILED REJECTION LOGGING WITH STRUCTURED LOGGER
-			logger().NamedLogger.Error(spanCtx, "VOTE REJECTED: Block validation failed",
+			logger().Error(spanCtx, "VOTE REJECTED: Block validation failed",
 				err,
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
@@ -139,15 +141,16 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("rejection_reason", err.Error()),
 				ion.String("function", "Vote.SubmitVote"))
 
-			// Also print to console for immediate visibility
-			fmt.Printf("❌ VOTE REJECTED (-1)\n")
-			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
-			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
-			fmt.Printf("   Transactions: %d\n", len(zkBlock.Transactions))
-			fmt.Printf("   Rejection Reason: %v\n", err)
+			// Also log to console via logger
+			logger().Info(spanCtx, "VOTE REJECTED (-1)",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.Int("block_number", int(zkBlock.BlockNumber)),
+				ion.Int("transaction_count", len(zkBlock.Transactions)),
+				ion.String("rejection_reason", err.Error()))
 		} else {
 			// Status is false but no error
-			logger().NamedLogger.Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
+			logger().Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
 				ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -155,10 +158,11 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("vote_decision", "REJECT"),
 				ion.String("function", "Vote.SubmitVote"))
 
-			fmt.Printf("❌ VOTE REJECTED (-1)\n")
-			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
-			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
-			fmt.Printf("   Rejection Reason: Validation returned false (no error details)\n")
+			logger().Info(spanCtx, "VOTE REJECTED (-1)",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.Int("block_number", int(zkBlock.BlockNumber)),
+				ion.String("rejection_reason", "Validation returned false (no error details)"))
 		}
 	} else if status {
 		// VOTE ACCEPTED (1)
@@ -174,7 +178,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 		)
 
 		// ✅ ACCEPTANCE LOGGING
-		logger().NamedLogger.Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
+		logger().Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
 			ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -183,12 +187,41 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.String("vote_decision", "ACCEPT"),
 			ion.String("function", "Vote.SubmitVote"))
 
-		fmt.Printf("✅ VOTE ACCEPTED (1) | Peer: %s | Block: %s (Number: %d)\n",
-			listenerNode.PeerID.String(),
-			blockHash,
-			zkBlock.BlockNumber)
+		logger().Info(spanCtx, "VOTE ACCEPTED (1)",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.String("block_hash", blockHash),
+			ion.Int("block_number", int(zkBlock.BlockNumber)))
 	} else {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
+	}
+
+	// Store own vote in the local CRDT before sending to the sequencer.
+	// This ensures that when the sequencer pulls BLS from this node, its
+	// CRDT has at least its own vote to sign over — regardless of pubsub
+	// propagation timing. Without this, ProcessVotesFromCRDT finds 0 votes
+	// and returns an error, producing 0 BLS results on the sequencer side.
+	if listenerNode.CRDTLayer != nil {
+		ownVoteJSON := vt.ToVoteString(vt.Vote)
+		OP := &Types.OP{
+			NodeID: listenerNode.PeerID,
+			OpType: int8(1),
+			KeyValue: Types.KeyValue{
+				Key:   listenerNode.PeerID.String(),
+				Value: ownVoteJSON,
+			},
+		}
+		if result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); result != nil {
+			if err, ok := result.(error); ok && err != nil {
+				logger().Warn(spanCtx, "Failed to store own vote in local CRDT (non-fatal, will still send to sequencer)",
+					ion.Err(err),
+					ion.String("function", "Vote.SubmitVote"))
+			}
+		}
+		logger().Info(spanCtx, "Stored own vote in local CRDT",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.Int("vote", int(vt.Vote.Vote)),
+			ion.String("block_hash", vt.Vote.BlockHash),
+			ion.String("function", "Vote.SubmitVote"))
 	}
 
 	// Create proper message with ACK stage for vote submission

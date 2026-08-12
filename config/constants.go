@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math/big"
 	"sync"
 	"time"
 
@@ -47,6 +48,23 @@ const (
 	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
 	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
 )
+
+var (
+	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
+	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
+)
+
+var SeedNodeURL string = "" // Default seed node URL, can be updated via SetSeedNodeURL
+
+// SetSeedNodeURL sets the seed node URL for the application
+func SetSeedNodeURL(url string) {
+	SeedNodeURL = url
+}
+
+// GetSeedNodeURL returns the current seed node URL
+func GetSeedNodeURL() string {
+	return SeedNodeURL
+}
 
 // Protocol IDs for message and file sharing
 const (
@@ -139,8 +157,11 @@ const (
 )
 
 const (
-	DIDPropagationProtocol protocol.ID = "/gossipnode/did/2.0.0" // v2 protocol: bumped with the network upgrade
-	MaxAccountHops         int         = 7
+	DIDPropagationProtocol      protocol.ID = "/gossipnode/did/2.0.0" // v2 protocol: bumped with the network upgrade
+	MaxAccountHops              int         = 7
+	ContractPropagationProtocol protocol.ID = "/gossipnode/contract/1.0.0"
+	MaxContractHops             int         = 7
+	ContractPullProtocol        protocol.ID = "/gossipnode/contract/pull/1.0.0"
 )
 
 // Network addresses

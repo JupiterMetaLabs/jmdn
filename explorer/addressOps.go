@@ -67,7 +67,7 @@ const maxAddrTxPage = 1_000_000
 // If the txindex is unavailable, this returns 503 rather than a fake empty
 // "no transactions" result — callers must be able to tell "no data" apart
 // from "data source down".
-func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
+func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// reqCtx is tied to the HTTP request's lifecycle (cancelled if the client
@@ -118,7 +118,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	// benefit. Please don't "fix" this with a transaction.
 	total, totalErr := txindex.CountByAddress(reqCtx, normalizedAddr)
 	if totalErr != nil {
-		logger().GetNamedLogger().Error(loggerCtx, "txindex unavailable",
+		logger().Error(loggerCtx, "txindex unavailable",
 			totalErr,
 			ion.String("address", addressParam),
 			ion.String("log_file", LOG_FILE),
@@ -151,7 +151,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 		// has no transactions". Returning 200+empty here would silently lie
 		// to explorers/wallets. Surface it as 503 so callers retry instead of
 		// showing a wrong "no activity" result.
-		logger().GetNamedLogger().Error(loggerCtx, "txindex unavailable",
+		logger().Error(loggerCtx, "txindex unavailable",
 			idxErr,
 			ion.String("address", addressParam),
 			ion.String("log_file", LOG_FILE),

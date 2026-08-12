@@ -1,0 +1,230 @@
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000001_init_schema (UP)
+-- Applied by: JMDNProfile.GetMigration() via ThebeDB profile system
+--
+-- Storage model:
+--   accounts     → SQL mutable  (Create, Update, Read)
+--   blocks       → SQL append-only (Create, Read)
+--   snapshots    → SQL append-only (Create, Read)
+--   transactions → SQL append-only (Create, Read)
+--   zk_proofs    → SQL append-only (Create, Read)
+--   l1_finality  → SQL append-only (Create, Read)
+--
+-- Contract data (code, storage, nonces, meta, receipts) → ThebeDB KV store (BadgerDB)
+-- Defined in Phase 7 migration when KV key schema is confirmed.
+-- ================================================================
+
+-- ================================================================
+-- 1) accounts (SQL — Create Update Read)
+-- Mutable: balance and nonce change on every tx.
+-- DID address uniqueness enforced — one account per DID.
+-- balance_wei / nonce stored as VARCHAR(30) to avoid NUMERIC precision
+-- loss when round-tripping through Go's big.Int string conversion.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS accounts (
+    address        CHAR(42)     PRIMARY KEY,
+    did_address    TEXT         NOT NULL UNIQUE,
+    balance_wei    VARCHAR(30)  NOT NULL DEFAULT '0',
+    nonce          VARCHAR(30)  NOT NULL DEFAULT '0',
+    tx_nonce       BIGINT       NOT NULL DEFAULT 0,
+    tx_count_sent  BIGINT       NOT NULL DEFAULT 0,
+    account_type   SMALLINT     NOT NULL,
+    metadata       JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
+    ON accounts(updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_did_address
+    ON accounts(did_address);
+
+-- Auto-update updated_at on every row change.
+CREATE OR REPLACE FUNCTION fn_accounts_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_accounts_updated_at ON accounts;
+CREATE TRIGGER trg_accounts_updated_at
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION fn_accounts_set_updated_at();
+
+-- ================================================================
+-- 2) blocks (SQL — Append Only — Create Read)
+-- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
+-- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
+-- state_root and txs_root uniqueness enforced: two blocks cannot share roots.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS blocks (
+    block_number  BIGINT        PRIMARY KEY,
+    block_hash    CHAR(66)      NOT NULL UNIQUE,
+    parent_hash   CHAR(66)      NOT NULL,
+    timestamp     TIMESTAMPTZ   NOT NULL,
+    txs_root      CHAR(66)      NOT NULL UNIQUE,
+    state_root    CHAR(66)      NOT NULL UNIQUE,
+    logs_bloom    BYTEA,
+    coinbase_addr CHAR(42),
+    zkvm_addr     CHAR(42),
+    gas_limit     NUMERIC(78,0),
+    gas_used      NUMERIC(78,0),
+    status        SMALLINT      NOT NULL,
+    extra_data    JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_timestamp
+    ON blocks(timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_block_hash
+    ON blocks(block_hash);
+
+-- Hard-block mutation on append-only table.
+CREATE OR REPLACE RULE rule_blocks_no_update AS
+    ON UPDATE TO blocks DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_blocks_no_delete AS
+    ON DELETE TO blocks DO INSTEAD NOTHING;
+
+-- ================================================================
+-- 3) snapshots (SQL — Append Only — Create Read)
+-- One snapshot per block (1:1 FK to blocks).
+-- Transactions are owned by snapshots via FK in transactions table.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS snapshots (
+    block_number BIGINT       PRIMARY KEY,
+    block_hash   CHAR(66)     NOT NULL UNIQUE,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_snapshot_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_created_at
+    ON snapshots(created_at DESC);
+
+CREATE OR REPLACE RULE rule_snapshots_no_update AS
+    ON UPDATE TO snapshots DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_snapshots_no_delete AS
+    ON DELETE TO snapshots DO INSTEAD NOTHING;
+
+-- ================================================================
+-- 4) transactions (SQL — Append Only — Create Read)
+-- FK to snapshots (snapshot owns the tx set for a block).
+-- to_addr is NULLABLE — NULL means contract creation (no recipient).
+-- FK to accounts for from_addr and to_addr enforces referential integrity:
+--   accounts must exist before transactions referencing them are inserted.
+-- sig_v is BIGINT — covers EIP-155 v values for any chain ID.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS transactions (
+    tx_hash              CHAR(66)      PRIMARY KEY,
+    block_number         BIGINT        NOT NULL,
+    tx_index             SMALLINT      NOT NULL,
+    from_addr            CHAR(42)      NOT NULL,
+    to_addr              CHAR(42),                    -- NULL = contract creation
+    value_wei            NUMERIC(78,0) NOT NULL DEFAULT 0,
+    nonce                NUMERIC(78,0) NOT NULL,
+    type                 SMALLINT      NOT NULL DEFAULT 0,
+    gas_limit            VARCHAR(30),
+    gas_price_wei        VARCHAR(30),
+    max_fee_wei          VARCHAR(30),
+    max_priority_fee_wei VARCHAR(30),
+    data                 BYTEA,
+    access_list          JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    sig_v                BIGINT        NOT NULL,
+    sig_r                CHAR(66)      NOT NULL,
+    sig_s                CHAR(66)      NOT NULL,
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_txn_snapshot
+        FOREIGN KEY (block_number) REFERENCES snapshots(block_number),
+    CONSTRAINT fk_txn_from
+        FOREIGN KEY (from_addr)    REFERENCES accounts(address),
+    CONSTRAINT fk_txn_to
+        FOREIGN KEY (to_addr)      REFERENCES accounts(address),
+    CONSTRAINT uq_txn_block_index
+        UNIQUE (block_number, tx_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_txn_block_number
+    ON transactions(block_number);
+
+CREATE INDEX IF NOT EXISTS idx_txn_from_addr
+    ON transactions(from_addr);
+
+CREATE INDEX IF NOT EXISTS idx_txn_to_addr
+    ON transactions(to_addr) WHERE to_addr IS NOT NULL;
+
+-- Composite index for GetLatestTransactionsByAddress query:
+-- SELECT ... WHERE from_addr=$1 OR to_addr=$1 ORDER BY block_number DESC, tx_index DESC LIMIT N
+CREATE INDEX IF NOT EXISTS idx_txn_from_block_desc
+    ON transactions(from_addr, block_number DESC, tx_index DESC);
+
+CREATE INDEX IF NOT EXISTS idx_txn_to_block_desc
+    ON transactions(to_addr, block_number DESC, tx_index DESC)
+    WHERE to_addr IS NOT NULL;
+
+CREATE OR REPLACE RULE rule_transactions_no_update AS
+    ON UPDATE TO transactions DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_transactions_no_delete AS
+    ON DELETE TO transactions DO INSTEAD NOTHING;
+
+-- ================================================================
+-- 5) zk_proofs (SQL — Append Only — Create Read)
+-- One ZK proof per block (1:1 FK to blocks).
+-- proof_hash uniqueness enforced across the table.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS zk_proofs (
+    block_number BIGINT       PRIMARY KEY,
+    proof_hash   CHAR(66)     NOT NULL UNIQUE,
+    stark_proof  BYTEA        NOT NULL,
+    commitment   BYTEA,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_zkproof_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_zk_proofs_proof_hash
+    ON zk_proofs(proof_hash);
+
+CREATE OR REPLACE RULE rule_zk_proofs_no_update AS
+    ON UPDATE TO zk_proofs DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_zk_proofs_no_delete AS
+    ON DELETE TO zk_proofs DO INSTEAD NOTHING;
+
+-- ================================================================
+-- 6) l1_finality (SQL — Append Only — Create Read)
+-- confirmation is the L1 transaction hash or attestation identifier.
+-- block_numbers is an array of JMDN block numbers confirmed by this L1 tx.
+-- GIN indexes allow efficient containment queries:
+--   WHERE block_numbers @> ARRAY[42::bigint]
+-- ================================================================
+CREATE TABLE IF NOT EXISTS l1_finality (
+    confirmation  CHAR(42)     PRIMARY KEY,
+    block_numbers BIGINT[]     NOT NULL,
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    metadata      JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_created_at
+    ON l1_finality(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_block_numbers
+    ON l1_finality USING GIN(block_numbers);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
+    ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
+
+CREATE OR REPLACE RULE rule_l1_finality_no_update AS
+    ON UPDATE TO l1_finality DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
+    ON DELETE TO l1_finality DO INSTEAD NOTHING;

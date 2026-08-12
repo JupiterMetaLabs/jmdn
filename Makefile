@@ -15,7 +15,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test test-unit fmt lint lint-fix version deploy
+.PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy
 
 all: build
 
@@ -46,8 +46,9 @@ deploy: build
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.
+# Infrastructure setup has moved to Scripts/install_services.sh.
 
-# Run all unit tests (requires live ImmuDB + seed node for integration tests)
+# Run all unit tests (requires live ThebeDB + seed node for integration tests)
 test:
 	go test ./...
 

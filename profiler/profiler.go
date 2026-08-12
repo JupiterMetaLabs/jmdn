@@ -19,6 +19,7 @@
 package profiler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,8 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/rs/zerolog/log"
 )
 
 // hostRef holds the libp2p host used by the stream handler. Guarded because
@@ -112,8 +113,8 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 	// stacks, cmdline). Loopback is the intended posture: reach it with an SSH
 	// tunnel. A non-loopback bind is honoured but logged loudly.
 	if !isLoopbackBind(bindAddr) {
-		log.Warn().Str("bind", bindAddr).
-			Msg("Profiler on a NON-loopback bind and unauthenticated — restrict via firewall, or prefer 127.0.0.1 + an SSH tunnel")
+		logger().Warn(context.Background(), "Profiler on a NON-loopback bind and unauthenticated — restrict via firewall, or prefer 127.0.0.1 + an SSH tunnel",
+			ion.String("bind", bindAddr))
 	}
 
 	addr := net.JoinHostPort(bindAddr, port)
@@ -132,21 +133,29 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 	server.RegisterOnShutdown(func() {
 		runtime.SetMutexProfileFraction(0)
 		runtime.SetBlockProfileRate(0)
-		log.Info().Msg("Profiler stopped — contention profiling disabled")
+		logger().Info(context.Background(), "Profiler stopped — contention profiling disabled")
 	})
 
 	go func() {
+		ctx := context.Background()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("Profiler server panic")
+				logger().Error(ctx, "Profiler server panic",
+					fmt.Errorf("%v", r),
+					ion.String("recovered", fmt.Sprintf("%v", r)))
 			}
 		}()
 
-		log.Info().Str("addr", addr).
-			Msg("Profiler enabled (pprof + contention) — /debug/pprof/, /debug/fds, /debug/streams")
+		logger().Info(ctx, "Starting profiler server",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/pprof/", bindAddr, port)))
+		logger().Info(ctx, "FD Monitor available",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/fds", bindAddr, port)))
+		logger().Info(ctx, "Stream Monitor available",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/streams", bindAddr, port)))
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error().Err(err).Str("addr", addr).Msg("Profiler server error")
+			logger().Error(ctx, "Profiler server error", err,
+				ion.String("addr", addr))
 		}
 	}()
 
@@ -213,6 +222,6 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Debug().Err(err).Msg("Profiler: response encode failed")
+		logger().Debug(context.Background(), "Profiler: response encode failed", ion.Err(err))
 	}
 }

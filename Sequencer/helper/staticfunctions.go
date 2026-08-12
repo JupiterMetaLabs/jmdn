@@ -10,6 +10,8 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
+// logger function is not used in this file - it uses fmt.Errorf which is kept as-is
+
 // @static function
 
 // buddyCandidatePoolRequest is the candidate count requested from VRF selection.

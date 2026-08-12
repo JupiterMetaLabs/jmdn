@@ -1,18 +1,20 @@
 package explorer
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gossipnode/DB_OPs"
 
 	"github.com/gin-gonic/gin"
 )
 
-func (s *ImmuDBServer) listDIDs(c *gin.Context) {
+func (s *ExplorerServer) listDIDs(c *gin.Context) {
 
-	// Get network parameter from URL path (optional)
-	network := c.Query("network")
+	// Note: "network" filter param not used after ThebeDB migration (SQL replaces ImmuDB prefix scan)
+	_ = c.Query("network")
 
 	// Get pagination parameters with defaults
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -31,7 +33,9 @@ func (s *ImmuDBServer) listDIDs(c *gin.Context) {
 
 	// Get the paginated list of DIDs from the database.
 	// This is now efficient as it only fetches the documents for the current page.
-	pagedDIDs, err := DB_OPs.ListAccountsPaginated(&s.accountsdb, limit, offset, network)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pagedDIDs, err := DB_OPs.ListAccountsPaginatedCtx(ctx, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve DIDs: " + err.Error()})
 		return
@@ -60,7 +64,7 @@ func getPaginationMetadata(page, limit, totalPages int) gin.H {
 	}
 }
 
-func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
+func (s *ExplorerServer) getDIDDetails(c *gin.Context) {
 	// list of DIDs in the request
 	DIDs := c.QueryArray("dids")
 	if len(DIDs) == 0 {

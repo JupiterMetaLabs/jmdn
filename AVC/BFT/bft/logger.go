@@ -8,9 +8,9 @@ import (
 
 // Zero allocation logger - its already allocated in the asynclogger
 func logger() *ion.Ion {
-	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.BFT, "")
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.BFT, "")
 	if err != nil {
 		return nil
 	}
-	return logger.NamedLogger
+	return logInstance.GetNamedLogger()
 }
