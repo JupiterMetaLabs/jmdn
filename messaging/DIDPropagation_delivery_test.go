@@ -32,7 +32,7 @@ import (
 // looks like a production regression and is not one.
 func withCommittee(t *testing.T, members map[string]string, err error) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]string, error) {
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 		return members, err
 	})
 	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })

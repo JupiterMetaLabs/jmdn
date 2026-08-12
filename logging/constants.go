@@ -54,5 +54,4 @@ const (
 	DB_OPs_LogWriter             = "log:DB_OPs_LogWriter"
 	CRDTLayer                    = "log:CRDTLayer"
 	DB_OPs_MerkleTree            = "log:DB_OPs_MerkleTree"
->>>>>>> remotes/origin/feat/thebe-sc-layer
 )

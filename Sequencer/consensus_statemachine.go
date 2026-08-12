@@ -320,7 +320,7 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 				}
 			}
 			sort.Strings(missing)
-			logger().NamedLogger.Warn(context.Background(),
+			logger().Warn(context.Background(),
 				"committee v2: seated members have no known multiaddr and cannot be asked to vote",
 				ion.Int("seated", len(seated)),
 				ion.Int("dialable", len(kept)),
