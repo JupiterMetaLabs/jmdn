@@ -103,7 +103,7 @@ func (consensusMessage *ConsensusMessage) SetGloalVarCacheConsensusMessage() *Co
 		return consensusMessage // never key on a nil block (audit NET-01 deref)
 	}
 	cacheMu.Lock()
-	CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()] = consensusMessage
+	cacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()] = consensusMessage
 	cacheMu.Unlock()
 	return consensusMessage
 }
@@ -114,7 +114,7 @@ func (consensusMessage *ConsensusMessage) GetGloalVarCacheConsensusMessage() *Co
 	}
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
-	return CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()]
+	return cacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()]
 }
 
 func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() *ConsensusMessage {
@@ -122,14 +122,14 @@ func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() 
 		return consensusMessage
 	}
 	cacheMu.Lock()
-	delete(CacheConsensuMessage, consensusMessage.ZKBlock.BlockHash.String())
+	delete(cacheConsensuMessage, consensusMessage.ZKBlock.BlockHash.String())
 	cacheMu.Unlock()
 	return consensusMessage
 }
 
 func (consensusMessage *ConsensusMessage) ClearGloalVarCacheConsensusMessage() *ConsensusMessage {
 	cacheMu.Lock()
-	CacheConsensuMessage = make(map[string]*ConsensusMessage)
+	cacheConsensuMessage = make(map[string]*ConsensusMessage)
 	cacheMu.Unlock()
 	return consensusMessage
 }

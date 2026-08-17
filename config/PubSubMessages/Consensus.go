@@ -10,7 +10,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-// CacheConsensuMessage is the process-wide consensus-message cache keyed by
+// cacheConsensuMessage is the process-wide consensus-message cache keyed by
 // block hash. It is written on the gossip/consensus path and ranged over from
 // several other packages (CRDT sync, subscription service, listener). All
 // access MUST go through the accessors below — a bare map range concurrent
@@ -18,17 +18,17 @@ import (
 // (audit NET-01). cacheMu guards every read, write and iteration.
 var (
 	cacheMu              sync.RWMutex
-	CacheConsensuMessage = make(map[string]*ConsensusMessage)
+	cacheConsensuMessage = make(map[string]*ConsensusMessage)
 )
 
 // SnapshotConsensusMessages returns a shallow copy of the cache for safe
-// iteration. Callers range over the returned map, never CacheConsensuMessage
+// iteration. Callers range over the returned map, never cacheConsensuMessage
 // directly. The values are shared pointers — treat them read-only.
 func SnapshotConsensusMessages() map[string]*ConsensusMessage {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
-	out := make(map[string]*ConsensusMessage, len(CacheConsensuMessage))
-	for k, v := range CacheConsensuMessage {
+	out := make(map[string]*ConsensusMessage, len(cacheConsensuMessage))
+	for k, v := range cacheConsensuMessage {
 		out[k] = v
 	}
 	return out
