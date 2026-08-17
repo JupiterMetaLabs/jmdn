@@ -31,12 +31,14 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/cache"
 	core "github.com/JupiterMetaLabs/ThebeDB/pkg/core"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 )
 
 // ThebeAppender is the minimal ThebeDB surface required by thebeGateway.
@@ -274,7 +276,11 @@ func (g *thebeGateway) PutSyncKV(key string, value []byte) error {
 func (g *thebeGateway) GetSyncKV(key string) ([]byte, error) {
 	v, err := g.kv.Get([]byte("sync-state:" + key))
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		// Typed sentinel, not a substring match: STO-11 made this read
+		// liveness-critical (a marker read error now aborts block apply), so
+		// absence MUST be detected structurally, not by error text that a
+		// Badger upgrade or backend swap could change (STO-20).
+		if errors.Is(err, kv.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("GetSyncKV(%s): %w", key, err)

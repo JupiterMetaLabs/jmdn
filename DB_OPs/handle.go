@@ -85,7 +85,9 @@ func storeAccountFromStore(a *store.Account) *Account {
 }
 
 // storeAccountToStore converts a DB_OPs Account to a store.Account.
-// TxNonce and TxCountSent are silently dropped (not in store.Account).
+// Copies ALL fields including TxNonce and TxCountSent (store.Account has both).
+// The sibling read-direction converter was fixed in STO-01; this write side is
+// the function a future write path will reach for (STO-19) — keep it lossless.
 func storeAccountToStore(a *Account) *store.Account {
 	if a == nil {
 		return nil
@@ -95,6 +97,8 @@ func storeAccountToStore(a *Account) *store.Account {
 		Address:     common.Address(a.Address),
 		Balance:     a.Balance,
 		Nonce:       a.Nonce,
+		TxNonce:     a.TxNonce,
+		TxCountSent: a.TxCountSent,
 		AccountType: a.AccountType,
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
