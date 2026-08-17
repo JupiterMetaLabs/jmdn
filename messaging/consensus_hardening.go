@@ -582,13 +582,19 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	}
 
 	// First sighting of this height (this session and durably). Record both.
-	seenHeights[number] = hashHex
 	if equivocationStore != nil {
 		if err := equivocationStore.RecordFirstSeen(number, hashHex); err != nil {
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable write failed; recorded in-memory only")
+			// Fail closed to match the hardened read (CON-08/CON-21): a failed
+			// durable write leaves a hole the fail-closed read cannot detect —
+			// a later read returns not-found and treats a conflicting block as
+			// a first sighting. Reject rather than record in-memory-only.
+			return reject("equivocation_write_failed",
+				"durable equivocation write failed at height %d: %v (fail closed)", number, err)
 		}
 	}
+	// In-memory cache set only AFTER the durable write succeeds, so the two
+	// never disagree.
+	seenHeights[number] = hashHex
 	return nil
 }
 
