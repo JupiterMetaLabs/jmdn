@@ -24,6 +24,7 @@ type NodeConfig struct {
 	FastSync     FastSyncSettings   `mapstructure:"fastsync"`
 	Selection    SelectionSettings  `mapstructure:"selection"`
 	Consensus    ConsensusSettings  `mapstructure:"consensus"`
+	Contracts    ContractsSettings  `mapstructure:"contracts"`
 }
 
 // ConsensusSettings holds operator-controlled consensus policy.
@@ -97,6 +98,19 @@ type ConsensusSettings struct {
 type SelectionSettings struct {
 	Mnemonic string `mapstructure:"mnemonic" yaml:"mnemonic"`
 	Salt     string `mapstructure:"salt"     yaml:"salt"`
+}
+
+// ContractsSettings controls the smart-contract / EVM execution layer.
+//
+// Enabled wires an execbridge.ContractExecutor into the block-apply path so
+// contract (Type-2 / deployment) transactions are executed during consensus
+// apply instead of falling through to a plain value transfer. Default FALSE:
+// the layer ships DORMANT (like thebe.enabled and the fastsync flags did until
+// validated) so a merge is non-breaking and current nodes are unaffected.
+// Enable ONLY after the 2-node determinism gate passes fleet-wide — a
+// heterogeneously-flagged fleet would fork (some nodes execute, some transfer).
+type ContractsSettings struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 }
 
 // NodeSettings defines the identity of this node.

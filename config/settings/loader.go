@@ -210,6 +210,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
 
 	// FastSync
+	v.SetDefault("contracts.enabled", d.Contracts.Enabled)
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
 	v.SetDefault("fastsync.enable_pulling", d.FastSync.EnablePulling)
 	v.SetDefault("fastsync.enable_catchup", d.FastSync.EnableCatchup)
