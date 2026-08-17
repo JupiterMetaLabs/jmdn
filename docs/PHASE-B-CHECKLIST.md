@@ -209,3 +209,48 @@ EVM-01..20 integration, STO-02/03/09 storage-atomicity semantics, SYN-01..07/09 
 Verification honesty: these gates were run in-session against ThebeDB @ 02f802e with the go1.26.5
 toolchain; the full-binary link exceeds sandbox disk, so a full `go build ./... && go test ./...`
 on the host is still the authoritative gate before merge.
+
+---
+
+## Audit Rev 8 (THEBE-AUDIT-HLD) — response, 2026-08-14
+
+The auditor independently verified remediation round 1: **all 9 fixes real, correctly targeted, no
+regressions; full `-short` gate genuinely green tree-wide (unscoped); NET-01 proven under `-race`.**
+It flagged that three fixes were completed at the declaration but not the paired use site (the same
+P4/P5 shape). Those paired residuals were mine to finish — done this round, build+vet+`-short` green
+on touched packages (DB_OPs, thebegateway, messaging, PubSubMessages):
+
+| Finding | Sev | Fix |
+|---|---|---|
+| STO-19 | LOW (latent) | storeAccountToStore write-converter now lossless (1f94831) |
+| STO-20 | HIGH | GetSyncKV uses errors.Is(kv.ErrKeyNotFound), not a string match — my STO-11 had made this liveness-critical (1f94831) |
+| CON-21 | MEDIUM-HIGH | equivocation durable WRITE path fails closed, pairing CON-08 (1cfcc76) |
+| NET-08 | LOW | cacheConsensuMessage unexported → NET-01 invariant compiler-enforced (9b8520a) |
+
+### Left open with rationale (not silently skipped)
+- **STO-21** (no code): STO-11 routes storage flakiness into the uncertified catch-up path (CON-04),
+  making CON-04 more load-bearing. Operational monitor: block-rejection rate. Ordering note only.
+- **NET-07** (MEDIUM): NET-02's buffer traded 1-message loss for up to 256 on close. Net large
+  improvement (was ~100% loss). Clean fix = don't close at all (remove close+reassign, rely on
+  isStarted) — a small redesign, deferred to a scoped Pubsub pass.
+- **NET-01 eviction / PRC-08 shared skip helper**: unbounded map growth and the `(nil,nil)` shim
+  root cause (BulkGetAccounts_test still uses the never-firing guard) — both real, both a scoped
+  cleanup, neither a correctness regression.
+- **CON-11 residual** (from CON-05): PrepareProof still outside DigestCommit — a relayed *genuine*
+  signed COMMIT can carry a spliced proof. Part of the CON-07+10/11 group that must land together;
+  belongs to the consensus-trust-model decision.
+
+### §15 ThebeDB-seam findings — deferred to the EVM/ThebeDB decision, NOT drive-by fixes
+- **STO-22** (HIGH): cassata.appendRecord reflects `ThebeDB.Append`, a method that does not exist, so
+  every contract receipt/registry SQL write silently errors on the loopback EVM path. Fix = typed
+  builder.Append call (+ compile-time interface assertion). Lives inside the EVM integrate-or-shelve
+  decision; fixing it revives EVM-24 (registry poisoning), which must be handled in the same change.
+- **STO-23** (CRITICAL liveness), **STO-24** (no fsync), **STO-25** (no read integrity check),
+  **STO-26** (CDC/planner) — all in the **ThebeDB sibling repo** (badger_store/builder/eventlog),
+  out of jmdn scope per the reconciliation stop-condition. Append to ThebeDB/docs/TASKS-from-jmdn-
+  reconciliation.md alongside T1/T2/T3.
+
+### Still operator P0 (unchanged, pushing round 1 extended the exposure window)
+- **SEC-01**: 3 BLS private keys tracked on the public remote. Rotate + purge history + force-push.
+- **DEP-01**: go.mod still `go 1.25.0`; one line to `go 1.25.12` closes 29 reachable stdlib CVEs —
+  cheapest item in the whole audit, do it in the next mechanical round if you want it batched.
