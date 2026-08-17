@@ -266,3 +266,12 @@ on touched packages (DB_OPs, thebegateway, messaging, PubSubMessages):
   peer into SubmitRawTransaction; bypass gated on origin.Trusted() (loopback/same-host), not tx
   shape. HTTP uses socket RemoteAddr (not spoofable ClientIP), eth gRPC uses peer.FromContext,
   JSON-RPC facade is OriginUntrusted. Trust logic proven in isolation; full CGO build = host gate.
+
+- **Gossip NET-03..07 — DONE** (1e53942), same channel / wire-compatible (JSON schema + framing
+  delimiter unchanged → cross-branch nodes interoperate on /broadcast/1.0.0; no new protocol ID,
+  no fleet partition). NET-04 re-marshal decremented TTL + age-expired dedup cache; NET-03 buffered
+  read + read deadline + bounded cache; NET-05 handler recover; NET-06 uniquePeers cap+prune; NET-07
+  listener runs for process lifetime (idle-close removed). Verified: build + vet green on ./Pubsub/...
+  (CGO off). Host gate before rollout: CGO_ENABLED=1 go build ./... && go test -race ./Pubsub/...
+  Residuals: NET-05 wrong-handler Unsubscribe (needs Subscribe token — API change, deferred);
+  NET-03 per-peer stream cap (deadline mitigates the slow-drip; hard cap deferred).
