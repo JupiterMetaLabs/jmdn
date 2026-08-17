@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	Router "gossipnode/Pubsub/Router"
 	"gossipnode/config/GRO"
@@ -51,60 +50,30 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 	}
 }
 
-// startMessageListener is an internal helper that runs until idle for >10s.
+// startMessageListener runs for the process lifetime. It no longer closes the
+// channel on idle: closing + reassigning a shared channel producers still send
+// to was the entire send-on-closed / lossy-close / double-close class (audit
+// NET-02/NET-07). isStarted already makes startup once-only, so a single
+// long-lived listener on a buffered channel is strictly simpler and safe. The
+// cost is one parked goroutine when idle — negligible.
 func startMessageListener() {
 	logger().Debug(context.Background(), "Listener started")
 
-	idleTimer := time.NewTimer(10 * time.Second)
-	defer idleTimer.Stop()
-
-	for {
-		select {
-		case msg := <-ChannelBuffer:
-			if msg.ID == "" {
-				continue
-			}
-
-			// Reset idle timer on each message
-			if !idleTimer.Stop() {
-				<-idleTimer.C
-			}
-			idleTimer.Reset(10 * time.Second)
-
-			// Process safely
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger().Warn(context.Background(), "Recovered in message handler",
-							ion.String("recovery", fmt.Sprintf("%v", r)))
-					}
-				}()
-				processMessage(msg)
-			}()
-
-		// NO messages for 10 seconds, close the channel automatically
-		case <-idleTimer.C:
-			logger().Debug(context.Background(), "Listener idle for 10s, closing channel")
-			closeChannel()
-			return
+	for msg := range ChannelBuffer {
+		if msg.ID == "" {
+			continue
 		}
+		// Process safely — a handler panic must not kill the listener.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger().Warn(context.Background(), "Recovered in message handler",
+						ion.String("recovery", fmt.Sprintf("%v", r)))
+				}
+			}()
+			processMessage(msg)
+		}()
 	}
-}
-
-func closeChannel() {
-	// Close + reassign under mu so a concurrent AppendMessage (which sends
-	// under the same lock) cannot send on the closed channel (audit NET-02).
-	mu.Lock()
-	defer mu.Unlock()
-	select {
-	case <-ChannelBuffer: // drain one if needed
-	default:
-	}
-	close(ChannelBuffer)
-	isStarted = false
-	ChannelBuffer = make(chan PubSubMessages.GossipMessage, 256) // recreate for next use
-
-	logger().Debug(context.Background(), "Channel closed and reset")
 }
 
 func processMessage(msg PubSubMessages.GossipMessage) {

@@ -262,9 +262,22 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 			sm.mutex.RUnlock()
 
 			for _, h := range currentHandlers {
-				if h != nil {
-					h(gossipMsg)
+				if h == nil {
+					continue
 				}
+				// Isolate each handler: a panic on decoded peer JSON must not
+				// kill this goroutine (which has no recover of its own) and
+				// take the process down (audit NET-05).
+				func(h func(*PubSubMessages.GossipMessage)) {
+					defer func() {
+						if r := recover(); r != nil {
+							logger().Error(context.Background(), "subscription handler panicked (recovered)",
+								fmt.Errorf("%v", r),
+								ion.String("function", "SubscriptionManager.run"))
+						}
+					}()
+					h(gossipMsg)
+				}(h)
 			}
 		}
 	}

@@ -1,9 +1,11 @@
 package Pubsub
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
@@ -140,11 +142,25 @@ func cleanupMessageCache(ctx context.Context, gps *PubSubMessages.GossipPubSub) 
 			gps.Mutex.Lock()
 			defer gps.Mutex.Unlock()
 
-			entriesCleared := len(gps.MessageCache)
-			gps.MessageCache = make(map[string]time.Time)
-
-			if entriesCleared > 0 {
-				log.Printf("Cache cleanup: cleared all %d entries", entriesCleared)
+			// Age-based expiry, NOT a wholesale flush. Wholesale-clearing every
+			// 4 min made a still-circulating message "unseen" again and it
+			// resurrected on the next cycle (audit NET-04). Keep an entry until
+			// it is older than the retention window; a hard ceiling bounds
+			// memory against a flood of unique IDs (audit NET-03).
+			now := time.Now()
+			cleared := 0
+			for id, seenAt := range gps.MessageCache {
+				if now.Sub(seenAt) > gossipCacheEntryTTL {
+					delete(gps.MessageCache, id)
+					cleared++
+				}
+			}
+			if len(gps.MessageCache) > gossipCacheMaxEntries {
+				// Ceiling breached (flood): drop everything as a last resort.
+				log.Printf("Cache cleanup: hard ceiling %d exceeded, clearing all", gossipCacheMaxEntries)
+				gps.MessageCache = make(map[string]time.Time)
+			} else if cleared > 0 {
+				log.Printf("Cache cleanup: expired %d aged entries (%d remain)", cleared, len(gps.MessageCache))
 			}
 		}()
 	}
@@ -217,9 +233,21 @@ func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string,
 	return nil
 }
 
+// Gossip receive-path bounds (audit NET-03/NET-04).
+const (
+	gossipStreamReadTimeout = 30 * time.Second // slow-drip peers cannot pin a goroutine
+	gossipCacheEntryTTL     = 10 * time.Minute // dedup retention; age-expired, not wholesale-flushed
+	gossipCacheMaxEntries   = 100_000          // hard ceiling against a unique-ID flood
+)
+
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	defer s.Close()
+
+	// Bound how long an unauthenticated peer can hold this goroutine open
+	// (audit NET-03): a peer trickling one byte per minute must not pin a
+	// goroutine + growing buffer indefinitely.
+	_ = s.SetReadDeadline(time.Now().Add(gossipStreamReadTimeout))
 
 	// Read message using delimiter
 	messageBytes, err := readMessage(s)
@@ -287,36 +315,38 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 		handler(&gossipMsg)
 	}
 
-	// Forward message to other peers (gossip)
+	// Forward message to other peers (gossip). Re-marshal so the DECREMENTED
+	// TTL travels on the wire — the old code forwarded the original bytes, so
+	// TTL never dropped hop-to-hop and a message resurrected forever (audit
+	// NET-04). Same JSON schema, so nodes on any branch parse it identically.
 	if gossipMsg.TTL > 0 {
-		Publisher.GossipMessage(gps, messageBytes)
+		forwardBytes, mErr := json.Marshal(gossipMsg)
+		if mErr != nil {
+			log.Printf("Failed to re-marshal gossip message for forward: %v", mErr)
+			return
+		}
+		Publisher.GossipMessage(gps, forwardBytes)
 	}
 }
 
 // readMessage reads a message from the stream using delimiter
 func readMessage(s network.Stream) ([]byte, error) {
 	const MaxMessageSize = 7 * 1024 * 1024 // 7 MB
-	var message []byte
-	buffer := make([]byte, 1)
-
-	for {
-		_, err := s.Read(buffer)
-		if err != nil {
-			return nil, err
-		}
-
-		if buffer[0] == config.Delimiter {
-			break
-		}
-
-		message = append(message, buffer[0])
-
-		if len(message) > MaxMessageSize {
-			return nil, fmt.Errorf("message size exceeds limit of %d bytes", MaxMessageSize)
-		}
+	// Buffered read to the delimiter, hard-capped by a LimitReader so an
+	// oversized or unterminated message cannot grow the buffer without bound
+	// (audit NET-03: the old loop did one syscall PER BYTE — ~7M reads/msg).
+	r := bufio.NewReader(io.LimitReader(s, MaxMessageSize+1))
+	msg, err := r.ReadBytes(config.Delimiter)
+	if err != nil {
+		// EOF without a delimiter (peer closed early or hit the cap), a read
+		// deadline, or a transport error — all fail closed.
+		return nil, err
 	}
-
-	return message, nil
+	msg = msg[:len(msg)-1] // strip the trailing delimiter
+	if len(msg) > MaxMessageSize {
+		return nil, fmt.Errorf("message size exceeds limit of %d bytes", MaxMessageSize)
+	}
+	return msg, nil
 }
 
 // GetTopics returns a list of subscribed topics

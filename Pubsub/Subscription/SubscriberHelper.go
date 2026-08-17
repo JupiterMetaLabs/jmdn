@@ -18,6 +18,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// Bounds for the uniquePeers metric map (audit NET-06).
+const (
+	maxUniquePeers      = 50_000
+	uniquePeerRetention = 30 * time.Minute
+)
+
 // NewEnhancedSubscriber creates a new EnhancedSubscriber instance
 func NewEnhancedSubscriber(subscription *pubsub.Subscription, gps *PubSubMessages.GossipPubSub, handler func(*PubSubMessages.GossipMessage)) *EnhancedSubscriber {
 	return &EnhancedSubscriber{
@@ -212,6 +218,17 @@ func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error 
 	peerID := msg.ReceivedFrom.String()
 	es.metrics.uniquePeersMu.Lock()
 	es.metrics.uniquePeers[peerID] = time.Now().UTC().UnixNano()
+	// Bound the map: libp2p identities are free to generate, so an unbounded
+	// per-peer-ID map is a memory-exhaustion vector (audit NET-06). When over
+	// the cap, drop entries older than the retention window.
+	if len(es.metrics.uniquePeers) > maxUniquePeers {
+		cutoff := time.Now().Add(-uniquePeerRetention).UTC().UnixNano()
+		for pid, ts := range es.metrics.uniquePeers {
+			if ts < cutoff {
+				delete(es.metrics.uniquePeers, pid)
+			}
+		}
+	}
 	es.metrics.uniquePeersMu.Unlock()
 
 	// Process the message
