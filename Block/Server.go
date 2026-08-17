@@ -124,7 +124,7 @@ func submitRawTransaction(c *gin.Context) {
 		return
 	}
 
-	txHash, err := SubmitRawTransaction(spanCtx, &tx)
+	txHash, err := SubmitRawTransaction(spanCtx, &tx, OriginHTTP(c.Request.RemoteAddr))
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
@@ -161,7 +161,7 @@ func submitRawTransaction(c *gin.Context) {
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (string, error) {
+func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, origin TxOrigin) (string, error) {
 	// Record trace span and close it
 	spanCtx, span := logger().Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
 	defer span.End()
@@ -197,18 +197,22 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		return "", errors.New("invalid transaction: hash is required and must be provided by the client")
 	}
 
-	// Detect unsigned contract-creation transactions submitted by the internal
-	// SmartContract service (To == nil, V == nil). These are trusted — the
-	// service runs on the same node — so we skip external signature validation
-	// and jump straight to the deployment pipeline.
-	isInternalDeployment := tx.To == nil && tx.V == nil
+	// Unsigned contract-creation bypass (To == nil, V == nil). Trust is decided
+	// from the CALLER'S TRANSPORT (origin.Trusted() — same-host/in-process),
+	// NOT from the transaction's shape. A remote peer sending {To:nil, V:nil}
+	// is no longer trusted, so it falls through to full Security.AllChecks and
+	// its unsigned/impersonated deployment is rejected (audit SEC-02).
+	isInternalDeployment := origin.Trusted() && tx.To == nil && tx.V == nil
 	if isInternalDeployment {
 		span.SetAttributes(
 			attribute.Bool("internal_deployment", true),
 			attribute.String("status", "internal_deployment_bypass"),
+			attribute.String("origin_transport", origin.Transport),
 		)
-		logger().Info(spanCtx, "Internal contract deployment detected — bypassing signature validation",
+		logger().Info(spanCtx, "Trusted same-host contract deployment — bypassing signature validation",
 			ion.String("from", addrHex(tx.From, "<nil>")),
+			ion.String("origin_transport", origin.Transport),
+			ion.String("origin_peer", origin.RemoteAddr),
 			ion.String("function", "BlockServer.SubmitRawTransaction"))
 	} else {
 		// Run full security checks (includes signature + hash validation)

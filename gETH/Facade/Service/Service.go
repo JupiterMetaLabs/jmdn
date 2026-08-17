@@ -406,7 +406,9 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		logger().Debug(opCtx, "JSON transaction parsed")
 	}
 
-	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
+	// Public eth JSON-RPC surface: never eligible for the unsigned-deployment
+	// bypass (audit SEC-02). A legitimately signed tx still passes AllChecks.
+	hash, err := block.SubmitRawTransaction(context.Background(), &tx, block.OriginUntrusted("grpc"))
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
 			logger().Error(opCtx, "Failed to log SendRawTx error", logErr)

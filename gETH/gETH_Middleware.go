@@ -11,6 +11,8 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
 
+	"google.golang.org/grpc/peer"
+
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -152,7 +154,14 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 	logger().Debug(context.Background(), "Transaction details",
 		ion.String("type", fmt.Sprintf("%d", tx.Type)),
 		ion.String("gas_price", tx.GasPrice.String()))
-	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
+	// Derive trust from the gRPC peer, not the tx shape (audit SEC-02). The
+	// eth gRPC surface is remote-reachable; only a same-host (loopback) caller
+	// is eligible for the unsigned internal-deployment bypass.
+	origin := block.OriginGRPC("")
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		origin = block.OriginGRPC(p.Addr.String())
+	}
+	hash, err := block.SubmitRawTransaction(context.Background(), &tx, origin)
 	if err != nil {
 		return nil, err
 	}
