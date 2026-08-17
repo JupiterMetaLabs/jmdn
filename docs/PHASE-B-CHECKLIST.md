@@ -254,3 +254,15 @@ on touched packages (DB_OPs, thebegateway, messaging, PubSubMessages):
 - **SEC-01**: 3 BLS private keys tracked on the public remote. Rotate + purge history + force-push.
 - **DEP-01**: go.mod still `go 1.25.0`; one line to `go 1.25.12` closes 29 reachable stdlib CVEs —
   cheapest item in the whole audit, do it in the next mechanical round if you want it batched.
+
+---
+
+## Deferred-item triage, one-by-one (2026-08-17)
+
+- **DEP-01 — DONE** (e66665a): go 1.25.0→1.25.12 (29 reachable stdlib CVEs), x/text v0.39.0,
+  otlploghttp v0.19.0. pion/dtls has no fix (v2→v3 migration) — still tracked. Verified: go mod
+  tidy no-op, go mod verify clean; full CGO build is the host gate.
+- **SEC-02 impersonation half — DONE** (da3ca59): TxOrigin (Block/origin.go) threads transport +
+  peer into SubmitRawTransaction; bypass gated on origin.Trusted() (loopback/same-host), not tx
+  shape. HTTP uses socket RemoteAddr (not spoofable ClientIP), eth gRPC uses peer.FromContext,
+  JSON-RPC facade is OriginUntrusted. Trust logic proven in isolation; full CGO build = host gate.
