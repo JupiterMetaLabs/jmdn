@@ -87,3 +87,31 @@ transfer path and is detectably behind, never silently divergent).
   by it. jmdn depends only on the interface, not on AVC.
 - **Rollback:** flip the flag off; the executor de-registers to no-op; behavior reverts with no data
   migration.
+
+---
+
+## Progress log
+
+- **P0 — DONE (569aec6):** execbridge seam + cfg.Contracts.Enabled (default off), dormant. Verified build (CGO off).
+- **P1a — DONE (ab201f8):** deterministic contract-state commit + state digest (EVM-09). Ordering
+  logic proven order-independent in isolation (200 randomized runs). Host gate: CGO build of ./DB_OPs/contractDB/.
+- **P1b — DONE (49717a4):** deterministic EVM execution entry — Deploy/ExecuteContractWithContext
+  take block context explicitly, no time.Now/HTTP (EVM-02). Dormant (no caller yet). Host gate: CGO
+  build of ./SmartContract/internal/evm/.
+
+### Remaining (need a working CGO compiler + the 2-node determinism gate — do NOT emit blind)
+- **P1c:** the execbridge.ContractExecutor impl in the SmartContract layer — construct a per-tx
+  StateDB (shared repo + DID client), call Deploy/ExecuteContractWithContext with a BlockExecContext
+  → DetBlockContext, CommitToDB, map GetBalanceChanges → ExecResult. Register in main.go behind
+  cfg.Contracts.Enabled.
+- **EVM-30/31 (gas):** intrinsic gas + refund via core.StateTransition / core.IntrinsicGas — exact
+  go-ethereum API MUST be verified against a compiler (version-sensitive); not written blind.
+- **EVM-29 (fork):** assert Shanghai selection (Random set / rules) — verify against a compiler.
+- **P2:** thread BlockNumber/BlockHash/TxIndex through processTransaction; invoke execbridge for
+  contract txs; fold BalanceChanges+GasUsed through config.GasFee/SplitFee under LockStateApply,
+  atomically with ApplyTxAtomic. Deployment (To==nil) no longer hits the nil-recipient deref.
+- **P3:** receipts/logs with real block context (EVM-13); SetSharedKVStore so HasCode works (EVM-16/25).
+- **P4:** contract-state root into the block + verify on receive.
+- **Enablement gate (before the flag is ever true):** 2-node deploy/call/payable — identical state,
+  digest, balances; negative test that a flag-off node stays on the transfer path and is detectably
+  behind, never silently divergent.
