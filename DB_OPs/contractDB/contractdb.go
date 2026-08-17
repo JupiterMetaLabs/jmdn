@@ -1,10 +1,12 @@
 package contractDB
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -109,32 +111,48 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 	batch := c.repo.NewBatch()
 	defer batch.Close()
 
+	// Deterministic order (audit EVM-09): collect dirty addresses and iterate
+	// them sorted, so the batch WRITE order and the returned state digest are
+	// identical on every node regardless of Go's random map iteration.
+	dirty := make([]common.Address, 0, len(c.stateObjects))
 	for addr, obj := range c.stateObjects {
-		if !obj.isDirty() {
-			continue
+		if obj.isDirty() {
+			dirty = append(dirty, addr)
 		}
+	}
+	hasher := newStateHasher()
+
+	for _, addr := range sortedAddrs(dirty) {
+		obj := c.stateObjects[addr]
 
 		if deleteEmptyObjects && (obj.deleted || (obj.suicided && obj.isEmpty())) {
 			batch.DeleteCode(addr)
-			for key := range obj.dirtyStorage {
+			for _, key := range sortedHashKeys(obj.dirtyStorage) {
 				batch.DeleteStorage(addr, key)
 			}
 			batch.DeleteNonce(addr)
+			hasher.foldTombstone(addr)
+			obj.commitState()
 			continue
 		}
 
 		toWrite, toDelete, metaUpdates := obj.finalizeStorage()
 
-		for key, value := range toWrite {
+		// Storage writes in sorted key order; metadata rides with its key.
+		for _, key := range sortedHashKeys(toWrite) {
+			value := toWrite[key]
 			if err := batch.SaveStorage(addr, key, value); err != nil {
 				return common.Hash{}, err
 			}
-		}
-		for key, meta := range metaUpdates {
-			if err := batch.SaveStorageMetadata(addr, key, meta); err != nil {
-				return common.Hash{}, err
+			if meta, ok := metaUpdates[key]; ok {
+				if err := batch.SaveStorageMetadata(addr, key, meta); err != nil {
+					return common.Hash{}, err
+				}
 			}
+			hasher.foldStorageWrite(addr, key, value)
 		}
+		// Storage deletions in sorted key order.
+		sort.Slice(toDelete, func(i, j int) bool { return bytes.Compare(toDelete[i][:], toDelete[j][:]) < 0 })
 		for _, key := range toDelete {
 			if err := batch.DeleteStorage(addr, key); err != nil {
 				return common.Hash{}, err
@@ -142,6 +160,7 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 			if err := batch.DeleteStorageMetadata(addr, key); err != nil {
 				return common.Hash{}, err
 			}
+			hasher.foldStorageDelete(addr, key)
 		}
 
 		if obj.dirtyCode {
@@ -161,12 +180,14 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 					return common.Hash{}, err
 				}
 			}
+			hasher.foldCode(addr, code)
 		}
 
 		if obj.dirtyNonce {
 			if err := batch.SaveNonce(addr, obj.getNonce()); err != nil {
 				return common.Hash{}, err
 			}
+			hasher.foldNonce(addr, obj.getNonce())
 		}
 
 		obj.commitState()
@@ -177,7 +198,7 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 	}
 
 	c.journal = newJournal()
-	return common.Hash{}, nil // state root not computed
+	return hasher.sum(), nil // deterministic state-change digest (P4: full MPT root)
 }
 
 // GetBalanceChanges returns addresses whose balance changed and their new values.
