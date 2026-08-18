@@ -100,9 +100,53 @@ func (s *VRFSelector) SelectBuddy(
 	}, nil
 }
 
-// buildRoundMessage creates the message for VRF
+// buildRoundMessage creates the message for VRF.
+//
+// AUDIT CON-06 (defect 1): this message is `nodeID:salt` with NO round / epoch /
+// height, so for a fixed selecting node it is CONSTANT — vrf.Prove is a pure
+// function of (message, key), so the VRF hash, the derived seed, and therefore
+// the committee never change across rounds. There is no rotation. Binding a round
+// (see BuildVRFRoundMessage) is a consensus-cadence change — the sequencer would
+// select a fresh committee each round/epoch — so it is threaded and enabled as a
+// gated step, not silently here. This default message is unchanged to keep the
+// current selection behavior byte-identical until that rollout.
 func (s *VRFSelector) buildRoundMessage(nodeID string) []byte {
 	return []byte(fmt.Sprintf("%s:%s", nodeID, string(s.networkSalt)))
+}
+
+// VRFRoundDomain is the domain-separation tag for the round-bound VRF message.
+const VRFRoundDomain = "jmdn/vrf-round/v1"
+
+// BuildVRFRoundMessage is the round-bound, domain-tagged VRF message that fixes
+// CON-06 defect 1: it binds the selecting node, the network salt, AND the round
+// (an agreed epoch or block height), so the VRF output — and thus the committee —
+// rotates each round instead of being constant forever. The domain tag keeps a
+// round-bound message from ever colliding with the legacy `nodeID:salt` message.
+//
+// Pure and deterministic: every node computes the identical bytes for the same
+// (nodeID, salt, round). Wiring the `round` value through the selection interface
+// (so the committee actually rotates and the proof is verifiable per round) is
+// the gated consensus-cadence step; this primitive is what that step will call.
+func BuildVRFRoundMessage(nodeID string, networkSalt []byte, round uint64) []byte {
+	return []byte(fmt.Sprintf("%s|%s|%s|%d", VRFRoundDomain, nodeID, string(networkSalt), round))
+}
+
+// VerifyVRFProof checks a VRF (hash, proof) pair against the selecting node's
+// public key and the exact message that was proven — audit CON-06 defect 3:
+// vrf.Verify was called NOWHERE, so a buddy proof was never actually checked.
+// A recipient of a selection claim calls this to confirm the sequencer really
+// ran the VRF over the agreed message (fail-closed: any mismatch returns false).
+//
+// message MUST be reconstructed independently by the verifier (e.g. via
+// BuildVRFRoundMessage with the agreed round) — never taken from the claimer —
+// so a forged proof over an attacker-chosen message cannot pass. Wiring the
+// receive path to carry the vrf hash + reject on false is the gated step; this
+// verifier is the tested primitive it will use.
+func VerifyVRFProof(publicKey ed25519.PublicKey, message, vrfHash, proof []byte) bool {
+	if len(publicKey) != ed25519.PublicKeySize || len(vrfHash) == 0 || len(proof) == 0 {
+		return false
+	}
+	return vrf.Verify(publicKey, message, vrfHash, proof)
 }
 
 // fisherYatesShuffle performs Fisher-Yates shuffle
@@ -221,20 +265,34 @@ func (s *VRFSelector) selectWithRegionDiversity(nodes []Node, k int, seed uint64
 	// Group nodes by region
 	regionGroups := GroupNodesByRegion(eligibleNodes)
 
-	// Sort nodes within each region by selection score (descending)
+	// Sort nodes within each region by selection score (descending), with a
+	// peer_id tiebreak so equal-score nodes have a TOTAL order (audit CON-06).
+	// Without the tiebreak, equal scores leave the intra-region order dependent
+	// on the incoming slice order — reproducible only by accident.
 	for region := range regionGroups {
-		sort.Slice(regionGroups[region], func(i, j int) bool {
-			return regionGroups[region][i].SelectionScore > regionGroups[region][j].SelectionScore
+		grp := regionGroups[region]
+		sort.Slice(grp, func(i, j int) bool {
+			if grp[i].SelectionScore != grp[j].SelectionScore {
+				return grp[i].SelectionScore > grp[j].SelectionScore
+			}
+			return grp[i].PeerId < grp[j].PeerId
 		})
 	}
 
-	// Get region list
+	// Get region list. CON-06: sort into a CANONICAL order before the seeded
+	// shuffle. `for region := range regionGroups` iterates a Go map, whose order
+	// is randomized per range, so without this sort the pre-shuffle order — and
+	// therefore the selected committee — differs run-to-run even for identical
+	// inputs and an identical VRF seed. Sorting first makes the shuffle (and thus
+	// the whole selection) a deterministic function of (inputs, seed).
 	regions := make([]string, 0, len(regionGroups))
 	for region := range regionGroups {
 		regions = append(regions, region)
 	}
+	sort.Strings(regions)
 
-	// Shuffle regions for fairness
+	// Shuffle regions for fairness (now reproducible: same seed + canonical input
+	// => same order on every node/run).
 	s.shuffleStrings(regions, seed)
 
 	selected := make([]Node, 0, k)
