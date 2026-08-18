@@ -302,3 +302,16 @@ Re-confirmed standing blockers (unchanged, mostly operator/decision or CGO-gated
 LWW silent write-loss, B7 deployment (to:null) still halts apply until P2, B9 no CI + irreproducible
 build, plus -race (8+ DATA RACE in 2 pkgs) and golangci-lint fmt (30 files) which the sandbox can't
 run. FastSync criticals (B6/B8) live in the JMDN-FastSync module (separate repo).
+
+---
+
+## Explorer/RPC API bucket — DONE (2026-08-18, 9bb80c9), build+vet ./explorer/ green (CGO off)
+- API-01 getMissingBlocks: 500-block cap (was unbounded chain materialization → OOM).
+- API-02 streamBlocks SSE: buffered channel + comma-ok closed-channel exit (was core-pinning busy-spin).
+- API-04 getDIDDetails: fan-out cap 100 + 404 on not-found + generic 500 (no raw driver text).
+- API-05 listTransactions: page cap (page*limit int-overflow guard).
+- API-07 listBlocks: uint64 underflow guard on out-of-range page → empty page.
+Flagged, NOT changed blind (security-defaults / auth decisions — would risk the explorer UI or auth):
+API-03 single shared explorer secret, API-08 wildcard CORS + Allow-Credentials, B-12 Thebe debug API
+default-on at :19090 with gin.New()/no-auth/wildcard-CORS. These belong with SEC-03/04/05 in an
+operator security-defaults pass (fail-closed compiled defaults; YAML relaxes, never tightens).
