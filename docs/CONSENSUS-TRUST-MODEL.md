@@ -38,12 +38,27 @@ Fix: block identity preimage = `keccak(txsRoot ‖ height ‖ parentHash ‖ pro
 because a mixed fleet computes different hashes. This is the one item that cannot be a silent
 in-place change; it flips fleet-wide like the contracts flag.
 
-### CON-03 · vote-requester authz default-on, fail-closed (CRITICAL)
-Sites: `AVC/.../consensus_vote_authz.go:20` (`enforceVoteRequesterAuth` env, default false), `:87`
-(`if !enforce { return true }`), `:97` (empty buddy set → "fail open" → true).
-Fix: default the gate ON; anchor on the authenticated snapshot, not the cached buddy list; **abstain**
-on an unknown set (abstaining is safe; signing for an unknown caller is not). Verify: with the env
-unset, an unauthenticated vote-result request is refused; an empty set abstains, never signs.
+### CON-03 · vote-requester authz — authoritative source + fail-closed (CRITICAL) — PARTIAL (c6c02ac)
+Sites: `AVC/.../consensus_vote_authz.go` (`enforceVoteRequesterAuth` env, default false; the old
+`empty buddy set → return true` fail-open).
+**Correction to the audit's "anchor on the snapshot" fix (missing-case, verified):** the requester is
+the SEQUENCER, and a buddy resolves the sequencer mainly from the self-declared, unsigned
+`msg.SequencerID` (`subscriptionService.go:803-825` Path 2) because buddies commonly hold no buddy
+list (Path 1 fails). So the sequencer is frequently ABSENT from `currentBuddySet()` — and, per CON-01,
+not guaranteed in the committee snapshot either. Defaulting the gate on and fail-closing against
+either set would **reject the legitimate sequencer and halt the chain.** The authoritative requester
+set must therefore be **committee snapshot ∪ pinned sequencer peer_id** — which makes CON-03's
+default-on **coupled to CON-01's pin.**
+Done (c6c02ac): `authorizedRequesterSource` (returns set + `ok`) + `AuthorizedRequesterSet` composer
++ `SetAuthorizedRequesterSource`. `voteRequesterAuthorized`: master switch (default-off, non-breaking)
+→ injected authorizer → authoritative source **when it resolves** (definitive: a non-member is
+rejected even with an empty buddy set — the fail-open is closed) → liveness-preserving legacy fallback
+only when the source is indeterminate. Decision logic proven by isolation harness (9/9 branches PASS
+CGO-off); in-package test host-gated (package pulls badger/redis/sqlite, won't compile in-sandbox).
+Remaining (CON-01-coupled, host + 2-node gated): wire `SetAuthorizedRequesterSource` to the live
+committee source ∪ pinned sequencer, then flip `enforceVoteRequesterAuth` default ON. Verify: with a
+resolved source, an unauthenticated request is refused and the pinned sequencer is accepted; an
+indeterminate source preserves liveness.
 
 ### CON-04 · certify catch-up / FastSync blocks (CRITICAL)
 Sites: `FastsyncV2/catchup.go:70` (`HandleCatchUpSync` writes blocks with no `VerifyCertificate` /
@@ -91,7 +106,8 @@ one that stops silent ledger divergence today, independent of contracts.
 
 ## Ordering
 1. **P2.5 state fingerprint** (stops silent divergence; feeds CON-02).
-2. **CON-01** (pin key, reject empty-key) + **CON-03** (authz on/fail-closed) — authorship anchor.
+2. **CON-01** (pin sequencer libp2p key, reject empty-key) + **CON-03** (authz on/fail-closed —
+   partial landed c6c02ac; default-on flip coupled to CON-01's pin) — authorship anchor.
 3. **CON-02** (block identity v3) — **versioned rollout**, flips fleet-wide.
 4. **CON-04** (certify sync).
 5. **CON-06 / CON-12** (committee determinism + quorum sizing).
