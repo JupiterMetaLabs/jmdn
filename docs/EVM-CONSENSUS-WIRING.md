@@ -50,6 +50,36 @@ messaging/BlockProcessing  ──calls──▶  execbridge.ContractExecutor  �
 Phase 0 changed no behavior: the seam is dormant, `cfg.Contracts.Enabled=false`, nothing calls the
 EVM. Verified: `go build ./execbridge/ ./config/settings/` green (CGO off).
 
+## Operator decisions LOCKED (2026-08-18)
+- **Balance source (Q1): the LOCAL committed ledger.** On the consensus apply path the
+  contract StateDB reads balances/nonces from the node's own committed account store — NOT the live
+  DID gRPC read, which is non-deterministic (EVM-A16: `state_object.go:255 loadAccountFromDID` swallows
+  a gRPC error to a zero balance, so a transient per-node hiccup forks state). The DID read becomes
+  debug/RPC-only; on the apply path a read error FAILS CLOSED (aborts the tx/block), never defaults to
+  zero.
+- **Native value (Q2): PERSIST NOW.** Payable calls / internal transfers / selfdestruct move native
+  coin in v1. After execution the executor's absolute balances are folded through the ONE centralized
+  fee/apply path — see `config.FoldContractExecution` below.
+
+## Pinned go-ethereum v1.17.0 APIs (verified via `go doc`, not guessed)
+- **EVM-29 (fork):** `vm.BlockContext.Random *common.Hash`. `NewChainConfig` already sets
+  `ShanghaiTime=0` (config.go:36), but go-ethereum gates `IsShanghai` on `isMerge == (Random != nil)`,
+  and the deterministic block context never sets `Random` → runs London. Fix = set `blockCtx.Random`
+  to a block-derived hash (add `Random common.Hash` to `DetBlockContext`). One field, no config change.
+- **EVM-30 (intrinsic gas):** `core.IntrinsicGas(data []byte, accessList types.AccessList, authList
+  []types.SetCodeAuthorization, isContractCreation, isHomestead, isEIP2028, isEIP3860 bool) (uint64,
+  error)`.
+
+## P2 value-fold — LANDED (pure, sandbox-verified): `config.FoldContractExecution`
+Because the deterministic EVM runs at gas price 0, its absolute post-exec balances reflect ONLY value
+movements (no gas). `FoldContractExecution(pre, evmAbs, sender, zkvm, coinbase, gasFee, recipients)`
+applies the protocol gas fee on top using the SAME `config.GasFee`/`SplitFee` formula as the plain
+path (single source of truth), and FAILS CLOSED on the two divergence classes: native coin not
+conserved (Σ value deltas ≠ 0 → mint/burn) and any ending negative balance (insolvent sender). 5 unit
+tests PASS CGO-off (payable call+gas, logic-only gas, minted-coin rejected, insolvent rejected,
+weighted recipients cross-checked against SplitFee). This is the P2 correctness core; the apply-path
+wiring that calls it under `LockStateApply` + `ApplyTxAtomic` is the CGO + 2-node-gated step.
+
 ## Phases 1–4 (pending approval — each default-off, each its own gate)
 
 **P1 — deterministic EVM bridge (SmartContract/execbridgeimpl or similar).** Implement
