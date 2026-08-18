@@ -36,6 +36,22 @@ type DetBlockContext struct {
 	GasLimit    uint64
 	BaseFee     *big.Int                 // nil -> 0
 	GetHash     func(uint64) common.Hash // nil -> zero hash (deterministic)
+
+	// Random is the block's PREVRANDAO (audit EVM-29). It MUST be threaded into
+	// vm.BlockContext.Random as a NON-NIL pointer, or go-ethereum treats the run
+	// as pre-merge and never activates Shanghai even though NewChainConfig sets
+	// ShanghaiTime=0 (IsShanghai is gated on isMerge == Random != nil). Set it to
+	// a block-derived hash; the zero value is acceptable and deterministic, but a
+	// real per-block value (e.g. the block hash) is preferred.
+	Random common.Hash
+}
+
+// randomPtr returns a non-nil *common.Hash for vm.BlockContext.Random so the EVM
+// runs post-merge (Shanghai) fork rules. Copies the value so the pointer is
+// independent of the caller's struct.
+func (b DetBlockContext) randomPtr() *common.Hash {
+	r := b.Random
+	return &r
 }
 
 func (b DetBlockContext) getHashFn() vm.GetHashFunc {
@@ -70,6 +86,7 @@ func (e *EVMExecutor) DeployContractWithContext(state vm.StateDB, bctx DetBlockC
 		Difficulty:  big.NewInt(0),
 		GasLimit:    bctx.GasLimit,
 		BaseFee:     bctx.baseFee(),
+		Random:      bctx.randomPtr(), // EVM-29: non-nil -> post-merge -> Shanghai
 	}
 
 	txCtx := vm.TxContext{Origin: caller, GasPrice: uint256.NewInt(0)}
@@ -111,6 +128,7 @@ func (e *EVMExecutor) ExecuteContractWithContext(state vm.StateDB, bctx DetBlock
 		Difficulty:  big.NewInt(0),
 		GasLimit:    bctx.GasLimit,
 		BaseFee:     bctx.baseFee(),
+		Random:      bctx.randomPtr(), // EVM-29: non-nil -> post-merge -> Shanghai
 	}
 
 	txCtx := vm.TxContext{Origin: caller, GasPrice: uint256.NewInt(0)}
