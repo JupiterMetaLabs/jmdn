@@ -275,3 +275,30 @@ on touched packages (DB_OPs, thebegateway, messaging, PubSubMessages):
   (CGO off). Host gate before rollout: CGO_ENABLED=1 go build ./... && go test -race ./Pubsub/...
   Residuals: NET-05 wrong-handler Unsubscribe (needs Subscribe token — API change, deferred);
   NET-03 per-peer stream cap (deadline mitigates the slow-drip; hard cap deferred).
+
+
+---
+
+## Implementation + devil's-advocate reviews (2026-08-17, @34d00b5) — response
+
+Both executed against real PostgreSQL 16.13 + BadgerDB. Net: they credit the design/diagnosis and
+re-confirm the standing blockers; two items land in MY committed code, both fixed:
+
+- **STO-14 (my bug, FIXED ebf4e1e):** RecordEquivocationHash guarded overwrite with
+  `gerr==nil && raw!=nil`, so a read error fell through and clobbered the durable first-seen hash,
+  returning nil — my CON-21 (1cfcc76) caller-guard never fired. Now propagates the read error;
+  caller rejects. The reviewer was right that 1cfcc76's "fails closed" was contradicted here.
+- **STO-26 (my stale comment, FIXED ebf4e1e):** Processing.go still claimed pre-migration
+  "ONE accountsdb ExecAll" atomicity; corrected to the two-write ThebeDB reality.
+
+Credited by the reviews (no action): execbridge design ("best-designed file in the EVM scope"),
+EVM-29 root-cause ("exactly right"), the gossip NET-03..08 hardening (io.LimitReader/read
+deadlines/bounded caches — "real hardening" vs the FastSync surface), the quorum fix landing
+correctly. EVM plan reordered per their strongest insight (state commitment is load-bearing) — see
+docs/EVM-CONSENSUS-WIRING.md course-correction.
+
+Re-confirmed standing blockers (unchanged, mostly operator/decision or CGO-gated): B1/SEC-01 keys
+(regressed — still unrotated a month post-July-audit), B2 no block state root, B3/STO-01/02 storage
+LWW silent write-loss, B7 deployment (to:null) still halts apply until P2, B9 no CI + irreproducible
+build, plus -race (8+ DATA RACE in 2 pkgs) and golangci-lint fmt (30 files) which the sandbox can't
+run. FastSync criticals (B6/B8) live in the JMDN-FastSync module (separate repo).

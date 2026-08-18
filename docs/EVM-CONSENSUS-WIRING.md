@@ -115,3 +115,29 @@ transfer path and is detectably behind, never silently divergent).
 - **Enablement gate (before the flag is ever true):** 2-node deploy/call/payable — identical state,
   digest, balances; negative test that a flag-off node stays on the transfer path and is detectably
   behind, never silently divergent.
+
+---
+
+## Course correction from the 2026-08-17 implementation + devil's-advocate reviews
+
+Both reviews (executed against 34d00b5 with real PostgreSQL/BadgerDB) accept the seam design
+("execbridge is the best-designed file in the EVM scope; nothing needs changing"; "the EVM-29
+root-cause diagnosis is exactly right") but land two corrections that reorder this plan:
+
+1. **P4 is load-bearing, not last.** The block's consensus StateRoot commits to NO account/contract
+   state today (`Block/helper/stateroot.go`: StateRoot = Keccak256(parentStateRoot ‖ BlockHash);
+   BlockHash = Keccak256(tx hashes)). So "contract state is consensus-validated" cannot be true no
+   matter how good P1c/P2 are, until the block header commits to state. **Reordered:** a **P2.5 —
+   canonical accounts+contract-state fingerprint in the block header** (cheaper than a full MPT;
+   enough to DETECT divergence and halt) lands WITH/BEFORE enabling execution, not after. This also
+   answers B2/EVM-A1 for the plain-transfer path, independent of contracts.
+2. **Determinism I/O is deeper than the block context (EVM-A16).** `getStateObject` does a
+   synchronous, timeout-less DID gRPC read and swallows the error as "account = zero" — network I/O
+   *below* the *WithContext layer, so P1b does not fix it. **P1c MUST** make the state-read path
+   deterministic + fail-closed (a DID read error must abort the tx/block, never default to zero),
+   or two nodes diverge on a transient DID hiccup.
+
+Also acknowledged (fair): P0/P1a/P1b are correct **building blocks but dead code** until P1c/P2 wire
+them — the flag `cfg.Contracts.Enabled` is read nowhere yet, `execbridge` has zero importers, P1a's
+digest is discarded by its one caller and covers only contract writes (not balances). They are not
+"live capability"; the progress log should be read as scaffolding-complete, not feature-complete.
