@@ -11,12 +11,13 @@
 // peers, 4 of 5 committee members connected, every round refused.
 //
 // WHY THIS IS SAFE (the property that must not break): the committee itself is
-// UNCHANGED — still the fixed, deterministic eligible set (seed-signed snapshot
-// MINUS block_buddy, hard-capped by consensus.max_validators and trimmed by
-// sorted peer_id). The certificate threshold is UNCHANGED — VerifyCertificate
-// still computes n = len(eligibleMembers()) and requires ByzantineQuorum(n).
-// Nothing about verification moves. We only stop REFUSING TO START a round that
-// could have reached quorum.
+// UNCHANGED — still the fixed, deterministic eligible set (seed-signed snapshot,
+// hard-capped by consensus.max_validators and trimmed by sorted peer_id). The
+// certificate threshold is UNCHANGED — VerifyCertificate computes the quorum
+// denominator n from the FLEET-AGREED committee (authenticatedCommittee: snapshot
+// + fleet-uniform cap, NOT reduced by the local block_buddy blocklist — CON-12)
+// and requires ByzantineQuorum(n). Nothing about verification moves. We only stop
+// REFUSING TO START a round that could have reached quorum.
 //
 // Quorum intersection therefore still holds: two quorums of q = ceil(2n/3)
 // drawn from the SAME fixed n intersect in >= 2q-n >= f+1 members, so at least

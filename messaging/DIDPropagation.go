@@ -579,7 +579,11 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 // Returns (reached, committeeSize, err). A non-nil err means the committee is
 // unknown on this node — callers must fail OPEN in that case.
 func committeeDeliveryStatus(targets []peer.ID, delivered int) (reached, size int, err error) {
-	members, err := eligibleMembers()
+	// Use the FLEET-AGREED committee (authenticated + capped, without the local
+	// block_buddy blocklist) so the delivery `need` matches the ByzantineQuorum a
+	// real block certificate requires fleet-wide — a local blocklist must not shift
+	// this pre-flight threshold (CON-12, same denominator as VerifyCertificate).
+	members, err := authenticatedCommittee()
 	if err != nil {
 		return 0, 0, err
 	}
