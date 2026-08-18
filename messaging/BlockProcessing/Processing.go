@@ -676,7 +676,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(
 		attribute.String("tx_hash", tx.Hash.Hex()),
 		attribute.String("from", tx.From.Hex()),
-		attribute.String("to", tx.To.Hex()),
+		attribute.String("to", addrPtrHex(tx.To)), // B7: nil for contract creation
 		attribute.String("coinbase", coinbaseAddr.Hex()),
 		attribute.String("zkvm", zkvmAddr.Hex()),
 	)
@@ -900,7 +900,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	logger().Info(txSpanCtx, "Transaction Amount Calculated",
 		ion.String("tx_hash", tx.Hash.Hex()),
 		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
+		ion.String("to", addrPtrHex(tx.To)), // B7: nil for contract creation
 		ion.String("value", parsedTx.ValueBig.String()),
 		ion.String("gas_limit", strconv.FormatUint(config.EffectiveGasLimit(tx.GasLimit), 10)),
 		ion.String("gas_fee", gasFeeToDeduct.String()),
@@ -967,7 +967,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		logger().Error(txSpanCtx, "Recipient DID does not exist (no block-carried identity to create it from)",
 			errors.New("recipient DID does not exist"),
 			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("to", tx.To.Hex()),
+			ion.String("to", addrPtrHex(tx.To)), // B7: nil for contract creation
 			ion.Bool("create_missing_accounts", CreateMissingAccounts),
 			ion.Bool("block_carried_nonce", hasCarriedNonce),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1127,8 +1127,23 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	return nil
 }
 
-// accountExists checks if an account exists in the database
+// addrPtrHex is a nil-safe hex renderer for an optional address (audit B7): a
+// contract-deployment tx carries To == nil, and logging tx.To.Hex() directly
+// panics the whole block-apply path. Use this for any log/trace of tx.To.
+func addrPtrHex(a *common.Address) string {
+	if a == nil {
+		return "(contract-creation)"
+	}
+	return a.Hex()
+}
+
+// accountExists checks if an account exists in the database. A nil address (a
+// contract deployment's absent recipient, audit B7) is reported as "not existing"
+// without dereferencing — the caller decides how to handle a missing recipient.
 func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
+	if account == nil {
+		return false, nil
+	}
 	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
 	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
