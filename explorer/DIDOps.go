@@ -2,8 +2,10 @@ package explorer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -71,12 +73,24 @@ func (s *ExplorerServer) getDIDDetails(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one 'dids' query parameter is required"})
 		return
 	}
+	// Cap the fan-out: without a bound each element is one serial 5s DID lookup,
+	// so ~10^5 elements = ~10^5 serial round-trips in one request (audit API-04).
+	const maxDIDsPerRequest = 100
+	if len(DIDs) > maxDIDsPerRequest {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many dids: %d (max %d)", len(DIDs), maxDIDsPerRequest)})
+		return
+	}
 
 	var didDocs []DB_OPs.Account
 	for _, DID := range DIDs {
 		DID_Doc, err := DB_OPs.GetAccountByDID(&s.accountsdb, DID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			// Not-found is a 404, not a 500 with the raw driver error (audit API-04/API-08).
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "DID not found", "did": DID})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve DID"})
 			return
 		}
 		didDocs = append(didDocs, *DID_Doc)

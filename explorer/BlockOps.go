@@ -188,12 +188,20 @@ func (s *ExplorerServer) listBlocks(c *gin.Context) {
 
 	// Calculate offset and limit for pagination
 	offset := (page - 1) * limit
-	endBlock := totalBlocks - uint64(offset)
-	var startBlock uint64
-	if endBlock > uint64(limit) {
-		startBlock = endBlock - uint64(limit) + 1
+	var endBlock, startBlock uint64
+	if uint64(offset) >= totalBlocks {
+		// Page is beyond the end of the chain. The old `totalBlocks - offset`
+		// underflowed uint64 into a huge endBlock and scanned a massive range
+		// (audit API-07). Return an empty page: endBlock=0 makes the descending
+		// loop below (i := endBlock; i >= startBlock; i--) not run.
+		endBlock, startBlock = 0, 1
 	} else {
-		startBlock = 1
+		endBlock = totalBlocks - uint64(offset)
+		if endBlock > uint64(limit) {
+			startBlock = endBlock - uint64(limit) + 1
+		} else {
+			startBlock = 1
+		}
 	}
 
 	// Get blocks for the current page
@@ -768,8 +776,17 @@ func (s *ExplorerServer) getMissingBlocks(c *gin.Context) {
 		return
 	}
 
+	// Bound the response: without a cap this loop materialises EVERY block above
+	// :number (with all transactions) into memory and JSON — one request can
+	// OOM the node (audit API-01). Serve at most maxMissingBlocksPerRequest and
+	// let the client page with the returned range.
+	const maxMissingBlocksPerRequest = 500
+	upper := latestBlockNumber
+	if upper-blockNumberInt > maxMissingBlocksPerRequest {
+		upper = blockNumberInt + maxMissingBlocksPerRequest
+	}
 	var missingBlocks []*config.ZKBlock
-	for blockNumberInt < latestBlockNumber {
+	for blockNumberInt < upper {
 		blockNumberInt++
 		block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, blockNumberInt)
 		if err != nil {
@@ -784,7 +801,7 @@ func (s *ExplorerServer) getMissingBlocks(c *gin.Context) {
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
 				ion.String("function", "ExplorerAPI.getMissingBlocks"))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read block"})
 			return
 		}
 		missingBlocks = append(missingBlocks, block)
@@ -910,6 +927,9 @@ func (s *ExplorerServer) listTransactions_fromLastBlock(c *gin.Context) {
 	}
 	if limit > 100 {
 		limit = 100 // Maximum limit to prevent excessive memory usage
+	}
+	if page > 100000 {
+		page = 100000 // cap page so page*limit cannot overflow int (audit API-05)
 	}
 
 	span.SetAttributes(

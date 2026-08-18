@@ -65,7 +65,7 @@ func sendEventToClients(event StreamEvent) {
 // streamBlocks handles SSE connections for block and transaction streaming
 func (s *ExplorerServer) streamBlocks(c *gin.Context) {
 	// Create a channel for this client
-	messageChan := make(chan string)
+	messageChan := make(chan string, 64) // buffered so a brief non-parked read does not evict the client (audit API-02)
 
 	// Add this client to the registry
 	streamRegistry.Lock()
@@ -106,7 +106,13 @@ func (s *ExplorerServer) streamBlocks(c *gin.Context) {
 		case <-notify:
 			// Client disconnected
 			return
-		case msg := <-messageChan:
+		case msg, ok := <-messageChan:
+			if !ok {
+				// Channel closed (client evicted as too-slow). Exit instead of
+				// busy-spinning on a closed channel emitting empty events until
+				// CloseNotify — which pinned a core per connection (audit API-02).
+				return
+			}
 			// Write to the ResponseWriter
 			c.SSEvent("message", msg)
 			c.Writer.Flush()
