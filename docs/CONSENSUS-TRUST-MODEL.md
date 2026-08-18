@@ -102,10 +102,37 @@ Host CGO build (`../ThebeDB` present) + `go test`/`-race` + a **2-node determini
 a forged-key certificate is rejected; a cross-height replay is rejected; two nodes applying the same
 block produce the same state fingerprint; a mismatch halts rather than serves.
 
-## One input needed to start CON-01/02
-- **Sequencer signing identity:** does the sequencer already sign each block with a pinned key
-  (which key/where), or is authorship established only via the committee certificate today? CON-01's
-  "pin" target and CON-04's "sequencer signature on synced blocks" both depend on this.
-- **Block-hash v3 rollout:** OK to introduce `/broadcast/block/3.0.0` + a v3 block-hash preimage
-  (height+parent+state) as a fleet-wide versioned cutover (old nodes stay on 2.0.0 until migrated),
-  the same non-breaking pattern used elsewhere?
+## Operator answers (2026-08-18) — folded in
+
+**Q1 sequencer identity — there is NO sequencer key today; authorship = committee certificate only.**
+Verified: ZKBlock proto has no signature/proposer field (Block/proto/block.proto:8-30); `SequencerID`
+is a self-declared unsigned string used only for routing (Consensus.go:44, subscriptionService.go:
+808-821); the only pin is `SeedAuthorityBLSPub`, which pins the seed authority for committee
+SNAPSHOTS, not the sequencer. **So CON-01 is net-new, not hardening: choose an identity → add a
+signature field → sign → verify → pin.** Chosen identity: the sequencer's BLS key already in the
+committee snapshot (`CommitteeSnapshotEntry.bls_pub`) — already authenticated (PoP at registration,
+epoch-frozen, covered by the authority signature), so pinning is free. **BLOCKER to verify first:**
+the sequencer is a proposer, not necessarily a committee member, so its bls_pub may be absent from
+the eligible set — confirm it has a registered entry (register a non-eligible identity entry, or
+fall back to a pinned host key). CON-04's "verify the sequencer signature on synced blocks" is
+likewise net-new (nothing to verify today).
+
+**Q2 block-hash v3 — YES, versioned cutover. Qualifications (from the answer, all verified):**
+1. Bump only the STREAM protocol `/broadcast/block/3.0.0` (side-by-side handlers, graceful). Do NOT
+   bump the pubsub TOPIC `pubsub-block-propagation/2.0.0` — a topic-name change hard-partitions the
+   fleet (no negotiation).
+2. There are TWO live canonical-hash impls: `Security.RecomputeBlockHashFromContents` (re-derives tx
+   hashes from contents — SAFE) and `messaging.RecomputeBlockHashFromTxs` (trusts claimed tx.Hash).
+   v3's txns_root basis MUST be the Security (contents) one; collapse the two during v3.
+3. Select v2/v3 by BLOCK HEIGHT (a cutover height in config), NOT build version — so a resync after
+   cutover still validates historical (pre-cutover) blocks with the v2 preimage. Keep the v2 func.
+4. Enforce the protocol/height gate BEFORE computing the hash, not after (a v2 node and a v3 node
+   compute different hashes → reject each other on CheckBlockHash; the gate is what prevents a fork).
+5. Check whether AVC/BFT PREPARE/COMMIT computes a block hash independently — if so it's a third
+   impl needing the same cutover (not verified this session).
+
+## v3 primitive landed (DONE, dormant)
+`consensushash.BlockHashV3` (89ea5d6): domain-tagged keccak over chain+height+parent+state+txns+time,
+pure-Go, unit-proven (empty-block collision fixed, height/parent/state/chain/time binding, domain
+separation). NOT wired — the receive-path cutover (protocol 3.0.0 handler, height-selected v2/v3 in
+CheckBlockHash, collapse the two hash impls) is the CGO-gated + 2-node-gated next step.
