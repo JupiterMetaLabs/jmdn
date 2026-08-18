@@ -13,6 +13,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/execbridge"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -394,7 +395,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, accountNonces)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, block.BlockNumber, block.BlockHash, i, accountNonces)
 		if Process_err != nil {
 			// DETERMINISM ON FINALIZED BLOCKS: a 2f+1 block is a canonical, agreed
 			// transaction sequence — every node MUST apply every tx or state
@@ -667,7 +668,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, accountNonces map[common.Address]uint64) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, blockNumber uint64, blockHash common.Hash, txIndex int, accountNonces map[common.Address]uint64) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -798,6 +799,15 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 			ion.String("function", "BlockProcessing.processTransaction"),
 		)
 		// Continue processing since this is just a precaution
+	}
+
+	// Contract transaction: route to the EVM apply path (deterministic execute →
+	// value/gas fold → atomic commit). Active only when a real executor is
+	// registered (cfg.Contracts.Enabled); otherwise the seam's no-op returns
+	// IsContractTx=false and control falls through to the value-transfer path
+	// below (non-breaking). Runs under the LockStateApply held above.
+	if execbridge.Enabled() && execbridge.Get().IsContractTx(&tx) {
+		return applyContractTx(txSpanCtx, tx, coinbaseAddr, zkvmAddr, feeRecipients, accountsClient, blockNumber, blockHash, txIndex, blockTimestamp, accountNonces)
 	}
 
 	// Store original state for rollback if needed
