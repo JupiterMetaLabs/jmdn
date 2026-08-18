@@ -69,15 +69,30 @@ certificate) with each synced block and verify it on apply; anchor sync to a seq
 checkpoint. Until then, catch-up peers are **trusted infrastructure** and that must be documented,
 not implicit. Verify: a synced block with an absent/invalid signature is rejected.
 
-### CON-06 · deterministic committee selection + verify the VRF proof (HIGH)
-Sites: `AVC/NodeSelection/pkg/selection/vrf.go:104` (`buildRoundMessage` = `"<nodeID>:<salt>"` — no
-round/epoch/height → constant VRF output forever), `filter.go:88` (`selectWithRegionDiversity`
-iterates a Go map → non-deterministic committee, run-to-run), `vrf.Verify` called nowhere.
-Fix: include round/epoch/height in the VRF message; replace map-iteration selection with a total
-order (sort by VRF output then peer_id); **call `vrf.Verify`** and reject an unverified proof.
-`Sequencer/committee_quorum.go:23-28` states the safety premise: the committee must be the same
-fixed authenticated set on every node — this finding is what breaks that. Verify: identical inputs →
-identical committee across runs; a round changes the VRF output; a bad proof is rejected.
+### CON-06 · deterministic committee selection + verify the VRF proof (HIGH) — PARTIAL (6b22304)
+Sites (all verified against the tree; `selectWithRegionDiversity` is in `vrf.go:205`, not
+`filter.go:88`): `AVC/NodeSelection/pkg/selection/vrf.go:104` (`buildRoundMessage` = `"<nodeID>:<salt>"`
+— no round → constant VRF output, no rotation), `vrf.go` region list built from Go map iteration
+before the seeded shuffle (non-deterministic committee run-to-run), `vrf.Verify` called nowhere. The
+selector is live (`Router.GetBuddyNodes → selection.GetBuddyNodesWithNodes → SelectMultipleBuddies`).
+Done (6b22304):
+- **Determinism (in-place, shipped):** sort the region list into a canonical order before the seeded
+  shuffle + a `peer_id` tiebreak on the intra-region score sort → selection is now a deterministic
+  function of (inputs, seed). Safe / cannot fork: selection is the sequencer's LOCAL choice
+  distributed via the seed-signed snapshot, and no node recomputes or verifies it today, so there is
+  no cross-node algorithm to keep byte-identical. Proven by a real assertion test (identical selected
+  order across 9 runs; the pre-existing test only logged and said results "may differ").
+- **Round binding (primitive, dormant):** `BuildVRFRoundMessage` (domain-tagged `jmdn/vrf-round/v1`,
+  binds node+salt+round). Threading `round`/epoch/height through the selection interface — so the
+  committee actually rotates per round — is a consensus-cadence change and is **gated** (not shipped
+  in-place; the default `buildRoundMessage` is byte-unchanged).
+- **Verify (primitive, additive):** `VerifyVRFProof` wraps `vrf.Verify`, fail-closed. Wiring the
+  receive path to carry the vrf hash and reject unverified proofs is the gated step.
+`Sequencer/committee_quorum.go:23-28` states the safety premise: the committee must be the same fixed
+authenticated set on every node — today that agreement comes from the seed-signed snapshot, not from
+each node recomputing this VRF. Remaining (gated): thread round + wire the receive-path verify.
+Residual: the determinism fix assumes the upstream node list order (from the seed fetch) is itself
+deterministic; if it is not, selection can still vary — verify that source order separately.
 
 ### CON-12 · compute quorum `n` from the authenticated snapshot, not local config (MEDIUM)
 Sites: `messaging/consensus_hardening.go:167-184` (`block_buddy` blocklist + `max_validators`) →
