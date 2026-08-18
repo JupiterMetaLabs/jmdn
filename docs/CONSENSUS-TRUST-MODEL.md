@@ -131,8 +131,57 @@ likewise net-new (nothing to verify today).
 5. Check whether AVC/BFT PREPARE/COMMIT computes a block hash independently — if so it's a third
    impl needing the same cutover (not verified this session).
 
-## v3 primitive landed (DONE, dormant)
-`consensushash.BlockHashV3` (89ea5d6): domain-tagged keccak over chain+height+parent+state+txns+time,
-pure-Go, unit-proven (empty-block collision fixed, height/parent/state/chain/time binding, domain
-separation). NOT wired — the receive-path cutover (protocol 3.0.0 handler, height-selected v2/v3 in
-CheckBlockHash, collapse the two hash impls) is the CGO-gated + 2-node-gated next step.
+## CON-01 blocker RESOLVED (2026-08-18) — identity is the sequencer's libp2p key, not a committee bls_pub
+
+The Q1 answer chose the committee-snapshot `bls_pub` as the sequencer identity, gated on confirming
+the sequencer has a registered snapshot entry. **Traced the tree; the blocker is real, and it flips
+the choice:**
+
+- The sequencer is the PROPOSER, structurally distinct from the voting buddies. `NewConsensus` is
+  invoked **only on the sequencer** (Sequencer/consensus_statemachine.go:145-153 comment) and it
+  SELECTS the buddy committee, which **excludes self** (consensus_vote_authz.go:15;
+  subscriptionService.go:828 "node is the sequencer itself — no non-self peer"). So the sequencer's
+  presence in `CommitteeSnapshotEntry` is not guaranteed — the committee-bls_pub identity may simply
+  be absent. Confirmed: **do NOT hang authorship on committee membership.**
+- The sequencer ALREADY HAS an authenticated identity: its **libp2p identity key**. On startup it
+  registers that key (`seednode.SetSequencerSignKey`, consensus_statemachine.go:150) and signs seed
+  selection (`ListBuddy`) requests with it via `committee.SignSequencerRequest` (domain
+  `jmdt/seed-auth/v1`, contracts.go:234-252). Likely: the seed pins the sequencer's peer_id as
+  `SEQUENCER_PEER_ID` and refuses all other callers (based on the jmdn-side contract comment
+  sequencer_listbuddy.go:63-68; not independently verified against the seed repo — to confirm, read
+  seedNodes SequencerAuthenticator.Verify).
+
+**Decision (net-new, single sequencer):** sign the block with the sequencer's **libp2p identity
+key**. Add a `sequencer_sig` field to the block; the sequencer signs the v3 block hash (or its
+preimage) with `host.Peerstore().PrivKey(host.ID())`. Verifiers **pin the sequencer peer_id** in
+config (the same value the seed uses as `SEQUENCER_PEER_ID`, distributed OOB exactly like
+`SeedAuthorityBLSPub`) and require the signature to verify against that peer_id — which turns today's
+self-declared, unsigned `msg.SequencerID` (Consensus.go:44) into an authenticated field.
+- **Why libp2p, not BLS:** the key is guaranteed to exist on the sequencer, is already the
+  authoritative sequencer credential the seed enforces, and — Likely, for Ed25519/secp256k1/ECDSA
+  libp2p identities — the pubkey is inlined in the peer_id (self-certifying), so verifiers derive the
+  verify key from the pinned peer_id with no separate key distribution. To confirm: check the
+  sequencer's identity key type (RSA identities hash rather than inline the key; jmdn default is
+  Likely Ed25519). If RSA, distribute the sequencer pubkey alongside the pinned peer_id.
+- **CON-04 falls out cheaper:** the same libp2p `sequencer_sig` travels with synced/catch-up blocks,
+  so "verify the sequencer signature on synced blocks" reuses this one verifier.
+- **Empty-key fail-closed still applies** to the *committee* auth path (keyAuthorized), unchanged —
+  that guards vote/certificate authenticity, a separate anchor from block authorship.
+
+Remaining CON-01 build (CGO + 2-node gated, not emitted blind): add the block `sequencer_sig` field
++ sign on propose + verify-against-pinned-peer_id on receive, on the `/broadcast/block/3.0.0`
+handler alongside the v3 hash cutover.
+
+## Primitives landed (DONE, dormant)
+- **`consensushash.BlockHashV3`** (89ea5d6): domain-tagged keccak over chain+height+parent+state+txns
+  +time, pure-Go, unit-proven (empty-block collision fixed, height/parent/state/chain/time binding,
+  domain separation). NOT wired — the receive-path cutover (protocol 3.0.0 handler, height-selected
+  v2/v3 in CheckBlockHash, collapse the two hash impls) is the CGO + 2-node-gated next step.
+- **`consensushash.StateFingerprintV1` + `StateFingerprinterV1`** (9dd47e6, P2.5): canonical
+  domain-tagged (`jmdn/state-fingerprint/v1`) keccak over full account + contract state; batch +
+  streaming forms with identical encoding; 9 unit tests PASS CGO-off (order independence over 50
+  shuffles, per-field binding, `""`==`"0"`, case-insensitive addr, account/contract section
+  separation, unambiguous length-prefix framing, streaming==batch). It is the `stateFingerprint`/
+  `stateRoot` term CON-02 folds in. NOT wired — recompute-after-apply + halt-on-mismatch + header
+  carriage is the CGO + 2-node-gated step; it also supersedes the SHA-256/no-domain/accounts-only
+  `DB_OPs.ComputeAccountStateFingerprint` operator diff tool.
