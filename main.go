@@ -881,6 +881,20 @@ func main() {
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
 
+	// SEC-03: security posture check. Warn loudly for every gatekeeper HTTP
+	// service left unauthenticated on a public (non-loopback) bind; when
+	// security.strict_posture is set, REFUSE to boot (fail closed).
+	for _, v := range cfg.InsecurePublicServices() {
+		log.Warn().
+			Str("service", v.Service).
+			Str("bind", v.Bind).
+			Msg("SEC-03: gatekeeper service is UNAUTHENTICATED on a public bind (auth_type=none) — set auth_type token/mtls, restrict the bind to loopback, or enable security.strict_posture to fail closed")
+	}
+	if err := cfg.ValidateSecurityPosture(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
 	log.Info().
 		Bool("enabled", cfg.Thebe.Enabled).
 		Str("kv_path", cfg.Thebe.KVPath).

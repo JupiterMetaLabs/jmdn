@@ -53,6 +53,14 @@ type SecurityConfig struct {
 	CertDir     string `mapstructure:"cert_dir" yaml:"cert_dir"`
 	IPCacheSize int    `mapstructure:"ip_cache_size" yaml:"ip_cache_size"` // Size of the LRU cache for Rate Limiting
 
+	// StrictPosture (SEC-03): when true, the node REFUSES to boot if any
+	// gatekeeper-mediated service is bound to a non-loopback address with
+	// auth_type=none (an open public/remote service). Default false: the same
+	// condition is logged as a loud boot WARNING instead of being fatal, so a
+	// deliberately-open deployment (e.g. public RPC behind an external gateway)
+	// still starts. Set true to fail closed.
+	StrictPosture bool `mapstructure:"strict_posture" yaml:"strict_posture"`
+
 	// Global Rate Limit (Layer 1: aggregate per-IP cap across all services)
 	GlobalRateLimit float64 `mapstructure:"global_rate_limit" yaml:"global_rate_limit"` // 0 = disabled
 	GlobalBurst     int     `mapstructure:"global_burst" yaml:"global_burst"`

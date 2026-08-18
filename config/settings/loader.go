@@ -220,6 +220,7 @@ func setDefaults(v *viper.Viper) {
 
 	// Security
 	v.SetDefault("security.enabled", d.Security.Enabled)
+	v.SetDefault("security.strict_posture", d.Security.StrictPosture)
 	v.SetDefault("security.cert_dir", d.Security.CertDir)
 	v.SetDefault("security.ip_cache_size", d.Security.IPCacheSize)
 	v.SetDefault("security.global_rate_limit", d.Security.GlobalRateLimit)
