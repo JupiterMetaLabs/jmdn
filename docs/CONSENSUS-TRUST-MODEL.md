@@ -94,13 +94,20 @@ each node recomputing this VRF. Remaining (gated): thread round + wire the recei
 Residual: the determinism fix assumes the upstream node list order (from the seed fetch) is itself
 deterministic; if it is not, selection can still vary — verify that source order separately.
 
-### CON-12 · compute quorum `n` from the authenticated snapshot, not local config (MEDIUM)
-Sites: `messaging/consensus_hardening.go:167-184` (`block_buddy` blocklist + `max_validators`) →
-`:346` (`n := len(committee)` after local trimming). A node that blocklists members silently
-requires fewer votes than the fleet.
-Fix: `n` = the authenticated snapshot committee size on every node; treat blocklisted members as
-**non-voters** (numerator), never shrink the denominator. Verify: blocklisting a member does not
-lower this node's threshold below the fleet's.
+### CON-12 · compute quorum `n` from the authenticated snapshot, not local config (MEDIUM) — DONE (ec11ba0)
+Verified: `block_buddy` is an operator-LOCAL config (`config/settings/config.go:32`); `max_validators`
+is fleet-uniform. Before, `eligibleMembers()` removed `block_buddy` before `VerifyCertificate` took
+`n := len(committee)`, so a node with a non-empty blocklist computed a smaller `n` and a lower
+threshold than the fleet — breaking quorum intersection.
+Fix (ec11ba0): split the roles — `authenticatedCommittee()` = source + fleet-uniform cap, WITHOUT the
+local blocklist → its size is the quorum denominator `n` (identical fleet-wide); `eligibleMembers()`
+= that minus `block_buddy` → the numerator/authorization set (a blocked peer is a **non-voter**).
+`VerifyCertificate` sizes `n` over `authenticatedCommittee` and counts the numerator over
+`eligibleMembers`; the DID pre-flight `need` (`committeeDeliveryStatus`) uses the same fleet
+denominator. Blocking can only make quorum HARDER, never lower the bar. Non-breaking for the default
+fleet (`BlockBuddy` nil → the two sets are identical). Proven: isolation harness 5/5 CGO-off
+(denominator ignores blocklist; 5 non-blocked reach, 4 do not; blocked vote does not count; no-blocklist
+identical; cap still applies). In-package `TestCON12` host-gated (messaging needs CGO).
 
 ### CON-11 / CON-05-residual · BFT COMMIT proof binding (HIGH; behind CON-07)
 `AVC/BFT/bft/security_helpers.go:41` (`DigestCommit` excludes `PrepareProof` → a relay can splice a
