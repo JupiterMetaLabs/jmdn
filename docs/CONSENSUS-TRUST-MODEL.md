@@ -109,7 +109,8 @@ one that stops silent ledger divergence today, independent of contracts.
 2. **CON-01** (pin sequencer libp2p key, reject empty-key) + **CON-03** (authz on/fail-closed —
    partial landed c6c02ac; default-on flip coupled to CON-01's pin) — authorship anchor.
 3. **CON-02** (block identity v3) — **versioned rollout**, flips fleet-wide.
-4. **CON-04** (certify sync).
+4. **CON-04** (certify sync) — **DEFERRED (operator, 2026-08-18)**: catch-up/FastSync certification
+   held for now; until wired, catch-up peers remain trusted infrastructure (document, do not assume).
 5. **CON-06 / CON-12** (committee determinism + quorum sizing).
 6. **CON-07 + CON-11 + CON-05-residual + CON-10 + CON-17** as one BFT-engine change.
 
