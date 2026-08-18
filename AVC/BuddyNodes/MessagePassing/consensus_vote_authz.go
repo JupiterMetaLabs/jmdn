@@ -55,6 +55,53 @@ var buddySetProvider func() []peer.ID
 // SetVoteBuddySetProvider overrides the source of the authenticated buddy set.
 func SetVoteBuddySetProvider(fn func() []peer.ID) { buddySetProvider = fn }
 
+// authorizedRequesterSource, when non-nil, supplies the AUTHORITATIVE set of
+// peers allowed to request this node's signed vote, plus an `ok` flag telling
+// whether that set could be resolved right now.
+//
+// WHY THIS EXISTS (audit CON-03): the legacy currentBuddySet() is NOT a reliable
+// requester source. The requester is the SEQUENCER, and a buddy resolves the
+// sequencer primarily from the self-declared, unsigned msg.SequencerID
+// (sendVoteResultToSequencer Path 2) because buddies commonly hold no buddy list
+// (Path 1 fails). So the sequencer is frequently ABSENT from currentBuddySet();
+// defaulting the gate on and fail-closing against that set would reject the
+// legitimate sequencer and halt the chain. The correct authoritative set is the
+// authenticated committee snapshot UNION the PINNED sequencer peer_id (the pin
+// CON-01 introduces). When that source is wired and available (ok==true), a
+// non-member is rejected even if the buddy set is empty — closing the fail-open.
+// This is why enabling the gate by default is COUPLED to CON-01: without the
+// pinned sequencer there is no reliable, transport-authenticated requester
+// identity to check against.
+//
+// `ok==false` means the authoritative set is momentarily unresolvable; the gate
+// then falls back to the liveness-preserving legacy path rather than halting.
+var authorizedRequesterSource func() (set map[peer.ID]struct{}, ok bool)
+
+// SetAuthorizedRequesterSource wires the authoritative requester set (committee
+// snapshot ∪ pinned sequencer). Call once at startup. Intended companion to the
+// CON-01 sequencer pin; until it is set the gate uses the legacy buddy-set path.
+func SetAuthorizedRequesterSource(fn func() (map[peer.ID]struct{}, bool)) {
+	authorizedRequesterSource = fn
+}
+
+// AuthorizedRequesterSet composes the authoritative requester set from the
+// authenticated committee members and the pinned sequencer peer_id. Empty
+// pinnedSequencer ("") is omitted. This is the exact set CON-01's pin feeds into
+// SetAuthorizedRequesterSource; kept here so the composition is explicit and
+// unit-testable independent of the live committee source.
+func AuthorizedRequesterSet(committee []peer.ID, pinnedSequencer peer.ID) map[peer.ID]struct{} {
+	set := make(map[peer.ID]struct{}, len(committee)+1)
+	for _, p := range committee {
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	if pinnedSequencer != "" {
+		set[pinnedSequencer] = struct{}{}
+	}
+	return set
+}
+
 // currentBuddySet returns the node's authenticated buddy set, read under the
 // BuddyNode lock. Empty when the PubSub node is not yet initialized.
 func currentBuddySet() []peer.ID {
@@ -82,8 +129,10 @@ func currentBuddySet() []peer.ID {
 // does not yet know its committee simply declines to sign rather than signing
 // for an unauthenticated caller.
 func voteRequesterAuthorized(remote peer.ID) bool {
-	// Default-off: when the gate is disabled, accept the request (signing and
-	// verification still apply).
+	// Master switch, default-off (non-breaking on merge): when the gate is
+	// disabled, accept the request (signing and verification still apply).
+	// Flipping this default on is coupled to CON-01 wiring the pinned-sequencer
+	// authoritative source below; see authorizedRequesterSource.
 	if !enforceVoteRequesterAuth {
 		return true
 	}
@@ -93,12 +142,24 @@ func voteRequesterAuthorized(remote peer.ID) bool {
 	if remote == "" {
 		return false
 	}
+
+	// Preferred path: the AUTHORITATIVE requester set (committee snapshot ∪
+	// pinned sequencer). When it resolves (ok==true) it is definitive — a
+	// non-member is rejected even if the legacy buddy set is empty, closing the
+	// fail-open. When it is momentarily unresolvable (ok==false) fall through to
+	// the liveness-preserving legacy path rather than halting.
+	if authorizedRequesterSource != nil {
+		if set, ok := authorizedRequesterSource(); ok {
+			_, member := set[remote]
+			return member
+		}
+	}
+
+	// Legacy fallback: no authoritative source configured (or it was
+	// indeterminate). Retain the liveness-preserving fail-open on an empty set,
+	// since the buddy set can legitimately be empty at request time.
 	set := currentBuddySet()
 	if len(set) == 0 {
-		// Fail open on an unknown/unpopulated committee set: the set can
-		// legitimately be empty at request time, so fail-closing here would stall
-		// consensus. Sign rather than block; the signature/certificate checks still
-		// run.
 		return true
 	}
 	for _, p := range set {
