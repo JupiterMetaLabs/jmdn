@@ -82,20 +82,25 @@ type SecurityConfig struct {
 // DefaultSecurityConfig returns a safe-by-default configuration
 func DefaultSecurityConfig() SecurityConfig {
 	return SecurityConfig{
-		Enabled:         true,
-		CertDir:         "certs",
-		IPCacheSize:     1000,
-		GlobalRateLimit: 0, // Disabled global limits by default for back-compat
-		GlobalBurst:     0,
+		Enabled:     true,
+		CertDir:     "certs",
+		IPCacheSize: 1000,
+		// SEC-05: ship a conservative per-IP anti-abuse floor instead of 0
+		// (disabled). 50 req/s sustained, burst 100 — generous for legitimate
+		// clients, a floor against trivial floods. Operators raise/lower via YAML
+		// (security.global_rate_limit / global_burst); 0 disables.
+		GlobalRateLimit: 50,
+		GlobalBurst:     100,
 
 		Services: map[string]Policy{
 			// 1. Explorer API (HTTP public - Had basic token auth before)
 			ServiceExplorerAPI: {
-				TLS:       false,
-				AuthType:  AuthTypeToken,
-				TokenEnv:  "EXPLORER_API_KEY",
-				RateLimit: 0,
-				Burst:     0,
+				TLS:      false,
+				AuthType: AuthTypeToken,
+				TokenEnv: "EXPLORER_API_KEY",
+				// SEC-05: per-service anti-abuse floor for the public read API.
+				RateLimit: 20,
+				Burst:     40,
 			},
 			// 2. Block/Sequencer API (Internal)
 			ServiceBlockIngestHTTP: {

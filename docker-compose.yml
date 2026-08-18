@@ -61,7 +61,9 @@ services:
       - no-new-privileges:true
     environment:
       POSTGRES_USER: jmdn
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jmdndefault}"
+      # SEC-04: fail closed — no baked default password. `docker compose up`
+      # errors unless POSTGRES_PASSWORD is set (see .env.docker.example).
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.docker.example)}"
       POSTGRES_DB: jmdn
     command: >
       postgres
@@ -69,7 +71,10 @@ services:
         -c max_replication_slots=4
         -c max_wal_senders=4
     ports:
-      - "5430:5432"
+      # SEC-04: bind the published port to loopback only — jmdn reaches Postgres
+      # over the internal compose network (postgres:5432), so the host port need
+      # not be world-reachable. Prevents remote DB exposure on 0.0.0.0:5430.
+      - "127.0.0.1:5430:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -100,7 +105,7 @@ services:
       - no-new-privileges:true
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-jmdnredissync}
+      --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env (see .env.docker.example)}
       --appendonly yes
       --appendfsync everysec
       --maxmemory ${REDIS_MAXMEMORY:-384mb}
@@ -108,7 +113,7 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-jmdnredissync}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -262,11 +267,16 @@ services:
 
     environment:
       # ThebeDB SQL projection — Docker internal DNS to the postgres service.
-      # Overrides the yaml sql_dsn (Viper env > yaml).
-      THEBE_SQL_DSN: "postgres://jmdn:${POSTGRES_PASSWORD:-jmdndefault}@postgres:5432/jmdn?sslmode=disable"
+      # Overrides the yaml sql_dsn (Viper env > yaml). SEC-04: no baked default
+      # password (`:?` fails compose up if unset). sslmode stays `disable` HERE
+      # only because this DSN rides the internal compose network to a Postgres
+      # shipped without TLS; the bare-metal/prod configs (jmdn_default.yaml,
+      # config/settings/defaults.go) use `sslmode=require`. To run this stack in
+      # require mode, enable TLS on the postgres service and flip this to require.
+      THEBE_SQL_DSN: "postgres://jmdn:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/jmdn?sslmode=disable"
 
       # Redis container reads REDIS_PASSWORD directly; jmdn reads it here via Viper.
-      JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
+      JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"
 
       # Explorer API key — forwarded into the container so the health check curl
       # can include the Bearer token. Set JMDN_SECURITY_EXPLORER_API_KEY in .env.

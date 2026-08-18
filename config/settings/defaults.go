@@ -53,17 +53,22 @@ func DefaultConfig() NodeConfig {
 		Database: DatabaseSettings{
 			TxIndexPath: "./DB/txindex.db",
 			Redis: RedisSettings{
-				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
-				Password: "jmdnredissync",  // optional: set if Redis requires authentication
+				URL: "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				// SEC-04: no baked default secret. Set via jmdn.yaml or
+				// JMDN_DATABASE_REDIS_PASSWORD to match the Redis --requirepass.
+				Password: "",
 			},
 		},
 		Thebe: ThebeConfig{
 			// ThebeDB is the node's only storage backend post ImmuDB removal —
 			// enabled by default. DSN matches the Postgres provisioned by
 			// Scripts/install_services.sh / setup_postgres.sh (host port 5430).
-			Enabled:    true,
-			KVPath:     "./storage/thebe-kv",
-			SQLDSN:     "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable",
+			Enabled: true,
+			KVPath:  "./storage/thebe-kv",
+			// SEC-04: require TLS by default (no cleartext SQL transport). The
+			// Postgres this points at MUST have TLS enabled; for a non-TLS local/
+			// dev DB, override THEBE_SQL_DSN with sslmode=disable explicitly.
+			SQLDSN:     "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=require",
 			RedisURL:   "",
 			StreamName: "",
 			MaxLen:     1000,

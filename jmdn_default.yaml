@@ -51,7 +51,9 @@ database:
 thebe:
   enabled: true                # ThebeDB is the node's only storage backend
   kv_path: "./storage/thebe-kv"
-  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable"  # Env: THEBE_SQL_DSN
+  # SEC-04: sslmode=require (no cleartext SQL). Postgres must have TLS enabled;
+  # for a non-TLS local DB, override THEBE_SQL_DSN with sslmode=disable.
+  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
   redis_url: ""                # Env: THEBE_REDIS_URL
   stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
   max_len: 1000                # Env: THEBE_MAX_LEN
