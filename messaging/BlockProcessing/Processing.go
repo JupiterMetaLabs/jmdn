@@ -1086,13 +1086,16 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
 
-	// Commit the whole tx atomically — every staged account document
-	// plus the tx_processed marker in ONE accountsdb ExecAll. Balances and
-	// marker land together, so there are no applied-but-unmarked balances that
-	// a replay could double-apply.
+	// Commit the tx's staged effect: accounts first (raw authoritative batch),
+	// then the tx_processed marker LAST.
 	//
-	// Failure here means NOTHING was applied for this tx, so returning an error
-	// is mandatory (the balances did not land either).
+	// NOTE (audit STO-26): on ThebeDB this is NOT one atomic ExecAll. Account
+	// writes go through BatchPutAccountsAuthoritative (a per-entry loop) and the
+	// marker through the sync-state KV — two separate writes. A crash between
+	// them re-applies the tx on replay (marker absent -> not skipped): a bounded
+	// double-apply for one tx's accounts. Single-write atomicity returns with
+	// the ThebeDB builder-2PC task. Returning an error on failure is still
+	// mandatory so the block rolls back.
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "atomic_commit_failed"))

@@ -68,7 +68,16 @@ func RecordEquivocationHash(conn *config.PooledConnection, height uint64, hashHe
 		return fmt.Errorf("equivocation write: %w", err)
 	}
 	key := EquivocationHeightKey(height)
-	if raw, gerr := h.GetSyncKV(key); gerr == nil && raw != nil {
+	// Fail CLOSED on a read error (audit STO-14): the old guard was
+	// `gerr == nil && raw != nil`, so a GetSyncKV error fell through and
+	// OVERWROTE the durable first-seen hash — silently destroying the
+	// equivocation record this function exists to protect, and returning nil
+	// so the CON-21 caller-side guard never fired. A read error now propagates.
+	raw, gerr := h.GetSyncKV(key)
+	if gerr != nil {
+		return fmt.Errorf("equivocation first-seen read (fail closed) height %d: %w", height, gerr)
+	}
+	if raw != nil {
 		return nil // first-seen record already present — never overwrite
 	}
 	val, err := json.Marshal(hashHex)
