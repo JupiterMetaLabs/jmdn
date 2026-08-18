@@ -52,19 +52,37 @@ func isLoopbackBind(addr string) bool {
 	return strings.HasPrefix(a, "127.")
 }
 
-// PostureViolation is one gatekeeper service left open on a non-loopback bind.
+// publicRPCServices are OPEN BY DESIGN — a public, Ethereum-compatible JSON-RPC
+// endpoint that must be reachable without a token or JWT (operator decision,
+// 2026-08-18). They are therefore EXEMPT from the auth requirement, but because
+// rate limiting is their only abuse control, the posture check requires them to
+// carry an effective rate limit (per-service or the global cap) instead.
+var publicRPCServices = map[string]bool{
+	ServiceEthRPC: true,
+}
+
+// PostureViolation is one gatekeeper service that fails the public-exposure
+// policy: either unauthenticated on a public bind, or an open public RPC with no
+// rate limit.
 type PostureViolation struct {
 	Service string
 	Bind    string
+	Reason  string
 }
 
 func (v PostureViolation) String() string {
-	return fmt.Sprintf("%s (auth_type=none, bind=%s)", v.Service, v.Bind)
+	return fmt.Sprintf("%s (%s, bind=%s)", v.Service, v.Reason, v.Bind)
 }
 
-// InsecurePublicServices returns the gatekeeper-mediated services that are
-// auth_type=none while bound to a non-loopback address, when security is enabled.
-// Empty slice = no public service is unauthenticated. Deterministic order.
+// InsecurePublicServices returns the gatekeeper-mediated services that violate
+// the public-exposure policy while security is enabled:
+//   - a normal service that is auth_type=none on a non-loopback bind; or
+//   - a public-by-design RPC (publicRPCServices) on a non-loopback bind with NO
+//     effective rate limit (neither a per-service limit nor the global cap).
+//
+// Public RPC is intentionally unauthenticated, so it is NOT flagged for missing
+// auth — only for missing rate limiting. Empty slice = policy satisfied.
+// Deterministic order.
 func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
 	if !c.Security.Enabled {
 		return nil
@@ -73,11 +91,18 @@ func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
 	var out []PostureViolation
 	for svc, bind := range binds {
 		policy, ok := c.Security.Services[svc]
-		if !ok {
+		if !ok || isLoopbackBind(bind) {
 			continue
 		}
-		if policy.AuthType == AuthTypeNone && !isLoopbackBind(bind) {
-			out = append(out, PostureViolation{Service: svc, Bind: bind})
+		if publicRPCServices[svc] {
+			// Open-by-design: require rate limiting, not auth.
+			if policy.RateLimit <= 0 && c.Security.GlobalRateLimit <= 0 {
+				out = append(out, PostureViolation{Service: svc, Bind: bind, Reason: "public RPC with no rate limit"})
+			}
+			continue
+		}
+		if policy.AuthType == AuthTypeNone {
+			out = append(out, PostureViolation{Service: svc, Bind: bind, Reason: "auth_type=none"})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })

@@ -18,48 +18,78 @@ func baseConfig() NodeConfig {
 	}
 }
 
-// With the shipped compiled defaults, eth_rpc (Facade, 0.0.0.0) and did_service
-// (DID, 0.0.0.0) are auth_type=none on a public bind → flagged. explorer_api is
-// token (not flagged); loopback services are not flagged.
-func TestInsecurePublicServices_FlagsOpenPublicOnly(t *testing.T) {
-	cfg := baseConfig()
-	got := map[string]bool{}
+func flaggedSet(cfg NodeConfig) map[string]string {
+	m := map[string]string{}
 	for _, v := range cfg.InsecurePublicServices() {
-		got[v.Service] = true
+		m[v.Service] = v.Reason
 	}
-	if !got[ServiceEthRPC] {
-		t.Fatal("eth_rpc (public, none) must be flagged")
+	return m
+}
+
+// eth_rpc is public-by-design: NOT flagged for missing auth (it carries the
+// default global rate limit). did_service (auth_type=none, public) IS flagged.
+// explorer_api (token) and loopback services are not flagged.
+func TestInsecurePublicServices_PublicRPCExempt(t *testing.T) {
+	got := flaggedSet(baseConfig())
+	if _, ok := got[ServiceEthRPC]; ok {
+		t.Fatalf("eth_rpc is public-by-design + rate-limited — must NOT be flagged, got %q", got[ServiceEthRPC])
 	}
-	if !got[ServiceDID] {
-		t.Fatal("did_service (public, none) must be flagged")
+	if got[ServiceDID] != "auth_type=none" {
+		t.Fatalf("did_service (public, none) must be flagged for auth, got %q", got[ServiceDID])
 	}
-	if got[ServiceExplorerAPI] {
+	if _, ok := got[ServiceExplorerAPI]; ok {
 		t.Fatal("explorer_api is token-authed — must NOT be flagged")
 	}
-	if got[ServiceCLI] || got[ServiceEthGRPC] {
+	if _, ok := got[ServiceCLI]; ok {
 		t.Fatal("loopback services must NOT be flagged")
 	}
 }
 
-// A loopback bind with auth none is fine; flipping the same service to a public
-// bind flags it.
+// Public RPC MUST be rate-limited: flagged only when neither a per-service nor
+// the global rate limit is set; not flagged once either is present.
+func TestPublicRPC_RequiresRateLimit(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Security.GlobalRateLimit = 0 // remove the global cap
+
+	// eth_rpc default per-service RateLimit is 0 → now unprotected → flagged.
+	if got := flaggedSet(cfg); got[ServiceEthRPC] != "public RPC with no rate limit" {
+		t.Fatalf("public RPC with no rate limit must be flagged, got %q", got[ServiceEthRPC])
+	}
+
+	// A per-service rate limit satisfies it (global still 0).
+	p := cfg.Security.Services[ServiceEthRPC]
+	p.RateLimit = 25
+	cfg.Security.Services[ServiceEthRPC] = p
+	if _, ok := flaggedSet(cfg)[ServiceEthRPC]; ok {
+		t.Fatal("per-service rate limit must satisfy the public-RPC policy")
+	}
+
+	// Or the global cap alone satisfies it.
+	p.RateLimit = 0
+	cfg.Security.Services[ServiceEthRPC] = p
+	cfg.Security.GlobalRateLimit = 50
+	if _, ok := flaggedSet(cfg)[ServiceEthRPC]; ok {
+		t.Fatal("global rate limit must satisfy the public-RPC policy")
+	}
+
+	// Even with no auth and no rate limit, eth_rpc is NEVER flagged for auth.
+	cfg.Security.GlobalRateLimit = 0
+	if flaggedSet(cfg)[ServiceEthRPC] == "auth_type=none" {
+		t.Fatal("public RPC must never be flagged for missing auth")
+	}
+}
+
+// The auth check is bind-driven for a normal (non-RPC) service: loopback ok,
+// public flagged.
 func TestInsecurePublicServices_BindDriven(t *testing.T) {
 	cfg := baseConfig()
-	cfg.Binds.Facade = "127.0.0.1" // eth_rpc now loopback
-	for _, v := range cfg.InsecurePublicServices() {
-		if v.Service == ServiceEthRPC {
-			t.Fatal("eth_rpc on loopback must not be flagged")
-		}
+	cfg.Binds.DID = "127.0.0.1" // did now loopback
+	if _, ok := flaggedSet(cfg)[ServiceDID]; ok {
+		t.Fatal("did on loopback must not be flagged")
 	}
-	cfg.Binds.Facade = "0.0.0.0" // back to public
-	found := false
-	for _, v := range cfg.InsecurePublicServices() {
-		if v.Service == ServiceEthRPC {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("eth_rpc on 0.0.0.0 must be flagged")
+	cfg.Binds.DID = "0.0.0.0"
+	if flaggedSet(cfg)[ServiceDID] != "auth_type=none" {
+		t.Fatal("did on 0.0.0.0 with none must be flagged")
 	}
 }
 
@@ -77,7 +107,7 @@ func TestIsLoopbackBind(t *testing.T) {
 	}
 }
 
-// Security disabled → no posture check (nothing flagged, no error).
+// Security disabled → no posture check.
 func TestPosture_DisabledSecurityNoOp(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Security.Enabled = false
@@ -89,28 +119,25 @@ func TestPosture_DisabledSecurityNoOp(t *testing.T) {
 	}
 }
 
-// Default (non-strict) never errors even with violations; strict errors when a
-// public service is open and returns nil once all public services are authed.
+// Non-strict never errors; strict errors while did is open and passes once authed
+// (eth_rpc stays open+rate-limited and never blocks strict boot).
 func TestValidateSecurityPosture_StrictGate(t *testing.T) {
 	cfg := baseConfig()
 
 	if err := cfg.ValidateSecurityPosture(); err != nil {
-		t.Fatalf("non-strict must not error despite open services: %v", err)
+		t.Fatalf("non-strict must not error: %v", err)
 	}
 
 	cfg.Security.StrictPosture = true
 	if err := cfg.ValidateSecurityPosture(); err == nil {
-		t.Fatal("strict must error while eth_rpc/did are open on public binds")
+		t.Fatal("strict must error while did is open on a public bind")
 	}
 
-	// Authenticate every public service → strict passes.
-	for _, svc := range []string{ServiceEthRPC, ServiceDID} {
-		p := cfg.Security.Services[svc]
-		p.AuthType = AuthTypeToken
-		p.TokenEnv = "SVC_TOKEN"
-		cfg.Security.Services[svc] = p
-	}
+	p := cfg.Security.Services[ServiceDID]
+	p.AuthType = AuthTypeToken
+	p.TokenEnv = "DID_TOKEN"
+	cfg.Security.Services[ServiceDID] = p
 	if err := cfg.ValidateSecurityPosture(); err != nil {
-		t.Fatalf("strict must pass once public services are authed: %v", err)
+		t.Fatalf("strict must pass once did is authed (public rate-limited RPC is fine): %v", err)
 	}
 }
