@@ -366,10 +366,16 @@ func (s *ExplorerServer) Close() {
 // CORS middleware
 func cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// API-08: the explorer authenticates with bearer tokens (the Authorization
+		// header), NOT cookies, so credentialed CORS is unnecessary. Emitting
+		// "Access-Control-Allow-Credentials: true" alongside a wildcard/reflected
+		// origin is exactly the combination that lets any site read responses with
+		// a victim's credentials. A wildcard origin is only dangerous WITH
+		// credentials, so keep permissive read CORS and drop the credentials header.
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Authorization")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		// Access-Control-Allow-Credentials deliberately NOT set (see above).
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 		// Handle WebSocket upgrade
@@ -410,6 +416,26 @@ func (s *ExplorerServer) generateToken(c *gin.Context) {
 
 	// Use cached token resolution (GetResolvedToken) + Constant time compare
 	validKey := settings.Get().Security.GetResolvedToken("EXPLORER_API_KEY")
+	jwtSecret := settings.Get().Security.GetResolvedToken("JWT_SECRET")
+
+	// API-03: fail CLOSED when the explorer auth secrets are not configured.
+	// An empty EXPLORER_API_KEY or JWT_SECRET must never mint a token — an empty
+	// JWT_SECRET would sign with an empty HMAC key (forgeable), and an empty
+	// EXPLORER_API_KEY would gate the whole explorer on a blank secret. Refuse
+	// loudly (503) rather than issue a weak/forgeable token.
+	if validKey == "" || jwtSecret == "" {
+		span.SetAttributes(attribute.String("status", "auth_not_configured"))
+		span.RecordError(errors.New("explorer auth secrets not configured"))
+		logger().Error(spanCtx, "Explorer auth not configured (EXPLORER_API_KEY/JWT_SECRET empty) — refusing to mint tokens (fail closed)",
+			errors.New("explorer auth not configured"),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("log_file", LOG_FILE),
+			ion.String("topic", TOPIC),
+			ion.String("function", "ExplorerAPI.generateToken"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "explorer authentication is not configured"})
+		return
+	}
+
 	if subtle.ConstantTimeCompare([]byte(req.APIKey), []byte(validKey)) != 1 {
 		span.SetAttributes(attribute.String("status", "unauthorized"), attribute.String("reason", "invalid_api_key"))
 		span.RecordError(errors.New("invalid API key"))
@@ -433,8 +459,7 @@ func (s *ExplorerServer) generateToken(c *gin.Context) {
 	)
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	// Use cached token resolution
-	jwtSecret := settings.Get().Security.GetResolvedToken("JWT_SECRET")
+	// jwtSecret was resolved and checked non-empty (fail-closed) above.
 	tokenString, err := token.SignedString([]byte(jwtSecret))
 	if err != nil {
 		span.RecordError(err)
