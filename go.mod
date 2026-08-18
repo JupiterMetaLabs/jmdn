@@ -37,6 +37,7 @@ require (
 	go.dedis.ch/dela v0.2.0
 	go.opentelemetry.io/otel v1.43.0
 	go.uber.org/zap v1.27.1
+	golang.org/x/crypto v0.53.0
 	golang.org/x/time v0.12.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
@@ -227,7 +228,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.20.0 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
