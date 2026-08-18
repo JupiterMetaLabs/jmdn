@@ -315,3 +315,18 @@ Flagged, NOT changed blind (security-defaults / auth decisions — would risk th
 API-03 single shared explorer secret, API-08 wildcard CORS + Allow-Credentials, B-12 Thebe debug API
 default-on at :19090 with gin.New()/no-auth/wildcard-CORS. These belong with SEC-03/04/05 in an
 operator security-defaults pass (fail-closed compiled defaults; YAML relaxes, never tightens).
+
+
+---
+
+## Consensus model decision (2026-08-18) + trust-model remediation design
+Operator decisions: **single sequencer** (one producer; others verify+store+vote) AND **buddy
+committee retained** (BFT still certifies the sequencer's blocks). Consequence: the committee-
+machinery findings (CON-03/06/12) are FIXED, not deleted; AVC/BFT stays. Full grounded remediation
+in docs/CONSENSUS-TRUST-MODEL.md — per-finding fixes for CON-01/02/03/04/06/11/12 + CON-05/07/10/17
+BFT-engine group, plus P2.5 (state fingerprint in the block header — the fix for the reproduced
+live=1000-vs-synced=2000 divergence, also CON-02's stateFingerprint term and closes B2/EVM-A1).
+Ordering: P2.5 → CON-01/03 → CON-02 (versioned block-hash v3) → CON-04 → CON-06/12 → BFT-engine group.
+All consensus code is host-CGO + 2-node-gate; not blind-emitted. Awaiting operator input: sequencer
+signing-key identity, and OK to roll a versioned /broadcast/block/3.0.0 cutover for CON-02.
+SEC-01 (BLS keys): operator will fix (stated 2026-08-18).
