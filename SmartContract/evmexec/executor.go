@@ -61,6 +61,20 @@ func New(chainID int, newContractDB func() (*contractDB.ContractDB, error), hasC
 
 var _ execbridge.ContractExecutor = (*Executor)(nil)
 
+// Register assembles the apply-path executor and installs it as the process-wide
+// contract executor. Call once at startup ONLY when cfg.Contracts.Enabled — with
+// the flag off, the seam stays on execbridge's no-op and the apply path is
+// unchanged (non-breaking). src is the local-ledger balance source (EVM-A16),
+// repo the contract-state repository, hasCode the deterministic code-presence
+// check (contractDB.HasCode). The repo is reused across txs; a fresh ContractDB
+// (fresh in-memory stateObjects) is built per tx.
+func Register(chainID int, src contractDB.AccountReader, repo contractDB.StateRepository, hasCode func(common.Address) bool) {
+	newDB := func() (*contractDB.ContractDB, error) {
+		return contractDB.NewContractDBWithAccountSource(src, repo), nil
+	}
+	execbridge.SetExecutor(New(chainID, newDB, hasCode))
+}
+
 // IsContractTx reports whether tx must go through ExecuteTx: a deployment
 // (To == nil) or a call to an address that holds code. Pure + deterministic.
 func (e *Executor) IsContractTx(tx *config.Transaction) bool {

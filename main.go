@@ -37,6 +37,7 @@ import (
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/contractDB"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DB_OPs/txindex"
@@ -46,6 +47,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/SmartContract"
+	"gossipnode/SmartContract/evmexec"
 	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -1142,6 +1144,21 @@ func main() {
 
 		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
 		cas = cassata.New(db, zap.NewNop())
+
+		// EVM contract execution (audit EVM-01 wiring). Registered ONLY when
+		// cfg.Contracts.Enabled; default-off leaves execbridge on its no-op so the
+		// apply path is byte-identical (non-breaking). The executor reads balances
+		// from the local committed ledger (deterministic, EVM-A16) and returns value
+		// deltas for the centralized fold (config.FoldContractExecution).
+		if cfg.Contracts.Enabled {
+			evmexec.Register(
+				cfg.Network.ChainID,
+				DB_OPs.ContractAccountSource{},
+				contractDB.NewKVStateRepository(cas.KV(), cas),
+				contractDB.HasCode,
+			)
+			mainLogger().Info(context.Background(), "EVM contract execution ENABLED — execbridge executor registered")
+		}
 
 		// Construct the ThebeGateway (2PC writes + outbox retry) backing the
 		// process-wide handle factory below. (The legacy ThebeShadowWriter hook
