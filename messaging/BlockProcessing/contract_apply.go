@@ -13,7 +13,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/settings"
-	"gossipnode/consensushash"
 	"gossipnode/execbridge"
 )
 
@@ -45,9 +44,9 @@ func acctNotFound(err error) bool {
 //
 // Newly-created accounts (the deployed contract, or a value recipient not seen
 // before) take their FastSync ART identity ONLY from the block-carried nonce map
-// (sequencer-stamped); there is no local mint. The deployed contract's carried
-// identity is additionally verified against the canonical derivation
-// (consensushash.DeriveContractARTNonce).
+// (a monotonic ordinal the sequencer stamps in DB_OPs.EnrichBlockAccountNonces,
+// which now also stamps the CREATE-deterministic deployed-contract address); there
+// is no local mint, and the apply path fails closed if the identity is absent.
 func applyContractTx(
 	span_ctx context.Context,
 	tx config.Transaction,
@@ -124,14 +123,12 @@ func applyContractTx(
 			if gerr != nil && !acctNotFound(gerr) {
 				return fail("contract tx %s: load account %s: %w", tx.Hash.Hex(), a.Hex(), gerr)
 			}
+			// New account's ART identity is the block-carried monotonic ordinal the
+			// sequencer stamped (EnrichBlockAccountNonces, including the deployed
+			// contract address). No local mint — fail closed if absent.
 			artNonce, ok := accountNonces[a]
 			if !ok || artNonce == 0 {
 				return fail("contract tx %s: new account %s has no block-carried ART identity", tx.Hash.Hex(), a.Hex())
-			}
-			if isDeploy && a == res.ContractAddress {
-				if want := consensushash.DeriveContractARTNonce(a); artNonce != want {
-					return fail("contract tx %s: block-carried contract identity %d != canonical %d for %s", tx.Hash.Hex(), artNonce, want, a.Hex())
-				}
 			}
 			accType := "user"
 			if isDeploy && a == res.ContractAddress {

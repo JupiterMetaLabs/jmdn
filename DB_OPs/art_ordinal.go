@@ -46,6 +46,7 @@ import (
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // ARTOrdinalMax is the exclusive upper bound of the sequencer-assigned ordinal
@@ -188,6 +189,15 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 	for i := range block.Transactions {
 		touch(block.Transactions[i].From)
 		touch(block.Transactions[i].To)
+		// Contract deployment (To == nil): the tx creates a NEW contract account at
+		// the CREATE-deterministic address crypto.CreateAddress(sender, tx.Nonce) —
+		// the same address the EVM computes at apply. Stamp it so it receives a
+		// canonical monotonic ART ordinal like any other new account; validators
+		// create the contract's ledger account from this carried identity (EVM P2).
+		if block.Transactions[i].To == nil && block.Transactions[i].From != nil {
+			ca := crypto.CreateAddress(*block.Transactions[i].From, block.Transactions[i].Nonce)
+			touch(&ca)
+		}
 	}
 
 	nonces := make(map[common.Address]uint64, len(ordered))
