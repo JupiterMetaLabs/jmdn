@@ -53,8 +53,15 @@ type StateDB interface {
 // (via StateRepository) for code/storage and the JMDN DID service for balances/nonces.
 type ContractDB struct {
 	// Persistence backends
-	didClient pbdid.DIDServiceClient // DID service — balance and nonce source of truth
-	repo      StateRepository        // Local PebbleDB — code, storage, receipts, metadata
+	didClient pbdid.DIDServiceClient // DID service — balance and nonce source (debug/RPC path)
+	repo      StateRepository        // Local KV — code, storage, receipts, metadata
+
+	// accountSrc, when non-nil, is the LOCAL committed-ledger balance/nonce source
+	// used on the consensus apply path INSTEAD of the non-deterministic DID gRPC
+	// read (audit EVM-A16). A read error is recorded in dbErr (sticky, fail-closed)
+	// and MUST abort the tx/block — the executor checks DBError() after execution.
+	accountSrc AccountReader
+	dbErr      error
 
 	// In-memory account cache
 	stateObjects map[common.Address]*stateObject

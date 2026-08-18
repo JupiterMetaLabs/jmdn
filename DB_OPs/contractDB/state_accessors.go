@@ -31,8 +31,23 @@ func (c *ContractDB) getStateObject(addr common.Address) *stateObject {
 		return obj
 	}
 
-	// Load from DID service, merge with locally cached nonce.
-	accountData := loadAccountFromDID(c.didClient, addr)
+	// Balance/nonce source. On the consensus apply path use the LOCAL committed
+	// ledger (deterministic, EVM-A16) and FAIL CLOSED on a read error; otherwise
+	// fall back to the DID service (loopback debug/RPC path, unchanged).
+	var accountData *AccountData
+	if c.accountSrc != nil {
+		ad, err := loadAccountFromReader(c.accountSrc, addr)
+		if err != nil {
+			// Record the sticky error (we hold the write lock here); the executor
+			// aborts the tx/block after execution. Use a zero account meanwhile so
+			// execution can unwind without a nil deref — its result is discarded.
+			c.setDBError(err)
+			ad = NewAccountData()
+		}
+		accountData = ad
+	} else {
+		accountData = loadAccountFromDID(c.didClient, addr)
+	}
 	localData := loadAccountFromLocalDB(c.repo, addr)
 	if localData.Nonce > accountData.Nonce {
 		accountData.Nonce = localData.Nonce
