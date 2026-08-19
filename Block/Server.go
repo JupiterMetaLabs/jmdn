@@ -600,6 +600,13 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
+	// attachment point — set Slot/Period from jmdn's own live tracking and,
+	// when the rollout flag is on, recompute BlockHash to bind them. Must run
+	// after all other validation/enrichment above and before consensus.Start
+	// below — see Block/consensus_fields.go for the full rationale.
+	attachAVCConsensusFields(&block)
+
 	logger().Info(spanCtx, "Block validated, starting consensus process",
 		ion.Int64("block_number", int64(block.BlockNumber)),
 		ion.String("block_hash", block.BlockHash.Hex()),

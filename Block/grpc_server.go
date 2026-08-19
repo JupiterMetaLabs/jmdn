@@ -85,6 +85,13 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		return nil, status.Errorf(codes.InvalidArgument, "block has not been verified by ZKVM")
 	}
 
+	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
+	// attachment point — set Slot/Period from jmdn's own live tracking and,
+	// when the rollout flag is on, recompute BlockHash to bind them. Must run
+	// after all other validation above and before consensus.Start below —
+	// see Block/consensus_fields.go for the full rationale.
+	attachAVCConsensusFields(block)
+
 	// Create consensus instance and start consensus process
 	peerList := Sequencer.PeerList{
 		MainPeers:   []peer.ID{},
