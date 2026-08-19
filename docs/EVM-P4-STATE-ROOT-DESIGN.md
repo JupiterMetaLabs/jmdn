@@ -1,7 +1,8 @@
 # EVM P4 — contract-state root: design + options
 
-**Status:** design (no code). Scopes the one EVM integration piece deliberately NOT built (see
-`docs/EVM-CONSENSUS-WIRING.md` → "P4 BLOCKED"). Decision required before implementation.
+**Status:** design. **Decision made (2026-08-19): Option B (sorted-scan digest) + a planned Option-C
+incremental cache for DEX scale. Option A (MPT) deferred — see §12 "Roadmap-driven decision".**
+Scopes the one EVM integration piece not yet built (see `docs/EVM-CONSENSUS-WIRING.md` → "P4 BLOCKED").
 
 **Author context:** written after P0–P3 + P2.5 landed (contract execution is wired end-to-end behind
 `cfg.Contracts.Enabled`; account state is divergence-checked and halts on mismatch). P4 closes the
@@ -172,3 +173,63 @@ accepting the weaker set-hash for detection-only, and upgrade to B when the iter
   committee-signed; until then its trust rests on the single honest sequencer (same as P2.5).
 - **Determinism of `codeHash`/`nonce` sources:** must read from the same committed local state the
   EVM-A16 path uses, so producer and receiver fold identical contract leaves.
+
+---
+
+## 12. Roadmap-driven decision (2026-08-19) — **Option B, A deferred**
+
+**Roadmap input:** a DEX on JMDN L2 + a **Wormhole** lock-and-mint bridge (lock JMDT on JMDN L2, mint
+wJMDT on Eth / Base / BSC).
+
+**Decision: implement Option B (sorted-scan keccak digest), and plan the Option-C incremental
+accumulator as a cache before mainnet DEX load. Do NOT build Option A (MPT) for this roadmap.**
+
+### Why the roadmap does not require A (MPT proofs)
+
+Wormhole is an **attestation bridge, not a light-client/proof bridge** (Likely — standard Wormhole
+Guardian model; confirm against the exact integration: Portal vs NTT vs custom). Its Guardian network
+runs watchers on JMDN L2, observes the Wormhole core contract's **published-message events/logs** on
+finalized blocks, and emits a **guardian-signed VAA**; the destination chain verifies **guardian
+signatures**, NOT a Merkle proof of JMDN state. So Wormhole never consumes a JMDN storage/state
+**proof** — which is the only capability Option A adds over B.
+
+Everything Wormhole actually needs from JMDN is already in place or covered by P1c–P3:
+EVM contract execution (P1c/P2), emitted **logs/receipts** (P3), the gETH/Facade **RPC** to read them,
+and block **finality** (L1 commitRollup). The contract-state root is for INTERNAL divergence detection
+only, and B provides that.
+
+```
+lock JMDT ─▶ Wormhole core contract on JMDN (emits LOG)
+             │
+             ▼  Guardians watch events on finalized blocks
+        guardian-signed VAA ─▶ dest chain verifies GUARDIAN SIGS ─▶ mint wJMDT
+                                     ▲
+             (MPT storage proof is NOT on this path)
+```
+
+### The actual gating concern for B: DEX storage scale
+
+A DEX is storage-heavy (AMM pools, LP positions, allowances → many slots). B recomputes over **all**
+contract storage every block (O(N)), which can dominate block time at DEX volume. Mitigation is
+planned, not a blocker:
+
+1. **Ship B now** — closes the storage-divergence gap, reuses the tested `StateFingerprinterV1`,
+   unblocks the DEX + Wormhole.
+2. **Before mainnet DEX volume, add the Option-C incremental accumulator as a CACHE** — maintain each
+   contract's storage root on write; periodically reconcile against a full B scan (B stays source of
+   truth, C is the fast path). Removes the per-block rescan without adopting A's trie + node-store +
+   pruning subsystem.
+
+### When to revisit A
+
+Only if the roadmap later adds a **trustless / non-guardian** bridge — e.g. a canonical JMDN↔Eth bridge
+that posts the JMDN state root to L1 and verifies **withdrawals via on-chain storage proofs**. That
+model needs A's MPT. Wormhole is not that model. If such a bridge enters the 12–18 month roadmap,
+reconsider **before** DEX storage grows large, because B→A is a flat-KV→trie **data migration** best
+avoided later.
+
+### Open confirmations
+- Confirm the Wormhole integration mode (Portal / NTT / custom) is guardian-attested, not a custom
+  trustless verifier that reads JMDN state proofs. A custom proof-verifying bridge would flip this to A.
+- Track B's full-scan cost against representative DEX state; trigger the Option-C cache before it
+  regresses block time.
