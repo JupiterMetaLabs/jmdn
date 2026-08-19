@@ -158,6 +158,31 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 
 	res := &execbridge.ExecResult{Handled: true, GasUsed: gasUsed}
 
+	// P3 (audit EVM-13): persist a transaction receipt with the REAL block number
+	// and tx index, plus the EVM logs. Receipts are a DERIVED query index (cassata
+	// SQL), separate from the consensus ledger, so a write failure here is
+	// best-effort and must NOT fail the tx/block. Written for both success and
+	// revert (status 0/1); on revert the contract address is empty.
+	{
+		status := uint64(1)
+		var receiptContract common.Address
+		if err != nil || exec == nil || exec.Error != nil {
+			status = 0
+		} else if isCreate {
+			receiptContract = exec.ContractAddr
+		}
+		_ = cdb.WriteReceipt(contractDB.TransactionReceipt{
+			TxHash:          tx.Hash,
+			BlockNumber:     bctx.BlockNumber,
+			TxIndex:         uint64(bctx.TxIndex),
+			Status:          status,
+			GasUsed:         gasUsed,
+			ContractAddress: receiptContract,
+			Logs:            cdb.Logs(),
+			CreatedAt:       bctx.Time,
+		})
+	}
+
 	// A reverted / errored execution pays gas but moves no value and commits no
 	// contract state.
 	if err != nil || exec == nil || exec.Error != nil {
