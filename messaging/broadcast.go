@@ -777,6 +777,13 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.Uint64("block_number", block.BlockNumber))
 	}
 
+	// M0.1 (Architecture §7.1) — fold this now-committed height into the
+	// live slot counter, using its OWN final Period (how many certified
+	// timeouts it burned before committing). Producer-side commit hook; see
+	// slot_store.go's header comment for the receiver-side twin and the
+	// documented live-only/no-persistence limitation.
+	DefaultSlotStore.AdvanceOnCommit(block.BlockNumber, block.Period)
+
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.
 	txindex.IndexBlockAsync(block)

@@ -377,6 +377,13 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 					ion.Uint64("block_number", msg.Block.BlockNumber))
 			}
 
+			// M0.1 (Architecture §7.1) — receiver-side twin of the hook in
+			// broadcast.go's ProcessBlockLocally. Every node folds a
+			// committed height into its OWN slot counter independently
+			// (§7.1b) — this is not receiving a peer's slot value, it is
+			// deriving the same one locally from the same certified event.
+			DefaultSlotStore.AdvanceOnCommit(msg.Block.BlockNumber, msg.Block.Period)
+
 			// Index the block's txs into the SQLite address index. Non-sequencer
 			// nodes receive blocks via pubsub; indexing them here keeps
 			// eth_getTransactionsByAddress current between catchups instead of
