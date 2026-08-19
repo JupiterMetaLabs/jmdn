@@ -119,12 +119,12 @@ func RoundContextForBlock(b *config.ZKBlock) RoundContext {
 		Epoch:    EpochForHeight(b.BlockNumber),
 		PrevHash: b.PrevHash.Bytes(),
 		Height:   b.BlockNumber,
-		// Period is 0 until the round loop tracks timeouts. See the migration
-		// note on VerifyCertificateForRound: with Period pinned at 0 a timed-out
-		// round re-draws the same members, so a stalled committee stalls the
-		// height. The seed already accounts for Period; only the plumbing is
-		// missing.
-		Period: 0,
+		// Period is chain-derived via DefaultPeriodStore (M0,
+		// timeout_certificates.go): it advances only when a quorum-certified
+		// TimeoutCertificate lands for this height, never from a local guess.
+		// A height with no certificate yet reads back 0, matching the
+		// pre-M0 behavior for the common case where a round never times out.
+		Period: DefaultPeriodStore.PeriodFor(b.BlockNumber),
 	}
 }
 
