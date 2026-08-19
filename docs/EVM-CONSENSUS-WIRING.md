@@ -129,22 +129,46 @@ transfer path and is detectably behind, never silently divergent).
   take block context explicitly, no time.Now/HTTP (EVM-02). Dormant (no caller yet). Host gate: CGO
   build of ./SmartContract/internal/evm/.
 
-### Remaining (need a working CGO compiler + the 2-node determinism gate — do NOT emit blind)
-- **P1c:** the execbridge.ContractExecutor impl in the SmartContract layer — construct a per-tx
-  StateDB (shared repo + DID client), call Deploy/ExecuteContractWithContext with a BlockExecContext
-  → DetBlockContext, CommitToDB, map GetBalanceChanges → ExecResult. Register in main.go behind
-  cfg.Contracts.Enabled.
-- **EVM-30/31 (gas):** intrinsic gas + refund via core.StateTransition / core.IntrinsicGas — exact
-  go-ethereum API MUST be verified against a compiler (version-sensitive); not written blind.
-- **EVM-29 (fork):** assert Shanghai selection (Random set / rules) — verify against a compiler.
-- **P2:** thread BlockNumber/BlockHash/TxIndex through processTransaction; invoke execbridge for
-  contract txs; fold BalanceChanges+GasUsed through config.GasFee/SplitFee under LockStateApply,
-  atomically with ApplyTxAtomic. Deployment (To==nil) no longer hits the nil-recipient deref.
-- **P3:** receipts/logs with real block context (EVM-13); SetSharedKVStore so HasCode works (EVM-16/25).
-- **P4:** contract-state root into the block + verify on receive.
-- **Enablement gate (before the flag is ever true):** 2-node deploy/call/payable — identical state,
-  digest, balances; negative test that a flag-off node stays on the transfer path and is detectably
-  behind, never silently divergent.
+### Landed (host-built clean per operator; flag-off by default)
+- **P1c — DONE (ad37d81):** `evmexec.Executor` implements `execbridge.ContractExecutor` — per-tx
+  local-ledger StateDB (EVM-A16), block-derived context, intrinsic gas, absolute BalanceChanges.
+- **EVM-A16 — DONE (db84e3e):** `contractDB.NewContractDBWithAccountSource` + `AccountReader` — apply
+  path reads balances from the committed ledger, fail-closed on read error (DID read = debug/RPC only).
+- **EVM-29 — DONE (05de087):** `vm.BlockContext.Random` set → Shanghai (was silently London).
+- **EVM-30 — DONE (in P1c):** intrinsic gas via `core.IntrinsicGas` (Shanghai flags) + execution gas.
+- **P2 — DONE (6af137d fold + e8be2a5 wire):** `config.FoldContractExecution` (value+gas fold with
+  conservation + solvency fail-closed, unit-tested), invoked from `processTransaction` under
+  `LockStateApply`, committed via `ApplyTxAtomic`. Contract identity: sequencer stamps the
+  CREATE-deterministic address's monotonic ART ordinal (`EnrichBlockAccountNonces`), validator
+  consumes it (736fb10). B7 (dd63c8c): `to:null` no longer panics apply.
+- **P2.5 — DONE (52552cb):** `ZKBlock.StateFingerprint` (advisory) + `DB_OPs.ComputeAccountStateFingerprintV1`
+  (keccak over all accounts) + producer-stamp / receiver-recompute-and-HALT-on-divergence in
+  `ProcessBlockTransactions`, gated on `execbridge.Enabled()`. Covers ACCOUNTS (the reproduced
+  live=1000-vs-synced=2000 class).
+- **P3 — DONE (20bd879):** transaction receipts with real BlockNumber/TxIndex + logs (EVM-13),
+  best-effort derived SQL index.
+
+### P4 — contract-state root: BLOCKED on missing infrastructure (do NOT ship a placeholder)
+A real contract-state root (committed to the block, verified on receive) requires a per-contract
+STORAGE ROOT. The codebase has none: `contractDB.GetStorageRoot` returns `common.Hash{}` (a stub),
+and the ThebeDB `kv.Store` behind `KVStateRepository` exposes no storage-slot iteration, so there is
+no way to deterministically digest a contract's full storage. Committing a zero/stub root would be
+WORSE than nothing — it would assert "contract state is consensus-validated" while validating
+nothing. P4 is therefore an INFRASTRUCTURE task, not a wiring task:
+  - implement a per-contract storage commitment — either a go-ethereum MPT (`core/state` trie) over
+    each contract's storage, or a deterministic full storage-slot scan (needs a prefix iterator on
+    the ThebeDB store) folded through `consensushash.StateFingerprinterV1`'s ContractLeaf; then
+  - extend `ComputeAccountStateFingerprintV1` to fold contract leaves (address, nonce, codeHash,
+    storageRoot) so the P2.5 halt also covers contract STORAGE divergence, and/or commit a dedicated
+    contract-state root into the block.
+Until then: contract CODE/existence and account balances are divergence-checked (P2.5); contract
+STORAGE divergence is NOT yet detected. This gap must be closed before contracts with non-trivial
+storage are trusted fleet-wide.
+
+### Enablement gate (before the flag is ever true) — OUTSTANDING
+2-node deploy/call/payable: identical state fingerprint, balances, and receipts on both nodes; a
+deliberately-diverged node HALTS (P2.5); a flag-off node stays on the transfer path and is detectably
+behind, never silently divergent. This gate is the precondition for setting `cfg.Contracts.Enabled`.
 
 ---
 
