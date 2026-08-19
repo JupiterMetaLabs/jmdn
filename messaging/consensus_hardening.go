@@ -28,6 +28,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
@@ -540,8 +541,18 @@ func RecomputeTxnsRoot(txs []config.Transaction) string {
 // received transactions and rejects any mismatch. This runs BEFORE
 // certificate verification so a certified hash cannot authorize a different
 // transaction set.
+//
+// Reads Security.M2bHashEnabled - the SAME flag Security.CheckBlockHash reads
+// - so the two hash-validation call sites can never disagree about which
+// formula is live. See that flag's doc for why this must stay off until the
+// block generator also switches formulas.
 func checkBodyBinding(b *config.ZKBlock) *blockRejection {
-	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
+	var wantHash common.Hash
+	if Security.M2bHashEnabled {
+		wantHash = Security.RecomputeBlockHashWithConsensusFields(b)
+	} else {
+		wantHash = RecomputeBlockHashFromTxs(b.Transactions)
+	}
 	if b.BlockHash != wantHash {
 		return reject("body_mismatch",
 			"block %s: recomputed hash %s does not match transactions (body substituted?)",
