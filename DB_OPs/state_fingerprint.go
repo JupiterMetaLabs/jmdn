@@ -68,7 +68,32 @@ func ComputeAccountStateFingerprintV1(ctx context.Context) (string, error) {
 		}
 		lastKey = nextKey
 	}
+
+	// P4: after the account pass, fold contract leaves (address, nonce, codeHash,
+	// storageRoot) so the fingerprint — and thus the P2.5 halt-on-divergence —
+	// covers contract STORAGE too. The hook is installed at startup when contract
+	// execution is enabled (evmexec.Register), keeping DB_OPs free of a contractDB
+	// import. Nil hook (contracts off) = accounts-only, unchanged.
+	if hook := contractFoldHook; hook != nil {
+		if err := hook(f); err != nil {
+			return "", fmt.Errorf("state fingerprint v1: contract fold: %w", err)
+		}
+	}
+
 	return f.Sum().Hex(), nil
+}
+
+// contractFoldHook, when non-nil, folds every contract into the fingerprint after
+// the account pass (audit P4). Installed via SetContractFoldHook at startup so
+// DB_OPs does not import DB_OPs/contractDB (avoids an import cycle and keeps the
+// account path buildable without the EVM layer).
+var contractFoldHook func(*consensushash.StateFingerprinterV1) error
+
+// SetContractFoldHook installs the contract-fold step used by
+// ComputeAccountStateFingerprintV1. Call once at startup when contract execution
+// is enabled; pass nil to disable (accounts-only fingerprint).
+func SetContractFoldHook(fn func(*consensushash.StateFingerprinterV1) error) {
+	contractFoldHook = fn
 }
 
 // ComputeAccountStateFingerprint hashes every account's consensus-relevant

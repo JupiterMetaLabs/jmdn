@@ -52,6 +52,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
+	"gossipnode/consensushash"
 	"gossipnode/explorer"
 	"gossipnode/gETH"
 	"gossipnode/gETH/Facade/Service"
@@ -1157,7 +1158,13 @@ func main() {
 				contractDB.NewKVStateRepository(cas.KV(), cas),
 				contractDB.HasCode,
 			)
-			mainLogger().Info(context.Background(), "EVM contract execution ENABLED — execbridge executor registered")
+			// P4: fold contract state into the P2.5 fingerprint so the
+			// halt-on-divergence check covers contract storage, not just accounts.
+			kvStore := cas.KV()
+			DB_OPs.SetContractFoldHook(func(f *consensushash.StateFingerprinterV1) error {
+				return contractDB.FoldAllContracts(kvStore, f)
+			})
+			mainLogger().Info(context.Background(), "EVM contract execution ENABLED — execbridge executor + state-fingerprint contract fold registered")
 		}
 
 		// Construct the ThebeGateway (2PC writes + outbox retry) backing the
