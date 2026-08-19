@@ -148,7 +148,20 @@ transfer path and is detectably behind, never silently divergent).
 - **P3 — DONE (20bd879):** transaction receipts with real BlockNumber/TxIndex + logs (EVM-13),
   best-effort derived SQL index.
 
-### P4 — contract-state root: BLOCKED on missing infrastructure (do NOT ship a placeholder)
+### P4 — contract-state root: DONE (Option B, ee0c0a7 + ThebeDB 2d264d2)
+Implemented as the sorted-scan keccak digest (roadmap decision — see
+`EVM-P4-STATE-ROOT-DESIGN.md` §12; Wormhole is guardian-attested, needs detection not proofs):
+- ThebeDB `kv.Store.ScanPrefix(prefix, fn)` — deterministic key-prefix scan (ThebeDB repo, tested).
+- `contractDB.ComputeStorageRoot` (domain-tagged keccak over sorted slots) + `FoldAllContracts`
+  (contract enumeration → `ContractLeaf`).
+- `DB_OPs.SetContractFoldHook` folds contracts into `ComputeAccountStateFingerprintV1` after the
+  account pass, so the P2.5 stamp/verify/HALT path now covers contract STORAGE; registered in main.go
+  when `cfg.Contracts.Enabled`.
+Residuals: O(N) full storage rescan per block (fine for detection; add the Option-C incremental cache
+before mainnet DEX load); not an MPT (no Merkle proofs — revisit only if a trustless/non-guardian
+bridge appears). Host gate: `CGO_ENABLED=1 go build ./... && go test ./DB_OPs/contractDB/`.
+
+### (historical) P4 was BLOCKED on missing infrastructure — now resolved by ScanPrefix
 A real contract-state root (committed to the block, verified on receive) requires a per-contract
 STORAGE ROOT. The codebase has none: `contractDB.GetStorageRoot` returns `common.Hash{}` (a stub),
 and the ThebeDB `kv.Store` behind `KVStateRepository` exposes no storage-slot iteration, so there is

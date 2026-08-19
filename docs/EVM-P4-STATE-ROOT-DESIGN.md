@@ -1,8 +1,9 @@
 # EVM P4 — contract-state root: design + options
 
-**Status:** design. **Decision made (2026-08-19): Option B (sorted-scan digest) + a planned Option-C
-incremental cache for DEX scale. Option A (MPT) deferred — see §12 "Roadmap-driven decision".**
-Scopes the one EVM integration piece not yet built (see `docs/EVM-CONSENSUS-WIRING.md` → "P4 BLOCKED").
+**Status:** IMPLEMENTED (2026-08-19) — Option B. ThebeDB `kv.Store.ScanPrefix` (2d264d2) +
+`contractDB.ComputeStorageRoot`/`FoldAllContracts` + `DB_OPs` fold hook (ee0c0a7), gated on
+`cfg.Contracts.Enabled`. Option A (MPT) deferred; Option-C incremental cache planned for DEX scale —
+see §12. Host gate: `CGO_ENABLED=1 go build ./... && go test ./DB_OPs/contractDB/`.
 
 **Author context:** written after P0–P3 + P2.5 landed (contract execution is wired end-to-end behind
 `cfg.Contracts.Enabled`; account state is divergence-checked and halts on mismatch). P4 closes the
