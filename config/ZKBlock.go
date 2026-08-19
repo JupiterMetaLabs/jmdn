@@ -79,6 +79,58 @@ type ZKBlock struct {
 	// never be treated as certificate-verified data: it is identity metadata whose
 	// safety comes from the uniqueness/monotonicity rules in DB_OPs/art_ordinal.go.
 	AccountNonces []AccountNonce `json:"account_nonces,omitempty"`
+
+	// AVC consensus metadata (M1/M2a — architecture doc §8). These six fields
+	// put the committee-selection inputs in the block, so a re-syncing node can
+	// reconstruct which committee a block claims instead of trusting the proposer.
+	//
+	// NOT YET HASH-COVERED. Like AccountNonces above, the block hash covers
+	// transaction contents only, so a relay can still rewrite these post-commit.
+	// Making them tamper-evident is M2b
+	// (Security.RecomputeBlockHashWithConsensusFields, written but not wired).
+	// Until then, do not treat these as certificate-verified data.
+	//
+	// Propagation is JSON and every field is omitempty, so old nodes ignore
+	// unknown keys and new nodes read absent keys as zero.
+
+	// Slot is the epoch clock (§7.1). Advances on a commit OR a timeout, so it
+	// skips where BlockNumber never does. Selection epoch = Slot / N.
+	Slot uint64 `json:"slot,omitempty"`
+
+	// Period is the retry counter at this height (§7.1c). Feeds the committee
+	// seed, so a retry re-draws. Resets to 0 on the next height.
+	Period uint64 `json:"period,omitempty"`
+
+	// RandaoReveals are the entropy-committee reveals collected in this block
+	// (§4.4). Empty on blocks that carry none.
+	RandaoReveals []Reveal `json:"randao_reveals,omitempty"`
+
+	// VdfProof is the epoch VDF proof. Present only on the epoch-boundary
+	// block (§7.2), empty on every other block.
+	VdfProof []byte `json:"vdf_proof,omitempty"`
+
+	// SeedEpoch is the frozen RANDAO snapshot lock — which snapshot produced
+	// this epoch's entropy (§3.2). Changes only at epoch boundaries.
+	SeedEpoch uint64 `json:"seed_epoch,omitempty"`
+
+	// VotingSnapshotEpoch is the declared voting pool that T_vote and T_agg are
+	// checked against (§3.2). Checkpoint-locked; verifiers check monotonicity
+	// only, since "is this the newest" is unenforceable (finding A6).
+	VotingSnapshotEpoch uint64 `json:"voting_snapshot_epoch,omitempty"`
+}
+
+// Reveal is one entropy-committee member's RANDAO reveal carried in a block.
+// Mirrors the (peerID -> secret) shape avc/randao uses internally, flattened to
+// a slice because block encoding needs a deterministic order and maps don't
+// have one. Each entry is verified against its own proposer's commitment, so
+// the delivery path doesn't matter and duplicates are harmless (§4.4).
+type Reveal struct {
+	// ProposerID is the peer ID of the revealing member.
+	ProposerID string `json:"proposer_id"`
+
+	// Secret is the raw 32-byte value; its hash must match this member's
+	// earlier commitment (§4.3).
+	Secret []byte `json:"secret"`
 }
 
 // AccountNonce binds one account address to its canonical ART identity nonce

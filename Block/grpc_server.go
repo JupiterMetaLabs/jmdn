@@ -2,6 +2,7 @@ package Block
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"net"
@@ -220,9 +221,14 @@ func (s *BlockServer) convertProtoToZKBlock(pbBlock *pb.ZKBlock) (*config.ZKBloc
 		LogsBloom:    pbBlock.LogsBloom,
 		PrevHash:     common.BytesToHash(pbBlock.PrevHash),
 		BlockHash:    common.BytesToHash(pbBlock.BlockHash),
-		GasLimit:     pbBlock.GasLimit,
-		GasUsed:      pbBlock.GasUsed,
-		BlockNumber:  pbBlock.BlockNumber,
+		GasLimit:            pbBlock.GasLimit,
+		GasUsed:             pbBlock.GasUsed,
+		BlockNumber:         pbBlock.BlockNumber,
+		Slot:                pbBlock.Slot,
+		Period:              pbBlock.Period,
+		VdfProof:            pbBlock.VdfProof,
+		SeedEpoch:           pbBlock.SeedEpoch,
+		VotingSnapshotEpoch: pbBlock.VotingSnapshotEpoch,
 	}
 
 	// Convert addresses if they're not empty
@@ -233,6 +239,12 @@ func (s *BlockServer) convertProtoToZKBlock(pbBlock *pb.ZKBlock) (*config.ZKBloc
 	if len(pbBlock.ZkvmAddr) > 0 {
 		addr := common.BytesToAddress(pbBlock.ZkvmAddr)
 		block.ZKVMAddr = &addr
+	}
+
+	if len(pbBlock.RandaoReveals) > 0 {
+		if err := json.Unmarshal(pbBlock.RandaoReveals, &block.RandaoReveals); err != nil {
+			return nil, fmt.Errorf("failed to decode randao reveals: %w", err)
+		}
 	}
 
 	return block, nil
