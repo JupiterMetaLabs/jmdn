@@ -552,6 +552,41 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 	)
 
+	// P2.5 state-fingerprint verification. When contract execution is enabled,
+	// recompute the canonical post-apply account-state fingerprint and reconcile
+	// it with the value the block carries:
+	//   - carried empty  → PRODUCER path: stamp our fingerprint so receivers can
+	//     verify (rollout-safe — unstamped blocks are never compared);
+	//   - carried set + mismatch → this node's ledger DIVERGED from the producer's:
+	//     HALT the block (fail-closed) before advancing the applied anchor, rather
+	//     than serve a wrong balance (the reproduced live=1000 vs synced=2000 class).
+	// Runs only under execbridge.Enabled() so the O(N) rescan never taxes a fleet
+	// with contracts off. NOTE: full cryptographic binding is CON-02 v3; here the
+	// carried value's trust rests on the single honest sequencer.
+	if execbridge.Enabled() {
+		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
+		if fperr != nil {
+			return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w", block.BlockNumber, fperr)
+		}
+		switch {
+		case block.StateFingerprint == "":
+			block.StateFingerprint = fp
+		case block.StateFingerprint != fp:
+			span.SetAttributes(attribute.String("status", "state_divergence_halt"))
+			logger().Error(span_ctx, "STATE DIVERGENCE — post-apply fingerprint does not match block-carried value; halting",
+				fmt.Errorf("state fingerprint mismatch"),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("local_fingerprint", fp),
+				ion.String("block_fingerprint", block.StateFingerprint),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
+		}
+	}
+
 	// Advance the accounts-applied anchor (accountsdb). Runs AFTER the atomic
 	// marker commit — the block's effects are proven applied at this point. This
 	// applies to zero-tx blocks too (nothing to apply still counts as applied).

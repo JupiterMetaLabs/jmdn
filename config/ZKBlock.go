@@ -79,6 +79,17 @@ type ZKBlock struct {
 	// never be treated as certificate-verified data: it is identity metadata whose
 	// safety comes from the uniqueness/monotonicity rules in DB_OPs/art_ordinal.go.
 	AccountNonces []AccountNonce `json:"account_nonces,omitempty"`
+
+	// StateFingerprint is the canonical post-apply account-state fingerprint
+	// (consensushash.StateFingerprintV1, hex) computed after this block is applied
+	// — audit P2.5. The producer stamps it; every receiver recomputes after apply
+	// and HALTS on mismatch instead of serving a divergent ledger (the reproduced
+	// live=1000 vs synced=2000 class). ADVISORY, NOT CONSENSUS-HASHED (same as
+	// AccountNonces — canonical BlockHash is tx-contents only), so it is
+	// wire-compatible with older builds and unstamped blocks skip the check. Full
+	// cryptographic binding (committee-signed) arrives with the CON-02 v3 block
+	// hash; until then its trust rests on the single honest sequencer.
+	StateFingerprint string `json:"state_fingerprint,omitempty"`
 }
 
 // AccountNonce binds one account address to its canonical ART identity nonce

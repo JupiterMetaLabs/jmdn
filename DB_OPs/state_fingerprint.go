@@ -19,7 +19,57 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"gossipnode/consensushash"
 )
+
+// ComputeAccountStateFingerprintV1 is the consensus (audit P2.5) post-apply
+// account-state fingerprint: the canonical, domain-tagged keccak digest
+// (consensushash.StateFingerprintV1) over every account's consensus-relevant
+// fields, streamed in the deterministic ListAccountsPaginatedFrom key order so
+// every node at the same height with the same ledger computes the identical hex
+// digest. A mismatch between a node's recompute and the block-carried value means
+// the ledgers diverged.
+//
+// v1 covers PLAIN ACCOUNTS only (the reproduced live-vs-synced divergence is an
+// account-balance divergence); contract state is committed separately by the
+// state root in P4. O(N) over all accounts per call — gate its use (it runs only
+// when contract execution is enabled) and make it incremental if N grows large.
+func ComputeAccountStateFingerprintV1(ctx context.Context) (string, error) {
+	const pageSize = 1000
+	f := consensushash.NewStateFingerprinterV1()
+	var lastKey []byte
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		accs, nextKey, err := ListAccountsPaginatedFrom(nil, pageSize, lastKey, "")
+		if err != nil {
+			return "", fmt.Errorf("state fingerprint v1: page after %q: %w", string(lastKey), err)
+		}
+		if len(accs) == 0 {
+			break
+		}
+		for _, acc := range accs {
+			if acc == nil {
+				continue
+			}
+			f.FoldAccount(consensushash.AccountLeaf{
+				Address:     acc.Address.Hex(),
+				Balance:     acc.Balance,
+				TxNonce:     acc.TxNonce,
+				TxCountSent: acc.TxCountSent,
+			})
+		}
+		if nextKey == nil || len(accs) < pageSize {
+			break
+		}
+		lastKey = nextKey
+	}
+	return f.Sum().Hex(), nil
+}
 
 // ComputeAccountStateFingerprint hashes every account's consensus-relevant
 // fields in ascending key order. Returns the hex digest and the number of
