@@ -172,7 +172,8 @@ func DefaultBlockContext(gasLimit uint64) vm.BlockContext {
 		BlockNumber: new(big.Int).SetUint64(1),
 		Time:        uint64(time.Now().UTC().Unix()),
 		Difficulty:  big.NewInt(0),
-		GasLimit:    30_000_000, // Fixed high limit for simulated block
+		GasLimit:    30_000_000,       // Fixed high limit for simulated block
+		Random:      new(common.Hash), // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
 		BaseFee:     big.NewInt(0),
 	}
 }

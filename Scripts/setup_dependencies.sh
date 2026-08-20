@@ -904,6 +904,8 @@ fi
 
 if [[ "${INSTALL_STORAGE}" == true ]] && [[ "${STORAGE_MODE:-docker}" != "none" ]]; then
 	log_info "Thebe SQL DSN:"
+	# NEW-4/SEC-04: cleartext local DSN. Production config defaults to sslmode=require —
+	# provision TLS or override THEBE_SQL_DSN with sslmode=disable knowingly for dev.
 	echo "postgres://${PG_APP_USER}:${PG_APP_PASSWORD}@localhost:${PG_APP_PORT}/${PG_APP_DB}?sslmode=disable"
 fi
 

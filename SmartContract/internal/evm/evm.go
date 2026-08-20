@@ -56,6 +56,7 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 		Time:        uint64(time.Now().UTC().Unix()),
 		Difficulty:  big.NewInt(0),
 		GasLimit:    30_000_000,
+		Random:      new(common.Hash),       // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
 		BaseFee:     big.NewInt(1000000000), // 1 gwei - must be non-zero for EIP-1559
 	}
 
@@ -126,6 +127,7 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 		Time:        uint64(time.Now().UTC().Unix()),
 		Difficulty:  big.NewInt(0),
 		GasLimit:    gasLimit,
+		Random:      new(common.Hash), // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
 		BaseFee:     big.NewInt(0),
 	}
 	// Try to update with real blockchain info

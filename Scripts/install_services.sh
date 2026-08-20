@@ -129,7 +129,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: jmdn
-      POSTGRES_PASSWORD: jmdndefault
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the compose .env (see DOCKER.md)}
       POSTGRES_DB: jmdn
     # wal_level=logical is required for ThebeDB CDC (WAL consumer).
     command: >

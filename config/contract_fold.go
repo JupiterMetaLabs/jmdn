@@ -90,6 +90,11 @@ func FoldContractExecution(
 	if fee == nil {
 		fee = new(big.Int)
 	}
+	// NEW-10: a negative gas fee is never valid. Fail closed instead of silently
+	// skipping the charge (which would make the tx free) or crediting the sender.
+	if fee.Sign() < 0 {
+		return nil, fmt.Errorf("contract fold: negative gasFee %s is invalid", fee)
+	}
 	if fee.Sign() > 0 {
 		ensure(sender).Sub(ensure(sender), fee)
 

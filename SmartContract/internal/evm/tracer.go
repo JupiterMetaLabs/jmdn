@@ -73,6 +73,7 @@ func TraceTransaction(
 		Time:        uint64(time.Now().UTC().Unix()),
 		Difficulty:  big.NewInt(0),
 		GasLimit:    gasLimit,
+		Random:      new(common.Hash), // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
 		BaseFee:     big.NewInt(0),
 	}
 	// Try to refresh with real chain state

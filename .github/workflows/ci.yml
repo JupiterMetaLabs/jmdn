@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "release/**"]
+    branches: ["main", "release/**", "feat/**"]
   pull_request:
-    branches: ["main", "release/**"]
+    branches: ["main", "release/**", "feat/**"]
 
 # Cancel any in-progress run for the same branch when a new push arrives.
 # This avoids wasting runner minutes on stale commits.
@@ -64,10 +64,12 @@ jobs:
         run: go build ./...
 
       # ── Tests ───────────────────────────────────────────────────────────
-      # Tests require live infrastructure (database pool, seed node) unavailable
-      # in CI. Enable once a test environment or proper mocks are in place.
-      # - name: Test
-      #   run: go test ./...
+      # -short skips integration tests that need live infra (they must gate on
+      # testing.Short()); -race catches data races in the unit + consensus tests.
+      # If a package fails here for lack of infra, gate that test behind
+      # testing.Short() rather than re-disabling the whole step.
+      - name: Test
+        run: go test -short -race ./...
 
       # ── Formatting ──────────────────────────────────────────────────────
       # Driven entirely by the `formatters:` block in .golangci.yml.

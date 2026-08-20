@@ -888,10 +888,16 @@ func main() {
 	// service left unauthenticated on a public (non-loopback) bind; when
 	// security.strict_posture is set, REFUSE to boot (fail closed).
 	for _, v := range cfg.InsecurePublicServices() {
+		// NEW-5: surface v.Reason so the remedy matches the ACTUAL violation.
+		// "auth_type=none" → set token/mtls; "public RPC with no rate limit" → set
+		// a rate limit (the RPC is intentionally unauthenticated). The old hardcoded
+		// message told operators to token-gate the JSON-RPC, which is wrong for the
+		// rate-limit case.
 		log.Warn().
 			Str("service", v.Service).
 			Str("bind", v.Bind).
-			Msg("SEC-03: gatekeeper service is UNAUTHENTICATED on a public bind (auth_type=none) — set auth_type token/mtls, restrict the bind to loopback, or enable security.strict_posture to fail closed")
+			Str("reason", v.Reason).
+			Msg("SEC-03: insecure gatekeeper service on a public bind — remediate per 'reason' (auth_type=none → set auth_type token/mtls; no rate limit → set a rate limit), restrict the bind to loopback, or enable security.strict_posture to fail closed")
 	}
 	if err := cfg.ValidateSecurityPosture(); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)

@@ -352,6 +352,9 @@ else
     FINAL_PORT="${DB_PORT}"
 fi
 
+# NEW-4/SEC-04: the shipped node config defaults to sslmode=require. This LOCAL DSN is
+# cleartext (no TLS). For production, give Postgres a server cert and use sslmode=require,
+# or the node hard-fails at boot (db.Ping). Override THEBE_SQL_DSN knowingly for dev.
 DSN="postgres://${DB_USER}:${DB_PASS}@${FINAL_HOST}:${FINAL_PORT}/${DB_NAME}?sslmode=disable"
 
 echo ""
