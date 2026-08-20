@@ -1199,6 +1199,18 @@ func main() {
 		// without going through a PooledConnection.
 		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
+
+		// Genesis allocation (bootstrap / 2-node determinism gate). If
+		// JMDN_GENESIS_ALLOC names a JSON {"0xADDR":"balanceWei"} file, seed those
+		// accounts now — before any block is produced or applied — so the fleet's
+		// pre-genesis baseline is identical. No-op when the env var is unset.
+		// Requires JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1; idempotent; deterministic
+		// (the P2.5 state fingerprint excludes ART ordinals + volatile timestamps).
+		if n, gErr := DB_OPs.SeedGenesisFromEnv(context.Background()); gErr != nil {
+			log.Warn().Err(gErr).Msg("[genesis] allocation seed failed")
+		} else if n > 0 {
+			log.Info().Int("accounts", n).Msg("[genesis] allocation seeded")
+		}
 	}
 
 	// Explorer stats account/DID counter. The stats API used to scan immudb
