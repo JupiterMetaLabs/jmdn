@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "release/**", "feat/**"]
+    branches: ["main", "release/**"]
   pull_request:
-    branches: ["main", "release/**", "feat/**"]
+    branches: ["main", "release/**"]
 
 # Cancel any in-progress run for the same branch when a new push arrives.
 # This avoids wasting runner minutes on stale commits.
