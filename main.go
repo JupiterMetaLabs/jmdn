@@ -1212,8 +1212,12 @@ func main() {
 		// pre-genesis baseline is identical. No-op when the env var is unset.
 		// Requires JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1; idempotent; deterministic
 		// (the P2.5 state fingerprint excludes ART ordinals + volatile timestamps).
+		// FAIL CLOSED: a partial/failed genesis seed produces a divergent pre-genesis
+		// baseline, which (with contracts enabled) lands the fleet in the P2.5 halt
+		// path. Refuse to boot rather than run with a wrong baseline. This only fires
+		// when JMDN_GENESIS_ALLOC is set — unset is a no-op (0, nil) and never fatal.
 		if n, gErr := DB_OPs.SeedGenesisFromEnv(context.Background()); gErr != nil {
-			log.Warn().Err(gErr).Msg("[genesis] allocation seed failed")
+			log.Fatal().Err(gErr).Msg("[genesis] allocation seed failed — refusing to boot with a divergent baseline")
 		} else if n > 0 {
 			log.Info().Int("accounts", n).Msg("[genesis] allocation seeded")
 		}

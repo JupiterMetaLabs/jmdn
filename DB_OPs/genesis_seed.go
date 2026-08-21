@@ -91,10 +91,18 @@ func SeedGenesisAllocations(ctx context.Context, path string) (int, error) {
 			return seeded, fmt.Errorf("genesis seed: %s: invalid decimal-wei balance %q", a, bal)
 		}
 
-		// Idempotent: skip accounts that already exist (GetAccount returns a
-		// non-nil error — "key not found" — only when absent).
-		if _, gErr := GetAccount(nil, addr); gErr == nil {
-			continue
+		// Idempotent: skip accounts that already exist. Distinguish a genuine
+		// "not found" from a transient/real read error (audit re-check High): a DB
+		// blip must NOT be read as "absent" — that would re-CreateAccount +
+		// UpdateAccountBalance over an existing funded account, overwriting its
+		// balance (the zero-clobber guard does not help, the genesis value is
+		// non-zero). Fail closed on any non-not-found error.
+		existing, gErr := GetAccount(nil, addr)
+		if gErr == nil && existing != nil {
+			continue // already present — leave it untouched
+		}
+		if gErr != nil && !isNotFoundError(gErr) {
+			return seeded, fmt.Errorf("genesis seed: probing %s (refusing to seed over a possibly-existing account): %w", a, gErr)
 		}
 
 		did := "did:jmdn:" + strings.ToLower(addr.Hex())
