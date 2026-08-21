@@ -1502,6 +1502,21 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
 		verifySpan.End()
 
+		// B1 (Architecture §4.2a, §10 decision 10) — stash the certificate that
+
+		// Only on a reached consensus: a failed round produces no certificate,
+		// and recording a partial one would let a rejected block's signatures
+		// feed the fallback fold. The certificate has to be carried by the next
+		// block rather than this one because the buddies sign THIS block's hash
+		// — see messaging/entropy_aggsig.go for the full reasoning.
+		//
+		// Read-only with respect to the consensus decision: it copies already-
+		// verified responses and cannot change consensusReached. No-op unless
+		// JMDN_AVC_AGG_CERT=1.
+		if consensusReached && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+			messaging.RecordCommitCertificate(consensus.ZKBlockData.GetZKBlock().BlockNumber, blsResults)
+		}
+
 		// (Reputation, OBSERVE-ONLY) Classify each committee member's behavior
 		// this round and log the score deltas. This is a future-SELECTION
 		// signal only: it never feeds the 2f+1 tally, never blocks a vote, and
