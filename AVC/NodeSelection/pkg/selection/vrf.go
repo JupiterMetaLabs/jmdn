@@ -102,7 +102,7 @@ func (s *VRFSelector) SelectBuddy(
 
 // buildRoundMessage creates the message for VRF
 func (s *VRFSelector) buildRoundMessage(nodeID string) []byte {
-	return []byte(fmt.Sprintf("%s:%s", nodeID, string(s.networkSalt)))
+	return fmt.Appendf(nil, "%s:%s", nodeID, string(s.networkSalt))
 }
 
 // fisherYatesShuffle performs Fisher-Yates shuffle

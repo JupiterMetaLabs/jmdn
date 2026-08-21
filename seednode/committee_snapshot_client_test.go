@@ -24,7 +24,7 @@ func curEpoch() uint64 { return uint64(time.Now().Unix() / testEpochSeconds) }
 func makeAuthority(t *testing.T, seed string) (priv []byte, pubHex string) {
 	t.Helper()
 	for i := 0; i < 1000; i++ {
-		p, pub, err := blssign.GenerateBLSKeyPairFromRawPrivKey([]byte(fmt.Sprintf("%s-%d", seed, i)))
+		p, pub, err := blssign.GenerateBLSKeyPairFromRawPrivKey(fmt.Appendf(nil, "%s-%d", seed, i))
 		if err == nil {
 			return p, hex.EncodeToString(pub)
 		}

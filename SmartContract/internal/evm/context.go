@@ -71,7 +71,7 @@ func (m *BlockHashManager) GetHash(n uint64) common.Hash {
 
 	// Fallback to deterministic hash on error
 	// This ensures execution doesn't panic on network errors, but isn't ideal for mainnet
-	return common.BytesToHash(crypto.Keccak256([]byte(fmt.Sprintf("%d", n))))
+	return common.BytesToHash(crypto.Keccak256(fmt.Appendf(nil, "%d", n)))
 }
 
 func (m *BlockHashManager) fetchBlockHashFromAPI(number uint64) (common.Hash, error) {
