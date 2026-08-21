@@ -75,8 +75,12 @@ func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "key not found") ||
-		strings.Contains(err.Error(), "tbtree: key not found")
+	msg := err.Error()
+	return strings.Contains(msg, "key not found") ||
+		strings.Contains(msg, "tbtree: key not found") ||
+		// SQL-backed reads (accounts, blocks) surface a missing row this way —
+		// it is a genuine "not found", not a transient error.
+		strings.Contains(msg, "no rows in result set")
 }
 
 // ReadJSON retrieves a value by key and unmarshals it into dest.

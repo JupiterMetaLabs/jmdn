@@ -87,6 +87,3 @@ test_results/
 jmdn2
 docs/FASTSYNC_V3_MIGRATION_PLAN.md
 Scripts/sign_tx.go
-
-# Local-only 2-node EVM determinism gate harness (not for commit)
-local-2node-gate/
