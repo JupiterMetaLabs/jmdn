@@ -199,6 +199,13 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
 	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
 	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
+	// Architecture §4.4 RevealPush — receive an entropy-committee member's
+	// RANDAO reveal pushed directly to this node when it is the current slot's
+	// proposer. Registered on EVERY node, not only proposers: which node
+	// proposes a given slot changes, and a node without the handler would
+	// refuse the stream outright, which under Rule 1 costs the whole epoch.
+	// Added 2026-08-20 with M4 Decision A.
+	h.SetStreamHandler(config.RevealPushProtocol, messaging.HandleRevealPushStream)
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	})

@@ -36,6 +36,7 @@ const blockHashV2Domain = "jmdn/block-hash/v2"
 //	   || len:VdfProof
 //	   || u64:SeedEpoch
 //	   || u64:VotingSnapshotEpoch
+//	   || len:encodeCertSigners(PrevAggCert)
 //	   || len:concat(txContentHash_i)
 //	    )
 //
@@ -63,6 +64,13 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	committee.WriteField(&buf, block.VdfProof)
 	committee.WriteU64(&buf, block.SeedEpoch)
 	committee.WriteU64(&buf, block.VotingSnapshotEpoch)
+	// PrevAggCert (added 2026-08-20, blocker B1). Hash-covered for the same
+	// reason every other field here is: it feeds the fallback seed, so a relay
+	// that could rewrite it post-commit could steer the next epoch's entire
+	// committee draw. Empty on ~90% of blocks (fold-window slots only), and
+	// EncodeCertSigners renders empty as a zero count, so this adds a fixed 8
+	// bytes to the preimage of an ordinary block and changes no existing field.
+	committee.WriteField(&buf, EncodeCertSigners(block.PrevAggCert))
 	committee.WriteField(&buf, txContentConcat(block.Transactions))
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))
@@ -115,4 +123,27 @@ func txContentConcat(txs []config.Transaction) []byte {
 		buf = append(buf, h.Bytes()...)
 	}
 	return buf
+}
+
+// EncodeCertSigners produces the canonical byte encoding of a commit
+// certificate.
+//
+//	u64:count || ( len:PeerID || len:PubKey || len:Signature )*
+//
+// Same length-prefixed convention as EncodeReveals, so the preimage stays
+// injective — "[A, BC]" cannot collide with "[AB, C]".
+//
+// Uses the slice's own order, not a sorted one: the hash must bind the exact
+// list the block declares, so that reordering is itself a detectable change.
+// Producers should emit a deterministic order (messaging sorts by peer ID)
+// precisely so two honest nodes assembling the same certificate agree.
+func EncodeCertSigners(cert []config.CertSigner) []byte {
+	var buf bytes.Buffer
+	committee.WriteU64(&buf, uint64(len(cert)))
+	for _, s := range cert {
+		committee.WriteField(&buf, []byte(s.PeerID))
+		committee.WriteField(&buf, []byte(s.PubKey))
+		committee.WriteField(&buf, []byte(s.Signature))
+	}
+	return buf.Bytes()
 }

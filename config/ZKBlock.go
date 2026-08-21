@@ -117,6 +117,51 @@ type ZKBlock struct {
 	// checked against (§3.2). Checkpoint-locked; verifiers check monotonicity
 	// only, since "is this the newest" is unenforceable (finding A6).
 	VotingSnapshotEpoch uint64 `json:"voting_snapshot_epoch,omitempty"`
+
+	// PrevAggCert is the buddy-committee certificate for the PREVIOUS block —
+	// the signatures that committed it. Added 2026-08-20 to unblock B1
+	// (Architecture §4.2a's fallback formula, §10 decision 10).
+	//
+	// WHY IT IS THE PREVIOUS BLOCK'S, NOT THIS ONE'S. §4.2a describes folding
+	// "every committed block's BLS aggregate signature", implying each block
+	// carries its own. That is structurally impossible: the buddies sign this
+	// block's HASH, so this block's certificate cannot be an input to its own
+	// hash without a circular dependency. Verified in code — the fields are
+	// attached in Block/consensus_fields.go's attachAVCConsensusFields, which
+	// its own call site documents as running "before consensus.Start", and the
+	// votes are taken over blk.BlockHash (Sequencer/Consensus.go). So the
+	// certificate necessarily lags by exactly one block. The fold window
+	// compensates by reading it one slot later.
+	//
+	// Present ONLY on blocks whose slot falls inside a fold window
+	// [E*N+K+1, E*N+K+B+1) — the +1 is that same one-block lag. Empty on every
+	// other block, which is ~90% of them at N=50, B=5, so the storage cost is
+	// a tenth of what carrying it on every block would be.
+	PrevAggCert []CertSigner `json:"prev_agg_cert,omitempty"`
+}
+
+// CertSigner is one buddy's contribution to a block's commit certificate: who
+// signed, with which committee key, and the signature itself.
+//
+// The components are carried rather than a pre-aggregated blob deliberately.
+// An aggregate alone is opaque — a sequencer could put any 64 bytes there and a
+// verifier could not tell. Carrying the parts lets every node re-verify each
+// signature against the previous block's canonical vote message and then
+// DERIVE the aggregate itself, so the sequencer's only remaining freedom is
+// which qualifying subset to include. That residual is exactly the
+// already-documented subset menu in §4.2a (up to 1,093 values at A=13), not a
+// new unbounded freedom.
+type CertSigner struct {
+	// PeerID of the signing buddy.
+	PeerID string `json:"peer_id"`
+
+	// PubKey is the hex-encoded committee BLS public key, same encoding
+	// BLS_Signer.BLSresponse uses.
+	PubKey string `json:"pub_key"`
+
+	// Signature is the hex-encoded BLS signature over the previous block's
+	// canonical v3 vote message with vote=+1.
+	Signature string `json:"signature"`
 }
 
 // Reveal is one entropy-committee member's RANDAO reveal carried in a block.

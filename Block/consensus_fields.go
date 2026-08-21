@@ -32,18 +32,43 @@ import (
 // messaging/body_binding_m2b_flag_test.go) - so this producer-side write is
 // the missing half of an already-closed loop, not a new one.
 //
-// RandaoReveals, VdfProof, SeedEpoch, and VotingSnapshotEpoch are
-// deliberately left at their zero value here. Verified 2026-08-19
-// (AVC-M4-Entropy-Reveal-Pipeline-Design.md): the entropy-committee reveal
-// pipeline (M4) and the voting-snapshot checkpoint pointer (M9) are not
-// built yet, so there is no real value to put in them. Leaving them zero is
-// honest, not a shortcut - M2b's hash still covers them (a relay cannot
-// silently turn a zero into a nonzero either, or vice versa), it simply
-// isn't load-bearing data until M4/M9 land. Do not synthesize placeholder
-// values here to make the fields "look" populated.
+// RandaoReveals is now populated — CHANGED 2026-08-20. It was previously left
+// at zero with the note "the entropy-committee reveal pipeline (M4) is not
+// built yet, so there is no real value to put in them." M4's reveal mechanism
+// now exists (Architecture §4.3 Decision A: deterministic ed25519 signatures),
+// and messaging.RevealsForBlock supplies the real, already-verified values.
+//
+// This assignment was THE missing link in the entropy pipeline. Every stage
+// downstream of it — fold, finalise, VDF seal — was wired and tested, but no
+// code anywhere assigned block.RandaoReveals, so every block shipped empty,
+// every epoch saw 0 of m reveals, and Rule 1 sent every single epoch to
+// fallback. Nothing downstream could have detected that as an anomaly, because
+// "no reveals arrived" is exactly what a fully-censored epoch looks like.
+//
+// RevealsForBlock returns nil outside the reveal window [E*N, E*N+K), so this
+// is a no-op on the large majority of blocks (47 of every 50 at N=50, K=3),
+// and it is ordered by peer ID so two nodes assembling from the same inbox
+// produce byte-identical lists — required once M2b hashes the reveal array in
+// order.
+//
+// VdfProof, SeedEpoch, and VotingSnapshotEpoch remain deliberately zero: the
+// VDF proof rides only on the epoch-boundary block (§7.2, Stage E owns that)
+// and the voting-snapshot checkpoint pointer (M9) is not built. Leaving those
+// zero is honest — M2b's hash still covers them, so a relay cannot turn a zero
+// into a nonzero. Do not synthesize placeholder values to make them look
+// populated.
 func attachAVCConsensusFields(block *config.ZKBlock) {
 	block.Slot = messaging.LiveSlotFor(block.BlockNumber)
 	block.Period = messaging.DefaultPeriodStore.PeriodFor(block.BlockNumber)
+	block.RandaoReveals = messaging.RevealsForBlock(block.Slot)
+	// B1 (Architecture §4.2a, §10 decision 10) — attach the PREVIOUS block's
+	// commit certificate when this block's parent sits in the epoch's fallback
+	// fold window. Nil on ~90% of blocks and whenever JMDN_AVC_AGG_CERT is off.
+	// It must be the parent's, not this block's: the buddies sign THIS block's
+	// hash, so its own certificate cannot be an input to that hash.
+	if block.BlockNumber > 0 {
+		block.PrevAggCert = messaging.CertificateForBlockAssembly(block.Slot, block.BlockNumber-1)
+	}
 
 	if Security.M2bHashEnabled {
 		block.BlockHash = Security.RecomputeBlockHashWithConsensusFields(block)

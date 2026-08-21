@@ -1251,6 +1251,44 @@ func main() {
 	messaging.SetHostInstance(n.Host)
 	profiler.RegisterHost(n.Host)
 
+	// AVC M4 Decision A — install this node's ed25519 identity so it can
+	// produce RANDAO reveals when it is drawn onto an entropy committee
+	// (Architecture §4.3). Added 2026-08-20; without this, ProduceRevealForEpoch
+	// has no key, so this node is counted as withheld in every epoch it is
+	// seated for, taking the whole epoch to fallback under Rule 1.
+	//
+	// The key is the node's EXISTING libp2p identity, read back from the
+	// peerstore rather than threaded down from node.NewNode — no new key
+	// material and no new provisioning step. That reuse is safe because reveal
+	// signatures are domain-separated (randao.RevealMessage) from every other
+	// use of this key, and it is what lets any peer verify a reveal with no key
+	// directory at all: an ed25519 peer ID self-certifies its own public key.
+	//
+	// Non-fatal on failure. A node that cannot install an identity still
+	// validates, votes and commits normally; it simply cannot contribute
+	// entropy — so this must never stop startup.
+	if selfPriv := n.Host.Peerstore().PrivKey(n.Host.ID()); selfPriv == nil {
+		fmt.Println("⚠️  no private key in the peerstore for this host — RANDAO reveals disabled for this node")
+	} else if idErr := messaging.SetNodeIdentity(selfPriv, n.Host.ID().String()); idErr != nil {
+		fmt.Printf("⚠️  could not install AVC M4 reveal identity: %v\n", idErr)
+	} else {
+		fmt.Println("✅ AVC M4 reveal identity installed")
+	}
+
+	// AVC M4 Stage F — install the RANDAO+VDF beacon (Stage 2 committee
+	// entropy) if it has been genuinely configured via env (see
+	// Sequencer/beacon_install.go's header for why the two required crypto
+	// parameters, the VDF group modulus and the calibrated difficulty T,
+	// are read from environment rather than pinned in code). A safe no-op
+	// when unset: the node stays on Stage 1 (salt-based) committee
+	// selection exactly as it does today.
+	if beaconInstalled, beaconErr := Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
+		fmt.Printf("AVC beacon (Stage 2 RANDAO+VDF) configuration present but invalid: %v\n", beaconErr)
+		log.Error().Err(beaconErr).Msg("entropy: AVC beacon (Stage 2) misconfigured — refusing to install, staying on Stage 1")
+	} else if beaconInstalled {
+		fmt.Println("✅ AVC beacon (Stage 2 RANDAO+VDF) installed")
+	}
+
 	// Initialize the listener node for handling submit message protocol
 	// This sets up the SubmitMessageProtocol handler for vote submission
 	listener := MessagePassing.NewListenerNode(logger_ctx, n.Host, Sequencer.NewResponseHandler())
