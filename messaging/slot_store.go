@@ -73,6 +73,18 @@ func NewSlotStore() *SlotStore {
 	return &SlotStore{}
 }
 
+// haveCommittedForRecoveryCheck reports whether this store has ever advanced
+// (live commit or a prior successful SeedFromCommittedTip). Used only by
+// EnsureSlotStoreRecovered (slot_store_recovery.go) to decide whether a
+// repeat recovery attempt is still meaningful — a live/seeded store can never
+// be seeded again anyway (SeedFromCommittedTip refuses), so this lets the
+// caller skip even the getTip read in that case.
+func (s *SlotStore) haveCommittedForRecoveryCheck() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.haveCommitted
+}
+
 // Current returns the slot value as of the last accepted commit.
 func (s *SlotStore) Current() uint64 {
 	s.mu.RLock()
@@ -106,6 +118,39 @@ func (s *SlotStore) AdvanceOnCommit(height, period uint64) (uint64, bool) {
 	s.lastCommittedHeight = height
 	s.haveCommitted = true
 	return s.slot, true
+}
+
+// SeedFromCommittedTip recovers the counter after a restart or a fast-sync
+// catch-up, from the last committed block's OWN Slot field (persisted per
+// docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 — the block already carries
+// the fully-folded value, so this is a direct adopt, not a recomputation:
+// tipSlot already equals what AdvanceOnCommit would have produced had this
+// process been running the whole time).
+//
+// Only takes effect on a store that has never been advanced live - checked
+// the same way AdvanceOnCommit checks for a stale/duplicate height, so a
+// startup call that races a live commit hook can never win and clobber real
+// progress. Returns false (no-op) once the store is already live, or once it
+// has already been seeded once (a second seed call is never legitimate: the
+// store is either fresh-and-unseeded, or it isn't).
+//
+// Call this ONCE at startup, before any commit hook can fire, with the tip
+// block's own Slot and BlockNumber. Deliberately does not touch
+// DefaultPeriodStore: the live in-flight period for whatever height hasn't
+// committed yet is correctly re-derived from scratch as the node resyncs
+// timeout certificates over gossip, not from anything that needs recovering
+// here.
+func (s *SlotStore) SeedFromCommittedTip(tipSlot, tipHeight uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.haveCommitted {
+		return false
+	}
+	s.slot = tipSlot
+	s.lastCommittedHeight = tipHeight
+	s.haveCommitted = true
+	return true
 }
 
 // DefaultSlotStore is the process-wide store the two commit hooks

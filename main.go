@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -752,6 +754,37 @@ func initAccountsDBPool() error {
 	return nil
 }
 
+// slotStoreRecoveryGetTip reads this node's own latest LOCALLY committed
+// block, for messaging.RecoverSlotStoreAtStartup / EnsureSlotStoreRecovered
+// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 — the slot-restart
+// fail-closed fix). Requires ThebeDB (DB_OPs.SetGlobalHandle already called
+// by the caller) — see the cfg.Thebe.Enabled branch at this function's call
+// site for the legacy-DB fallback.
+//
+// Returns messaging.ErrNoCommittedBlock (wrapped) when this node's local
+// chain has no committed block at all — surfaced as sql.ErrNoRows from the
+// underlying SQL MAX(block_number) lookup (DB_OPs/thebegateway/reader.go's
+// sqlGetLatestBlock) and identified by errors.Is, which %w-wrapping preserves
+// through every layer between here and that query (backend -> cache decorator
+// -> DB_OPs shim). That is a legitimate state (true network genesis, or a
+// brand-new/not-yet-synced node), never treated as a read failure. Any other
+// error is returned as-is, so the caller fails closed rather than guessing.
+func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
+	ctx := context.Background()
+	height, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("slot recovery: %w", messaging.ErrNoCommittedBlock)
+		}
+		return nil, fmt.Errorf("slot recovery: reading latest local block number: %w", err)
+	}
+	blk, err := DB_OPs.GetZKBlockByNumber(nil, height)
+	if err != nil {
+		return nil, fmt.Errorf("slot recovery: reading locally committed block %d: %w", height, err)
+	}
+	return blk, nil
+}
+
 // initFastsyncV2 initializes the FastSync V2 service.
 // ctx is the node's top-level shutdown context — it governs the lifetime of
 // server-side network handler goroutines inside the engine.
@@ -1237,6 +1270,40 @@ func main() {
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
 
+	// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// item 8). MUST run here, BEFORE node.NewNode() below: that call creates
+	// the libp2p host and registers its stream handlers, which is what lets a
+	// live commit hook (broadcast.go's HandleBroadcastStream path,
+	// blockPropagation.go's receive-and-store path) ever fire
+	// DefaultSlotStore.AdvanceOnCommit. Running recovery before the host
+	// exists means no such hook can possibly race an unseeded SlotStore —
+	// the ordering here is the actual race-freedom guarantee, not any lock
+	// inside RecoverSlotStoreAtStartup itself.
+	if cfg.Thebe.Enabled {
+		if err := messaging.RecoverSlotStoreAtStartup(slotStoreRecoveryGetTip); err != nil {
+			fmt.Printf("⚠️  slot recovery failed — this node will NOT vote or propose until this is resolved: %v\n", err)
+			log.Error().Err(err).Msg("slot recovery: startup recovery failed — consensus participation blocked (fail-closed, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)")
+		} else {
+			fmt.Println("✅ slot/epoch clock recovered from local committed history")
+		}
+	} else {
+		// No ThebeDB means no ExtraData persistence (DB_OPs/backend/block.go's
+		// Slot/Period write only exists on that path), so there is nothing to
+		// recover from and no way to detect a stale post-restart slot on this
+		// configuration. Marking ready preserves this legacy path's
+		// pre-existing (unprotected) behavior instead of permanently blocking
+		// consensus on a fleet that predates ThebeDB — this fix's scope is the
+		// ThebeDB-backed path, and that scoping is disclosed loudly rather
+		// than silently applied.
+		log.Warn().Msg("slot recovery: ThebeDB disabled — slot/epoch clock cannot be recovered from storage; running without restart protection (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 is scoped to the ThebeDB-backed path)")
+		messaging.MarkSlotStoreReady()
+	}
+	// Wire the vote-side gate (AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go)
+	// to the same readiness state — injected rather than imported directly to
+	// avoid an import cycle (messaging -> Vote -> MessagePassing already
+	// exists); see SetSlotStoreReadyFn's doc.
+	MessagePassing.SetSlotStoreReadyFn(messaging.SlotStoreReady)
+
 	// Start the node
 	fmt.Println("Creating libp2p node...")
 	n, err := node.NewNode(logger_ctx)
@@ -1405,6 +1472,20 @@ func main() {
 								continue
 							}
 							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							// Slot-restart recovery, fast-sync half
+							// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8,
+							// point 5): bulk catch-up writes bypass the live
+							// commit hooks entirely (slot_store.go's own
+							// documented scope), so DefaultSlotStore.haveCommitted
+							// is still false here even after this node just
+							// wrote thousands of blocks — re-running recovery
+							// against the now-populated local tip is what
+							// actually seeds it. No-ops if this node is
+							// already live (e.g. it was never behind and this
+							// reconcile was a no-op tick).
+							if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
+								log.Error().Err(err).Msg("[ReconcileFunc] slot recovery after catchup failed — this node remains blocked from voting/proposing")
+							}
 							return nil
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))

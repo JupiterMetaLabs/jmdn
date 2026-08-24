@@ -89,8 +89,15 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	// attachment point — set Slot/Period from jmdn's own live tracking and,
 	// when the rollout flag is on, recompute BlockHash to bind them. Must run
 	// after all other validation above and before consensus.Start below —
-	// see Block/consensus_fields.go for the full rationale.
-	attachAVCConsensusFields(block)
+	// see Block/consensus_fields.go for the full rationale. Fails closed
+	// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8) if this node's
+	// slot/epoch clock has not been recovered from its committed history.
+	if err := attachAVCConsensusFields(block); err != nil {
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: refusing to propose — slot/epoch clock not recovered", err)
+		}
+		return nil, status.Errorf(codes.Unavailable, "%v", err)
+	}
 
 	// Create consensus instance and start consensus process
 	peerList := Sequencer.PeerList{

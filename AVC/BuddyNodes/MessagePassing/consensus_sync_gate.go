@@ -18,6 +18,37 @@ const MaxConsensusLagBlocks uint64 = 2
 // JMDN_ENFORCE_SYNC_GATE=0 to disable (revert to always-permit) during rollout.
 var enforceConsensusSyncGate = os.Getenv("JMDN_ENFORCE_SYNC_GATE") != "0"
 
+// enforceSlotRecoveryGate additionally requires slotStoreReadyFn() before a
+// vote is cast — closing the "slot state is not fail-closed after restart"
+// finding (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node whose
+// slot/epoch clock has not been recovered from its own committed history
+// must not vote on anything, because its committee/epoch view may already
+// be silently wrong. Default-ON: this is a purely LOCAL per-node safety
+// check (unlike the *_WIRING/*_AGG_CERT flags elsewhere in this codebase,
+// it changes no wire format and needs no fleet-wide coordination). Same env
+// var messaging.EnforceSlotRecoveryGate reads, kept as a separate
+// os.Getenv call rather than importing messaging's var directly — see
+// slotStoreReadyFn's doc for why this package cannot import messaging.
+var enforceSlotRecoveryGate = os.Getenv("JMDN_ENFORCE_SLOT_RECOVERY_GATE") != "0"
+
+// slotStoreReadyFn, when set, reports whether this node's slot/epoch clock
+// has been recovered from committed history (messaging.SlotStoreReady).
+// Injected rather than imported directly: messaging already imports Vote,
+// and Vote imports this package (MessagePassing) — messaging -> Vote ->
+// MessagePassing already exists, so MessagePassing -> messaging would be an
+// import cycle. Same pattern DB_OPs/latest_block.go uses for the same
+// reason. When nil, defaults to permit — mirrors consensusSyncGate's own
+// "unwired means this package's existing tests are unaffected" convention;
+// the actual fail-closed behavior in production comes from main.go
+// explicitly wiring this to messaging.SlotStoreReady, which itself defaults
+// false until recovery succeeds.
+var slotStoreReadyFn func() bool
+
+// SetSlotStoreReadyFn wires the slot-recovery readiness check. Call once at
+// startup, before the node can vote — see main.go's call site, right after
+// messaging.RecoverSlotStoreAtStartup is wired.
+func SetSlotStoreReadyFn(fn func() bool) { slotStoreReadyFn = fn }
+
 // Consensus vote sync-gate.
 //
 // An unsynced node MUST NOT participate in consensus. A node with no local
@@ -38,6 +69,17 @@ func SetConsensusSyncGate(fn func() bool) { consensusSyncGate = fn }
 
 // consensusVoteReady reports whether this node may cast a consensus vote now.
 func consensusVoteReady() bool {
+	// Fail-closed: a node whose slot/epoch clock has not been recovered from
+	// its own committed history must not vote at all, independent of block
+	// height sync — see enforceSlotRecoveryGate/slotStoreReadyFn's docs.
+	// Checked first, and unconditionally (not folded into the block-height
+	// escape hatches below), because a node can be perfectly caught up on
+	// block HEIGHT while its in-memory SlotStore is still stuck at slot 0
+	// post-restart — that is exactly the bug this closes
+	// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8).
+	if enforceSlotRecoveryGate && slotStoreReadyFn != nil && !slotStoreReadyFn() {
+		return false
+	}
 	// Default-off: when the gate is not explicitly enforced, always permit
 	// voting so a buddy that cannot self-assess sync state does not silently
 	// abstain and stall consensus.

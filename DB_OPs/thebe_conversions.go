@@ -5,6 +5,7 @@ package DB_OPs
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -41,7 +42,15 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
-	return &config.ZKBlock{
+	// Slot/Period — persisted by DB_OPs/backend/block.go's toBlockRecord
+	// (2026-08-24, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8) so a
+	// restarted node can recover its slot/epoch clock from its own committed
+	// history (messaging.SlotStore.SeedFromCommittedTip). This was the
+	// missing read-side half: the write side existed and was tested, but
+	// nothing decoded these two keys back out of ExtraData into the ZKBlock
+	// struct, so every caller of GetZKBlockByNumber saw Slot=0/Period=0 on a
+	// real block regardless of what was actually persisted.
+	blk := &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
 		PrevHash:     common.HexToHash(r.ParentHash),
@@ -55,7 +64,53 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		GasUsed:      r.GasUsed,
 		ExtraData:    extraData,
 		Transactions: []config.Transaction{},
-	}, nil
+	}
+	if v, ok := r.ExtraData["slot"]; ok {
+		blk.Slot = extraDataUint64(v)
+	}
+	if v, ok := r.ExtraData["period"]; ok {
+		blk.Period = extraDataUint64(v)
+	}
+	return blk, nil
+}
+
+// extraDataUint64 decodes a uint64 that round-tripped through ExtraData's
+// map[string]any (itself round-tripped through JSON — see
+// thebegateway/reader.go's scanBlock, and the cache decorator in
+// DB_OPs/store/cache/block.go, both of which json.Unmarshal into this map).
+// JSON numbers decode to float64 by default, never uint64/int64 directly, so
+// a plain type-assertion to uint64 always misses — this is the one correct
+// place that fact needs handling, rather than every caller re-discovering it.
+// Also accepts the narrower numeric types directly, for any future writer
+// that bypasses JSON (e.g. an in-process test building the map by hand).
+func extraDataUint64(v any) uint64 {
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case uint64:
+		return n
+	case int64:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case int:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case json.Number:
+		u, err := strconv.ParseUint(n.String(), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return u
+	default:
+		return 0
+	}
 }
 
 // txRecordToTransaction converts a thebegateway.TransactionRecord to a config.Transaction.

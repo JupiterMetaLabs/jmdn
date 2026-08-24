@@ -604,8 +604,21 @@ func processZKBlock(c *gin.Context) {
 	// attachment point — set Slot/Period from jmdn's own live tracking and,
 	// when the rollout flag is on, recompute BlockHash to bind them. Must run
 	// after all other validation/enrichment above and before consensus.Start
-	// below — see Block/consensus_fields.go for the full rationale.
-	attachAVCConsensusFields(&block)
+	// below — see Block/consensus_fields.go for the full rationale. Fails
+	// closed (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8) if this node's
+	// slot/epoch clock has not been recovered from its committed history.
+	if err := attachAVCConsensusFields(&block); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "slot_recovery_not_ready"))
+		logger().Error(spanCtx, "Refusing to propose — slot/epoch clock not recovered",
+			err,
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("log_file", FILENAME),
+			ion.String("topic", BLOCKTOPIC),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
 
 	logger().Info(spanCtx, "Block validated, starting consensus process",
 		ion.Int64("block_number", int64(block.BlockNumber)),

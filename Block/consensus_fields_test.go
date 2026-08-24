@@ -28,6 +28,19 @@ func resetSlotAndPeriodStores(t *testing.T) {
 		messaging.DefaultSlotStore = savedSlot
 		messaging.DefaultPeriodStore = savedPeriod
 	})
+
+	// attachAVCConsensusFields now fails closed (docs/COMMITTEE-SNAPSHOT-
+	// FREEZE-TODO.md item 8) unless messaging.SlotStoreReady() is true. These
+	// tests are exercising the field-assignment logic itself, not the
+	// recovery gate — TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered
+	// below covers the gate directly, deliberately WITHOUT this helper.
+	savedReady := messaging.SlotStoreReady()
+	messaging.MarkSlotStoreReady()
+	t.Cleanup(func() {
+		if !savedReady {
+			messaging.ResetSlotStoreReadyForTest()
+		}
+	})
 }
 
 func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) {
@@ -38,7 +51,9 @@ func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) 
 	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
 
 	block := &config.ZKBlock{BlockNumber: 2}
-	attachAVCConsensusFields(block)
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
 
 	// LiveSlotFor(2) = committed(2) + pendingPeriod(0) + 1 = 3.
 	if block.Slot != 3 {
@@ -57,7 +72,9 @@ func TestAttachAVCConsensusFields_FlagOff_DoesNotTouchBlockHash(t *testing.T) {
 
 	original := common.HexToHash("0xdeadbeef")
 	block := &config.ZKBlock{BlockNumber: 0, BlockHash: original}
-	attachAVCConsensusFields(block)
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
 
 	if block.BlockHash != original {
 		t.Fatalf("flag off: BlockHash changed from %s to %s, must be untouched", original.Hex(), block.BlockHash.Hex())
@@ -74,7 +91,9 @@ func TestAttachAVCConsensusFields_FlagOn_RecomputesBlockHashToMatchIndependentCa
 		BlockNumber: 0,
 		BlockHash:   common.HexToHash("0xdeadbeef"), // whatever the caller supplied — must be overwritten
 	}
-	attachAVCConsensusFields(block)
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
 
 	// Independently recompute — not by re-checking the function's own output
 	// against itself, but by calling the same underlying function a second
@@ -86,5 +105,45 @@ func TestAttachAVCConsensusFields_FlagOn_RecomputesBlockHashToMatchIndependentCa
 	}
 	if block.BlockHash == common.HexToHash("0xdeadbeef") {
 		t.Fatal("flag on: BlockHash was not overwritten from the placeholder value")
+	}
+}
+
+// TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered is the
+// propose-side half of the slot-restart fail-closed fix
+// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node that has not
+// recovered its slot/epoch clock from committed history must refuse to
+// PROPOSE, exactly as consensus_sync_gate.go's consensusVoteReady refuses to
+// VOTE. Deliberately does NOT use resetSlotAndPeriodStores's helper (that
+// helper marks the store ready specifically so the OTHER tests in this file
+// can test field-assignment logic in isolation from this gate).
+func TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered(t *testing.T) {
+	savedSlot, savedPeriod := messaging.DefaultSlotStore, messaging.DefaultPeriodStore
+	messaging.DefaultSlotStore = messaging.NewSlotStore()
+	messaging.DefaultPeriodStore = messaging.NewPeriodStore()
+	messaging.ResetSlotStoreReadyForTest()
+	savedEnforce := messaging.EnforceSlotRecoveryGate
+	messaging.EnforceSlotRecoveryGate = true
+	t.Cleanup(func() {
+		messaging.DefaultSlotStore = savedSlot
+		messaging.DefaultPeriodStore = savedPeriod
+		messaging.EnforceSlotRecoveryGate = savedEnforce
+	})
+
+	block := &config.ZKBlock{BlockNumber: 7, Slot: 999, Period: 999}
+	err := attachAVCConsensusFields(block)
+	if err == nil {
+		t.Fatal("expected attachAVCConsensusFields to refuse when SlotStoreReady() is false, got nil error")
+	}
+	// The refusal must happen BEFORE any field is touched — a caller that
+	// ignores the error must not find a half-mutated block that looks valid.
+	if block.Slot != 999 || block.Period != 999 {
+		t.Fatalf("attachAVCConsensusFields mutated Slot/Period despite refusing: got Slot=%d Period=%d", block.Slot, block.Period)
+	}
+
+	// Once recovery completes, the same call must succeed.
+	messaging.MarkSlotStoreReady()
+	t.Cleanup(messaging.ResetSlotStoreReadyForTest)
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error after SlotStoreReady: %v", err)
 	}
 }

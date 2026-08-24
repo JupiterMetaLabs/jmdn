@@ -14,6 +14,8 @@ package Block
 // call sites in Server.go and grpc_server.go.
 
 import (
+	"fmt"
+
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/messaging"
@@ -57,7 +59,21 @@ import (
 // zero is honest — M2b's hash still covers them, so a relay cannot turn a zero
 // into a nonzero. Do not synthesize placeholder values to make them look
 // populated.
-func attachAVCConsensusFields(block *config.ZKBlock) {
+// attachAVCConsensusFields now returns an error, checked FIRST and fail-closed
+// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node whose slot/epoch
+// clock has not been recovered from its own committed history (see
+// messaging.RecoverSlotStoreAtStartup / SlotStoreReady) must not PROPOSE
+// either, not only vote — block.Slot below is read straight off
+// DefaultSlotStore via LiveSlotFor, and stamping a wrong slot onto a
+// proposed block is exactly as dangerous as voting on one, arguably worse
+// since it is this node's own error propagating outward to every voter.
+// Mirrors the vote-side gate in
+// AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go's consensusVoteReady;
+// same knob (messaging.EnforceSlotRecoveryGate), so one env var controls both.
+func attachAVCConsensusFields(block *config.ZKBlock) error {
+	if messaging.EnforceSlotRecoveryGate && !messaging.SlotStoreReady() {
+		return fmt.Errorf("attachAVCConsensusFields: SlotStore not recovered — refusing to propose block %d until this node's slot/epoch clock is confirmed consistent with its committed history", block.BlockNumber)
+	}
 	block.Slot = messaging.LiveSlotFor(block.BlockNumber)
 	block.Period = messaging.DefaultPeriodStore.PeriodFor(block.BlockNumber)
 	block.RandaoReveals = messaging.RevealsForBlock(block.Slot)
@@ -70,7 +86,19 @@ func attachAVCConsensusFields(block *config.ZKBlock) {
 		block.PrevAggCert = messaging.CertificateForBlockAssembly(block.Slot, block.BlockNumber-1)
 	}
 
+	// Committee-snapshot anchor (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md items
+	// 1/6/8) — empty unless JMDN_COMMITTEE_SNAPSHOT_ANCHOR is on AND this
+	// block's slot's epoch has already been frozen (messaging's
+	// maybeFreezeUpcomingSnapshot, called from the commit hooks). Repeated on
+	// every block of the epoch once frozen, not just one boundary block, so
+	// a rejoining node can recover it from whichever block it happens to sync
+	// to first, not one specific block that might be missed.
+	if h, ok := messaging.FrozenCommitteeSnapshotHashFor(messaging.EpochForSlot(block.Slot)); ok {
+		block.CommitteeSnapshotHash = h[:]
+	}
+
 	if Security.M2bHashEnabled {
 		block.BlockHash = Security.RecomputeBlockHashWithConsensusFields(block)
 	}
+	return nil
 }
