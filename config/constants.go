@@ -92,6 +92,18 @@ const (
 	// is still "T1" in the architecture doc's transport inventory.
 	RevealPushProtocol   protocol.ID = "/p2p/randao/reveal/1.0.0"
 	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/2.0.0" // v2 protocol: signed PREPARE/COMMIT
+
+	// TimeoutCertRejoinProtocol carries the rejoin/catch-up request-response
+	// RPC for M0/§7.1c's timeout certificates: a node that just synced (or
+	// restarted) asks a peer "what's your latest accepted TimeoutCertificate
+	// for height H", instead of waiting to observe one over gossip live.
+	// Added 2026-08-24 — closes the scope note in messaging/timeout_gossip.go
+	// ("a real network fetch-on-rejoin RPC ... is NOT built here"). One
+	// request, one response, both JSON+newline over a direct stream — same
+	// shape as RevealPushProtocol above, its own protocol ID for the same
+	// reason: a node that doesn't speak it fails the connection rather than
+	// silently mis-routing into another handler.
+	TimeoutCertRejoinProtocol protocol.ID = "/p2p/timeout-cert/rejoin/1.0.0"
 )
 
 const (
