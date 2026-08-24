@@ -99,6 +99,19 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 		rec.ExtraData = map[string]any{"raw": b.ExtraData}
 	}
 
+	// Slot/Period: persisted so a restarted node can recover its slot counter
+	// from the tip block instead of resetting to 0 - see
+	// messaging.SlotStore.SeedFromCommittedTip and
+	// docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8. Written unconditionally,
+	// including when both are legitimately 0 (genesis / first commit) - a
+	// value must always be present for the reseed to distinguish "no data
+	// persisted yet" from "this block's slot really is 0".
+	if rec.ExtraData == nil {
+		rec.ExtraData = map[string]any{}
+	}
+	rec.ExtraData["slot"] = b.Slot
+	rec.ExtraData["period"] = b.Period
+
 	return rec
 }
 
