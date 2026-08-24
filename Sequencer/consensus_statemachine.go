@@ -434,6 +434,20 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// Broadcast the "rejected" status so nodes discard the block; it is never
 		// applied locally. The alert from VerifyConsensusWithBLS already notifies
 		// about the failed vote, so a broadcast error here is not propagated.
+
+		// M0/§7.1c timeout-certificate wiring — the integration point named
+		// in timeout_certificates.go's own doc comment. blockVoters is every
+		// peer that returned ANY vote this round (Agree or Reject) — used so
+		// the mutual-exclusion rule (§7.1b: a validator cannot sign both a
+		// block vote and a timeout vote for the same height/period) has real
+		// data, not an assumed-empty set. No-op end-to-end unless
+		// JMDN_TIMEOUT_CERT_WIRING=1.
+		blockVoters := make(map[string]bool, len(blsResults))
+		for _, r := range blsResults {
+			blockVoters[r.PeerID] = true
+		}
+		messaging.MaybeStartTimeoutFlow(consensus.Host, block.BlockNumber, blockVoters)
+
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
 			logger().Warn(ctx, "Failed to broadcast rejected-block notice to peers",
 				ion.String("error", err.Error()),

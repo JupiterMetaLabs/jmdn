@@ -50,7 +50,7 @@ var (
 // generateMessageID creates a unique ID for a broadcast message
 func generateMessageID(sender, content string, timestamp int64) string {
 	hasher := sha256.New()
-	hasher.Write(fmt.Appendf(nil, "%s-%s-%d", sender, content, timestamp))
+	hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, content, timestamp)))
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }
@@ -151,6 +151,15 @@ func HandleBroadcastStream(stream network.Stream) {
 	// Handle different message types
 	if msg.Type == "vote_trigger" {
 		handleVoteTriggerBroadcast(msg)
+	}
+	// Timeout-certificate wiring (M0/§7.1c, timeout_gossip.go) — reuses this
+	// exact flood-broadcast transport with two new msg.Type values. Both
+	// handlers no-op unless TimeoutCertWiringEnabled is set.
+	if msg.Type == timeoutVoteBroadcastType {
+		handleTimeoutVoteBroadcast(getHostInstance(), msg)
+	}
+	if msg.Type == timeoutCertBroadcastType {
+		handleTimeoutCertificateBroadcast(getHostInstance(), msg)
 	}
 
 	// Only rebroadcast if we haven't reached max hops
