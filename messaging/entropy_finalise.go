@@ -44,6 +44,28 @@ package messaging
 // still computes it internally for the fallback branch, and every path below
 // discards that value.
 //
+// # Amendment, 2026-08-24 — two-phase finalisation
+//
+// The single-shot design above had a bug found while reviewing a count-based
+// alternative to the fixed [K,K+B) fold window: maybeFinaliseCompletedEpochs
+// called the fallback fold (finaliseEpoch -> resolveFallbackSeed) AT the
+// cutoff slot itself, which is also the instant the collection range OPENS.
+// Zero signers exist in the range at that moment under any window design, so
+// the fallback path could never succeed — every fallback epoch failed closed
+// unconditionally, which is a stronger and unintended failure than "fail
+// closed when genuinely unable to compute a seed."
+//
+// Finalisation is now two phases: decideEpoch makes only the mixed-vs-fallback
+// call at the cutoff (a mixed outcome still finalises immediately). A
+// fallback outcome enters pendingFallback and is retried by
+// resolvePendingFallbacks on every subsequently committed block, until either
+// enough signers have been collected (see entropy_fallback_window.go's
+// FallbackFoldBufferB) or the collection deadline passes (see
+// FallbackFoldMaxSlotOffset) — see this file's "Two-phase finalisation"
+// section below. resolveFallbackSeed and finaliseEpoch (the single-shot
+// functions) are removed; decideEpoch and resolvePendingFallbacks replace
+// them.
+//
 // # The genesis gap — unchanged, still disclosed, still not solved here
 //
 // This cannot produce a result for the network's first epoch: it needs
@@ -52,6 +74,8 @@ package messaging
 // entropy exists anywhere in this codebase. Every call fails closed until that
 // is decided — logged, never fatal, never guessed around.
 import (
+	"errors"
+	"sort"
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/randao"
@@ -97,68 +121,85 @@ func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
 }
 
 // ---------------------------------------------------------------------------
-// Fallback selection — the security-sensitive part of this file
+// Two-phase finalisation — the security- and liveness-sensitive part of this
+// file. See this file's header amendment for why this replaced a single-shot
+// design.
 // ---------------------------------------------------------------------------
 
-// fallbackSeedSource names which formula produced a fallback seed, so logs
-// never have to infer it. One value today; kept as a named type because a
-// future threshold-BLS variant (§10 decision 1f) would be a second one.
-type fallbackSeedSource string
-
-const fallbackSourceAggSig fallbackSeedSource = "aggsig-window" // §4.2a, the only formula
-
-// resolveFallbackSeed picks the fallback seed for epoch: §4.2a's
-// aggregate-signature fold, or nothing.
-//
-// Takes the fold as a parameter rather than reading global state so the
-// fail-closed behaviour can be tested without a live committee, beacon, or
-// aggregate store.
-//
-// There is deliberately no second option. An epoch that cannot compute the
-// §4.2a seed does not finalise — see this file's header for why a visible halt
-// beats a weaker seed.
-func resolveFallbackSeed(
-	epoch uint64,
-	aggSigSeed func(uint64) (randao.Seed, error),
-) (randao.Seed, fallbackSeedSource, error) {
-
-	seed, err := aggSigSeed(epoch)
-	if err != nil {
-		return randao.Seed{}, "", err
-	}
-	return seed, fallbackSourceAggSig, nil
-}
-
-// ---------------------------------------------------------------------------
-// Finalisation
-// ---------------------------------------------------------------------------
-
-// finaliseEpoch finalises epoch's Accumulator, replacing the fallback branch's
-// seed per resolveFallbackSeed. A mixed outcome passes through untouched.
-func finaliseEpoch(epoch uint64) (randao.Result, error) {
+// decideEpoch makes the one decision Architecture §7.2 ties to the cutoff
+// slot: mixed, or fallback. A mixed outcome finalises immediately, exactly as
+// the single-shot design did. A fallback outcome is marked pending — it must
+// NOT try to resolve a seed here, because the collection range has just
+// opened and holds zero signers at this exact instant.
+func decideEpoch(epoch uint64, block *config.ZKBlock) {
 	acc, err := entropyAccumulatorFor(epoch)
 	if err != nil {
-		return randao.Result{}, err
+		log.Error().Err(err).Uint64("epoch", epoch).Uint64("height", block.BlockNumber).
+			Msg("entropy: cannot decide epoch outcome — no accumulator")
+		return
 	}
 
 	res := acc.Finalise()
 	if res.Outcome != randao.OutcomeFallback {
-		return res, nil
+		notifyEpochFinalised(epoch, res.Seed)
+		pruneAggSigsBelow(cutoffSlotFor(epoch))
+		pruneRevealsBelow(epoch + 1)
+		return
 	}
 
-	// Every path from here discards randao.Fallback()'s output, which
+	// Every path past this point discards randao.Fallback()'s output, which
 	// Accumulator.Finalise() has already put in res.Seed — that is §4.2a's
-	// RESOLVED-AS-BROKEN formula and it must never reach the beacon.
-	seed, source, err := resolveFallbackSeed(epoch, FallbackSeedForEpoch)
-	if err != nil {
-		return randao.Result{}, err
-	}
+	// RESOLVED-AS-BROKEN formula and it must never reach the beacon. Nothing
+	// below reads res.Seed again; the eventual seed comes only from
+	// resolvePendingFallbacks once collection succeeds.
+	finaliseTrackMu.Lock()
+	pendingFallback[epoch] = struct{}{}
+	finaliseTrackMu.Unlock()
+	log.Info().Uint64("epoch", epoch).Strs("withheld", res.Withheld).Uint64("height", block.BlockNumber).
+		Msg("entropy: epoch entered fallback at the reveal cutoff — collecting aggregate-signature signers before it can finalise")
+}
 
-	res.Seed = seed
-	log.Info().Uint64("epoch", epoch).Strs("withheld", res.Withheld).
-		Str("formula", string(source)).
-		Msg("entropy: epoch finalised via the §4.2a aggregate-signature fallback")
-	return res, nil
+// resolvePendingFallbacks re-attempts every epoch still waiting on the
+// aggregate-signature fold, at this block's slot. Called on every committed
+// block (not just at the cutoff) via maybeFinaliseCompletedEpochs, because a
+// pending epoch's signers are exactly the blocks committed after its cutoff —
+// they do not exist yet when decideEpoch runs.
+func resolvePendingFallbacks(block *config.ZKBlock) {
+	finaliseTrackMu.Lock()
+	pending := make([]uint64, 0, len(pendingFallback))
+	for e := range pendingFallback {
+		pending = append(pending, e)
+	}
+	finaliseTrackMu.Unlock()
+	sort.Slice(pending, func(i, j int) bool { return pending[i] < pending[j] })
+
+	for _, e := range pending {
+		seed, err := FallbackSeedForEpoch(e, block.Slot)
+		switch {
+		case err == nil:
+			finaliseTrackMu.Lock()
+			delete(pendingFallback, e)
+			finaliseTrackMu.Unlock()
+			log.Info().Uint64("epoch", e).Uint64("height", block.BlockNumber).
+				Msg("entropy: epoch finalised via the §4.2a aggregate-signature fallback")
+			notifyEpochFinalised(e, seed)
+			pruneAggSigsBelow(cutoffSlotFor(e))
+			pruneRevealsBelow(e + 1)
+		case errors.Is(err, ErrFallbackNotYetReady):
+			// Still collecting; try again on the next block.
+		case errors.Is(err, ErrFallbackDeadlineExceeded):
+			finaliseTrackMu.Lock()
+			delete(pendingFallback, e)
+			finaliseTrackMu.Unlock()
+			log.Error().Err(err).Uint64("epoch", e).Uint64("height", block.BlockNumber).
+				Msg("entropy: fallback deadline exceeded — no seed produced for this epoch (fail closed by design; not retried again)")
+			pruneAggSigsBelow(cutoffSlotFor(e))
+			pruneRevealsBelow(e + 1)
+		default:
+			log.Error().Err(err).Uint64("epoch", e).Uint64("height", block.BlockNumber).
+				Msg("entropy: unexpected error resolving a pending fallback epoch")
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -206,53 +247,52 @@ func epochsWithClosedRevealWindow(currentSlot, lastFinalisedEpoch uint64, haveFi
 	return out
 }
 
+// finaliseTrackMu guards all three of the maps/counters below — the decided-
+// epoch watermark and the set of epochs still waiting on their fallback
+// fold. One mutex for all three because decideEpoch and
+// resolvePendingFallbacks are always called back-to-back from the same
+// commit hook and never need fine-grained locking between them.
 var (
-	finaliseTrackMu    sync.Mutex
-	lastFinalisedEpoch uint64
-	haveFinalisedAny   bool
+	finaliseTrackMu  sync.Mutex
+	lastDecidedEpoch uint64
+	haveDecidedAny   bool
+	pendingFallback  = make(map[uint64]struct{})
 )
 
-// maybeFinaliseCompletedEpochs finalises every epoch whose reveal cutoff this
-// block's slot has reached, and notifies Stage E for each one that succeeds.
+// maybeFinaliseCompletedEpochs runs both phases for a newly committed block:
+// decide any epoch whose reveal cutoff this block's slot has just reached,
+// then retry every still-pending fallback epoch against this block.
 //
 // Call once per committed block, from the same two hooks
 // foldBlockDeclaredReveals uses (broadcast.go's ProcessBlockLocally,
 // blockPropagation.go's receive path) — and AFTER foldBlockDeclaredReveals and
 // VerifyAndRecordPrevCert, so this block's own reveal and its parent's
-// certificate are in before any epoch is finalised using them.
+// certificate are in before either phase runs.
 //
-// An epoch that fails to finalise is still marked handled and never retried:
-// its reveal window really has closed, whether or not the failure is fixed
-// later. Retrying would mean folding reveals that arrived after the cutoff,
-// which is precisely what the cutoff exists to exclude.
+// A mixed epoch, or a fallback epoch that resolves (succeeds or hits its
+// deadline), is never revisited: decideEpoch advances lastDecidedEpoch
+// unconditionally, and resolvePendingFallbacks removes an epoch from
+// pendingFallback the moment it resolves either way. Retrying a resolved
+// epoch would mean folding signers from slots the cutoff or the deadline has
+// already ruled out — precisely what both boundaries exist to prevent.
 func maybeFinaliseCompletedEpochs(block *config.ZKBlock) {
 	finaliseTrackMu.Lock()
-	toClose := epochsWithClosedRevealWindow(block.Slot, lastFinalisedEpoch, haveFinalisedAny)
+	toDecide := epochsWithClosedRevealWindow(block.Slot, lastDecidedEpoch, haveDecidedAny)
 	finaliseTrackMu.Unlock()
 
-	for _, e := range toClose {
-		res, err := finaliseEpoch(e)
-
+	for _, e := range toDecide {
+		decideEpoch(e, block)
 		finaliseTrackMu.Lock()
-		lastFinalisedEpoch = e
-		haveFinalisedAny = true
+		lastDecidedEpoch = e
+		haveDecidedAny = true
 		finaliseTrackMu.Unlock()
-
-		if err != nil {
-			log.Error().Err(err).Uint64("epoch", e).
-				Uint64("height", block.BlockNumber).Uint64("slot", block.Slot).
-				Msg("entropy: reveal window closed but the epoch could not be finalised — no seed produced, nothing downstream can seat off this epoch (fail closed by design; see this file's fallback-selection order)")
-			continue
-		}
-
-		notifyEpochFinalised(e, res.Seed)
-
-		// The next epoch's fold window starts strictly after this one's, so
-		// anything below this epoch's cutoff can never be needed again.
-		pruneAggSigsBelow(cutoffSlotFor(e))
-
-		// Same for buffered reveals: this epoch's window is closed, so nothing
-		// still held for it (or for any earlier epoch) can ever be included.
-		pruneRevealsBelow(e + 1)
 	}
+
+	resolvePendingFallbacks(block)
+
+	// Committee-snapshot anchoring (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// items 1/8) - piggybacks on this function's existing per-commit call
+	// sites (blockPropagation.go, broadcast.go) rather than adding a third.
+	// No-op unless CommitteeSnapshotAnchorEnabled is on.
+	maybeFreezeUpcomingSnapshot(block.Slot)
 }

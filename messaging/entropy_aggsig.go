@@ -114,27 +114,31 @@ func RecordCommitCertificate(height uint64, responses []BLS_Signer.BLSresponse) 
 // CertificateForBlockAssembly returns the certificate to attach to a block at
 // `slot` with parent height `prevHeight`, or nil.
 //
-// Returns nil unless slot is inside a fold window — carrying it on every block
-// would cost ~10x the storage for data only the window needs. The window is
-// shifted by +1 slot to account for the one-block certificate lag: a block at
-// slot S carries the certificate for its PARENT, so to cover fold slots
-// [K, K+B) the certificates ride on the blocks that follow them. With no
-// timeouts the carrier sits at S+1; after a timeout the parent is period+1
-// slots back, which VerifyAndRecordPrevCert accounts for. The +1 window shift
-// here is the no-timeout case; a timed-out round simply leaves its slot
-// uncovered, and the fold then fails closed for that epoch — correct, because
-// that slot genuinely produced no committed block to certify.
+// Returns nil unless slot is inside the fallback collection deadline range —
+// carrying it on every block would cost far more storage than only the range
+// that might need it. The range is shifted by +1 slot to account for the
+// one-block certificate lag: a block at slot S carries the certificate for
+// its PARENT, so to cover collection slots [K, K+MaxOffset) the certificates
+// ride on the blocks that follow them. With no timeouts the carrier sits at
+// S+1; after a timeout the parent is period+1 slots back, which
+// VerifyAndRecordPrevCert accounts for.
+//
+// Note this range can be wider than FallbackFoldBufferB slots — collection
+// stops as soon as B signers are found, wherever in the range that happens,
+// so any block before the deadline might turn out to be one of the B signers
+// actually used. A timed-out round simply leaves its slot uncovered, which is
+// expected and does not block collection (see entropy_fallback_window.go).
 func CertificateForBlockAssembly(slot, prevHeight uint64) []config.CertSigner {
 	if !AggCertEnabled {
 		return nil
 	}
 	epoch := EpochForSlot(slot)
-	start, end, err := randao.FallbackWindow(epoch, N, RevealCutoffK, FallbackFoldBufferB)
+	start, deadline, err := randao.FallbackCollectionBounds(epoch, N, RevealCutoffK, FallbackFoldMaxSlotOffset)
 	if err != nil {
 		return nil
 	}
-	if slot < start+1 || slot >= end+1 {
-		return nil // this block's parent is not in the fold window
+	if slot < start+1 || slot >= deadline+1 {
+		return nil // this block's parent is not in the collection range
 	}
 
 	certForNextBlockMu.Lock()

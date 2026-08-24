@@ -1270,6 +1270,21 @@ func main() {
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
 
+	// Fallback-window parameter sanity check (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md,
+	// "Fallback window" section, item 3 of the 2026-08-24 verification pass).
+	// FallbackFoldBufferB/FallbackFoldMaxSlotOffset are compiled-in constants,
+	// not per-node config, but nothing enforced them against §7.2's liveness
+	// rule at startup — this is that missing wiring, same "built the checker,
+	// never called it" shape the SlotStore recovery gap (item 8) had. A
+	// failure here means N/K/B/MaxOffset cannot satisfy the liveness bound
+	// M4-1 already found broken once, so this hard-exits rather than
+	// failing closed-but-running: unlike a per-node recovery failure, a bad
+	// build affects every node identically and there is nothing to recover
+	// into. No cfg/node dependency, so it can run this early.
+	if err := messaging.ValidateFallbackWindowParams(); err != nil {
+		log.Fatal().Err(err).Msg("fallback window: N/K/B/MaxOffset are not a usable liveness-safe combination (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md, Fallback window section)")
+	}
+
 	// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
 	// item 8). MUST run here, BEFORE node.NewNode() below: that call creates
 	// the libp2p host and registers its stream handlers, which is what lets a

@@ -1,13 +1,12 @@
 package messaging
 
-// Tests for entropy_fallback_window.go — the [K, K+B) fallback fold window
-// (Architecture §4.2a as amended 2026-08-20).
+// Tests for entropy_fallback_window.go — the count-based fallback signer
+// collection (Architecture §4.2a as amended 2026-08-24).
 //
-// The most important test here is the one asserting that this path currently
-// FAILS. Blocker B1 (aggSig is never persisted on a block) means no node can
-// compute this seed today, and the correct behaviour is a visible refusal, not
-// a substituted value. If someone later wires the collector, that test is what
-// tells them the blocker is genuinely cleared rather than papered over.
+// The most important tests here are the three-outcome ones: FallbackSeedForEpoch
+// must distinguish "not ready yet, keep waiting" from "deadline exceeded, give
+// up" from "here is the seed" — collapsing any two of those into one outcome
+// is what made the fallback path unable to ever succeed before this amendment.
 
 import (
 	"errors"
@@ -31,18 +30,35 @@ func testAggSig(b byte) []byte {
 	return s
 }
 
-// The compiled-in parameters must actually form a usable window. Getting this
-// wrong is a silent liveness bug, so it is asserted rather than assumed.
+func mustRecordAggSig(t *testing.T, slot uint64, sig []byte) {
+	t.Helper()
+	if err := RecordAggSigForFallback(slot, sig); err != nil {
+		t.Fatalf("RecordAggSigForFallback(%d): %v", slot, err)
+	}
+}
+
+func testCollectionBounds(t *testing.T, epoch uint64) (start, deadline uint64) {
+	t.Helper()
+	start, deadline, err := randao.FallbackCollectionBounds(epoch, N, RevealCutoffK, FallbackFoldMaxSlotOffset)
+	if err != nil {
+		t.Fatalf("FallbackCollectionBounds: %v", err)
+	}
+	return start, deadline
+}
+
+// The compiled-in parameters must actually form a usable collection range.
+// Getting this wrong is a silent liveness bug, so it is asserted rather than
+// assumed.
 func TestValidateFallbackWindowParams_AdoptedValuesAreUsable(t *testing.T) {
 	if err := ValidateFallbackWindowParams(); err != nil {
-		t.Fatalf("N=%d/K=%d/B=%d is not a usable window: %v", N, RevealCutoffK, FallbackFoldBufferB, err)
+		t.Fatalf("N=%d/K=%d/B=%d/MaxOffset=%d is not usable: %v", N, RevealCutoffK, FallbackFoldBufferB, FallbackFoldMaxSlotOffset, err)
 	}
 }
 
 // B's ceiling, derived from §7.2's own liveness rule at the adopted
-// N=50, K=3, s_min=60s, T_vdf=1200s:  B <= N - K - 2*T_vdf/s_min = 7.
+// N=50, K=3, s_min=60s, T_vdf=1200s: B <= N - K - 2*T_vdf/s_min = 7.
 // If someone raises B past that, a fallback epoch loses its VDF runway — the
-// exact defect the narrowed window was introduced to fix.
+// exact defect the narrowed collection range was introduced to fix.
 func TestFallbackFoldBufferB_WithinTheDerivedCeiling(t *testing.T) {
 	const (
 		sMinSeconds = 60
@@ -58,88 +74,123 @@ func TestFallbackFoldBufferB_WithinTheDerivedCeiling(t *testing.T) {
 	}
 }
 
-// The window must start at the cutoff, not at the epoch boundary — that is
-// what keeps the reveal/withhold decision blind.
-func TestFallbackWindow_UsesTheCutoffAsItsStart(t *testing.T) {
-	start, end, err := randao.FallbackWindow(9, N, RevealCutoffK, FallbackFoldBufferB)
-	if err != nil {
-		t.Fatalf("FallbackWindow: %v", err)
+// The same ceiling applies to the deadline itself — MaxOffset is bounded by
+// the identical liveness rule, since it is the range B's signers must be
+// found inside.
+func TestFallbackFoldMaxSlotOffset_WithinTheDerivedCeilingAndAtLeastB(t *testing.T) {
+	const (
+		sMinSeconds = 60
+		tVDFSeconds = 1200
+	)
+	ceiling := N - RevealCutoffK - 2*tVDFSeconds/sMinSeconds
+	if FallbackFoldMaxSlotOffset > uint64(ceiling) {
+		t.Fatalf("MaxOffset=%d exceeds the derived ceiling %d — a fallback epoch could lose its VDF runway",
+			FallbackFoldMaxSlotOffset, ceiling)
 	}
+	if FallbackFoldMaxSlotOffset < FallbackFoldBufferB {
+		t.Fatalf("MaxOffset=%d is smaller than B=%d — even zero timeouts could never collect enough signers before the deadline",
+			FallbackFoldMaxSlotOffset, FallbackFoldBufferB)
+	}
+}
+
+// The collection range must start at the cutoff, not at the epoch boundary —
+// that is what keeps the reveal/withhold decision blind.
+func TestFallbackCollectionBounds_UsesTheCutoffAsItsStart(t *testing.T) {
+	start, deadline := testCollectionBounds(t, 9)
 	if start != cutoffSlotFor(9) {
-		t.Fatalf("window starts at %d, want the cutoff slot %d", start, cutoffSlotFor(9))
+		t.Fatalf("range starts at %d, want the cutoff slot %d", start, cutoffSlotFor(9))
 	}
-	if end >= 10*N {
-		t.Fatalf("window ends at %d, at or past epoch 9's end %d — no runway left", end, 10*N)
-	}
-}
-
-// BLOCKER B1, asserted. Nothing populates the store in production, so this must
-// refuse rather than produce a seed.
-func TestFallbackSeedForEpoch_FailsClosedWhileAggSigIsNotPersisted(t *testing.T) {
-	resetAggSigStore(t)
-
-	_, err := FallbackSeedForEpoch(9)
-	if err == nil {
-		t.Fatal("FallbackSeedForEpoch returned a seed with no recorded aggregates — while blocker B1 stands " +
-			"this path must fail closed, never substitute a value")
-	}
-	if !errors.Is(err, ErrAggSigUnavailable) {
-		t.Fatalf("error = %v, want ErrAggSigUnavailable so the cause is unambiguous", err)
+	if deadline >= 10*N {
+		t.Fatalf("range ends at %d, at or past epoch 9's end %d — no runway left", deadline, 10*N)
 	}
 }
 
-// A partial window is still a refusal: folding one would hand whoever caused
-// the gap a choice among window subsets.
-func TestFallbackSeedForEpoch_PartialWindowStillFailsClosed(t *testing.T) {
+// --- FallbackSeedForEpoch: the three outcomes -------------------------------
+
+// Fewer than B signers, deadline not reached: keep waiting, do not fail
+// permanently and do not fabricate a seed.
+func TestFallbackSeedForEpoch_NotYetReadyBeforeDeadline(t *testing.T) {
 	resetAggSigStore(t)
-	start, end, err := randao.FallbackWindow(9, N, RevealCutoffK, FallbackFoldBufferB)
-	if err != nil {
-		t.Fatalf("FallbackWindow: %v", err)
-	}
+	start, _ := testCollectionBounds(t, 9)
+	mustRecordAggSig(t, start, testAggSig(0x01))
+	mustRecordAggSig(t, start+1, testAggSig(0x02)) // only 2 of 5
 
-	// Record every slot except the last.
-	for slot := start; slot < end-1; slot++ {
-		if err := RecordAggSigForFallback(slot, testAggSig(byte(slot))); err != nil {
-			t.Fatalf("RecordAggSigForFallback(%d): %v", slot, err)
-		}
-	}
-
-	if _, err := FallbackSeedForEpoch(9); !errors.Is(err, ErrAggSigUnavailable) {
-		t.Fatalf("error = %v, want ErrAggSigUnavailable for a window missing one slot", err)
+	_, err := FallbackSeedForEpoch(9, start+1)
+	if !errors.Is(err, ErrFallbackNotYetReady) {
+		t.Fatalf("error = %v, want ErrFallbackNotYetReady", err)
 	}
 }
 
-// The forward-looking test: once B1 lands and the collector is fed, the seed
-// must actually compute. This proves the wiring is complete apart from its
-// input.
-func TestFallbackSeedForEpoch_CompleteWindowProducesSeed(t *testing.T) {
+// The exact worked example from the design discussion: signers land at
+// offsets 0,1,3,5,6 from the cutoff (offsets 2 and 4 behaved as if they
+// timed out). This must succeed — it is the scenario the fixed-width window
+// could never handle.
+func TestFallbackSeedForEpoch_ReadyOnceFiveCollectedWithGaps(t *testing.T) {
 	resetAggSigStore(t)
-	start, end, err := randao.FallbackWindow(9, N, RevealCutoffK, FallbackFoldBufferB)
-	if err != nil {
-		t.Fatalf("FallbackWindow: %v", err)
-	}
-	for slot := start; slot < end; slot++ {
-		if err := RecordAggSigForFallback(slot, testAggSig(byte(slot))); err != nil {
-			t.Fatalf("RecordAggSigForFallback(%d): %v", slot, err)
-		}
+	start, _ := testCollectionBounds(t, 9)
+	offsets := []uint64{0, 1, 3, 5, 6}
+	for i, off := range offsets {
+		mustRecordAggSig(t, start+off, testAggSig(byte(i+1)))
 	}
 
-	seed, err := FallbackSeedForEpoch(9)
+	seed, err := FallbackSeedForEpoch(9, start+offsets[len(offsets)-1])
 	if err != nil {
 		t.Fatalf("FallbackSeedForEpoch: %v", err)
 	}
 	if seed == (randao.Seed{}) {
-		t.Fatal("seed is all zero")
+		t.Fatal("returned the zero seed")
+	}
+}
+
+// Past the deadline with too few signers: fail closed, distinguishably from
+// "not yet ready", so the caller knows to stop retrying.
+func TestFallbackSeedForEpoch_DeadlineExceededWithTooFewSigners(t *testing.T) {
+	resetAggSigStore(t)
+	start, deadline := testCollectionBounds(t, 9)
+	mustRecordAggSig(t, start, testAggSig(0x01)) // only 1 of 5
+
+	_, err := FallbackSeedForEpoch(9, deadline)
+	if !errors.Is(err, ErrFallbackDeadlineExceeded) {
+		t.Fatalf("error = %v, want ErrFallbackDeadlineExceeded", err)
+	}
+}
+
+// Zero signers at the cutoff slot itself is exactly the instant the old
+// single-shot design called this function at — it must be "not yet ready",
+// never an immediate hard failure, or the fallback path can never succeed.
+func TestFallbackSeedForEpoch_ZeroSignersAtCutoffIsNotYetReadyNotAFailure(t *testing.T) {
+	resetAggSigStore(t)
+	start, deadline := testCollectionBounds(t, 9)
+	if start >= deadline {
+		t.Fatal("test setup: start must be before deadline")
 	}
 
-	// And it must depend on the aggregates, not just on epoch/chain.
-	resetAggSigStore(t)
-	for slot := start; slot < end; slot++ {
-		if err := RecordAggSigForFallback(slot, testAggSig(byte(slot)+100)); err != nil {
-			t.Fatalf("RecordAggSigForFallback(%d): %v", slot, err)
-		}
+	_, err := FallbackSeedForEpoch(9, start)
+	if !errors.Is(err, ErrFallbackNotYetReady) {
+		t.Fatalf("error = %v, want ErrFallbackNotYetReady — this is the exact bug being fixed", err)
 	}
-	other, err := FallbackSeedForEpoch(9)
+	if errors.Is(err, ErrFallbackDeadlineExceeded) {
+		t.Fatal("zero signers at the cutoff must not be treated as a deadline failure")
+	}
+}
+
+// And it must actually depend on the aggregates, not just on epoch/chain.
+func TestFallbackSeedForEpoch_DependsOnTheAggregates(t *testing.T) {
+	resetAggSigStore(t)
+	start, deadline := testCollectionBounds(t, 9)
+	for i := uint64(0); i < FallbackFoldBufferB; i++ {
+		mustRecordAggSig(t, start+i, testAggSig(byte(i)))
+	}
+	seed, err := FallbackSeedForEpoch(9, deadline)
+	if err != nil {
+		t.Fatalf("FallbackSeedForEpoch: %v", err)
+	}
+
+	resetAggSigStore(t)
+	for i := uint64(0); i < FallbackFoldBufferB; i++ {
+		mustRecordAggSig(t, start+i, testAggSig(byte(i)+100))
+	}
+	other, err := FallbackSeedForEpoch(9, deadline)
 	if err != nil {
 		t.Fatalf("FallbackSeedForEpoch (second set): %v", err)
 	}
@@ -171,9 +222,7 @@ func TestPruneAggSigsBelow_DropsOnlyOlderSlots(t *testing.T) {
 	resetAggSigStore(t)
 
 	for slot := uint64(0); slot < 20; slot++ {
-		if err := RecordAggSigForFallback(slot, testAggSig(byte(slot))); err != nil {
-			t.Fatalf("RecordAggSigForFallback(%d): %v", slot, err)
-		}
+		mustRecordAggSig(t, slot, testAggSig(byte(slot)))
 	}
 	pruneAggSigsBelow(10)
 
