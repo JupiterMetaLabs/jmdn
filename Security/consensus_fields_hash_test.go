@@ -30,9 +30,10 @@ func sampleBlock() *config.ZKBlock {
 			{ProposerID: "peerA", Secret: []byte("secret-a")},
 			{ProposerID: "peerB", Secret: []byte("secret-b")},
 		},
-		VdfProof:            []byte("proof-bytes"),
-		SeedEpoch:           30,
-		VotingSnapshotEpoch: 31,
+		VdfProof:              []byte("proof-bytes"),
+		SeedEpoch:             30,
+		VotingSnapshotEpoch:   31,
+		CommitteeSnapshotHash: []byte("snapshot-hash-bytes"),
 	}
 }
 
@@ -47,7 +48,8 @@ func TestEveryConsensusFieldIsTamperEvident(t *testing.T) {
 		"Period":              func(b *config.ZKBlock) { b.Period++ },
 		"SeedEpoch":           func(b *config.ZKBlock) { b.SeedEpoch++ },
 		"VotingSnapshotEpoch": func(b *config.ZKBlock) { b.VotingSnapshotEpoch++ },
-		"VdfProof":            func(b *config.ZKBlock) { b.VdfProof = []byte("different") },
+		"VdfProof":              func(b *config.ZKBlock) { b.VdfProof = []byte("different") },
+		"CommitteeSnapshotHash": func(b *config.ZKBlock) { b.CommitteeSnapshotHash = []byte("different-hash") },
 		"RandaoReveals": func(b *config.ZKBlock) {
 			b.RandaoReveals[0].Secret = []byte("tampered")
 		},
@@ -101,10 +103,12 @@ func TestNilAndEmptyAreEquivalent(t *testing.T) {
 	nilBlock := sampleBlock()
 	nilBlock.VdfProof = nil
 	nilBlock.RandaoReveals = nil
+	nilBlock.CommitteeSnapshotHash = nil
 
 	emptyBlock := sampleBlock()
 	emptyBlock.VdfProof = []byte{}
 	emptyBlock.RandaoReveals = []config.Reveal{}
+	emptyBlock.CommitteeSnapshotHash = []byte{}
 
 	if RecomputeBlockHashWithConsensusFields(nilBlock) !=
 		RecomputeBlockHashWithConsensusFields(emptyBlock) {

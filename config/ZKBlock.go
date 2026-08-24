@@ -138,6 +138,23 @@ type ZKBlock struct {
 	// other block, which is ~90% of them at N=50, B=5, so the storage cost is
 	// a tenth of what carrying it on every block would be.
 	PrevAggCert []CertSigner `json:"prev_agg_cert,omitempty"`
+
+	// CommitteeSnapshotHash anchors the entropy-committee eligible-set
+	// snapshot on-chain: a 32-byte digest (avc/committee.HashSnapshot) of the
+	// frozen validator list used to seed this block's slot's entropy
+	// committee draw. Added 2026-08-24, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// items 1/6/8 — lets a node that has synced this block verify a snapshot
+	// body served by a seed node (or recovered from its own local cache)
+	// against a value that traveled with the chain itself, instead of having
+	// to trust whoever served the body.
+	//
+	// Gated by JMDN_COMMITTEE_SNAPSHOT_ANCHOR (default off, same coordinated
+	// rollout pattern as M2b and JMDN_AVC_AGG_CERT) and by
+	// messaging.frozenSnapshotHashFor actually having a cached value for this
+	// block's slot's epoch — empty on every block until both are true.
+	// Deliberately does NOT carry the snapshot body itself (large, grows with
+	// the pool) — only the hash. The body is served off-chain; see the TODO.
+	CommitteeSnapshotHash []byte `json:"committee_snapshot_hash,omitempty"`
 }
 
 // CertSigner is one buddy's contribution to a block's commit certificate: who

@@ -37,6 +37,7 @@ const blockHashV2Domain = "jmdn/block-hash/v2"
 //	   || u64:SeedEpoch
 //	   || u64:VotingSnapshotEpoch
 //	   || len:encodeCertSigners(PrevAggCert)
+//	   || len:CommitteeSnapshotHash
 //	   || len:concat(txContentHash_i)
 //	    )
 //
@@ -71,6 +72,13 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	// EncodeCertSigners renders empty as a zero count, so this adds a fixed 8
 	// bytes to the preimage of an ordinary block and changes no existing field.
 	committee.WriteField(&buf, EncodeCertSigners(block.PrevAggCert))
+	// CommitteeSnapshotHash (added 2026-08-24, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// items 1/6/8). Hash-covered so a relay cannot substitute a different
+	// eligible-set hash post-commit and have a rejoining node verify a
+	// tampered snapshot body against it. Empty on every block until
+	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR is on, same "zero is honest" rule as
+	// VdfProof/SeedEpoch above.
+	committee.WriteField(&buf, block.CommitteeSnapshotHash)
 	committee.WriteField(&buf, txContentConcat(block.Transactions))
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))
