@@ -110,19 +110,49 @@ timeout quorum and reported through the existing reputation-equivocation
 pipeline. `TestValidatorCannotSignBothTimeoutAndBlockVote` covers both the
 self-check and the remote-exclusion path.
 
-**Deliberately NOT built (disclosed, not silently dropped) — same precedent
-as item 6 above:** a real network RPC for "ask a peer for the latest
-certificate at height H" on rejoin. No such transport (gRPC or otherwise)
-exists anywhere in this repo today for ANY purpose (checked `Sequencer`,
-`seednode`) — building one from scratch was judged disproportionate to
-bundle into this pass versus the seed-node `GetCommitteeSnapshot` gap
-already tracked as its own item. What IS built is the half that makes such
-an RPC trivial to add later: `LatestTimeoutCertificateFor` is the exact
-function such a handler would call, and `AcceptIncomingTimeoutCertificate`
-is the exact function a client would call with the response — the "jump
-directly to the correct period" requirement is proven end-to-end via gossip
-delivery in the network test; only the on-demand pull (vs. push-via-gossip)
-transport remains open.
+**✅ CLOSED 2026-08-24 (second pass) — the rejoin RPC itself.** The gap
+directly above (and item 9 below) is now built, not just made trivial-to-add:
+
+- `jmdn/config/constants.go` — new `TimeoutCertRejoinProtocol` (its own
+  protocol ID, same reasoning as `RevealPushProtocol`: a node that doesn't
+  speak it fails the connection outright rather than silently mis-routing).
+- `jmdn/messaging/timeout_rejoin.go` (NEW) — the RPC itself, one
+  request/response pair over a direct libp2p stream (JSON+newline, same wire
+  style as `entropy_reveal_push.go`'s RevealPush):
+  - `HandleTimeoutCertRejoinStream` (server side) — answers strictly from
+    this node's own already-verified local state
+    (`LatestTimeoutCertificateFor`); never fetches, forwards, or trusts a
+    third party.
+  - `RequestLatestTimeoutCertificateFromPeers(h, peers, height)` (client
+    side) — asks each peer in turn, and re-verifies whatever comes back via
+    the SAME `AcceptIncomingTimeoutCertificate` gossip already uses before
+    trusting it for anything. A peer's answer that fails verification (wrong
+    signers, forged, stale) is rejected and the next peer is tried — the RPC
+    layer adds zero new trust over gossip's own acceptance path. Querying
+    several peers means one unresponsive/lying peer cannot stall a
+    rejoining node.
+  - Registered on every node in `node/node.go`, right alongside the other
+    stream handlers.
+  - Gated OFF by default (`JMDN_TIMEOUT_CERT_REJOIN`) — flip together with
+    `JMDN_TIMEOUT_CERT_WIRING` once both are fleet-tested.
+- `jmdn/messaging/timeout_rejoin_test.go` (NEW) — real 2-host libp2p network
+  tests: legitimate "not found" (most heights never time out); a genuine
+  quorum-certified certificate served and independently verified+accepted
+  by the client (`PeriodStore` actually advances); a certificate signed by
+  keys outside the client's eligible pool is rejected (forged-peer case);
+  an unresponsive first peer does not block a second, good peer. All pass,
+  including under `-race`; full `messaging` package and repo build remain
+  green (the only pre-existing failures anywhere in the repo — `TestStreamLeak`,
+  `TestGetBuddyNodes`, `DB_OPs/Tests`, `seednode`'s `Test_GetPeer` — are
+  unrelated environmental issues, confirmed by reading each one).
+
+**Still open, disclosed, not part of this pass:** the *orchestration* call
+site — deciding WHICH heights need a rejoin request and WHICH peers to ask
+(e.g. wired into `FastsyncV2`'s catch-up path or a dedicated startup check
+against `PeriodStore` gaps) — is not built. What exists is the complete,
+tested transport + verified-accept primitive; wiring it into an automatic
+"call this on rejoin" trigger is the next step, same shape as
+`messaging.EnsureSlotStoreRecovered`'s fast-sync hook in item 8 above.
 
 ### Production rollout checklist — before flipping `JMDN_TIMEOUT_CERT_WIRING=1`
 
@@ -160,14 +190,18 @@ Known gaps to consciously accept or close before go-live (nothing here
 blocks flipping the flag in a low-stakes/staging environment — these are
 what to weigh for a real-money production fleet):
 
-5. **No rejoin/catch-up RPC (already tracked as item 9 below).** A node
-   that restarts mid-timeout-escalation for the CURRENT, not-yet-committed
-   height loses all in-memory period/certificate state and restarts that
-   height at period 0. It only recovers if it happens to receive a live
-   gossip of a still-relevant certificate — gossip is not replayed or
-   persisted. Low risk for a short escalation on a small, stable fleet;
-   real risk if restarts/deploys are frequent or escalations run long.
-   Decide: accept and monitor for v1, or build the catch-up RPC first.
+5. **✅ Rejoin/catch-up RPC built (2026-08-24, second pass — see item 9
+   below).** A node that restarts mid-timeout-escalation for the CURRENT,
+   not-yet-committed height loses all in-memory period/certificate state
+   and restarts that height at period 0. It can now recover on demand via
+   `messaging.RequestLatestTimeoutCertificateFromPeers`, instead of only
+   passively via a live gossip that happens to arrive — but nothing yet
+   CALLS that function automatically on rejoin (no orchestration wired
+   in). Until that orchestration exists, a restarted node still only
+   recovers passively (live gossip / a fresh certification after it
+   reconnects), exactly as before — the fix is available, not yet
+   triggered. Decide: wire the automatic call before go-live, or accept
+   passive-only recovery and monitor for v1.
 6. **CPU cost on duplicate/replayed votes and certificates — confirmed by
    re-reading the code, not a guess.** `TallyTimeoutVotes` (called from
    `tryCertify`) re-verifies every vote's BLS signature on every call,
@@ -215,16 +249,119 @@ being read everywhere but nothing ever advanced it past 0 before this
 session's work — so "off" is not a new, untested code path, it's the
 literal status quo this session started from.
 
-**New TODO item 9 — seed node / sync RPC for timeout-certificate catch-up.**
-Expose `LatestTimeoutCertificateFor` over an actual RPC (natural home:
-`seednode`, alongside the still-open `GetCommitteeSnapshot` item 6, since
-both are "ask an authority/peer for a value I don't have locally" shaped).
-Until this exists, a rejoining node recovers its period only if it happens
-to receive a live gossip of the certificate (or a fresh one gets certified
-after it reconnects) — not yet via an explicit pull on demand.
+**Item 9 — seed node / sync RPC for timeout-certificate catch-up.**
+**✅ CLOSED 2026-08-24 (second pass).** `LatestTimeoutCertificateFor` is now
+exposed over an actual RPC — see the "✅ CLOSED 2026-08-24 (second pass) —
+the rejoin RPC itself" entry above for the full detail
+(`config.TimeoutCertRejoinProtocol`, `messaging/timeout_rejoin.go`'s
+`HandleTimeoutCertRejoinStream` / `RequestLatestTimeoutCertificateFromPeers`,
+registered in `node/node.go`, gated by `JMDN_TIMEOUT_CERT_REJOIN`, 4 new
+real-network tests in `messaging/timeout_rejoin_test.go`). A rejoining node
+can now pull a peer's latest certificate on demand instead of only ever
+receiving it passively via gossip.
+
+**Still open (not this item, tracked in the "Still open, disclosed" note
+above and rollout-checklist item 5):** nothing yet calls
+`RequestLatestTimeoutCertificateFromPeers` automatically on
+rejoin/catch-up. The transport and verified-accept logic exist; the
+orchestration decision — which heights to check and which peers to
+ask, wired into `FastsyncV2`'s catch-up path or a dedicated startup
+check — is the next step.
+
+**Item 10 — timeout-recovery quorum draws from the same committee that
+failed, not a wider T_vote pool. ❌ NOT DONE — confirmed still open,
+2026-08-24 (verification pass, no code changed).**
+
+`messaging/timeout_certificates.go:91-95`'s own comment claims
+`TallyTimeoutVotes` uses "a pool-wide T_vote quorum... never the buddy
+committee's smaller T_agg (recovery must not depend on the entity that
+failed to reach consensus in the first place)." Traced end-to-end and
+that claim does not hold for the live code path:
+
+- `tryCertify` (`timeout_gossip.go:257-283`) calls `timeoutVotingPool(height)`
+  (`timeout_gossip.go:171-181`), which calls
+  `eligibleMembersUncappedForEpoch(epoch, false)`
+  (`consensus_hardening.go:189`) — the SAME function that resolves the
+  block-voting committee for that epoch. There is no second, independent
+  pool anywhere in this codebase (`T_agg` does not appear as an actual
+  value anywhere else — grepped, zero hits outside that one comment).
+- In the path that is actually live today (no pinned seed authority —
+  `Sequencer/consensus_statemachine.go:172`'s `legacyBuddySource`), that
+  function returns `c.PeerList.MainPeers` directly, explicitly capped
+  to "the voting-committee size" (`consensus_statemachine.go:135`) — the
+  literal same peer set asked to vote/propose the block that timed out.
+- Even the V2/pinned path doesn't yet help: `SelectCommitteeWithSize`
+  (`committee_v2.go:209`) draws committees from
+  `MaxValidators(7) >= pool(7)` today, a documented no-op cap
+  (`committee_v2.go:262`), and the underlying wider registry it would need
+  — `GetCommitteeSnapshot(epoch)` server-side — has "zero server
+  implementation anywhere in the repo" (item 6 above, unchanged).
+
+**Verdict: the finding is accurate.** A buddy committee that fails as a
+whole is asked to certify its own recovery. Not a quick wiring fix like
+items 8/9 above — the wider pool this needs doesn't exist as data
+anywhere yet, so fixing it means first deciding where that pool comes
+from (the full registered-validator set once item 6 is built, vs. a
+dedicated backup/standby committee) — a consensus-critical design
+decision needing the same coordinated-rollout discipline as the other
+flags in this file, not something to silently pick during a
+verification pass. Awaiting direction before any implementation starts.
+
+## Fallback window (§4.2a / §10 decision 11) — verification findings, 2026-08-24
+
+Checked against the morning's count-based-collection amendment
+(`messaging/entropy_fallback_window.go`) and the two-phase finalisation
+it depends on (`messaging/entropy_finalise.go`). Two items genuinely
+done, two gaps found — neither previously tracked in this file.
+
+- **✅ DONE — hard upper bound on B exists and is correct.**
+  `FallbackFoldBufferB = 5`, `FallbackFoldMaxSlotOffset = 7`
+  (`entropy_fallback_window.go:87,102`), derived from §7.2's liveness rule
+  (`B ≤ N−K−2·T_vdf/s_min = 50−3−40 = 7`) with 2 slots of margin.
+  `ValidateFallbackWindowParams()` (`:168-178`) correctly checks both the
+  N/K/MaxOffset range and `MaxOffset ≥ B`. Test
+  (`TestValidateFallbackWindowParams_AdoptedValuesAreUsable`) passes.
+- **✅ CLOSED 2026-08-24 (third pass) — checker now wired at startup.**
+  `main.go` now calls `messaging.ValidateFallbackWindowParams()` right
+  before the slot-recovery block (item 8), before `node.NewNode()` —
+  no `cfg`/node dependency, so it runs as early as possible. A failure
+  hard-exits via `log.Fatal()` (same pattern already used elsewhere in
+  `main.go` for irrecoverable startup errors) rather than failing
+  closed-but-running: unlike a per-node recovery failure, a bad
+  N/K/B/MaxOffset combination is a build defect that is identical on
+  every node, so there is nothing to run into. Verified: `go build ./...`
+  clean, `gofmt -l main.go` clean, and two new `verify-m4.sh` checks
+  (function exists; has a real non-test caller) — 57/0 passing, up
+  from 55.
+- **✅ DONE — two-phase pending finalisation, wired to real commit
+  hooks.** `decideEpoch` (`entropy_finalise.go:134-160`) never resolves a
+  fallback seed at the cutoff slot itself (zero signers exist at that
+  instant by construction); it marks the epoch `pendingFallback` and
+  returns. `resolvePendingFallbacks` (`:167-203`) retries on every
+  subsequently committed block until `FallbackFoldBufferB` signers are
+  collected or `FallbackFoldMaxSlotOffset` passes.
+  `maybeFinaliseCompletedEpochs` (`:278-298`) runs both and is called
+  from the two real commit hooks — `broadcast.go:816` and
+  `blockPropagation.go:401` (grep-confirmed). All 12 relevant tests
+  re-run fresh, including the exact "ordering that used to be
+  impossible" regression case named in the file's own header — pass.
+- **⚠️ Stale doc comment found — B1 is actually cleared, the file
+  header doesn't say so.** `entropy_fallback_window.go`'s own header
+  (lines 33-47) still reads "THIS PATH CANNOT RUN TODAY — blocker B1...
+  Nothing can supply this collector." That's now false:
+  `entropy_aggsig.go`'s header states "Blocker B1, cleared" (same date,
+  2026-08-20) and the real wiring is in place —
+  `RecordCommitCertificate`/`CertificateForBlockAssembly`/
+  `VerifyAndRecordPrevCert` are live-called from
+  `Sequencer/Consensus.go:1519`, `Block/consensus_fields.go:86`,
+  `broadcast.go:814`, `blockPropagation.go:399` — gated by
+  `AggCertEnabled` (env `JMDN_AVC_AGG_CERT`, default OFF, same
+  coordinated-rollout discipline as the other flags). The fallback fold
+  is functionally ready end-to-end once that flag flips; the comment
+  just never got updated to say so. Needs a doc fix, no code change.
 
 ## Open questions (not yet resolved)
 
 - ~~Who signs the frozen snapshot when no seed authority key is configured?~~ Resolved by the design change above: the on-chain hash makes the seed node's signature unnecessary — the chain is the authority. Still open only for the case of a node that trusts neither the chain (hasn't synced) nor a seed node.
 - `consensus.committee_epoch_blocks` defaults to `0`, which degenerates the *BFT*-committee epoch concept (separate from the entropy epoch, which already works via `EpochForSlot`). Not blocking this TODO, but flagged so it isn't confused with the entropy-epoch fix above.
-- Item 8's startup call site (where a real node reads its tip block at boot) was not located this session — needs a follow-up look at `main.go`/node startup sequence.
+- ~~Item 8's startup call site (where a real node reads its tip block at boot) was not located this session — needs a follow-up look at `main.go`/node startup sequence.~~ Resolved in the second pass, 2026-08-24: located and wired at `main.go:1299-1305`, right before `node.NewNode()`. See item 8 above for full detail.
