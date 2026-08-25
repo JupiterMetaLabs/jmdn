@@ -6,5 +6,7 @@ package DB_OPs
 type CountBuilder struct{}
 
 func (cb CountBuilder) Build() (*CountBuilder, error)            { return &CountBuilder{}, nil }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (cb CountBuilder) GetMainDBCount(_ string) (int, error)     { return 0, nil }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (cb CountBuilder) GetAccountsDBCount(_ string) (int, error) { return 0, nil }

@@ -5,6 +5,7 @@ import (
 )
 
 // convertHashesToStrings converts []common.Hash to []string
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ConvertHashesToStrings(hashes []common.Hash) []string {
 	strings := make([]string, len(hashes))
 	for i, hash := range hashes {
@@ -24,6 +25,7 @@ func ContainsAddress(filterAddresses []string, logAddress string) bool {
 }
 
 // matchesTopicFilter checks if log topics match the filter topics
+// __DEAD_CODE_AUDIT_PUBLIC__
 func MatchesTopicFilter(filterTopics [][]string, logTopics []string) bool {
 	// If no topics in filter, match all
 	if len(filterTopics) == 0 {

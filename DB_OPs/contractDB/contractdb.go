@@ -311,6 +311,7 @@ func (c *ContractDB) GetReceipt(txHash common.Hash) (*TransactionReceipt, error)
 // EVM Mechanics
 // ============================================================================
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddRefund(gas uint64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -334,12 +335,14 @@ func (c *ContractDB) SubRefund(gas uint64) {
 	c.refund -= gas
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetRefund() uint64 {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	return c.refund
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddLog(log *types.Log) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -371,40 +374,51 @@ func (c *ContractDB) AccessEvents() *state.AccessEvents { return nil }
 func (c *ContractDB) Prepare(_ params.Rules, _, _ common.Address, _ *common.Address, _ []common.Address, _ types.AccessList) {
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddressInAccessList(addr common.Address) bool {
 	return c.accessList.ContainsAddress(addr)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) SlotInAccessList(addr common.Address, slot common.Hash) (bool, bool) {
 	return c.accessList.Contains(addr, slot)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddAddressToAccessList(addr common.Address) {
 	c.journal.append(accessListAddAccountChange{address: &addr})
 	c.accessList.AddAddress(addr)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
 	c.journal.append(accessListAddSlotChange{address: &addr, slot: &slot})
 	c.accessList.AddSlot(addr, slot)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) AddPreimage(_ common.Hash, _ []byte) {}
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) ForEachStorage(_ common.Address, _ func(key, value common.Hash) bool) error {
 	return nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
 	return c.GetState(addr, key), c.GetCommittedState(addr, key)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) IsNewContract(_ common.Address) bool { return false }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetTransientState(_ common.Address, _ common.Hash) common.Hash {
 	return common.Hash{}
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) SetTransientState(_ common.Address, _, _ common.Hash) {}
 func (c *ContractDB) GetStorageRoot(_ common.Address) common.Hash          { return common.Hash{} }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetSelfDestruction(_ common.Address) bool             { return false }
 
 // ============================================================================

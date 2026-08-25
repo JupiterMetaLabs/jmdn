@@ -90,6 +90,7 @@ func chunkCount(n int) int {
 }
 
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
 	addr := common.HexToAddress(accountAddress)
 	dbtxs, err := DB_OPs.GetDBTransactionsByAccount(&addr)
@@ -107,6 +108,7 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 	return result, nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (am *account_manager) GetTransactionsForAccountInRange(accountAddress string, fromBlock, toBlock uint64) ([]types.DBTransaction, error) {
 	addr := common.HexToAddress(accountAddress)
 	dbtxs, err := DB_OPs.GetDBTransactionsByAccountInRange(&addr, fromBlock, toBlock)
@@ -125,6 +127,7 @@ func (am *account_manager) GetTransactionsForAccountInRange(accountAddress strin
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, uint64, error) {
 	addr := common.HexToAddress(accountAddress)
 	acc, err := DB_OPs.GetAccount(nil, addr)
@@ -347,6 +350,7 @@ type thebeNonceIter struct {
 }
 
 // Time: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (it *thebeNonceIter) TotalAccounts() (uint64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

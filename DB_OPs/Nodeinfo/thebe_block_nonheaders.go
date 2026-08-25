@@ -14,11 +14,13 @@ import (
 type dbBlockNonHeaderIterator struct{}
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (sync *sync_struct) NewBlockNonHeaderIterator() types.BlockNonHeader {
 	return &dbBlockNonHeaderIterator{}
 }
 
 // Time Complexity: O(N*M) where N is blocknumbers length and M is transactions per block
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockNonHeaderIterator) GetBlockNonHeaders(blocknumbers []uint64) ([]*blockpb.NonHeaders, error) {
 	var results []*blockpb.NonHeaders
 	for _, num := range blocknumbers {
@@ -32,6 +34,7 @@ func (i *dbBlockNonHeaderIterator) GetBlockNonHeaders(blocknumbers []uint64) ([]
 }
 
 // Time Complexity: O(N*M) where N is end-start range and M is transactions per block
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockNonHeaderIterator) GetBlockNonHeadersRange(start, end uint64) ([]*blockpb.NonHeaders, error) {
 	blocks, err := DB_OPs.GetBlocksRange(nil, start, end)
 	if err != nil {

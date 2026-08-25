@@ -823,6 +823,7 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	}
 }
 
+// __DEAD_CODE_AUDIT__
 func (h *CommandHandler) handleSyncInfo() {
 	fmt.Println("FastSync Configuration (V2):")
 	fmt.Println("  V1 retired — engine: FastsyncV2")
@@ -978,6 +979,7 @@ func (h *CommandHandler) handleDiscoverNeighbors() {
 	printDashes()
 }
 
+// __DEAD_CODE_AUDIT__
 func (h *CommandHandler) checkDBClient() error {
 	if h.MainClient == nil {
 		return fmt.Errorf("database client not initialized")

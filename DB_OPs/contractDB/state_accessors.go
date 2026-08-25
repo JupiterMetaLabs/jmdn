@@ -205,6 +205,7 @@ func (c *ContractDB) SetCode(addr common.Address, code []byte, reason tracing.Co
 	return code
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetCodeSize(addr common.Address) int {
 	obj := c.getStateObject(addr)
 	if obj == nil {
@@ -225,6 +226,7 @@ func (c *ContractDB) GetState(addr common.Address, key common.Hash) common.Hash 
 	return obj.getState(key)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) SetState(addr common.Address, key common.Hash, value common.Hash) common.Hash {
 	obj := c.getOrNewStateObject(addr)
 	if obj == nil {
@@ -292,6 +294,7 @@ func (c *ContractDB) Suicide(addr common.Address) bool {
 	return true
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) SelfDestruct(addr common.Address) {
 	c.Suicide(addr)
 }
@@ -301,10 +304,12 @@ func (c *ContractDB) HasSuicided(addr common.Address) bool {
 	return obj != nil && obj.suicided
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) HasSelfDestructed(addr common.Address) bool {
 	return c.HasSuicided(addr)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) Selfdestruct6780(addr common.Address) {
 	c.Suicide(addr)
 }

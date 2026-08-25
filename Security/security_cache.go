@@ -156,6 +156,7 @@ func (s *SecurityCache) UpdateTxNonce(address common.Address, newNonce uint64) {
 	}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (s *SecurityCache) GetTxNonce(address common.Address) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

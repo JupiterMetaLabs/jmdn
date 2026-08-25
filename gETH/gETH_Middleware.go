@@ -169,6 +169,7 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
 }
 
+// __DEAD_CODE_AUDIT__
 func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 	// Get the Mempool Client
 	RoutingClient, err := block.ReturnMempoolObject()

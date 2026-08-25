@@ -15,6 +15,7 @@ type dbServer struct {
 	accountsdb config.PooledConnection
 }
 
+// __DEAD_CODE_AUDIT__
 func initDBs() (dbServer, error) {
 	return dbServer{}, nil
 }

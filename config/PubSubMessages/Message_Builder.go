@@ -51,6 +51,7 @@ func (gossipmessage *GossipMessage) SetTopic(topic string) *GossipMessage {
 	return gossipmessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gossipmessage *GossipMessage) GetTopic() string {
 	return gossipmessage.Topic
 }
@@ -88,10 +89,12 @@ func (gossipmessage *GossipMessage) SetTTL(ttl int) *GossipMessage {
 	return gossipmessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gossipmessage *GossipMessage) GetTTL() int {
 	return gossipmessage.TTL
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gossipmessage *GossipMessage) SetMetadata(metadata map[string]string) *GossipMessage {
 	gossipmessage.Metadata = metadata
 	return gossipmessage
@@ -145,6 +148,7 @@ func (msg *Message) Marshal() ([]byte, error) {
 	return json.Marshal(msg)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (msg *Message) ToString() string {
 	data, err := msg.Marshal()
 	if err != nil {

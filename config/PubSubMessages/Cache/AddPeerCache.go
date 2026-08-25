@@ -35,6 +35,7 @@ type Stats struct {
 	TimeTaken        time.Duration
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr { return make(map[peer.ID]multiaddr.Multiaddr) }
 
 func AddPeer(peerID peer.ID, addr multiaddr.Multiaddr) {

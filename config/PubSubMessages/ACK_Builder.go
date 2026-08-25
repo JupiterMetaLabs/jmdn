@@ -51,6 +51,7 @@ func (ack *ACK) Marshal() ([]byte, error) {
 	return json.Marshal(ack)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (ack *ACK) ToString() string {
 	data, err := ack.Marshal()
 	if err != nil {

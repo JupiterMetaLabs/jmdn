@@ -58,6 +58,7 @@ func (e *ContractError) Error() string {
 	return fmt.Sprintf("contract %s: %v", e.Address, e.Err)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (e *ContractError) Unwrap() error {
 	return e.Err
 }

@@ -16,6 +16,7 @@ import (
 
 type SolidityCompiler struct{}
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewSolidityCompiler() Types.Compiler {
 	return &SolidityCompiler{}
 }

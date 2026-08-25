@@ -11,6 +11,7 @@ type BLSRouter struct {
 	bls *blssign.MultiSigManager
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewBLSRouter() *BLSRouter {
 	return &BLSRouter{
 		bls: blssign.NewMultiSigManager(3),
@@ -40,6 +41,7 @@ func (r *BLSRouter) GetSigner(signerID string) (*blssign.Signer, error) {
 	return r.bls.GetSigner(signerID)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (r *BLSRouter) CollectAndAggregateSignatures(messageKey string, message string, signerIDs []string) ([]byte, [][]byte, error) {
 	msgBytes := []byte(message)
 	for _, signerID := range signerIDs {

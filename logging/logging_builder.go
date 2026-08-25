@@ -8,10 +8,12 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 )
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewLoggingBuilder() *Logging {
 	return &Logging{}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (lb *Logging) SetFileName(fileName string) *Logging {
 	lb.FileName = fileName
 	return lb
@@ -22,6 +24,7 @@ func (lb *Logging) SetTopic(topic string) *Logging {
 	return lb
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (lb *Logging) NewNamedLogger(globalLogger *ion.Ion) *Logging {
 	// Named() returns ion.Logger (interface), but we need *ion.Ion
 	// Type assert ion.Logger interface to *ion.Ion pointer
@@ -40,10 +43,12 @@ func (lb *Logging) GetNamedLogger() *ion.Ion {
 	return lb.NamedLogger
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (lb *Logging) GetLoggingMetadata() *LoggingMetadata {
 	return lb.LoggingMetadata
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (lb *Logging) SetLoggingMetadata(loggingMetadata *LoggingMetadata) *Logging {
 	lb.LoggingMetadata = loggingMetadata
 	return lb

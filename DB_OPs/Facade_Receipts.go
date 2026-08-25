@@ -162,6 +162,7 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	return receipt
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.Receipt) ([]byte, error) {
 	receiptRoot, err := utils.GenerateReceiptRoot(receipts)
 	if err != nil {

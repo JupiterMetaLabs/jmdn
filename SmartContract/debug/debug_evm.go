@@ -71,22 +71,27 @@ func (m *MockStateDB) SetCode(addr common.Address, code []byte, reason tracing.C
 	m.code[addr] = code
 	return code
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetCodeSize(addr common.Address) int { return len(m.code[addr]) }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddRefund(gas uint64) {
 	m.refund += gas
 }
 func (m *MockStateDB) SubRefund(gas uint64) {
 	m.refund -= gas
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetRefund() uint64 {
 	return m.refund
 }
 func (m *MockStateDB) GetCommittedState(addr common.Address, key common.Hash) common.Hash {
 	return m.GetState(addr, key)
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
 	return m.GetState(addr, key), m.GetCommittedState(addr, key)
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) IsNewContract(addr common.Address) bool {
 	return false
 }
@@ -96,6 +101,7 @@ func (m *MockStateDB) GetState(addr common.Address, key common.Hash) common.Hash
 	}
 	return common.Hash{}
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
 	if _, ok := m.storage[addr]; !ok {
 		m.storage[addr] = make(map[common.Hash]common.Hash)
@@ -109,20 +115,27 @@ func (m *MockStateDB) Exist(addr common.Address) bool       { return true }
 func (m *MockStateDB) Empty(addr common.Address) bool       { return false }
 func (m *MockStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddressInAccessList(addr common.Address) bool { return true }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addressOk bool, slotOk bool) {
 	return true, true
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddAddressToAccessList(addr common.Address)                {}
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {}
 func (m *MockStateDB) RevertToSnapshot(revid int)                                {}
 func (m *MockStateDB) Snapshot() int                                             { return 0 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddLog(log *types.Log)                                     { m.logs = append(m.logs, log) }
 func (m *MockStateDB) GetLogs(hash common.Hash, blockNumber uint64, hash2 common.Hash) []*types.Log {
 	return m.logs
 }
 func (m *MockStateDB) Logs() []*types.Log                            { return m.logs }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) AddPreimage(hash common.Hash, preimage []byte) {}
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) ForEachStorage(addr common.Address, cb func(key, value common.Hash) bool) error {
 	return nil
 }
@@ -132,16 +145,22 @@ func (m *MockStateDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 	return common.Hash{}, nil
 }
 func (m *MockStateDB) Finalise(deleteEmptyObjects bool) {}
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
 	return common.Hash{}
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) SetTransientState(addr common.Address, key, value common.Hash) {}
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) SelfDestruct(addr common.Address)               {}
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) HasSelfDestructed(addr common.Address) bool     { return false }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) Selfdestruct6780(addr common.Address)           {}
 func (m *MockStateDB) CreateContract(addr common.Address)             {}
 func (m *MockStateDB) GetStorageRoot(addr common.Address) common.Hash { return common.Hash{} }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetSelfDestruction(addr common.Address) bool    { return false }
 func (m *MockStateDB) Witness() *stateless.Witness                    { return nil }
 func (m *MockStateDB) AccessEvents() *state.AccessEvents              { return nil }

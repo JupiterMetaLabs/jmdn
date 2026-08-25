@@ -46,6 +46,7 @@ const maxMarkerBatch = 500
 // TxProcessedKey / BlockProcessedKey build the marker keys. Formats are frozen —
 // they must match the legacy populations already on disk.
 func TxProcessedKey(txHash string) string       { return "tx_processed:" + txHash }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func TxProcessingKey(txHash string) string      { return "tx_processing:" + txHash }
 func BlockProcessedKey(blockHash string) string { return "block_processed:" + blockHash }
 

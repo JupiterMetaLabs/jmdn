@@ -97,6 +97,7 @@ func GetNodeManagerInterface() *NodeManager {
 	return NodeManagerInterface
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ClearNodeManagerInterface() {
 	nodeManagerMutex.Lock()
 	defer nodeManagerMutex.Unlock()

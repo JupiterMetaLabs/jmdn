@@ -103,6 +103,7 @@ func NewExplorerServer() (*ExplorerServer, error) {
 	return server, nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func CloseExplorerServer(server *ExplorerServer) {
 	server.Close()
 }

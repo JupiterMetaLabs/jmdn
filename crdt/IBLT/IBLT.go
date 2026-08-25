@@ -23,6 +23,7 @@ type IBLT struct {
 	Table []cell `json:"table"` // The table of cells
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (ib *IBLT) To_JsonRawMessage() json.RawMessage {
 	// Convert IBLT to JSON
 	jsonBytes, err := json.Marshal(ib)
@@ -32,6 +33,7 @@ func (ib *IBLT) To_JsonRawMessage() json.RawMessage {
 	return json.RawMessage(jsonBytes)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func OptimalIBLTParams(nKeys int, expectedDiffRatio, safetyFactor float64) (m, k int) {
 	// Default parameters if caller passes 0
 	if expectedDiffRatio == 0 {

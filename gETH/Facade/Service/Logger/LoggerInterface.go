@@ -19,6 +19,7 @@ const (
 	DIR      = "logs"
 )
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func InitLogger() error {
 	var err error
 	Once.Do(func() {

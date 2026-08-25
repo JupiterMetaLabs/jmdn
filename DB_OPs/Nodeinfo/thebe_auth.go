@@ -21,6 +21,7 @@ var (
 )
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (sync *sync_struct) AUTH() types.AUTHHandler {
 	once.Do(func() {
 		authHandler = &AUTHHandler{
@@ -31,6 +32,7 @@ func (sync *sync_struct) AUTH() types.AUTHHandler {
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (a *AUTHHandler) AddRecord(peerID peer.ID, UUID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -49,6 +51,7 @@ func (a *AUTHHandler) AddRecord(peerID peer.ID, UUID string) error {
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (a *AUTHHandler) RemoveRecord(peerID peer.ID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -57,6 +60,7 @@ func (a *AUTHHandler) RemoveRecord(peerID peer.ID) error {
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (a *AUTHHandler) GetRecord(peerID peer.ID) (types.AUTHStructure, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -74,6 +78,7 @@ func (a *AUTHHandler) GetRecord(peerID peer.ID) (types.AUTHStructure, error) {
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (a *AUTHHandler) IsAUTH(peerID peer.ID, UUID string) (bool, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -89,6 +94,7 @@ func (a *AUTHHandler) IsAUTH(peerID peer.ID, UUID string) (bool, error) {
 }
 
 // Time Complexity: O(1)
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (a *AUTHHandler) ResetTTL(peerID peer.ID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -8,6 +8,7 @@ import (
 )
 
 // Take the input as a json string and return the message as a Pubsub.GossipMessage and also convert GossipMessage.Data from interface to MessagePassing.Message
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ConvertMessage(message string) (*PubSubMessages.GossipMessage, error) {
 	var gossipMessage PubSubMessages.GossipMessage
 	if err := json.Unmarshal([]byte(message), &gossipMessage); err != nil {

@@ -13,6 +13,7 @@ What it does:
 - Pings the candidates and adds them to the cache
 - Returns the main and backup candidates
 */
+// __DEAD_CODE_AUDIT_PUBLIC__
 func CheckReachability(candidates []PubSubMessages.Buddy_PeerMultiaddr, mainLen int) ([]PubSubMessages.Buddy_PeerMultiaddr, []PubSubMessages.Buddy_PeerMultiaddr, error) {
 
 	if candidates == nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewBuddyNodeBuilder(buddy *BuddyNode) *BuddyNode {
 	if buddy != nil {
 		return &BuddyNode{
@@ -29,6 +30,7 @@ func NewBuddyNodeBuilder(buddy *BuddyNode) *BuddyNode {
 	return &BuddyNode{}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetCRDTLayer(crdtlayer *Types.Controller) *BuddyNode {
 	buddy.CRDTLayer = crdtlayer
 	return buddy
@@ -39,6 +41,7 @@ func (buddy *BuddyNode) SetHost(host host.Host) *BuddyNode {
 	return buddy
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetNetwork(network network.Network) *BuddyNode {
 	buddy.Network = network
 	return buddy
@@ -49,6 +52,7 @@ func (buddy *BuddyNode) SetPeerID(peerID peer.ID) *BuddyNode {
 	return buddy
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetBuddyNodes(buddies Buddies) *BuddyNode {
 	buddy.BuddyNodes = buddies
 	return buddy
@@ -75,16 +79,19 @@ func removeBuddies(buddies []peer.ID, remove []peer.ID) []peer.ID {
 	return buddies
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetResponseHandler(responseHandler ResponseHandler) *BuddyNode {
 	buddy.ResponseHandler = responseHandler
 	return buddy
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetPubSub(pubsub *GossipPubSub) *BuddyNode {
 	buddy.PubSub = pubsub
 	return buddy
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetStreamCache(streamCache *StreamCache) *BuddyNode {
 	buddy.StreamCache = NewStreamCacheBuilder(streamCache)
 	return buddy
@@ -94,6 +101,7 @@ func (buddy *BuddyNode) GetStreamCache() *StreamCache {
 	return NewStreamCacheBuilder(buddy.StreamCache)
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) GetPubSub() *GossipPubSub {
 	return NewGossipPubSubBuilder(buddy.PubSub)
 }
@@ -106,6 +114,7 @@ func (buddy *BuddyNode) GetHost() host.Host {
 	return buddy.Host
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) GetNetwork() network.Network {
 	return buddy.Network
 }
@@ -122,6 +131,7 @@ func (buddy *BuddyNode) GetResponseHandler() ResponseHandler {
 	return buddy.ResponseHandler
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) GetMetaData() MetaData {
 	return buddy.MetaData
 }

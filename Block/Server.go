@@ -63,6 +63,7 @@ type FullTxn struct {
 var accountMutex sync.Mutex
 
 // Convert API AccessTuple to Block.AccessList
+// __DEAD_CODE_AUDIT__
 func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 	if len(apiList) == 0 {
 		return config.AccessList{}
@@ -357,6 +358,7 @@ func getPublishGPS() *PubSubMessages.GossipPubSub {
 	return globalGPS
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }
