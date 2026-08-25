@@ -38,11 +38,19 @@ func (c *ContractDB) getStateObject(addr common.Address) *stateObject {
 	if c.accountSrc != nil {
 		ad, err := loadAccountFromReader(c.accountSrc, addr)
 		if err != nil {
-			// Record the sticky error (we hold the write lock here); the executor
-			// aborts the tx/block after execution. Use a zero account meanwhile so
-			// execution can unwind without a nil deref — its result is discarded.
-			c.setDBError(err)
-			ad = NewAccountData()
+			if isAccountNotFound(err) {
+				// Unknown account = empty (balance 0, nonce 0). This is NOT a read
+				// error: eth_call must work from ANY address (cast/viem default
+				// from=0x0), and on the apply path a genuinely new account is empty.
+				// Do NOT set the sticky error — that would fail the call/block closed.
+				ad = NewAccountData()
+			} else {
+				// Genuine read error (overflow, backend down): fail closed. We hold
+				// the write lock; the executor aborts the tx/block after execution.
+				// Use a zero account meanwhile so unwind has no nil deref.
+				c.setDBError(err)
+				ad = NewAccountData()
+			}
 		}
 		accountData = ad
 	} else {

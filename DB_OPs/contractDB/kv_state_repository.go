@@ -169,6 +169,19 @@ func isKVNotFound(err error) bool {
 	return err == kv.ErrKeyNotFound || strings.Contains(strings.ToLower(err.Error()), "key not found")
 }
 
+// isAccountNotFound reports whether err means the account simply does not exist —
+// KV key-absence OR the SQL-backed "no rows in result set" that DB_OPs.GetAccount
+// (via the AccountReader) returns for an unknown address. An unknown account is
+// empty (balance 0, nonce 0), NOT a read failure, so getStateObject must not fail
+// closed on it. Kept local so contractDB stays decoupled from gossipnode/DB_OPs.
+func isAccountNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "no rows in result set") || strings.Contains(m, "key not found")
+}
+
 // isNotFound reports whether err is a not-found condition from the SQL/cassata
 // read path. (Recovered from the deleted thebe_adapter.go — its only surviving
 // caller is GetReceipt above.)
