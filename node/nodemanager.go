@@ -721,11 +721,17 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 		)
 		return
 	}
-	message := string(buf[:n])
+	// Trim: the client sends "HEARTBEAT\n" (newline-terminated), so compare
+	// against the trimmed token, not the raw bytes.
+	message := strings.TrimSpace(string(buf[:n]))
 	span.SetAttributes(attribute.String("heartbeat_message", message))
 
-	if message != "HEARTBEAT" {
-		span.SetAttributes(attribute.String("message_status", "invalid"))
+	// VALID heartbeat path: respond "OK\n" and refresh the peer's liveness.
+	// (Previously this ran under `!= "HEARTBEAT"`, so a correct heartbeat fell
+	// through to the else branch and returned nothing — the stream closed and
+	// sendHeartbeat read EOF and marked the peer offline.)
+	if message == "HEARTBEAT" {
+		span.SetAttributes(attribute.String("message_status", "valid"))
 		logger().Debug(span_ctx, "Heartbeat message received",
 			ion.String("message", message),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -808,7 +814,18 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 			)
 		}
 	} else {
-		span.SetAttributes(attribute.String("message_status", "valid"))
+		// Invalid/unexpected message — do NOT send "OK" and do NOT touch peer
+		// liveness. The stream closes on return; the sender treats that as a
+		// failed heartbeat (correct — it sent something other than HEARTBEAT).
+		span.SetAttributes(attribute.String("message_status", "invalid"))
+		logger().Debug(span_ctx, "Ignoring non-heartbeat message on heartbeat stream",
+			ion.String("message", message),
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("log_file", LOG_FILE),
+			ion.String("topic", TOPIC),
+			ion.String("function", "node.handleHeartbeat"),
+		)
 	}
 
 	duration := time.Since(startTime).Seconds()
