@@ -189,7 +189,23 @@ func VerifyTimeoutCertificate(cert TimeoutCertificate, poolSize int, pubKeys map
 // PeriodFor returns Go's zero value until that height's own first certificate
 // lands.
 type PeriodStore struct {
-	mu      sync.RWMutex
+	mu sync.RWMutex
+
+	// periods MUST have exactly one writer in this entire codebase:
+	// AcceptTimeoutCertificate below, and only through its verify-then-
+	// strictly-monotonic path. This is a hard invariant, not a convention —
+	// Period feeds committee selection (RoundContextForBlock ->
+	// SelectCommitteeWithSize's seed input), so if any two nodes ever
+	// disagreed on a height's period, they would compute two different
+	// committees for the same round. There is no such thing as a "local"
+	// or "fast-path" period bump: not for a stuck timer, not for the
+	// sequencer, not for an operator override. If you are tempted to add a
+	// second write site to this map — for ANY reason — stop: the fix
+	// belongs in how/when a TimeoutCertificate gets built and verified, not
+	// in a new way to write here. Confirmed by grep as of 2026-08-24: this
+	// field is written at exactly one line in the whole repo (this file's
+	// AcceptTimeoutCertificate) — verify-m4.sh checks this mechanically so
+	// a future second writer can't land silently.
 	periods map[uint64]uint64
 }
 
@@ -205,8 +221,19 @@ func (s *PeriodStore) PeriodFor(height uint64) uint64 {
 	return s.periods[height]
 }
 
-// AcceptTimeoutCertificate verifies cert and, if valid and strictly newer
-// than what is already known for its height, advances the stored period.
+// AcceptTimeoutCertificate is the ONLY valid path by which Period may ever
+// change (see the struct-level invariant comment above). It verifies cert
+// and, if valid and strictly newer than what is already known for its
+// height, advances the stored period.
+//
+// This is a state-machine rule, not a timeout timer: a node holds at its
+// current period for as long as it takes — seconds or hours — until a
+// certificate meeting this exact bar arrives, from anywhere (gossip, a
+// rejoin-RPC fetch, a locally-assembled quorum). There is no deadline after
+// which a node may advance on weaker evidence, and no caller — including
+// whichever node happened to assemble/broadcast the certificate — gets any
+// special authority here: the same verify-then-monotonic check applies
+// identically no matter who calls this.
 //
 //   - (newPeriod, true, nil): accepted, period advanced.
 //   - (currentPeriod, false, nil): a stale or already-known certificate -

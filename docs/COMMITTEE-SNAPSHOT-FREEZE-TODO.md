@@ -307,6 +307,110 @@ decision needing the same coordinated-rollout discipline as the other
 flags in this file, not something to silently pick during a
 verification pass. Awaiting direction before any implementation starts.
 
+**Item 10 stays open exactly as written above — the following section is
+a separate, now-closed question about the STATE MACHINE, not about pool
+composition. Do not read the section below as resolving Item 10; it does
+not touch which peers can vote, only what happens with the votes once
+cast.**
+
+## Timeout-recovery period-advancement state machine — closed 2026-08-25
+
+Design confirmed this session and now enforced by construction, not just
+by convention: **Period may advance only via a verified, monotonic
+`TimeoutCertificate` — never on a timer, never by any single node's
+(including the sequencer's) local say-so.** This is orthogonal to Item 10
+above: Item 10 is about *who is eligible to vote* (still open); this
+section is about *what happens once votes exist* (now closed and tested).
+
+Required flow, as specified and verified against the live code:
+
+```
+PERIOD 0 → Select Committee for (height, period=0) → Run Block Consensus
+  SUCCESS → Commit Block
+  FAILURE → Committee members create TimeoutVotes → Collect TimeoutVotes
+    → quorum reached?
+        NO  → Stay at Period 0. Committee unchanged. Keep collecting
+              votes indefinitely — no collection deadline exists, so a
+              vote received late still counts.
+        YES → Build TimeoutCertificate → Verify → Period 0 → Period 1
+              → re-select committee using Period 1 → restart consensus
+```
+
+- **✅ DONE — single-writer invariant made explicit and mechanically
+  enforced.** `messaging.PeriodStore.periods` already had exactly one
+  write site in the repo (`AcceptTimeoutCertificate`, gated on BLS
+  verification of the certificate AND `cert.Period > current`, i.e.
+  strict monotonicity) — confirmed by grep before any code changed. What
+  was missing was (a) that invariant being stated anywhere as a rule
+  rather than an accident of how the code happened to be written, and
+  (b) a regression check that would catch a future second writer before
+  it ships. Both added: `timeout_certificates.go`'s `PeriodStore` struct
+  and `AcceptTimeoutCertificate` doc comments now spell out that this is
+  the *only* valid path, explicitly ruling out "operator override" and
+  "sequencer local bump" as future shortcuts. `verify-m4.sh` now greps
+  the whole repo for writes to `s.periods[...]` and fails if the count
+  is ever anything other than exactly 1.
+- **✅ DONE — no privileged aggregator, confirmed against the live gossip
+  path, not just by code reading.** `recordAndMaybeCertify`/`tryCertify`
+  take no host-identity or role parameter — any node that receives
+  enough gossiped votes can independently assemble and broadcast a
+  certificate, and `broadcastTimeoutVote`/`broadcastTimeoutCertificate`
+  flood-broadcast to every connected peer rather than addressing a
+  distinguished "sequencer." The sequencer MAY collect votes and
+  assemble the certificate first for latency (this is the "sequencer as
+  optional aggregator" design discussed this session), but has zero
+  special authority: every node still independently re-verifies via the
+  same `AcceptTimeoutCertificate` path, and the peer-to-peer gossip
+  fallback works identically whether or not any particular node
+  (sequencer or otherwise) is reachable. Proven with a real 3-host
+  libp2p network, not just unit-level function calls (test 4 below).
+- **✅ DONE — no collection deadline, confirmed.** There is no dedicated
+  "give up waiting for timeout votes" timer anywhere in
+  `timeout_gossip.go` (grepped for `time.After|time.NewTimer|Escalat|
+  expire|Expire`, zero matches). The only real timer in the system is
+  `config.ConsensusTimeout = 90s` (`config/constants.go:33`), which
+  governs the block-voting round itself, not timeout-vote collection.
+  Votes arriving late — even much later — still count toward quorum;
+  this matches the spec's "keep accepting/collecting additional
+  TimeoutVotes" requirement for the NO branch exactly, and is now
+  covered by a test that adds votes with a real time delay between them
+  and confirms the period only advances the instant quorum is crossed.
+- **✅ NEW — end-to-end test suite,
+  `messaging/timeout_recovery_statemachine_test.go`.** Four tests, all
+  using the exact numbers in the spec (7 committee members, quorum 5),
+  all passing under `-race`:
+  1. `TestTimeoutRecoveryStateMachine_QuorumReached_EveryIndependentNodeConverges`
+     — three separately-constructed `PeriodStore`s, given the same
+     certificate, all independently verify it and land on the same
+     Period 1. Proves "verify once, agree everywhere," not "trust
+     whoever assembled it."
+  2. `TestTimeoutRecoveryStateMachine_QuorumNotReached_PeriodStaysFrozen`
+     — 3 of 7 votes (below quorum): `TallyTimeoutVotes` returns
+     `ok=false` with no error, and `PeriodFor(height)` stays at 0.
+  3. `TestTimeoutRecoveryStateMachine_LateVotesArriveOverTime_QuorumReachedEventually`
+     — votes 1-3 recorded, period still 0; a real 50ms sleep; vote 4,
+     still 0; vote 5, period advances to 1 in the same call that crosses
+     quorum, and the cached certificate has exactly the 5 signers that
+     actually arrived.
+  4. `TestTimeoutRecoveryStateMachine_NoPrivilegedNode_AnyPeerCanCompleteTheCertificate`
+     — three real libp2p hosts; an ordinary, non-distinguished host
+     collects 5 gossiped votes over an actual network connection,
+     assembles and broadcasts the certificate, and a third, independent
+     host receives and can independently verify it. No code path in
+     this test is aware of any "sequencer" concept.
+  Verified: `go test ./messaging/... -run 'TestTimeoutRecoveryStateMachine' -v -race`
+  — all 4 PASS; full `go test ./messaging/... -race` — both
+  `gossipnode/messaging` and `gossipnode/messaging/BlockProcessing`
+  green, no regressions, 32.6s total.
+- **Verdict: the state-machine question from this session's design
+  discussion is closed.** The flow the user specified was, by the time
+  it was specified, already correctly implemented by construction for
+  every branch — this pass added the explicit invariant statement (so a
+  future edit can't silently weaken it) and the proof that it actually
+  holds (so "already correct" isn't just an untested claim). **Item 10
+  above is unaffected and remains the real open question**: this closes
+  *what the votes do once collected*, not *who is allowed to vote*.
+
 ## Fallback window (§4.2a / §10 decision 11) — verification findings, 2026-08-24
 
 Checked against the morning's count-based-collection amendment
