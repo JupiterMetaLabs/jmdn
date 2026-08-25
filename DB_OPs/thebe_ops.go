@@ -83,6 +83,13 @@ func isNotFoundError(err error) bool {
 		strings.Contains(msg, "no rows in result set")
 }
 
+// IsNotFound reports whether err is any not-found shape — KV ("key not found",
+// "tbtree: key not found") or SQL ("no rows in result set"). Exported canonical
+// matcher for callers in other packages (apply path, account manager) that must
+// treat a brand-new account — a contract address or a first-time receiver read
+// from the SQL-backed store — as missing, not as a transient failure.
+func IsNotFound(err error) bool { return isNotFoundError(err) }
+
 // ReadJSON retrieves a value by key and unmarshals it into dest.
 func ReadJSON(key string, dest interface{}) error {
 	var err error

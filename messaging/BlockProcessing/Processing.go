@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -859,7 +858,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 				TxCountSent: doc.TxCountSent,
 				UpdatedAt:   doc.UpdatedAt,
 			}
-		} else if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
+		} else if DB_OPs.IsNotFound(err) {
 			originalState[did] = AccountSnapshot{Balance: "0"}
 		} else {
 			txSpan.RecordError(err)
@@ -1190,7 +1189,7 @@ func accountExists(account *common.Address, accountsClient *config.PooledConnect
 	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
 	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
-		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
+		if DB_OPs.IsNotFound(err) {
 			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
 			return false, nil
 		}

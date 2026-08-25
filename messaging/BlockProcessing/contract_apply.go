@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -24,7 +23,10 @@ const contractBlockGasLimit = uint64(30_000_000)
 // (processTransaction snapshot loop): a missing account is a fresh account, not
 // a hard error.
 func acctNotFound(err error) bool {
-	return err != nil && (err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found"))
+	// Canonical matcher: KV ("key not found") AND SQL ("no rows in result set").
+	// A first-time contract address read from the SQL-backed store surfaces the
+	// latter, which the old narrow check missed → the deploy was rejected.
+	return err != nil && DB_OPs.IsNotFound(err)
 }
 
 // applyContractTx applies a contract transaction (deployment, or a call to an
