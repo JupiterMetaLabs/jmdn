@@ -1221,6 +1221,20 @@ func main() {
 		} else if n > 0 {
 			log.Info().Int("accounts", n).Msg("[genesis] allocation seeded")
 		}
+
+		// Genesis BLOCK (devnet/bootstrap): on a fresh chain, write an empty block 0
+		// so "latest"-anchored reads (eth_getBalance, explorer, the orchestrator's
+		// balance validation) resolve and the first produced block links to a real
+		// parent. Only when JMDN_GENESIS_ALLOC is set (i.e. this is a seeded devnet) —
+		// production chains get their blocks from the sequencer and must not synthesize
+		// a genesis block. Idempotent (no-op once any block exists).
+		if strings.TrimSpace(os.Getenv("JMDN_GENESIS_ALLOC")) != "" {
+			if created, gbErr := DB_OPs.SeedGenesisBlockIfEmpty(context.Background()); gbErr != nil {
+				log.Fatal().Err(gbErr).Msg("[genesis] block-0 seed failed — refusing to boot")
+			} else if created {
+				log.Info().Msg("[genesis] block 0 written (fresh chain)")
+			}
+		}
 	}
 
 	// Explorer stats account/DID counter. The stats API used to scan immudb

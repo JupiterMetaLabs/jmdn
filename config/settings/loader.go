@@ -67,6 +67,10 @@ func Load() (*NodeConfig, error) {
 	// directly). BindEnv with explicit names bypasses the prefix.
 	_ = v.BindEnv("selection.mnemonic", "JMDN_NODE_SELECTION_MNEMONIC")
 	_ = v.BindEnv("selection.salt", "JMDN_NETWORK_SALT")
+	// AutomaticEnv does not reach these through Unmarshal — bind explicitly so
+	// JMDN_SECURITY_ENABLED=false actually disables the gatekeeper (TLS/auth). Without
+	// this, services stay TLS even when the env/partial-yaml says disabled.
+	_ = v.BindEnv("security.enabled", "JMDN_SECURITY_ENABLED")
 
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()

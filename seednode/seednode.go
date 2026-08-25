@@ -34,8 +34,16 @@ type ManagedPeer struct {
 	IsAlive       bool
 }
 
-// getPublicIP fetches the public IP address using ifconfig.me
+// getPublicIP fetches the public IP address using ifconfig.me.
+//
+// Override: if JMDN_ADVERTISE_IP is set, return it verbatim and skip the
+// ifconfig.me lookup. Needed on a local/Docker devnet (and behind NAT) where the
+// ifconfig.me result is the host's public IP — unroutable by peers/seed inside the
+// cluster. Set it to the node's cluster-reachable IP (e.g. its compose static IP).
 func getPublicIP() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("JMDN_ADVERTISE_IP")); v != "" {
+		return v, nil
+	}
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
