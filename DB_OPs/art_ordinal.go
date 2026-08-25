@@ -54,8 +54,11 @@ import (
 // GenerateARTNonce mints and are never treated as ordinals.
 const ARTOrdinalMax = uint64(1) << 40
 
-// artOrdinalKey is the main-DB key holding the NEXT unassigned ordinal.
-const artOrdinalKey = "art_ordinal_next"
+// artOrdinalKey is the sync-state KV key holding the NEXT unassigned ordinal.
+// Namespaced under "sync:" like AppliedAnchorKey; persisted via the ThebeDB
+// handle's GetSyncKV/PutSyncKV (the old "art_ordinal_next" main-DB key was an
+// ImmuDB-era Read/Update path that no longer persists — see the rewrite below).
+const artOrdinalKey = "sync:art_ordinal_next"
 
 // artOrdinalMu serializes read-reserve-write on the counter within this
 // process (the sequencer assigns from one goroutine, but apply-side floor
@@ -66,21 +69,18 @@ var artOrdinalMu sync.Mutex
 // key does not exist yet (ordinal space starts at 1; 0 is reserved as the
 // "no identity carried" sentinel that mergeAccountForWrite already preserves).
 func readARTOrdinalNext() (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := GetMainDBConnectionandPutBack(ctx)
+	h, err := getHandle(nil)
 	if err != nil {
-		return 0, fmt.Errorf("art_ordinal read: connection: %w", err)
-	}
-	defer PutMainDBConnection(conn)
-
-	raw, err := Read(conn, artOrdinalKey)
-	if err != nil {
-		if err == ErrNotFound || strings.Contains(err.Error(), "key not found") {
-			return 1, nil
-		}
 		return 0, fmt.Errorf("art_ordinal read: %w", err)
+	}
+	raw, err := h.GetSyncKV(artOrdinalKey)
+	if err != nil {
+		return 0, fmt.Errorf("art_ordinal read: %w", err)
+	}
+	if raw == nil {
+		// Never seeded (fresh chain) → ordinal space starts at 1. GetSyncKV
+		// returns (nil, nil) for an absent key, so this needs no error sentinel.
+		return 1, nil
 	}
 	var next uint64
 	if err := json.Unmarshal(raw, &next); err != nil {
@@ -90,6 +90,23 @@ func readARTOrdinalNext() (uint64, error) {
 		next = 1
 	}
 	return next, nil
+}
+
+// writeARTOrdinalNext persists the next-ordinal counter through the ThebeDB
+// sync-state KV (mirrors writeAnchorLocked). Callers hold artOrdinalMu.
+func writeARTOrdinalNext(v uint64) error {
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("art_ordinal write: %w", err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("art_ordinal encode: %w", err)
+	}
+	if err := h.PutSyncKV(artOrdinalKey, raw); err != nil {
+		return fmt.Errorf("art_ordinal write: %w", err)
+	}
+	return nil
 }
 
 // reserveARTOrdinals atomically reserves n consecutive ordinals and returns
@@ -109,7 +126,7 @@ func reserveARTOrdinals(n uint64) (uint64, error) {
 	if next+n >= ARTOrdinalMax {
 		return 0, fmt.Errorf("art_ordinal reserve: ordinal space exhausted (next=%d, n=%d)", next, n)
 	}
-	if err := Update(artOrdinalKey, next+n); err != nil {
+	if err := writeARTOrdinalNext(next + n); err != nil {
 		return 0, fmt.Errorf("art_ordinal reserve: persist %d: %w", next+n, err)
 	}
 	return next, nil
@@ -135,7 +152,7 @@ func BumpARTOrdinalFloor(floor uint64) error {
 	if floor <= next {
 		return nil
 	}
-	if err := Update(artOrdinalKey, floor); err != nil {
+	if err := writeARTOrdinalNext(floor); err != nil {
 		return fmt.Errorf("art_ordinal floor: persist %d: %w", floor, err)
 	}
 	return nil
