@@ -95,6 +95,10 @@ type ZKProofStore interface {
 // ReceiptStore covers on-the-fly receipt generation.
 type ReceiptStore interface {
 	GetReceipt(ctx context.Context, txHash string) (*config.Receipt, error)
+	// GetContractReceipt returns the persisted per-tx EVM outcome (real status,
+	// gas, contract address, logs) written at apply time. Found == false (nil error)
+	// when the tx has no persisted contract receipt (plain transfers).
+	GetContractReceipt(ctx context.Context, txHash string) (*ContractReceipt, error)
 }
 
 // LogStore covers event log persistence and filtered retrieval.

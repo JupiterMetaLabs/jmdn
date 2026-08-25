@@ -2,7 +2,23 @@ package store
 
 import (
 	"github.com/ethereum/go-ethereum/common"
+
+	"gossipnode/config"
 )
+
+// ContractReceipt is the neutral, persisted per-tx EVM execution outcome surfaced
+// on the handle. The backend maps thebegateway.ContractReceiptRecord into this so
+// the store package keeps zero dependency on thebegateway. Found == false (with a
+// nil error) means the tx has no persisted contract receipt — e.g. a plain value
+// transfer — NOT a read failure.
+type ContractReceipt struct {
+	Found           bool
+	Status          uint64 // 1 = success, 0 = revert/fail
+	GasUsed         uint64 // actual EVM gas consumed
+	ContractAddress *common.Address
+	Logs            []config.Log
+	RevertReason    string
+}
 
 // Account mirrors DB_OPs.Account exactly — same fields, same types.
 // Defined here so store/ has zero dependency on the DB_OPs package.

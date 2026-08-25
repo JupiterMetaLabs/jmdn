@@ -9,13 +9,16 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
 	"gossipnode/config/utils"
 
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 // GetReceipt generates a receipt on-the-fly by fetching the transaction and its containing block.
@@ -79,6 +82,20 @@ func (b *thebeBackend) GetReceipt(ctx context.Context, txHash string) (*config.R
 		logs = append(logs, log)
 	}
 
+	// Persisted EVM receipt (real status/gas/logs/contractAddress) overrides the
+	// reconstruction when present; absent (plain transfers) keeps the defaults.
+	status := uint64(1)
+	gasUsed := parseUint64OrZero(txRec.GasLimit) // fallback proxy (plain-tx path)
+	var contractAddress *common.Address
+	if cr, cerr := b.GetContractReceipt(ctx, normalizedHash); cerr == nil && cr != nil && cr.Found {
+		status = cr.Status
+		gasUsed = cr.GasUsed
+		contractAddress = cr.ContractAddress
+		if len(cr.Logs) > 0 {
+			logs = cr.Logs
+		}
+	}
+
 	logsBloom := utils.GenerateLogsBloom(logs)
 
 	return &config.Receipt{
@@ -86,16 +103,76 @@ func (b *thebeBackend) GetReceipt(ctx context.Context, txHash string) (*config.R
 		BlockHash:         common.HexToHash(blockRec.BlockHash),
 		BlockNumber:       blockRec.BlockNumber,
 		TransactionIndex:  uint64(txRec.TxIndex),
-		Status:            1,
+		Status:            status,
 		Type:              uint8(txRec.Type),
-		GasUsed:           parseUint64OrZero(txRec.GasLimit),
+		GasUsed:           gasUsed,
 		CumulativeGasUsed: cumulativeGasUsed,
-		ContractAddress:   nil,
+		ContractAddress:   contractAddress,
 		Logs:              logs,
 		LogsBloom:         logsBloom,
 		ZKProof:           nil,
 		ZKStatus:          "",
 	}, nil
+}
+
+// GetContractReceipt returns the persisted per-tx EVM outcome (written at apply
+// time by the executor) mapped to the neutral store DTO. Found == false (nil
+// error) when the tx has no persisted contract receipt (e.g. a plain transfer).
+func (b *thebeBackend) GetContractReceipt(ctx context.Context, txHash string) (*store.ContractReceipt, error) {
+	normalizedHash := txHash
+	if !strings.HasPrefix(strings.ToLower(txHash), "0x") {
+		normalizedHash = "0x" + txHash
+	}
+
+	rec, err := b.r.GetContractReceipt(ctx, normalizedHash)
+	if err != nil {
+		// A missing contract receipt (plain transfer) is not an error.
+		m := strings.ToLower(err.Error())
+		if strings.Contains(m, "no rows") || strings.Contains(m, "not found") {
+			return &store.ContractReceipt{Found: false}, nil
+		}
+		return nil, fmt.Errorf("backend.GetContractReceipt(%s): %w", txHash, err)
+	}
+	if rec == nil {
+		return &store.ContractReceipt{Found: false}, nil
+	}
+
+	out := &store.ContractReceipt{
+		Found:        true,
+		Status:       uint64(rec.Status),
+		GasUsed:      parseUint64OrZero(rec.GasUsed),
+		RevertReason: rec.RevertReason,
+	}
+	if rec.ContractAddress != nil && *rec.ContractAddress != "" {
+		a := common.HexToAddress(*rec.ContractAddress)
+		out.ContractAddress = &a
+	}
+
+	// Persisted logs are go-ethereum types.Log JSON — decode into that type, then
+	// map to config.Log (their JSON field tags differ, so a direct unmarshal into
+	// config.Log would drop most fields).
+	if len(rec.Logs) > 0 {
+		var glogs []*gethtypes.Log
+		if json.Unmarshal(rec.Logs, &glogs) == nil {
+			for _, gl := range glogs {
+				if gl == nil {
+					continue
+				}
+				out.Logs = append(out.Logs, config.Log{
+					Address:     gl.Address,
+					Topics:      gl.Topics,
+					Data:        gl.Data,
+					BlockNumber: gl.BlockNumber,
+					BlockHash:   gl.BlockHash,
+					TxHash:      gl.TxHash,
+					TxIndex:     uint64(gl.TxIndex),
+					LogIndex:    uint64(gl.Index),
+					Removed:     gl.Removed,
+				})
+			}
+		}
+	}
+	return out, nil
 }
 
 // parseUint64OrZero parses a decimal string to uint64; returns 0 on any error.

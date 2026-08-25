@@ -65,19 +65,26 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	return nil, fmt.Errorf("transaction not found")
 }
 
-// reconstructedGasUsed returns the best gas-used value available WITHOUT the
-// persisted EVM receipt. A plain value transfer (recipient present, no calldata)
-// costs exactly the 21000 intrinsic and always succeeds once included, so it is
-// EXACT. A contract create/call executes additional opcode gas that is only in
-// the persisted EVM receipt — so we return the EIP-2028 intrinsic FLOOR
-// (21000 + calldata), never tx.GasLimit (which massively over-reports).
+// reconstructedGasUsed is the FALLBACK gas-used value used only when a tx has no
+// persisted EVM receipt (a plain value transfer). generateReceiptFromTransaction
+// prefers the actual persisted GasUsed via the handle's GetContractReceipt.
 //
-// TODO(receipt-persistence): the actual GasUsed and Status for contract txs live
-// in the per-tx EVM receipt written at apply time (contractDB.WriteReceipt →
-// thebegateway.GetContractReceipt). Expose that reader on the store handle and
-// read it here so a reverted contract tx reports status 0 and its true gas.
+// A plain value transfer (recipient present, no calldata) costs exactly 21000 and
+// always succeeds once included, so it is EXACT. For a contract create/call this
+// is only the intrinsic FLOOR (never tx.GasLimit, which massively over-reports):
+//   - creation: 21000 + 32000 (CREATE) = 53000, plus the EIP-3860 initcode word
+//     cost (2 gas per 32-byte word);
+//   - call: 21000;
+//   - plus the EIP-2028 calldata cost (16/non-zero byte, 4/zero byte).
 func reconstructedGasUsed(tx *config.Transaction) uint64 {
-	gas := uint64(21000) // intrinsic base (EIP-2028, non-creation)
+	var gas uint64
+	if tx.To == nil {
+		gas = 53000
+		words := (uint64(len(tx.Data)) + 31) / 32
+		gas += 2 * words // EIP-3860 initcode word cost
+	} else {
+		gas = 21000
+	}
 	for _, b := range tx.Data {
 		if b == 0 {
 			gas += 4
@@ -99,13 +106,11 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 		}
 	}
 
-	// Plain ETH transfers and most non-contract calls emit no logs.
-	// Do not fabricate synthetic log entries — return an empty slice so
-	// dApps that parse receipt logs see correct data.
+	// Reconstruction defaults — correct for plain value transfers, overridden below
+	// by the persisted EVM receipt for contract txs. No synthetic logs.
 	logs := []config.Log{}
-	logsBloom := utils.GenerateLogsBloom(logs)
-
 	gasUsed := reconstructedGasUsed(tx)
+	status := uint64(1)
 
 	// Contract-creation address is DETERMINISTIC: crypto.CreateAddress(sender, nonce),
 	// the same address the EVM and EnrichBlockAccountNonces derive. Set it for a
@@ -116,10 +121,27 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 		contractAddress = &ca
 	}
 
-	// Status: plain transfers always succeed once included. A reverted contract tx
-	// should be status 0, but that outcome is only in the persisted EVM receipt —
-	// see the reconstructedGasUsed TODO.
-	status := uint64(1)
+	// Persisted EVM receipt (written at apply time) is authoritative: it carries the
+	// ACTUAL revert status, true gas, contract address, and logs. Override the
+	// reconstruction with it when present; a plain transfer has none (Found=false)
+	// and keeps the reconstruction above. Best-effort read — a lookup failure falls
+	// back to the reconstruction rather than failing the RPC.
+	if h, herr := getHandle(mainDBClient); herr == nil {
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if cr, cerr := h.GetContractReceipt(rctx, tx.Hash.Hex()); cerr == nil && cr != nil && cr.Found {
+			status = cr.Status
+			gasUsed = cr.GasUsed
+			if cr.ContractAddress != nil {
+				contractAddress = cr.ContractAddress
+			}
+			if len(cr.Logs) > 0 {
+				logs = cr.Logs
+			}
+		}
+		rcancel()
+	}
+
+	logsBloom := utils.GenerateLogsBloom(logs)
 
 	receipt := &config.Receipt{
 		TxHash:            tx.Hash,

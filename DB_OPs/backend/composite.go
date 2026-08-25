@@ -228,6 +228,11 @@ func (h *compositeHandle) GetReceipt(ctx context.Context, txHash string) (*confi
 	return h.receipts.GetReceipt(ctx, txHash)
 }
 
+// GetContractReceipt delegates directly to thebeBackend (persisted EVM outcome).
+func (h *compositeHandle) GetContractReceipt(ctx context.Context, txHash string) (*store.ContractReceipt, error) {
+	return h.receipts.GetContractReceipt(ctx, txHash)
+}
+
 // — LogStore —
 
 // StoreLogs delegates directly to thebeBackend (no cache — write path).
