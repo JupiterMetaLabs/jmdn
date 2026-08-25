@@ -179,8 +179,10 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	// transactions, which would inflate the nonce for recipient addresses.
 	account, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Address has no transactions yet — nonce is 0
+		if DB_OPs.IsNotFound(err) {
+			// Address has no transactions yet — nonce is 0. IsNotFound also matches
+			// the SQL-backed "no rows in result set" shape a never-seen address now
+			// returns (the old "not found"/"does not exist" check missed it).
 			return big.NewInt(0), nil
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount failed: %v", err), "GetTransactionCount", -1); logErr != nil {
@@ -314,7 +316,10 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	if err != nil {
 		logger().Error(opCtx, "GetAccount error", err)
 		// If account not found, create a new account with zero balance
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+		if DB_OPs.IsNotFound(err) {
+			// IsNotFound also matches the SQL-backed "no rows in result set" shape a
+			// never-seen address now returns (the old "not found"/"does not exist"
+			// check missed it, erroring instead of returning 0).
 			// Ordinary Ethereum semantics: an unknown address simply has balance 0.
 			// REGISTER-ON-READ IS GONE — eth_getBalance used to auto-create and
 			// propagate the account here, which brought accounts into existence on

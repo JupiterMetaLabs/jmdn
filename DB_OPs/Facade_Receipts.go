@@ -3,10 +3,14 @@ package DB_OPs
 import (
 	"context"
 	"fmt"
-	"gossipnode/config"
-	"gossipnode/config/utils"
 	"strings"
 	"time"
+
+	"gossipnode/config"
+	"gossipnode/config/utils"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
@@ -61,14 +65,37 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	return nil, fmt.Errorf("transaction not found")
 }
 
-// generateReceiptFromTransaction creates a receipt from transaction and block data
+// reconstructedGasUsed returns the best gas-used value available WITHOUT the
+// persisted EVM receipt. A plain value transfer (recipient present, no calldata)
+// costs exactly the 21000 intrinsic and always succeeds once included, so it is
+// EXACT. A contract create/call executes additional opcode gas that is only in
+// the persisted EVM receipt — so we return the EIP-2028 intrinsic FLOOR
+// (21000 + calldata), never tx.GasLimit (which massively over-reports).
+//
+// TODO(receipt-persistence): the actual GasUsed and Status for contract txs live
+// in the per-tx EVM receipt written at apply time (contractDB.WriteReceipt →
+// thebegateway.GetContractReceipt). Expose that reader on the store handle and
+// read it here so a reverted contract tx reports status 0 and its true gas.
+func reconstructedGasUsed(tx *config.Transaction) uint64 {
+	gas := uint64(21000) // intrinsic base (EIP-2028, non-creation)
+	for _, b := range tx.Data {
+		if b == 0 {
+			gas += 4
+		} else {
+			gas += 16
+		}
+	}
+	return gas
+}
+
+// generateReceiptFromTransaction creates a receipt from transaction and block data.
 func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
-	// Cumulative gas used = sum of GasLimit for all txns up to and including this one.
-	// config.Transaction does not carry a GasUsed field; GasLimit is the best proxy.
+	// Cumulative gas = sum of per-tx reconstructed gas up to and including this one
+	// (NOT GasLimit).
 	var cumulativeGasUsed uint64
 	for i := uint64(0); i <= txIndex; i++ {
 		if i < uint64(len(block.Transactions)) {
-			cumulativeGasUsed += block.Transactions[i].GasLimit
+			cumulativeGasUsed += reconstructedGasUsed(&block.Transactions[i])
 		}
 	}
 
@@ -78,18 +105,32 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	logs := []config.Log{}
 	logsBloom := utils.GenerateLogsBloom(logs)
 
-	gasUsed := tx.GasLimit
+	gasUsed := reconstructedGasUsed(tx)
+
+	// Contract-creation address is DETERMINISTIC: crypto.CreateAddress(sender, nonce),
+	// the same address the EVM and EnrichBlockAccountNonces derive. Set it for a
+	// creation tx (To == nil, From != nil); leave nil for calls/transfers.
+	var contractAddress *common.Address
+	if tx.To == nil && tx.From != nil {
+		ca := crypto.CreateAddress(*tx.From, tx.Nonce)
+		contractAddress = &ca
+	}
+
+	// Status: plain transfers always succeed once included. A reverted contract tx
+	// should be status 0, but that outcome is only in the persisted EVM receipt —
+	// see the reconstructedGasUsed TODO.
+	status := uint64(1)
 
 	receipt := &config.Receipt{
 		TxHash:            tx.Hash,
 		BlockHash:         block.BlockHash,
 		BlockNumber:       block.BlockNumber,
 		TransactionIndex:  txIndex,
-		Status:            uint64(1),
+		Status:            status,
 		Type:              tx.Type,
-		GasUsed:           gasUsed, // Use actual gas consumption
+		GasUsed:           gasUsed,
 		CumulativeGasUsed: cumulativeGasUsed,
-		ContractAddress:   nil,
+		ContractAddress:   contractAddress,
 		Logs:              logs,
 		LogsBloom:         logsBloom,
 		ZKProof:           block.StarkProof,
