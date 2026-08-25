@@ -232,7 +232,13 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 			// Treat it as missing instead: assign a real ordinal, which apply-side
 			// adopt then propagates fleet-wide (including back onto this sequencer).
 			missing = append(missing, addr)
-		case err != nil && strings.Contains(err.Error(), "key not found"):
+		case err != nil && isNotFoundError(err):
+			// Never-seen address (e.g. a crypto.CreateAddress contract address, or
+			// any first-time receiver). SQL-backed reads surface this as "sql: no
+			// rows in result set", not "key not found" — the canonical helper
+			// matches all not-found shapes, so a genuinely-new account is treated
+			// as missing (assign an ordinal) instead of hitting the fail-closed
+			// default and rejecting the block.
 			missing = append(missing, addr)
 		default:
 			// Fail-closed: a transient DB error must not be read as "new account".
