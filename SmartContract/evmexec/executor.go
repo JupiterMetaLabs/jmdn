@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 	gethcore "github.com/ethereum/go-ethereum/core"
@@ -171,7 +172,7 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 		} else if isCreate {
 			receiptContract = exec.ContractAddr
 		}
-		_ = cdb.WriteReceipt(contractDB.TransactionReceipt{
+		if werr := cdb.WriteReceipt(contractDB.TransactionReceipt{
 			TxHash:          tx.Hash,
 			BlockNumber:     bctx.BlockNumber,
 			TxIndex:         uint64(bctx.TxIndex),
@@ -180,7 +181,13 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 			ContractAddress: receiptContract,
 			Logs:            cdb.Logs(),
 			CreatedAt:       bctx.Time,
-		})
+		}); werr != nil {
+			// Non-fatal: receipts are a DERIVED query index and must NOT fail the
+			// tx/block. But this was fire-and-forget, hiding WHY contract_receipts
+			// stays empty (append/2PC/projection wiring). Surface it to stderr so it
+			// reaches journald/docker logs: grep 'persist contract receipt'.
+			fmt.Fprintf(os.Stderr, "WARN persist contract receipt failed tx=%s err=%v\n", tx.Hash.Hex(), werr)
+		}
 	}
 
 	// A reverted / errored execution pays gas but moves no value and commits no
