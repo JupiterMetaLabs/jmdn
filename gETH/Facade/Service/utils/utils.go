@@ -230,6 +230,7 @@ func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 		ParentHash:          ZKBlock.PrevHash.Bytes(),
 		StateRoot:           ZKBlock.StateRoot.Bytes(),
 		ReceiptsRoot:        Receiptshash,
+		TxnsRoot:            common.HexToHash(ZKBlock.TxnsRoot).Bytes(), // 32-byte txns trie root for eth_getBlock*
 		LogsBloom:           LogsBloom,
 		Miner:               ZKBlock.ZKVMAddr.Bytes(),
 		Number:              ZKBlock.BlockNumber,

@@ -31,6 +31,7 @@ type BlockHeader struct {
 	ParentHash          []byte `json:"parenthash"`
 	StateRoot           []byte `json:"stateroot"`
 	ReceiptsRoot        []byte `json:"receiptsroot"`
+	TxnsRoot            []byte `json:"txnsroot"` // transactions trie root — required by alloy/viem/web3 block deserialization
 	LogsBloom           []byte `json:"logsbloom"`
 	Miner               []byte `json:"miner"`
 	Number              uint64 `json:"number"`

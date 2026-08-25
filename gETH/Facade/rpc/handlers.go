@@ -770,9 +770,10 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 		"gasUsed":  "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
 
 		// State / receipts — all stored in ZKBlock, surfaced via BlockHeader
-		"stateRoot":    "0x" + hex.EncodeToString(b.Header.StateRoot),
-		"receiptsRoot": "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
-		"logsBloom":    "0x" + hex.EncodeToString(b.Header.LogsBloom),
+		"stateRoot":        "0x" + hex.EncodeToString(b.Header.StateRoot),
+		"receiptsRoot":     "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
+		"transactionsRoot": "0x" + hex.EncodeToString(b.Header.TxnsRoot), // required by alloy/cast/viem
+		"logsBloom":        "0x" + hex.EncodeToString(b.Header.LogsBloom),
 		"extraData":    "0x" + hex.EncodeToString(b.Header.ExtraData),
 
 		// Miner / sequencer address (ZKVMAddr in ZKBlock → Miner in BlockHeader)
