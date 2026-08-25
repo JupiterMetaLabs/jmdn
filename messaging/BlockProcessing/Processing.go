@@ -717,14 +717,12 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		attribute.String("zkvm", zkvmAddr.Hex()),
 	)
 
-	// First check the connection
-	if accountsClient == nil {
-		txSpan.RecordError(errors.New("accountsClient is nil"))
-		txSpan.SetAttributes(attribute.String("status", "error"))
-		return errors.New("accountsClient is nil")
-	}
-
-	// Confirm the DB connection
+	// Confirm the DB connection. Post-ImmuDB migration a nil accountsClient is the
+	// INTENDED value — both callers (blockPropagation.go, broadcast.go) pass nil and
+	// every DB_OPs.*(accountsClient, ...) call resolves the process-wide ThebeDB
+	// handle via getHandle(nil). The old `accountsClient == nil` hard-reject was a
+	// stale ImmuDB-era check that failed every block. EnsureDBConnection (which
+	// validates the global handle) is the correct availability gate.
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
 		txSpan.RecordError(err)
