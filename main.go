@@ -27,6 +27,7 @@ import (
 	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/ethereum/go-ethereum/common"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
@@ -1158,11 +1159,22 @@ func main() {
 		// from the local committed ledger (deterministic, EVM-A16) and returns value
 		// deltas for the centralized fold (config.FoldContractExecution).
 		if cfg.Contracts.Enabled {
+			// Derive hasCode from the SAME persistent repo passed to Register — its
+			// GetCode reads cas.KV() (the store deploys commit to and eth_getCode
+			// reads). The old contractDB.HasCode read a process-wide sharedKVStore
+			// singleton that is never set (SetSharedKVStore has zero callers), so it
+			// always returned false → IsContractTx gated every CALL (To != nil) onto
+			// the value-transfer path and the EVM never ran for contract calls
+			// (deploys bypass hasCode, which is why only deploys worked).
+			contractRepo := contractDB.NewKVStateRepository(cas.KV(), cas)
 			evmexec.Register(
 				cfg.Network.ChainID,
 				DB_OPs.ContractAccountSource{},
-				contractDB.NewKVStateRepository(cas.KV(), cas),
-				contractDB.HasCode,
+				contractRepo,
+				func(addr common.Address) bool {
+					code, err := contractRepo.GetCode(context.Background(), addr)
+					return err == nil && len(code) > 0
+				},
 			)
 			// P4: fold contract state into the P2.5 fingerprint so the
 			// halt-on-divergence check covers contract storage, not just accounts.
