@@ -9,6 +9,7 @@ import (
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/config"
 	"gossipnode/logging"
+	"gossipnode/txstatus"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -405,13 +406,51 @@ func CloseMempoolClient() {
 	}
 }
 
-// SubmitToMempool submits a transaction to the mempool instead of propagating it directly
+// SubmitToMempool submits a transaction to the mempool instead of propagating it directly.
+//
+// It also writes a local submit record. That record is what lets a later status
+// query distinguish "this transaction is in flight" from "we have never seen
+// this hash" — without it, both look identical (absent from the chain store,
+// absent from the mempool) and the only honest answer to either is `unknown`.
+// The record is written on BOTH outcomes, carrying whether the forward
+// succeeded: a failed forward means the transaction never reached the mempool
+// and will never be mined, which a status query must report as `unknown` rather
+// than leaving a wallet polling forever.
+//
+// The record write is a no-op unless the feature is enabled, and cannot fail
+// the submit.
 func SubmitToMempool(tx *config.Transaction, txHash string) error {
 	if globalMempoolClient == nil {
-		return fmt.Errorf("mempool client not initialized")
+		err := fmt.Errorf("mempool client not initialized")
+		recordSubmitAttempt(tx, txHash, err)
+		return err
 	}
 
-	return globalMempoolClient.SubmitTransaction(tx, txHash)
+	err := globalMempoolClient.SubmitTransaction(tx, txHash)
+	recordSubmitAttempt(tx, txHash, err)
+	return err
+}
+
+// recordSubmitAttempt notes the outcome of one forward attempt in the local
+// submit log.
+func recordSubmitAttempt(tx *config.Transaction, txHash string, forwardErr error) {
+	rec := txstatus.SubmitRecord{
+		Hash:        txHash,
+		SubmittedAt: time.Now().UTC(),
+		Forwarded:   forwardErr == nil,
+	}
+	if tx != nil {
+		// From is a *common.Address and is nil on some paths — do not deref it
+		// blindly, a status-log write must never panic the submit path.
+		if tx.From != nil {
+			rec.Sender = tx.From.Hex()
+		}
+		rec.Nonce = tx.Nonce
+	}
+	if forwardErr != nil {
+		rec.ForwardErr = forwardErr.Error()
+	}
+	txstatus.RecordSubmit(rec)
 }
 
 func ReturnMempoolObject() (*MempoolClient, error) {

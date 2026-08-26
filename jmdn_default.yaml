@@ -234,3 +234,62 @@ alerts:
   api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
   chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
   http_timeout: 10s
+
+# ── Transaction status ─────────────────────────────────
+# Answers "where is this transaction?" for hashes that are not in a block, by
+# consulting the mempool routing engine and a local record of what this node
+# forwarded. Powers the non-standard jmdt_getTransactionStatus method.
+#
+# DEFAULT-OFF. While disabled: no submit records are kept,
+# jmdt_getTransactionStatus reports the method as unavailable, and
+# eth_getTransactionByHash behaves exactly as it does today.
+#
+# eth_getTransactionReceipt is NEVER affected by anything here. A receipt stays
+# null until the transaction is in a block, because wallets read a non-null
+# receipt as proof of mining — a synthesised receipt with status 0x0 would show
+# a merely-queued transaction as FAILED.
+#
+# Requires MRE_LOOKUP_ENABLED=true on the mempool routing engine; without it
+# every mempool lookup returns UNIMPLEMENTED and statuses degrade to `unknown`.
+tx_status:
+  enabled: false                      # JMDN_TX_STATUS_ENABLED
+
+  # How long this node remembers that it forwarded a transaction. This is the
+  # ONLY evidence that permits a `processing` answer, so it must comfortably
+  # exceed the worst-case time-to-inclusion. MEASURE that on your network
+  # first: the sequencer polls the mempool on an interval and only builds a
+  # block once enough transactions are pending, so it is far longer than
+  # intuition suggests. Too short and in-flight transactions report `unknown`.
+  submit_record_ttl: 30m               # JMDN_TX_STATUS_SUBMIT_RECORD_TTL
+  submit_record_capacity: 100000       # JMDN_TX_STATUS_SUBMIT_RECORD_CAPACITY
+
+  # Ceiling on how long a status query may wait on the mempool. Expiry degrades
+  # the answer to `unknown`; it never hangs or errors the RPC.
+  mempool_timeout: 400ms               # JMDN_TX_STATUS_MEMPOOL_TIMEOUT
+  chain_timeout: 2s                    # JMDN_TX_STATUS_CHAIN_TIMEOUT
+
+  # Remembers CONCLUSIVE unknowns so repeated probes for nonexistent hashes do
+  # not each trigger a fleet-wide fan-out. Inconclusive answers are never
+  # cached. Keep the TTL short — it bounds how long a freshly submitted
+  # transaction can stay invisible after a miss on the same hash.
+  negative_cache_ttl: 2s               # JMDN_TX_STATUS_NEGATIVE_CACHE_TTL
+  negative_cache_size: 16384           # JMDN_TX_STATUS_NEGATIVE_CACHE_SIZE
+
+  # Load protection, not tuning: the JSON-RPC port is public and every
+  # chain-store miss amplifies into an N-shard scatter-gather inside MRE.
+  # There is no transport auth between jmdn and MRE today, so do not raise
+  # these or set them to 0.
+  rate_limit_per_sec: 50               # JMDN_TX_STATUS_RATE_LIMIT_PER_SEC
+  rate_limit_burst: 100                # JMDN_TX_STATUS_RATE_LIMIT_BURST
+
+  # Stops calling an unresponsive mempool, so an outage does not add the full
+  # timeout to every request.
+  breaker_failure_threshold: 5         # JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD
+  breaker_cooldown: 5s                 # JMDN_TX_STATUS_BREAKER_COOLDOWN
+
+  # Second, separate opt-in: lets eth_getTransactionByHash answer from the
+  # mempool, returning a queued transaction with null blockHash / blockNumber /
+  # transactionIndex (the standard Ethereum pending representation), and null
+  # for a hash that is not known anywhere. Off even when `enabled` is true,
+  # because it changes what existing clients see.
+  pending_tx_by_hash: false            # JMDN_TX_STATUS_PENDING_TX_BY_HASH

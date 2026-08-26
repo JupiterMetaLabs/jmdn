@@ -524,6 +524,28 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	// Get the block containing this transaction
 	block, err := DB_OPs.GetTransactionBlock(opCtx, nil, normalizedHash)
 	if err != nil {
+		// Chain-store miss. With pending lookup enabled, the transaction may
+		// still be queued in the mempool, in which case it is returned with nil
+		// block fields (the standard Ethereum pending representation) — and a
+		// hash we know nothing about returns (nil, nil) so the RPC layer answers
+		// null, which is what eth_getTransactionByHash is specified to do for an
+		// unknown hash.
+		//
+		// This branch is inert unless tx_status.pending_tx_by_hash is enabled:
+		// PendingTxByHash returns (nil, nil) when the feature is off, so the
+		// original error is returned exactly as before.
+		if pending, perr := s.PendingTxByHash(opCtx, normalizedHash); perr == nil && pending != nil {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash served pending tx from mempool: %s", hash), "TxByHash", 1); logErr != nil {
+				logger().Error(opCtx, "Failed to log TxByHash pending result", logErr)
+			}
+			return pending, nil
+		} else if pendingTxByHashEnabled() {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash: hash not in a block and not queued (returning null): %s", hash), "TxByHash", -1); logErr != nil {
+				logger().Error(opCtx, "Failed to log TxByHash miss", logErr)
+			}
+			return nil, nil
+		}
+
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
 			logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
