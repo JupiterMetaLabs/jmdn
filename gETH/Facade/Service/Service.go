@@ -752,67 +752,73 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Base gas cost for any transaction
-	baseGas := uint64(21000)
+	const blockGasLimit = uint64(30_000_000)
 
-	// // Get fee statistics from routing service to adjust base gas estimate
-	// feeStats, err := block.GetFeeStatisticsFromRouting()
-	// if err == nil && feeStats != nil {
-	// 	fmt.Printf("📊 Fee stats from routing service:\n")
-	// 	fmt.Printf("   MeanFee: %d wei (%.9f gwei)\n", feeStats.MeanFee, float64(feeStats.MeanFee)/1000000000.0)
-	// 	fmt.Printf("   Standard: %d wei (%.9f gwei)\n", feeStats.RecommendedFees.Standard, float64(feeStats.RecommendedFees.Standard)/1000000000.0)
-	// 	fmt.Printf("   Min: %d wei, Max: %d wei, Median: %d wei\n", feeStats.MinFee, feeStats.MaxFee, feeStats.MedianFee)
-
-	// 	if feeStats.MeanFee > 0 {
-	// 		// Use mean fee from routing service to adjust base gas
-	// 		// Higher fees typically correlate with more complex transactions requiring more gas
-	// 		feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 35 gwei
-	// 		if feeMultiplier > 1.0 {
-	// 			fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
-	// 			baseGas = uint64(float64(baseGas) * feeMultiplier)
-	// 		} else {
-	// 			fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 35 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
-	// 		}
-	// 	}
-	// } else if err != nil {
-	// 	fmt.Printf("⚠️ Failed to get fee statistics from routing service: %v\n", err)
-	// }
-
-	// Additional gas for contract deployment
+	// Intrinsic base: 21000 + contract-creation (32000) + EIP-2028 calldata cost.
+	// The EVM's execution gas does NOT include this, so it is always added.
+	intrinsic := uint64(21000)
 	if msg.To == "" {
-		baseGas += 32000 // Contract creation cost
+		intrinsic += 32000
 	}
-
-	// Additional gas for data payload
-	if len(msg.Data) > 0 {
-		// Calculate gas for data
-		// - 4 gas for each zero byte
-		// - 16 gas for each non-zero byte
-		var dataGas uint64
-		for _, b := range msg.Data {
-			if b == 0 {
-				dataGas += 4
-			} else {
-				dataGas += 16
-			}
+	for _, b := range msg.Data {
+		if b == 0 {
+			intrinsic += 4
+		} else {
+			intrinsic += 16
 		}
-		baseGas += dataGas
 	}
 
-	// Additional gas for value transfer
-	// if msg.Value != nil && msg.Value.Sign() > 0 {
-	// 	baseGas += 9000 // Value transfer cost
-	// }
-
-	// Add a buffer for safety (5%)
-	estimatedGas := baseGas + (baseGas * 5 / 100)
-
-	// Log success
-	if logErr := Logger.LogData(opCtx, fmt.Sprintf("EstimateGas returned to client: %d", estimatedGas), "EstimateGas", 1); logErr != nil {
-		logger().Error(opCtx, "Failed to log EstimateGas success", logErr)
+	isCreate := msg.To == ""
+	isContractCall := false
+	if !isCreate {
+		if code, cerr := s.GetCode(opCtx, msg.To, nil); cerr == nil && code != "" && code != "0x" {
+			isContractCall = true
+		}
 	}
 
-	return estimatedGas, nil
+	// Plain value transfer (no code at To) — no EVM execution; intrinsic only.
+	// This is the old behaviour and is exact (~21000 for a bare transfer).
+	if !isCreate && !isContractCall {
+		est := intrinsic + intrinsic*5/100
+		if est > blockGasLimit {
+			est = blockGasLimit
+		}
+		_ = Logger.LogData(opCtx, fmt.Sprintf("EstimateGas (plain transfer) returned: %d", est), "EstimateGas", 1)
+		return est, nil
+	}
+
+	// Contract call/creation: run it through the EVM (side-effect-free, the same
+	// read-only path eth_call uses) to get REAL execution gas — the old code
+	// returned intrinsic-only, so MetaMask under-funded contract calls and they
+	// execute-failed.
+	if s.scClient == nil {
+		return 0, fmt.Errorf("SmartContract client not initialized")
+	}
+	caller := common.FromHex(msg.From)
+	var contractAddr []byte
+	if !isCreate {
+		contractAddr = common.FromHex(msg.To)
+	}
+	resp, err := s.scClient.EstimateGas(opCtx, caller, contractAddr, msg.Data)
+	if err != nil {
+		return 0, fmt.Errorf("gas estimation failed: %w", err)
+	}
+	if resp.Error != "" {
+		// EVM reverted during estimation — surface it (standard eth_estimateGas
+		// behaviour) so MetaMask shows the failure instead of sending a tx that
+		// reverts on-chain and burns the fee.
+		return 0, fmt.Errorf("gas estimation reverted: %s", resp.Error)
+	}
+
+	// Total = intrinsic + executor estimate (execution gas + the router's 20%),
+	// then ~30% headroom, capped at the block gas limit.
+	total := intrinsic + resp.GasEstimate
+	total += total * 30 / 100
+	if total > blockGasLimit {
+		total = blockGasLimit
+	}
+	_ = Logger.LogData(opCtx, fmt.Sprintf("EstimateGas (evm) intrinsic=%d exec=%d returned: %d", intrinsic, resp.GasEstimate, total), "EstimateGas", 1)
+	return total, nil
 }
 
 // GasPrice implements the Service interface - gets gas price from routing service

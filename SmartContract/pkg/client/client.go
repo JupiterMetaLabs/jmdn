@@ -115,6 +115,24 @@ func (c *Client) CallContract(ctx context.Context, caller []byte, contractAddr [
 	})
 }
 
+// EstimateGas runs the tx through the EVM against the shared (repo-backed) state
+// WITHOUT committing (same read-only path CallContract uses) and returns the
+// executor's estimate = EXECUTION gas + the router's 20% buffer. The 21000
+// intrinsic base is NOT included; the caller adds it. An empty contractAddr means
+// contract creation.
+func (c *Client) EstimateGas(ctx context.Context, caller []byte, contractAddr []byte, input []byte) (*proto.EstimateGasResponse, error) {
+	ca := ""
+	if len(contractAddr) > 0 {
+		ca = hexutil.Encode(contractAddr)
+	}
+	return c.remote.EstimateGas(ctx, &proto.EstimateGasRequest{
+		Caller:          hexutil.Encode(caller),
+		ContractAddress: ca,
+		Input:           hexutil.Encode(input),
+		Value:           "0x0",
+	})
+}
+
 // GetContractCode retrieves the bytecode of a contract
 func (c *Client) GetContractCode(ctx context.Context, contractAddr []byte) (*proto.GetContractCodeResponse, error) {
 	return c.remote.GetContractCode(ctx, &proto.GetContractCodeRequest{
