@@ -32,6 +32,7 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	Structs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Block"
 	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
@@ -1319,9 +1320,12 @@ func main() {
 	// exists); see SetSlotStoreReadyFn's doc.
 	MessagePassing.SetSlotStoreReadyFn(messaging.SlotStoreReady)
 	// Vote-CRDT read path's committee source (Stage 3.5 of
-	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md) — same injection pattern as
-	// the line above, for the same import-cycle reason.
-	MessagePassing.SetAuthorizedCommitteeFn(messaging.AuthorizedCommittee)
+	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md). Lives in package Structs (not
+	// MessagePassing) because Structs is the actual caller (Stage 4's
+	// ProcessVotesFromCRDT in AVC/BuddyNodes/MessagePassing/Structs/Utils.go)
+	// and MessagePassing -> Structs already exists, so Structs ->
+	// MessagePassing would be an import cycle.
+	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommittee)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
@@ -1452,6 +1456,18 @@ func main() {
 	// seednode periodically (outbound only, no DB writes ever).
 	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
 	// enable_pulling guards CLI pull commands and the reconcile path independently.
+	// Stage 6 (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §8): register the vote-CRDT
+	// compaction hook unconditionally, BEFORE the sync-monitor wiring below,
+	// which is gated behind FastSync.Enabled + a configured seed node + a
+	// live seednode client + syncMonitor.Start succeeding — any one of which
+	// failing must not also silently disable compaction. Compaction bounds
+	// THIS node's own vote-CRDT memory growth and has nothing to do with
+	// whether it talks to a seednode. If the sync-monitor block below does
+	// start successfully, it composes with this hook rather than overwriting
+	// it (DB_OPs.SetLatestBlockAdvanceHook holds exactly one function).
+	voteCompactionHook := startVoteCRDTCompactionHook(ctx)
+	DB_OPs.SetLatestBlockAdvanceHook(voteCompactionHook)
+
 	var syncMonitor *syncmonitor.Monitor
 	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
@@ -1543,9 +1559,18 @@ func main() {
 					// only signals a debounced, async pusher (never blocks the
 					// apply path); the periodic timer remains the backstop.
 					localMon := syncMonitor
-					DB_OPs.SetLatestBlockAdvanceHook(startSeedBlockHeadPusher(ctx, func(c context.Context) {
+					seedPushHook := startSeedBlockHeadPusher(ctx, func(c context.Context) {
 						localMon.TriggerCheck(c)
-					}))
+					})
+					// Compose with the unconditionally-registered Stage 6
+					// compaction hook above rather than overwriting it —
+					// DB_OPs.SetLatestBlockAdvanceHook holds exactly one
+					// function, and voteCompactionHook is already running
+					// regardless of whether this branch is ever reached.
+					DB_OPs.SetLatestBlockAdvanceHook(func(head uint64) {
+						seedPushHook(head)
+						voteCompactionHook(head)
+					})
 					log.Info().Msg("[SeedPush] event-driven block-head reporting wired")
 				}
 			}
