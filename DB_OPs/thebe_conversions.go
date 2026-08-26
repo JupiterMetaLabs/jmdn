@@ -4,6 +4,7 @@ package DB_OPs
 // Used by the ThebeHandle-based reimplementations of immuclient.go and account_immuclient.go.
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -71,7 +72,102 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 	if v, ok := r.ExtraData["period"]; ok {
 		blk.Period = extraDataUint64(v)
 	}
+	if v, ok := r.ExtraData["seed_epoch"]; ok {
+		blk.SeedEpoch = extraDataUint64(v)
+	}
+	if v, ok := r.ExtraData["voting_snapshot_epoch"]; ok {
+		blk.VotingSnapshotEpoch = extraDataUint64(v)
+	}
+
+	// The four non-scalar consensus fields FAIL CLOSED on a malformed value,
+	// unlike extraDataUint64's lenient zero above. The asymmetry is
+	// deliberate. A corrupt slot decoding to 0 is caught downstream — the
+	// slot-recovery gate refuses to vote or propose on an implausible value.
+	// A corrupt PrevAggCert decoding to nil is NOT caught anywhere: it is
+	// indistinguishable from "this block legitimately carried no signers", so
+	// the fallback fold would silently treat corrupt data as a real gap and
+	// produce a wrong seed rather than refusing. Returning the error hands
+	// that decision to the caller, which is the only place it can be made
+	// correctly.
+	//
+	// A key that is simply ABSENT is never an error — that is every record
+	// written before this fix, and it decodes to the zero value exactly as
+	// before.
+	if v, ok := r.ExtraData["randao_reveals"]; ok {
+		if err := decodeExtraDataJSON(v, &blk.RandaoReveals); err != nil {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding randao_reveals: %w", r.BlockNumber, err)
+		}
+	}
+	if v, ok := r.ExtraData["prev_agg_cert"]; ok {
+		if err := decodeExtraDataJSON(v, &blk.PrevAggCert); err != nil {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding prev_agg_cert: %w", r.BlockNumber, err)
+		}
+	}
+	if v, ok := r.ExtraData["vdf_proof"]; ok {
+		b, err := extraDataBytes(v)
+		if err != nil {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding vdf_proof: %w", r.BlockNumber, err)
+		}
+		blk.VdfProof = b
+	}
+	if v, ok := r.ExtraData["committee_snapshot_hash"]; ok {
+		b, err := extraDataBytes(v)
+		if err != nil {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding committee_snapshot_hash: %w", r.BlockNumber, err)
+		}
+		blk.CommitteeSnapshotHash = b
+	}
 	return blk, nil
+}
+
+// decodeExtraDataJSON decodes a struct-slice field that round-tripped through
+// ExtraData's map[string]any into dst.
+//
+// Re-marshalling and unmarshalling rather than type-asserting is what makes
+// this work for BOTH shapes the value can arrive in: []any of map[string]any
+// after a real JSON round-trip through JSONB, and the original typed slice
+// when an in-process writer put it in the map directly (tests, and the cache
+// decorator's write-through path). A type switch would have to enumerate both,
+// and would silently miss the first — which is the shape production actually
+// uses.
+//
+// Order is preserved, which is required rather than incidental:
+// RecordCommitCertificate hash-covers a certificate in array order, so a decode
+// that reordered signers would change the derived aggregate.
+func decodeExtraDataJSON(v any, dst any) error {
+	if v == nil {
+		return nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, dst)
+}
+
+// extraDataBytes decodes a []byte field that round-tripped through ExtraData.
+//
+// encoding/json renders []byte as a base64 string, so after a JSONB round-trip
+// the value arrives as a string, never as bytes. Both forms are accepted for
+// the same reason extraDataUint64 accepts the narrower numeric types: an
+// in-process writer that never touches JSON puts the []byte in directly.
+//
+// An unexpected type is an error rather than a silent nil — see the fail-closed
+// note at the call sites.
+func extraDataBytes(v any) ([]byte, error) {
+	switch b := v.(type) {
+	case nil:
+		return nil, nil
+	case []byte:
+		return b, nil
+	case string:
+		if b == "" {
+			return nil, nil
+		}
+		return base64.StdEncoding.DecodeString(b)
+	default:
+		return nil, fmt.Errorf("expected a base64 string or []byte, got %T", v)
+	}
 }
 
 // extraDataUint64 decodes a uint64 that round-tripped through ExtraData's

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/config"
 	"gossipnode/DB_OPs/thebegateway"
+	"gossipnode/config"
 )
 
 // StoreBlock converts a config.ZKBlock to a thebegateway.BlockRecord and writes it.
@@ -73,15 +73,15 @@ func (b *thebeBackend) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*t
 // Field-by-field mapping documented inline.
 func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 	rec := &thebegateway.BlockRecord{
-		BlockNumber: b.BlockNumber,                    // direct field
-		BlockHash:   b.BlockHash.Hex(),                // common.Hash → 0x-prefixed hex string
-		ParentHash:  b.PrevHash.Hex(),                 // ZKBlock.PrevHash → BlockRecord.ParentHash
+		BlockNumber: b.BlockNumber,                   // direct field
+		BlockHash:   b.BlockHash.Hex(),               // common.Hash → 0x-prefixed hex string
+		ParentHash:  b.PrevHash.Hex(),                // ZKBlock.PrevHash → BlockRecord.ParentHash
 		Timestamp:   time.Unix(b.Timestamp, 0).UTC(), // int64 epoch-seconds → time.Time
-		TxsRoot:     b.TxnsRoot,                       // ZKBlock.TxnsRoot → BlockRecord.TxsRoot
-		StateRoot:   b.StateRoot.Hex(),                // common.Hash → hex string
-		LogsBloom:   b.LogsBloom,                      // []byte → []byte direct
-		GasLimit:    b.GasLimit,                       // uint64 direct
-		GasUsed:     b.GasUsed,                        // uint64 direct
+		TxsRoot:     b.TxnsRoot,                      // ZKBlock.TxnsRoot → BlockRecord.TxsRoot
+		StateRoot:   b.StateRoot.Hex(),               // common.Hash → hex string
+		LogsBloom:   b.LogsBloom,                     // []byte → []byte direct
+		GasLimit:    b.GasLimit,                      // uint64 direct
+		GasUsed:     b.GasUsed,                       // uint64 direct
 	}
 
 	// CoinbaseAddr: nil pointer → empty string; present → 0x-prefixed hex
@@ -111,6 +111,40 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 	}
 	rec.ExtraData["slot"] = b.Slot
 	rec.ExtraData["period"] = b.Period
+
+	// The remaining AVC consensus fields, added 2026-08-26. Slot/Period were
+	// persisted first because the slot-clock recovery needed them; the other
+	// six were left behind, and that gap turned out to be load-bearing in
+	// three separate places:
+	//
+	//   - PrevAggCert is blocker B1's own field. It rides the wire correctly
+	//     and every node re-verifies it live, but dropping it here means a
+	//     node replaying its own history — or fast-syncing from a peer, which
+	//     serves from these records — cannot reconstruct the fallback seed for
+	//     any epoch that fell back. "Persisted aggSig" was only ever true of
+	//     the in-memory path.
+	//   - VdfProof exists so a node that hasn't finished its own VDF
+	//     evaluation can take the millisecond verify path instead of the
+	//     ~20-minute one. Dropped here, a rejoining node always pays the full
+	//     evaluation, which is the exact cost the field was added to avoid.
+	//   - All six are covered by the M2b block hash
+	//     (Security.RecomputeBlockHashWithConsensusFields). A record that
+	//     loses them cannot be used to re-derive its own block's hash.
+	//
+	// Written unconditionally, nil and zero included, for the same reason
+	// slot/period are: a reader must be able to tell "this block genuinely
+	// carried no reveals" from "this record predates the fix". For the fold
+	// window that distinction is the difference between a real gap and an
+	// artifact, and a fold cannot be correct without it.
+	//
+	// Keys match each field's own JSON tag on config.ZKBlock, so the stored
+	// JSONB reads the same as the wire format.
+	rec.ExtraData["randao_reveals"] = b.RandaoReveals
+	rec.ExtraData["vdf_proof"] = b.VdfProof
+	rec.ExtraData["seed_epoch"] = b.SeedEpoch
+	rec.ExtraData["voting_snapshot_epoch"] = b.VotingSnapshotEpoch
+	rec.ExtraData["prev_agg_cert"] = b.PrevAggCert
+	rec.ExtraData["committee_snapshot_hash"] = b.CommitteeSnapshotHash
 
 	return rec
 }
