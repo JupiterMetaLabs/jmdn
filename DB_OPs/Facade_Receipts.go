@@ -6,12 +6,27 @@ import (
 	"strings"
 	"time"
 
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 	"gossipnode/config/utils"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// WriteContractReceipt persists a full contract receipt via the process-wide
+// ThebeDB handle's gateway 2PC path (→ SQL contract_receipts) — the same
+// synchronous path WriteTransaction uses, so it works with or without a projector.
+// Called from the apply path (applyContractTx), NOT the decoupled executor.
+func WriteContractReceipt(conn *config.PooledConnection, rec *thebegateway.ContractReceiptRecord) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h, err := getHandle(conn)
+	if err != nil {
+		return fmt.Errorf("WriteContractReceipt: %w", err)
+	}
+	return h.WriteContractReceipt(ctx, rec)
+}
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
 func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*config.Receipt, error) {

@@ -2,14 +2,17 @@ package BlockProcessing
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/execbridge"
@@ -195,6 +198,48 @@ func applyContractTx(
 		return fail("contract tx %s atomic commit failed: %w", tx.Hash.Hex(), err)
 	}
 	cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.String())
+
+	// 9. Persist the contract receipt through the gateway 2PC path (→ SQL
+	//    contract_receipts) — the same synchronous path WriteTransaction uses, so it
+	//    works without a projector Runner. Best-effort: a derived-index write must
+	//    not fail an already-committed block; eth_getTransactionReceipt falls back to
+	//    reconstruction if the row is absent.
+	{
+		status := int16(0)
+		if res.Success {
+			status = 1
+		}
+		var caddr *string
+		if res.Success && isDeploy && res.ContractAddress != (common.Address{}) {
+			s := res.ContractAddress.Hex()
+			caddr = &s
+		}
+		var logsJSON []byte
+		if res.Success && len(res.Logs) > 0 {
+			if b, mErr := json.Marshal(res.Logs); mErr == nil {
+				logsJSON = b
+			}
+		}
+		revertReason := ""
+		if !res.Success && res.Err != nil {
+			revertReason = res.Err.Error()
+		}
+		rec := &thebegateway.ContractReceiptRecord{
+			TxHash:          tx.Hash.Hex(),
+			BlockNumber:     blockNumber,
+			TxIndex:         int16(txIndex),
+			Status:          status,
+			GasUsed:         strconv.FormatUint(res.GasUsed, 10),
+			ContractAddress: caddr,
+			Logs:            logsJSON,
+			RevertReason:    revertReason,
+			CreatedAt:       time.Unix(blockTimestamp, 0).UTC(),
+		}
+		if rErr := DB_OPs.WriteContractReceipt(accountsClient, rec); rErr != nil {
+			logger().Warn(span_ctx, "persist contract receipt failed",
+				ion.String("tx", tx.Hash.Hex()), ion.String("err", rErr.Error()))
+		}
+	}
 
 	logger().Info(span_ctx, "Contract transaction applied",
 		ion.String("tx_hash", tx.Hash.Hex()),

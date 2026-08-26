@@ -23,7 +23,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 	gethcore "github.com/ethereum/go-ethereum/core"
@@ -161,36 +160,14 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 
 	res := &execbridge.ExecResult{Handled: true, GasUsed: gasUsed}
 
-	// P3 (audit EVM-13): persist a transaction receipt with the REAL block number
-	// and tx index, plus the EVM logs. Receipts are a DERIVED query index (cassata
-	// SQL), separate from the consensus ledger, so a write failure here is
-	// best-effort and must NOT fail the tx/block. Written for both success and
-	// revert (status 0/1); on revert the contract address is empty.
-	{
-		status := uint64(1)
-		var receiptContract common.Address
-		if err != nil || exec == nil || exec.Error != nil {
-			status = 0
-		} else if isCreate {
-			receiptContract = exec.ContractAddr
-		}
-		if werr := cdb.WriteReceipt(contractDB.TransactionReceipt{
-			TxHash:          tx.Hash,
-			BlockNumber:     bctx.BlockNumber,
-			TxIndex:         uint64(bctx.TxIndex),
-			Status:          status,
-			GasUsed:         gasUsed,
-			ContractAddress: receiptContract,
-			Logs:            cdb.Logs(),
-			CreatedAt:       bctx.Time,
-		}); werr != nil {
-			// Non-fatal: receipts are a DERIVED query index and must NOT fail the
-			// tx/block. But this was fire-and-forget, hiding WHY contract_receipts
-			// stays empty (append/2PC/projection wiring). Surface it to stderr so it
-			// reaches journald/docker logs: grep 'persist contract receipt'.
-			fmt.Fprintf(os.Stderr, "WARN persist contract receipt failed tx=%s err=%v\n", tx.Hash.Hex(), werr)
-		}
-	}
+	// Carry the EVM logs so the APPLY path can persist the receipt through the
+	// gateway 2PC path (→ SQL contract_receipts), the same synchronous path
+	// blocks/txs/accounts use. The executor deliberately no longer writes the
+	// receipt itself: its only persistence was cdb.WriteReceipt → the canonical-log
+	// (cassata) append, which needs an async projector Runner this deployment does
+	// not run, so the row never reached SQL and eth_getTransactionReceipt fell back
+	// to reconstruction. See applyContractTx → DB_OPs.WriteContractReceipt.
+	res.Logs = cdb.Logs()
 
 	// A reverted / errored execution pays gas but moves no value and commits no
 	// contract state.

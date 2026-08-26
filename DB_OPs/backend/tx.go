@@ -82,6 +82,17 @@ func (b *thebeBackend) SetTransactionStatus(ctx context.Context, txHash string, 
 	return nil
 }
 
+// WriteContractReceipt persists a full contract receipt via the gateway 2PC path
+// (→ SQL contract_receipts). Same path/ordering as WriteTransaction, so the
+// fk_contract_receipt_block FK resolves. Called from the apply path.
+// Time: O(1) — single gateway write.
+func (b *thebeBackend) WriteContractReceipt(ctx context.Context, rec *thebegateway.ContractReceiptRecord) error {
+	if err := b.gw.WriteContractReceipt(ctx, rec); err != nil {
+		return fmt.Errorf("backend.WriteContractReceipt(%s): %w", rec.TxHash, err)
+	}
+	return nil
+}
+
 // SetTxProcessing marks txHash as in-flight in BadgerDB KV ("-1" sentinel).
 // Time: O(1) — single KV PutDerived via gateway.
 func (b *thebeBackend) SetTxProcessing(ctx context.Context, txHash string) error {

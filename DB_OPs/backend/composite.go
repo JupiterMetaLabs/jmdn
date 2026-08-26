@@ -194,6 +194,11 @@ func (h *compositeHandle) SetTransactionStatus(ctx context.Context, txHash strin
 	return h.txs.SetTransactionStatus(ctx, txHash, status)
 }
 
+// WriteContractReceipt delegates to the TxStore (gateway 2PC → SQL contract_receipts).
+func (h *compositeHandle) WriteContractReceipt(ctx context.Context, rec *thebegateway.ContractReceiptRecord) error {
+	return h.txs.WriteContractReceipt(ctx, rec)
+}
+
 // SetTxProcessing delegates to the cache-decorated TxStore.
 func (h *compositeHandle) SetTxProcessing(ctx context.Context, txHash string) error {
 	return h.txs.SetTxProcessing(ctx, txHash)

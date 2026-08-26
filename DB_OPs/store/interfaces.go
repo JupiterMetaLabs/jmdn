@@ -76,6 +76,12 @@ type TxStore interface {
 	CountTransactions(ctx context.Context) (uint64, error)
 	RefreshAccountTxStats(ctx context.Context, address string) error
 	SetTransactionStatus(ctx context.Context, txHash string, status int) error
+	// WriteContractReceipt persists a full contract receipt through the gateway
+	// 2PC path (→ SQL contract_receipts), the same synchronous path WriteTransaction
+	// uses. Called from the apply path; NOT via the executor's canonical-log append
+	// (which needs a projector). Same block ordering as WriteTransaction so the
+	// fk_contract_receipt_block FK resolves.
+	WriteContractReceipt(ctx context.Context, rec *thebegateway.ContractReceiptRecord) error
 
 	// Tx processing flag — backed by BadgerDB KV.
 	// SetTxProcessing marks a transaction as in-flight ("-1" sentinel in KV).

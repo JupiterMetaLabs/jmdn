@@ -119,6 +119,16 @@ func (s *cachedTxStore) SetTransactionStatus(ctx context.Context, txHash string,
 	return nil
 }
 
+// WriteContractReceipt delegates to inner (gateway 2PC → SQL); invalidates the tx
+// hash cache key so a subsequent receipt/tx read reflects the new status.
+func (s *cachedTxStore) WriteContractReceipt(ctx context.Context, rec *thebegateway.ContractReceiptRecord) error {
+	if err := s.inner.WriteContractReceipt(ctx, rec); err != nil {
+		return err
+	}
+	_ = s.c.Delete(ctx, Tx(rec.TxHash))
+	return nil
+}
+
 // SetTxProcessing delegates directly — KV-backed, no cache layer.
 func (s *cachedTxStore) SetTxProcessing(ctx context.Context, txHash string) error {
 	return s.inner.SetTxProcessing(ctx, txHash)

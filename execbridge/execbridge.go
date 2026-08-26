@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"gossipnode/config"
 )
@@ -62,6 +63,7 @@ type ExecResult struct {
 	GasUsed         uint64                      // fed back through the centralized fee path
 	BalanceChanges  map[common.Address]*big.Int // absolute balances, applied by the caller
 	StateRoot       common.Hash                 // deterministic post-exec contract-state root (Phase 4)
+	Logs            []*gethtypes.Log            // EVM logs, persisted with the receipt by the apply path
 	Err             error
 }
 
