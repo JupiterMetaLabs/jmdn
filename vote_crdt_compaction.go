@@ -13,6 +13,7 @@ import (
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
+	"gossipnode/metrics"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
@@ -58,6 +59,10 @@ func envUint64(key string, def uint64) uint64 {
 // reputation.Observe's current signature only takes peerID and Event, so
 // they are logged here rather than dropped silently, in case a future
 // Observe signature (or an operator reading logs) wants them.
+//
+// A4-COMPLETION-LLD.md §2: wired live (was nil through Stage 6's initial
+// rollout, per the LLD's own "land with nil first, confirm it deletes
+// correctly" recommendation — that confirmation has now happened).
 type equivocationReputationReporter struct{}
 
 func (equivocationReputationReporter) ReportEquivocation(peerID, blockHash string, height uint64, values []int8) {
@@ -67,10 +72,29 @@ func (equivocationReputationReporter) ReportEquivocation(peerID, blockHash strin
 		Uint64("height", height).
 		Interface("values", values).
 		Msg("[VoteCRDTCompaction] equivocation confirmed at convergence — reporting")
+
+	// A4-COMPLETION-LLD.md §3.3 (Design A): visibility, not a fix. This
+	// counter increments independently on every node that observes this
+	// fault against its own local CRDT copy — comparing it across nodes for
+	// the same peer_id is how the §3.1 cross-node convergence gap would
+	// ever actually be noticed, rather than silently assumed closed by the
+	// K-buffer.
+	metrics.ReputationEquivocationsReportedCounter.WithLabelValues(peerID).Inc()
+
 	if !reputation.Enabled {
 		return
 	}
 	reputation.Default.Observe(peerID, reputation.Equivocation)
+
+	// A4-COMPLETION-LLD.md §5: equivocation is the one event severe enough
+	// (straight to Floor) to justify pushing sooner than the routine
+	// interval — everything else stays on the 5-minute tick.
+	// Non-blocking, never fires reputation.Enabled == false above; also
+	// safe (a harmless no-op) on a node whose pusher hasn't started yet, or
+	// isn't the sequencer — triggerImmediateReputationPush only ever
+	// signals a wake, pushReputationOnce itself still checks
+	// PushReputationWeights' own ErrNotSequencer gate.
+	triggerImmediateReputationPush()
 }
 
 // startVoteCRDTCompactionHook launches the background compactor with the
@@ -145,15 +169,11 @@ func compactConvergedVotes(ctx context.Context, tip, k uint64) {
 		return
 	}
 
-	// reporter=nil deliberately, per the LLD §8.3's own recommended rollout:
-	// "land compaction with a nil reporter, confirm it deletes correctly,
-	// then wire the reporter" as a separate, later step. equivocationReputationReporter
-	// below is fully implemented and tested (vote_crdt_compaction_test.go)
-	// and ready to swap in here once that follow-up step is deliberately
-	// taken — this is not a placeholder that still needs writing, only a
-	// wire that hasn't been connected yet.
+	// A4-COMPLETION-LLD.md §2: reporter is live (was nil through Stage 6's
+	// initial rollout — see equivocationReputationReporter's doc comment
+	// for the confirmation this follow-up step refers to).
 	evaluated, deleted, err := avcvotes.DefaultWatermark.ConvergeAndCompact(
-		listenerNode.VoteCRDTLayer, tip, k, authorized, nil)
+		listenerNode.VoteCRDTLayer, tip, k, authorized, equivocationReputationReporter{})
 	if err != nil {
 		log.Warn().Err(err).Uint64("tip", tip).Uint64("k", k).Msg("[VoteCRDTCompaction] ConvergeAndCompact failed")
 		return
