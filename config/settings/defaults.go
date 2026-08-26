@@ -133,15 +133,17 @@ func DefaultConfig() NodeConfig {
 		//     identical network-wide, so it carries a stable default. Override
 		//     per-network via config/env if you want isolation between networks.
 		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
-		// Contract execution DEFAULT-OFF (cycle-5 audit). Re-enable only after the
-		// remaining apply-path items land and the 2-node/apply gate runs green:
-		// the fingerprint reader must be node-independent (ORDER BY address, not
-		// created_at), tx.GasLimit must be bounded on ingress, and the commit-
-		// before-fold residual (NEW-2) resolved. With this ON, contract txs execute
-		// during apply and the P2.5 HALT-on-divergence is fleet-wide, so a fleet with
-		// any of those gaps (or a heterogeneously-flagged / EVM-less member) can fork.
-		// Turn on per-node via jmdn.yaml / JMDN_CONTRACTS_ENABLED once validated.
-		Contracts: ContractsSettings{Enabled: false},
+		// Contract execution ENABLED by default. The cycle-5 blockers that drove the
+		// temporary default-off have landed: deploy double-nonce fixed (single-use
+		// deploy gone), fingerprint reader is node-independent (ORDER BY LOWER(address)),
+		// tx.GasLimit is bounded on ingress (config.MaxTxGasLimit), non-deterministic
+		// state-read/commit errors fail the block closed (not a silent revert), and
+		// receipts persist via the gateway 2PC path. With this ON, contract txs execute
+		// during apply and the P2.5 HALT-on-divergence is fleet-wide — so run a
+		// HOMOGENEOUS fleet: a heterogeneously-flagged or EVM-less member will fork.
+		// Residual (tracked): NEW-2 commit-before-fold — a successful exec commits
+		// contract state before FoldContractExecution, with no undo on a fold reject.
+		Contracts: ContractsSettings{Enabled: true},
 		// Consensus policy: empty block_buddy blocklist by default (no peer is
 		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
 		// Committee-source: no pinned authority by default (consumer disabled
