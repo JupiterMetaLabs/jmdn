@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/config"
@@ -239,13 +240,19 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			// Initialize CRDT Layer
 			CRDTLayer := ServiceLayer.GetServiceController()
 
+			// VoteCRDTLayer: Stage 1 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md.
+			// Constructed and reachable from here on; unused until Stage 2's
+			// dual-write lands. CRDTLayer above remains the live vote store.
+			VoteCRDTLayer := DataLayer.GetVoteCRDTLayer()
+
 			basicBuddyNode := &AVCStruct.BuddyNode{
-				PeerID:      h.ID(),
-				Host:        h,
-				PubSub:      nil, // Will be set when needed
-				BuddyNodes:  *defaultBuddies,
-				StreamCache: streamCache, // Initialize with proper StreamCache
-				CRDTLayer:   CRDTLayer,   // Initialize CRDT Layer
+				PeerID:        h.ID(),
+				Host:          h,
+				PubSub:        nil, // Will be set when needed
+				BuddyNodes:    *defaultBuddies,
+				StreamCache:   streamCache, // Initialize with proper StreamCache
+				CRDTLayer:     CRDTLayer,   // Initialize CRDT Layer
+				VoteCRDTLayer: VoteCRDTLayer,
 				MetaData: AVCStruct.MetaData{
 					Received:  0,
 					Sent:      0,

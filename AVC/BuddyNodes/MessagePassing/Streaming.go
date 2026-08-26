@@ -81,6 +81,14 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 	// Initialize CRDT Layer
 	CRDTLayer := ServiceLayer.GetServiceController()
 
+	// VoteCRDTLayer: Stage 1 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md. This is
+	// the REAL primary path — NewListenerNode is called directly from
+	// main.go/Consensus.go at startup and sets ForListner unconditionally.
+	// (node/node.go's own VoteCRDTLayer wiring is a nil-guarded fallback for
+	// a "regular node" that never called this function; it does not run once
+	// this path has already set ForListner, which is the normal case.)
+	VoteCRDTLayer := DataLayer.GetVoteCRDTLayer()
+
 	Node := &AVCStruct.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
@@ -88,6 +96,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 		ResponseHandler: responseHandler,
 		StreamCache:     streamCache.GetStreamCache(), // Max 20 streams, 2min TTL
 		CRDTLayer:       CRDTLayer,                    // Initialize CRDT Layer
+		VoteCRDTLayer:   VoteCRDTLayer,
 		MetaData: AVCStruct.MetaData{
 			Received:  0,
 			Sent:      0,

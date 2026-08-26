@@ -6,6 +6,7 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/Types"
 
+	avctypes "github.com/JupiterMetaLabs/avc/types"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -20,7 +21,14 @@ type ResponseHandler interface {
 }
 
 type BuddyNode struct {
-	CRDTLayer       *Types.Controller
+	CRDTLayer *Types.Controller
+
+	// VoteCRDTLayer is the block-keyed vote CRDT (avc/crdt/votes), standing
+	// alongside CRDTLayer during the migration described in
+	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md. Stage 1: constructed and
+	// reachable, nothing reads or writes it yet. CRDTLayer stays the
+	// authoritative vote store through Stage 6 — do not remove it here.
+	VoteCRDTLayer   *avctypes.Controller
 	Host            host.Host
 	Network         network.Network
 	PeerID          peer.ID
