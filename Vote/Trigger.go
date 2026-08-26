@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/Security"
@@ -19,6 +21,7 @@ import (
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
 
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opentelemetry.io/otel/attribute"
@@ -222,6 +225,49 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.Int("vote", int(vt.Vote.Vote)),
 			ion.String("block_hash", vt.Vote.BlockHash),
 			ion.String("function", "Vote.SubmitVote"))
+	}
+
+	// NEW — additive, flagged. Nothing here may ever affect vt.Vote,
+	// blockHash, or this function's return value. A failure here is logged
+	// and dropped; the legacy write above remains the only one that matters
+	// until Stage 4 rewires the readers.
+	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
+		// Per-vote BLS signature. Nothing in the codebase signs individual
+		// votes before this — the existing signer only produces an
+		// AGGREGATED result at tally time (ListenerHandler.go). Same domain,
+		// same key material as that path, just invoked at cast time instead
+		// of at aggregation time.
+		blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
+			vt.Vote.Vote,
+			BLS_Signer.DomainChainID(),
+			zkBlock.BlockNumber,
+			blockHash,
+		)
+		if blsErr != nil || !signed {
+			logger().Warn(spanCtx, "v2 vote CRDT: per-vote BLS signing failed, skipping v2 write (old path unaffected)",
+				ion.String("block_hash", blockHash),
+				ion.Err(blsErr),
+				ion.String("function", "Vote.SubmitVote"))
+		} else {
+			rec := avcvotes.VoteRecord{
+				PeerID:       listenerNode.PeerID.String(),
+				Vote:         vt.Vote.Vote,
+				BlockHash:    blockHash,
+				Height:       zkBlock.BlockNumber,
+				BLSSignature: blsResp.Signature,
+				BLSPubKeyHex: blsResp.PubKey,
+			}
+			if err := avcvotes.AddVote(listenerNode.VoteCRDTLayer, listenerNode.PeerID, rec); err != nil {
+				if !errors.Is(err, avcvotes.ErrHeightCompacted) {
+					logger().Warn(spanCtx, "v2 vote CRDT write failed (old path unaffected)",
+						ion.Err(err),
+						ion.String("block_hash", blockHash),
+						ion.String("function", "Vote.SubmitVote"))
+				}
+				// ErrHeightCompacted is expected/harmless — a late vote for
+				// an already-converged height. Not logged as an error.
+			}
+		}
 	}
 
 	// Create proper message with ACK stage for vote submission
