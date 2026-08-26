@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs/thebegateway"
@@ -102,6 +103,28 @@ func txRecordToTransaction(r *thebegateway.TransactionRecord) *config.Transactio
 	}
 
 	tx.V = new(big.Int).SetUint64(r.SigV)
+	// SigR/SigS are stored as base-16 (no 0x) via big.Int.Text(16) and CHAR(66)
+	// pads with trailing spaces — trim before parsing. Without this, block full-tx
+	// responses (eth_getBlockByNumber) return r=s=0 even though the row is signed.
+	parseSig := func(s string) *big.Int {
+		s = strings.TrimSpace(s)
+		s = strings.TrimPrefix(s, "0x")
+		s = strings.TrimPrefix(s, "0X")
+		if s == "" {
+			return nil
+		}
+		n, ok := new(big.Int).SetString(s, 16)
+		if !ok {
+			return nil
+		}
+		return n
+	}
+	if n := parseSig(r.SigR); n != nil {
+		tx.R = n
+	}
+	if n := parseSig(r.SigS); n != nil {
+		tx.S = n
+	}
 
 	return tx
 }
