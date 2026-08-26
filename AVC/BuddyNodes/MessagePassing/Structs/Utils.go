@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	voteaggregation "gossipnode/AVC/VoteModule"
@@ -211,6 +213,23 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		return 0, nil, err
 	}
 
+	// Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): TallyBlock authenticates
+	// (the voter's claimed pubkey matches the committee record) but does not
+	// cryptographically verify the BLS signature itself — that division of
+	// labor is documented on TallyBlock. Drop every (peer, value) pair whose
+	// signature does not actually verify before anything downstream counts
+	// it or reports it as an equivocation, so a forged element can never be
+	// counted and can never manufacture a false equivocation charge against
+	// a real peer.
+	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash)
+	if droppedForgeries > 0 {
+		logger().Error(logger_ctx, "Dropped votes with invalid BLS signatures (v2 path)", nil,
+			ion.Int("dropped", droppedForgeries),
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
+	tally = verified
+
 	// Equivocation reporting (reputation side-effect) is an A4 concern,
 	// explicitly deferred by the user ("later we will think of the A4
 	// reputation weighting"). reporter == nil is a valid, documented no-op
@@ -266,6 +285,58 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		return 1, rejectionReasons, nil
 	}
 	return -1, rejectionReasons, nil
+}
+
+// verifyTallySignatures is Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): it
+// re-verifies the BLS signature backing every (peer, value) pair TallyBlock
+// authenticated, and returns a tally containing only the pairs that
+// actually verify, plus how many were dropped.
+//
+// Every pair is checked, not just single-vote peers: an equivocating peer's
+// two conflicting values must BOTH verify before either counts as real
+// evidence — otherwise a single forged element under a real committee
+// member's peer ID could manufacture a false equivocation charge against
+// them once ApplyEquivocationPolicy runs. "Only verify votes you are
+// counting" (the LLD's own CPU-DoS caution) still holds: this only ever
+// verifies what TallyBlock already authenticated against the committee
+// snapshot, bounded by the same maxElementsPerPeerPerBlock ingest cap
+// AddVote enforces — never every element ever written.
+//
+// AuthorizedVotesByPeer[peerID][i] and Signatures[peerID][i] are written in
+// lockstep by TallyBlock (same append, same loop iteration), so indexing
+// both by i is safe by construction, not by convention.
+func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash string) (verified avcvotes.BlockTally, dropped int) {
+	verified = avcvotes.BlockTally{
+		AuthorizedVotesByPeer: make(map[string][]int8, len(tally.AuthorizedVotesByPeer)),
+		Signatures:            make(map[string][]avcvotes.VoteRecord, len(tally.Signatures)),
+		SkippedUnauthorized:   tally.SkippedUnauthorized,
+		MalformedVotes:        tally.MalformedVotes,
+		MalformedSignatures:   tally.MalformedSignatures,
+	}
+
+	for peerID, values := range tally.AuthorizedVotesByPeer {
+		recs := tally.Signatures[peerID]
+		for i, v := range values {
+			if i >= len(recs) {
+				// TallyBlock never produces this — Signatures[peerID] is
+				// appended in the same iteration as AuthorizedVotesByPeer[peerID]
+				// — but a missing record can't be verified either way, so
+				// drop it rather than assume it is valid.
+				dropped++
+				continue
+			}
+			rec := recs[i]
+			resp := BLS_Signer.BLSresponse{PeerID: peerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
+			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, v); err != nil {
+				dropped++
+				continue
+			}
+			verified.AuthorizedVotesByPeer[peerID] = append(verified.AuthorizedVotesByPeer[peerID], v)
+			verified.Signatures[peerID] = append(verified.Signatures[peerID], rec)
+		}
+	}
+
+	return verified, dropped
 }
 
 // processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical
