@@ -2205,6 +2205,14 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 				ion.String("peer_id", r.PeerID),
 				ion.Int64("vote", int64(vote)),
 				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			// Reputation (OBSERVE-ONLY): objective protocol fault — a vote
+			// response whose BLS signature does not verify against either the
+			// block-bound (v3) or legacy message. Mirrors the ObserveRound gate
+			// at ProcessVoteCollection; never affects this function's return
+			// value or the quorum count above. Kill switch: JMDN_REPUTATION_OBSERVE=0.
+			if reputation.Enabled {
+				reputation.Default.Observe(r.PeerID, reputation.BadSignature)
+			}
 			continue
 		}
 
@@ -2242,6 +2250,12 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 				Label("block_hash", blockHashHex).
 				Description(fmt.Sprintf("Vote from unauthorized committee key: peer %s (block %s)", r.PeerID, blockHashHex)).
 				Send()
+			// Reputation (OBSERVE-ONLY): objective protocol fault — unauthorized
+			// key, same "Invalid signature / unauthorized key" class as the BLS
+			// verify failure above. Never affects the quorum decision.
+			if reputation.Enabled {
+				reputation.Default.Observe(r.PeerID, reputation.BadSignature)
+			}
 			continue
 		}
 
