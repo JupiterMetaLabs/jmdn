@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"gossipnode/Security"
+	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/messaging"
 )
@@ -53,12 +54,20 @@ import (
 // produce byte-identical lists — required once M2b hashes the reveal array in
 // order.
 //
-// VdfProof, SeedEpoch, and VotingSnapshotEpoch remain deliberately zero: the
-// VDF proof rides only on the epoch-boundary block (§7.2, Stage E owns that)
-// and the voting-snapshot checkpoint pointer (M9) is not built. Leaving those
-// zero is honest — M2b's hash still covers them, so a relay cannot turn a zero
-// into a nonzero. Do not synthesize placeholder values to make them look
-// populated.
+// VdfProof and SeedEpoch are now populated — CHANGED (VDF pipeline
+// completion pass). They are attached ONLY on the epoch-boundary block
+// (block.Slot == messaging.EpochBoundarySlot(epoch), §7.2) via
+// Sequencer.SealerResultFor; every other block leaves them at zero, same
+// style as RandaoReveals outside its reveal window (a silent no-op by
+// design, not an error). On the boundary block itself, a proof that is not
+// yet ready fails closed (Sequencer.ErrVDFProofNotReady) rather than
+// proposing with a missing/zero entropy value for its own epoch — see
+// Sequencer.SealerResultFor's doc comment.
+//
+// VotingSnapshotEpoch remains deliberately zero: the voting-snapshot
+// checkpoint pointer (M9) is not built. Leaving it zero is honest — M2b's
+// hash still covers it, so a relay cannot turn a zero into a nonzero. Do not
+// synthesize a placeholder value to make it look populated.
 // attachAVCConsensusFields now returns an error, checked FIRST and fail-closed
 // (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node whose slot/epoch
 // clock has not been recovered from its own committed history (see
@@ -86,6 +95,8 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		block.PrevAggCert = messaging.CertificateForBlockAssembly(block.Slot, block.BlockNumber-1)
 	}
 
+	epoch := messaging.EpochForSlot(block.Slot)
+
 	// Committee-snapshot anchor (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md items
 	// 1/6/8) — empty unless JMDN_COMMITTEE_SNAPSHOT_ANCHOR is on AND this
 	// block's slot's epoch has already been frozen (messaging's
@@ -93,8 +104,28 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// every block of the epoch once frozen, not just one boundary block, so
 	// a rejoining node can recover it from whichever block it happens to sync
 	// to first, not one specific block that might be missed.
-	if h, ok := messaging.FrozenCommitteeSnapshotHashFor(messaging.EpochForSlot(block.Slot)); ok {
+	if h, ok := messaging.FrozenCommitteeSnapshotHashFor(epoch); ok {
 		block.CommitteeSnapshotHash = h[:]
+	}
+
+	// VDF proof attachment (VDF-Implementation-Handoff.md §6) — only on the
+	// epoch-boundary block. Off-boundary blocks leave VdfProof/SeedEpoch at
+	// zero (see the header comment above); this is not an error.
+	if block.Slot == messaging.EpochBoundarySlot(epoch) {
+		result, ok := Sequencer.SealerResultFor(epoch)
+		if !ok {
+			return fmt.Errorf("attachAVCConsensusFields: %w: epoch %d, block %d",
+				Sequencer.ErrVDFProofNotReady, epoch, block.BlockNumber)
+		}
+		if result.Err != nil {
+			return fmt.Errorf("attachAVCConsensusFields: VDF sealing failed for epoch %d: %w", epoch, result.Err)
+		}
+		raw, err := result.Proof.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("attachAVCConsensusFields: encoding VDF proof for epoch %d: %w", epoch, err)
+		}
+		block.VdfProof = raw
+		block.SeedEpoch = epoch
 	}
 
 	if Security.M2bHashEnabled {

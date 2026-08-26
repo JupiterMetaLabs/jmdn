@@ -1286,6 +1286,15 @@ func main() {
 		log.Fatal().Err(err).Msg("fallback window: N/K/B/MaxOffset are not a usable liveness-safe combination (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md, Fallback window section)")
 	}
 
+	// VDF timing self-consistency (messaging/vdf_timing_params.go, Architecture
+	// §10 decision 12b) — same "built the checker, never called it" shape as
+	// the fallback-window check directly above, and the same reason to
+	// hard-exit: a bad T_vdf/N/K/s_min/S combination is a build defect
+	// identical on every node, not a per-node recovery case.
+	if err := messaging.ValidateVDFTimingParams(); err != nil {
+		log.Fatal().Err(err).Msg("VDF timing: T_vdf/N/K/s_min are not a bias-resistant, live combination (§10 decision 12b)")
+	}
+
 	// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
 	// item 8). MUST run here, BEFORE node.NewNode() below: that call creates
 	// the libp2p host and registers its stream handlers, which is what lets a

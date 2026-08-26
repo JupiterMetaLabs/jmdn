@@ -51,6 +51,15 @@ func EpochForSlot(slot uint64) uint64 {
 	return slot / N
 }
 
+// EpochBoundarySlot returns the first slot of epoch — the inverse edge of
+// EpochForSlot (EpochForSlot(EpochBoundarySlot(e)) == e, and it is the
+// unique slot in epoch e for which that holds at the low end). The VDF
+// proof is attached only on this slot's block (§7.2) — see
+// Block/consensus_fields.go.
+func EpochBoundarySlot(epoch uint64) uint64 {
+	return epoch * N
+}
+
 // SlotStore tracks the live, in-memory slot counter for this node. Every
 // node computes its OWN slot from the certified events it has observed -
 // never a wall clock, never copied from a peer (§7.1b's global-agreement

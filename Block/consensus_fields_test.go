@@ -5,12 +5,16 @@ package Block
 // corrected attachment point.
 
 import (
+	"errors"
+	"math/big"
 	"testing"
 
 	"gossipnode/Security"
+	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/messaging"
 
+	"github.com/JupiterMetaLabs/avc/vdf"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -145,5 +149,110 @@ func TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered(t *testin
 	t.Cleanup(messaging.ResetSlotStoreReadyForTest)
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("attachAVCConsensusFields: unexpected error after SlotStoreReady: %v", err)
+	}
+}
+
+// --- VDF proof attachment (VDF-Implementation-Handoff.md §6) ---
+
+// landOnBoundarySlot advances DefaultSlotStore directly to slot 49 (via a
+// single AdvanceOnCommit(0, 48) — the advance amount is period+1, so this
+// is equivalent to 49 ordinary commits without looping) so that
+// LiveSlotFor(1) = 49 + PeriodFor(1) + 1 = 50, exactly
+// messaging.EpochBoundarySlot(1). Must be called after resetSlotAndPeriodStores.
+func landOnBoundarySlot(t *testing.T) {
+	t.Helper()
+	messaging.DefaultSlotStore.AdvanceOnCommit(0, 48)
+}
+
+func TestAttachAVCConsensusFields_NonBoundarySlot_LeavesVdfProofZero(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+
+	// Same setup as TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores:
+	// two commits then BlockNumber=2 -> slot 3, not a multiple of messaging.N (50).
+	messaging.DefaultSlotStore.AdvanceOnCommit(0, 0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
+
+	block := &config.ZKBlock{BlockNumber: 2}
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
+	if block.Slot == messaging.EpochBoundarySlot(messaging.EpochForSlot(block.Slot)) {
+		t.Fatalf("test setup error: slot %d is a boundary slot, expected non-boundary", block.Slot)
+	}
+	if block.VdfProof != nil {
+		t.Fatalf("non-boundary block: VdfProof = %x, want nil (Sequencer.SealerResultFor must not even be consulted off-boundary)", block.VdfProof)
+	}
+	if block.SeedEpoch != 0 {
+		t.Fatalf("non-boundary block: SeedEpoch = %d, want 0", block.SeedEpoch)
+	}
+}
+
+func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+	landOnBoundarySlot(t)
+
+	want := vdf.Proof{Y: big.NewInt(7), Pi: big.NewInt(11), T: 1234, Group: "test-group"}
+	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Proof: want})
+
+	block := &config.ZKBlock{BlockNumber: 1}
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
+	if block.Slot != messaging.EpochBoundarySlot(1) {
+		t.Fatalf("test setup error: block.Slot = %d, want %d (epoch 1's boundary)", block.Slot, messaging.EpochBoundarySlot(1))
+	}
+	if block.SeedEpoch != 1 {
+		t.Fatalf("block.SeedEpoch = %d, want 1", block.SeedEpoch)
+	}
+	if len(block.VdfProof) == 0 {
+		t.Fatal("boundary block: VdfProof is empty, want the seeded proof's encoding")
+	}
+	var got vdf.Proof
+	if err := got.UnmarshalBinary(block.VdfProof); err != nil {
+		t.Fatalf("block.VdfProof does not round-trip via vdf.Proof.UnmarshalBinary: %v", err)
+	}
+	if got.T != want.T || got.Group != want.Group || got.Y.Cmp(want.Y) != 0 || got.Pi.Cmp(want.Pi) != 0 {
+		t.Fatalf("round-tripped proof = %+v, want %+v", got, want)
+	}
+}
+
+func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenProofNotReady(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+	landOnBoundarySlot(t)
+	// Deliberately do not seed a result for epoch 1 — SealerResultFor must
+	// report ok=false, and attachAVCConsensusFields must fail closed rather
+	// than propose with a missing entropy value for its own boundary slot.
+
+	block := &config.ZKBlock{BlockNumber: 1}
+	err := attachAVCConsensusFields(block)
+	if !errors.Is(err, Sequencer.ErrVDFProofNotReady) {
+		t.Fatalf("attachAVCConsensusFields error = %v, want errors.Is(..., Sequencer.ErrVDFProofNotReady)", err)
+	}
+	// Scoped to the VDF-related fields specifically: unlike the SlotStore
+	// gate (which returns before touching ANY field), this check runs after
+	// Slot/Period/RandaoReveals/etc. are already set, so only VdfProof/
+	// SeedEpoch are expected to stay untouched on this failure path.
+	if block.VdfProof != nil {
+		t.Fatalf("VdfProof = %x on failure, want nil", block.VdfProof)
+	}
+	if block.SeedEpoch != 0 {
+		t.Fatalf("SeedEpoch = %d on failure, want 0", block.SeedEpoch)
+	}
+}
+
+func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+	landOnBoundarySlot(t)
+
+	sealErr := errors.New("simulated VDF evaluation failure")
+	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Err: sealErr})
+
+	block := &config.ZKBlock{BlockNumber: 1}
+	err := attachAVCConsensusFields(block)
+	if !errors.Is(err, sealErr) {
+		t.Fatalf("attachAVCConsensusFields error = %v, want errors.Is(..., sealErr)", err)
+	}
+	if block.VdfProof != nil {
+		t.Fatalf("VdfProof = %x on sealing failure, want nil", block.VdfProof)
 	}
 }

@@ -24,6 +24,7 @@ package Sequencer
 // without starting anything — a mix is computed (Stage D succeeded) but
 // never gets sealed or published.
 import (
+	"errors"
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/beacon"
@@ -32,6 +33,15 @@ import (
 
 	"gossipnode/messaging"
 )
+
+// ErrVDFProofNotReady is returned by Block.attachAVCConsensusFields (via
+// SealerResultFor) when an epoch-boundary block is being built but that
+// epoch's VDF sealing has not finished yet. Callers MUST fail closed on it —
+// same discipline as committee.ErrEntropyUnavailable: proposing a
+// boundary block with a missing/zero VdfProof would let whichever node
+// happens to have raced ahead choose the committee for every node that
+// didn't.
+var ErrVDFProofNotReady = errors.New("Sequencer: VDF proof for this epoch's boundary block is not ready yet (fail closed)")
 
 var (
 	vdfPipelineMu sync.Mutex
@@ -107,13 +117,9 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 
 // SealerResultFor returns forEpoch's sealing result, if a sealer was started
 // for it and has finished. This is the read side of the
-// VDF-Implementation-Handoff.md §5/§6 pattern — for whichever code
-// eventually attaches VdfProof to the epoch-boundary block. NOT wired to a
-// block-attachment call site by this change: Block/consensus_fields.go (the
-// producer-side wiring landed 2026-08-19 by a separate change) deliberately
-// leaves VdfProof zero pending exactly this piece — see that file's own
-// note. Exported so that wiring is a pure addition later, not a reason to
-// touch this file again.
+// VDF-Implementation-Handoff.md §5/§6 pattern. WIRED: Block/consensus_fields.go
+// calls this on the epoch-boundary block to attach VdfProof, returning
+// ErrVDFProofNotReady (fail closed) if ok is false.
 func SealerResultFor(forEpoch uint64) (SealResult, bool) {
 	vdfSealersMu.Lock()
 	s, ok := vdfSealers[forEpoch]
@@ -122,4 +128,21 @@ func SealerResultFor(forEpoch uint64) (SealResult, bool) {
 		return SealResult{}, false
 	}
 	return s.Result()
+}
+
+// SeedSealResultForTest injects a completed (or failed) SealResult for
+// forEpoch directly into vdfSealers, bypassing Start and the background
+// goroutine entirely. Test-only — lets a test in another package (e.g.
+// Block/consensus_fields_test.go) exercise SealerResultFor's ok=true and
+// ok=false paths without running a real ~20-minute VDF evaluation. The
+// ok=false ("not ready") path needs no seam at all: simply don't seed a
+// result for that epoch, and SealerResultFor already returns
+// (SealResult{}, false) for any epoch with no registered sealer. Overwrites
+// any sealer already registered for forEpoch.
+func SeedSealResultForTest(forEpoch uint64, result SealResult) {
+	s := &VDFSealer{resultCh: make(chan SealResult, 1)}
+	s.resultCh <- result
+	vdfSealersMu.Lock()
+	vdfSealers[forEpoch] = s
+	vdfSealersMu.Unlock()
 }
