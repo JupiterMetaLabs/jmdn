@@ -1468,6 +1468,25 @@ func main() {
 	voteCompactionHook := startVoteCRDTCompactionHook(ctx)
 	DB_OPs.SetLatestBlockAdvanceHook(voteCompactionHook)
 
+	// Phase A4.2 (docs/A4-REPUTATION-WEIGHTING-PLAN.md): push observed
+	// reputation to the seed as peer.Weights, independently of FastSync/the
+	// sync monitor, for the same reason compaction is registered
+	// unconditionally above — this has nothing to do with whether this node
+	// pulls from a seed for sync. Only meaningful when a seed is configured;
+	// startReputationSeedPusher itself no-ops (with a log line) on a nil
+	// client, and PushReputationWeights no-ops per-tick on every node that
+	// isn't the sequencer. See seednode/sequencer_reputation_push.go's PHASE
+	// A4.2 CAVEAT for what this does and does not guarantee today.
+	if cfg.Network.SeedNode != "" {
+		if reputationSeedClient, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
+			log.Error().Err(err).Msg("[ReputationPush] failed to create seednode client — reputation push disabled")
+		} else {
+			startReputationSeedPusher(ctx, reputationSeedClient)
+		}
+	} else {
+		log.Warn().Msg("[ReputationPush] cfg.network.seed_node not set — reputation push disabled")
+	}
+
 	var syncMonitor *syncmonitor.Monitor
 	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
