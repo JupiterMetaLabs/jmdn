@@ -1318,6 +1318,10 @@ func main() {
 	// avoid an import cycle (messaging -> Vote -> MessagePassing already
 	// exists); see SetSlotStoreReadyFn's doc.
 	MessagePassing.SetSlotStoreReadyFn(messaging.SlotStoreReady)
+	// Vote-CRDT read path's committee source (Stage 3.5 of
+	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md) — same injection pattern as
+	// the line above, for the same import-cycle reason.
+	MessagePassing.SetAuthorizedCommitteeFn(messaging.AuthorizedCommittee)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")

@@ -260,6 +260,13 @@ func eligibleMembers() (map[string]string, error) {
 	return eligible, nil
 }
 
+// AuthorizedCommittee exports eligibleMembers for injection into
+// MessagePassing (Stage 3.5 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md,
+// Decision 1: capped, matching what VerifyCertificate uses today). The
+// underlying function stays unexported everywhere else — this is the one
+// deliberate seam.
+func AuthorizedCommittee() (map[string]string, error) { return eligibleMembers() }
+
 // EligibleCommitteePeerIDs returns the set of peer_ids authorized to vote this
 // round — exactly the set keyAuthorized checks against (authenticated source,
 // with the block_buddy blocklist and the max_validators cap already applied).
