@@ -1577,6 +1577,11 @@ func main() {
 		log.Printf("Routing client initialized successfully")
 	}
 
+	// Transaction-status resolution (default-off). Wired here, after the routing
+	// client exists and before StartFacadeServer, so the RPC facade sees a
+	// resolver that can already reach the mempool.
+	initTxStatus(cfg)
+
 	// Initialize node manager
 	nodeManager, err = node.NewNodeManagerWithLogger(n)
 	if err != nil {

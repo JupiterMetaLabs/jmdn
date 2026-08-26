@@ -72,6 +72,29 @@ func Load() (*NodeConfig, error) {
 	// this, services stay TLS even when the env/partial-yaml says disabled.
 	_ = v.BindEnv("security.enabled", "JMDN_SECURITY_ENABLED")
 
+	// AutomaticEnv does not reach nested keys through Unmarshal, so every
+	// tx_status key is bound explicitly — otherwise JMDN_TX_STATUS_ENABLED=true
+	// would silently do nothing and the feature would appear broken rather than
+	// off. Same reason as the security.enabled bind above.
+	for key, env := range map[string]string{
+		"tx_status.enabled":                   "JMDN_TX_STATUS_ENABLED",
+		"tx_status.submit_record_ttl":         "JMDN_TX_STATUS_SUBMIT_RECORD_TTL",
+		"tx_status.submit_record_capacity":    "JMDN_TX_STATUS_SUBMIT_RECORD_CAPACITY",
+		"tx_status.mempool_timeout":           "JMDN_TX_STATUS_MEMPOOL_TIMEOUT",
+		"tx_status.chain_timeout":             "JMDN_TX_STATUS_CHAIN_TIMEOUT",
+		"tx_status.negative_cache_ttl":        "JMDN_TX_STATUS_NEGATIVE_CACHE_TTL",
+		"tx_status.negative_cache_size":       "JMDN_TX_STATUS_NEGATIVE_CACHE_SIZE",
+		"tx_status.rate_limit_per_sec":        "JMDN_TX_STATUS_RATE_LIMIT_PER_SEC",
+		"tx_status.rate_limit_burst":          "JMDN_TX_STATUS_RATE_LIMIT_BURST",
+		"tx_status.breaker_failure_threshold": "JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD",
+		"tx_status.breaker_cooldown":          "JMDN_TX_STATUS_BREAKER_COOLDOWN",
+		"tx_status.pending_tx_by_hash":        "JMDN_TX_STATUS_PENDING_TX_BY_HASH",
+	} {
+		if err := v.BindEnv(key, env); err != nil {
+			return nil, fmt.Errorf("binding %s: %w", env, err)
+		}
+	}
+
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -270,6 +293,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("orchestrator.api_key", d.Orchestrator.APIKey)
 	v.SetDefault("orchestrator.http_timeout", d.Orchestrator.HTTPTimeout)
 	v.SetDefault("orchestrator.max_attempts", d.Orchestrator.MaxAttempts)
+
+	// Transaction status resolution (default-off)
+	v.SetDefault("tx_status.enabled", d.TxStatus.Enabled)
+	v.SetDefault("tx_status.submit_record_ttl", d.TxStatus.SubmitRecordTTL)
+	v.SetDefault("tx_status.submit_record_capacity", d.TxStatus.SubmitRecordCapacity)
+	v.SetDefault("tx_status.mempool_timeout", d.TxStatus.MempoolTimeout)
+	v.SetDefault("tx_status.chain_timeout", d.TxStatus.ChainTimeout)
+	v.SetDefault("tx_status.negative_cache_ttl", d.TxStatus.NegativeCacheTTL)
+	v.SetDefault("tx_status.negative_cache_size", d.TxStatus.NegativeCacheSize)
+	v.SetDefault("tx_status.rate_limit_per_sec", d.TxStatus.RateLimitPerSec)
+	v.SetDefault("tx_status.rate_limit_burst", d.TxStatus.RateLimitBurst)
+	v.SetDefault("tx_status.breaker_failure_threshold", d.TxStatus.BreakerFailureThreshold)
+	v.SetDefault("tx_status.breaker_cooldown", d.TxStatus.BreakerCooldown)
+	v.SetDefault("tx_status.pending_tx_by_hash", d.TxStatus.PendingTxByHash)
 }
 
 // mergeStructs merges src into dest generically.

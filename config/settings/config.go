@@ -25,6 +25,77 @@ type NodeConfig struct {
 	Selection    SelectionSettings  `mapstructure:"selection"`
 	Consensus    ConsensusSettings  `mapstructure:"consensus"`
 	Contracts    ContractsSettings  `mapstructure:"contracts"`
+	TxStatus     TxStatusSettings   `mapstructure:"tx_status"`
+}
+
+// TxStatusSettings controls transaction-status resolution for transactions that
+// are not in a block: the local submit log, the MRE mempool lookup, and the
+// jmdt_getTransactionStatus RPC.
+//
+// Disabled by default. With Enabled=false:
+//   - no submit records are written,
+//   - jmdt_getTransactionStatus reports the feature as disabled,
+//   - eth_getTransactionByHash behaves exactly as before (an error for a hash
+//     that is not in a block).
+//
+// YAML:
+//
+//	tx_status:
+//	  enabled: true
+//	  submit_record_ttl: 30m
+//
+// Env: JMDN_TX_STATUS_ENABLED, JMDN_TX_STATUS_SUBMIT_RECORD_TTL, …
+type TxStatusSettings struct {
+	// Enabled turns the whole feature on. Default false.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// SubmitRecordTTL is how long a local submit record is kept. It must
+	// comfortably exceed the worst-case time-to-inclusion, or an in-flight
+	// transaction will report `unknown` instead of `processing` before it is
+	// mined. The sequencer polls the mempool on an interval and only builds a
+	// block once enough transactions are pending, so worst-case inclusion is
+	// far longer than intuition suggests — MEASURE it rather than trusting this
+	// default.
+	SubmitRecordTTL time.Duration `mapstructure:"submit_record_ttl" yaml:"submit_record_ttl"`
+	// SubmitRecordCapacity bounds the in-memory submit log.
+	SubmitRecordCapacity int `mapstructure:"submit_record_capacity" yaml:"submit_record_capacity"`
+
+	// MempoolTimeout bounds one MRE lookup. A status query must never block an
+	// RPC handler, so this stays small and expiry degrades to `unknown`.
+	MempoolTimeout time.Duration `mapstructure:"mempool_timeout" yaml:"mempool_timeout"`
+	// ChainTimeout bounds each chain-store read.
+	ChainTimeout time.Duration `mapstructure:"chain_timeout" yaml:"chain_timeout"`
+
+	// NegativeCacheTTL / NegativeCacheSize remember CONCLUSIVE unknowns so a
+	// burst of probes for nonexistent hashes does not become a burst of
+	// fleet-wide mempool scatter-gathers. Inconclusive answers are never
+	// cached. Keep the TTL short: a transaction submitted moments after a miss
+	// must not stay invisible.
+	NegativeCacheTTL  time.Duration `mapstructure:"negative_cache_ttl" yaml:"negative_cache_ttl"`
+	NegativeCacheSize int           `mapstructure:"negative_cache_size" yaml:"negative_cache_size"`
+
+	// RateLimitPerSec / RateLimitBurst cap the sustained status-lookup rate.
+	// This is load protection for the mempool fleet, not tuning: the JSON-RPC
+	// port is public and each miss amplifies into an N-shard fan-out.
+	RateLimitPerSec float64 `mapstructure:"rate_limit_per_sec" yaml:"rate_limit_per_sec"`
+	RateLimitBurst  int     `mapstructure:"rate_limit_burst" yaml:"rate_limit_burst"`
+
+	// BreakerFailureThreshold / BreakerCooldown stop calling an unresponsive
+	// mempool, so an outage does not add the full timeout to every request.
+	BreakerFailureThreshold int           `mapstructure:"breaker_failure_threshold" yaml:"breaker_failure_threshold"`
+	BreakerCooldown         time.Duration `mapstructure:"breaker_cooldown" yaml:"breaker_cooldown"`
+
+	// PendingTxByHash controls whether eth_getTransactionByHash may answer from
+	// the mempool. When true a queued transaction is returned with null
+	// blockHash/blockNumber/transactionIndex (the standard Ethereum pending
+	// representation) and an unknown hash returns null instead of an error.
+	// When false eth_getTransactionByHash is untouched.
+	//
+	// eth_getTransactionReceipt is NOT affected by this or any other setting
+	// here: a receipt must stay null until the transaction is in a block,
+	// because wallets read a non-null receipt as proof of mining and a
+	// synthesised status:0x0 renders as a FAILED transaction.
+	PendingTxByHash bool `mapstructure:"pending_tx_by_hash" yaml:"pending_tx_by_hash"`
 }
 
 // ConsensusSettings holds operator-controlled consensus policy.

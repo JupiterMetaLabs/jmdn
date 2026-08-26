@@ -156,5 +156,38 @@ func DefaultConfig() NodeConfig {
 			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
 			P2P:                   1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
 		},
+		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
+		// exactly as it does today until an operator opts in. The numbers below
+		// only take effect once Enabled=true.
+		TxStatus: TxStatusSettings{
+			Enabled: false,
+			// 30m is a placeholder, not a measurement. The sequencer polls the
+			// mempool on an interval and only builds a block once enough
+			// transactions are pending, so real worst-case inclusion must be
+			// measured on the target network before this is trusted. Too short
+			// and an in-flight transaction reports `unknown`; too long and a
+			// dropped transaction reports `processing` for longer than it should.
+			SubmitRecordTTL:      30 * time.Minute,
+			SubmitRecordCapacity: 100_000,
+			// Small on purpose: this bounds how long a status query can hold an
+			// RPC handler waiting on the mempool. Expiry degrades to `unknown`.
+			MempoolTimeout: 400 * time.Millisecond,
+			ChainTimeout:   2 * time.Second,
+			// Short TTL: only CONCLUSIVE unknowns are cached, but a hash
+			// submitted moments after a miss must not stay invisible for long.
+			NegativeCacheTTL:  2 * time.Second,
+			NegativeCacheSize: 16_384,
+			// Load protection for the mempool fleet, not tuning — the JSON-RPC
+			// port is public and each chain-store miss amplifies into a
+			// fleet-wide fan-out.
+			RateLimitPerSec:         50,
+			RateLimitBurst:          100,
+			BreakerFailureThreshold: 5,
+			BreakerCooldown:         5 * time.Second,
+			// Off even when the feature is on: serving pending transactions from
+			// eth_getTransactionByHash changes what an existing client sees, so
+			// it is a second, separate opt-in.
+			PendingTxByHash: false,
+		},
 	}
 }
