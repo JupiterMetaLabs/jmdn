@@ -83,6 +83,14 @@ type Vote struct {
 	Vote            int8   `json:"vote"`                       // 1 for yes, -1 for no
 	BlockHash       string `json:"block_hash"`                 // hash of the block
 	RejectionReason string `json:"rejection_reason,omitempty"` // set when vote == -1
+	// Height is the block number this vote is for. Stage 4
+	// (JMDN-CRDT-VOTE-MIGRATION-LLD.md): the block-keyed vote CRDT
+	// (avc/crdt/votes) tallies by (height, blockHash), so the height must
+	// travel with the vote on the wire — subscriptionService.go's
+	// pubsub-message read path has no other source for it. Zero-value on
+	// messages from nodes that predate this field; callers on the new path
+	// must treat Height==0 as "unknown" rather than a real genesis vote.
+	Height uint64 `json:"height,omitempty"`
 }
 
 // BlockResult represents the result of block validation

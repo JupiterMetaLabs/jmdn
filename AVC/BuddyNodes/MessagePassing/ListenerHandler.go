@@ -1650,7 +1650,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var err error
 	const maxCRDTAttempts = 3
 	for attempt := 1; attempt <= maxCRDTAttempts; attempt++ {
-		result, rejectionReasons, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
+		result, rejectionReasons, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash, targetBlockNumber)
 		if err == nil {
 			break
 		}

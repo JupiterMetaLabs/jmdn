@@ -1321,7 +1321,8 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 	// Use ProcessVotesFromCRDT which iterates GetAllCRDTs() correctly.
 	// GetVotesFromCRDT(..."vote") always returns found=false and is removed.
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	voteResult, _, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash)
+	blockHeight := consensus.ZKBlockData.GetZKBlock().BlockNumber
+	voteResult, _, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash, blockHeight)
 	if voteErr != nil || voteResult == 0 {
 		span.SetAttributes(
 			attribute.Int("votes_count", 0),

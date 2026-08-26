@@ -121,6 +121,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 			Vote:            -1,
 			BlockHash:       blockHash,
 			RejectionReason: rejectionReason,
+			Height:          zkBlock.BlockNumber,
 		}
 		vt.setVote(&vote)
 
@@ -172,6 +173,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 		vote := PubSubMessages.Vote{
 			Vote:      1,
 			BlockHash: blockHash,
+			Height:    zkBlock.BlockNumber,
 		}
 		vt.setVote(&vote)
 
@@ -250,12 +252,13 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("function", "Vote.SubmitVote"))
 		} else {
 			rec := avcvotes.VoteRecord{
-				PeerID:       listenerNode.PeerID.String(),
-				Vote:         vt.Vote.Vote,
-				BlockHash:    blockHash,
-				Height:       zkBlock.BlockNumber,
-				BLSSignature: blsResp.Signature,
-				BLSPubKeyHex: blsResp.PubKey,
+				PeerID:          listenerNode.PeerID.String(),
+				Vote:            vt.Vote.Vote,
+				BlockHash:       blockHash,
+				Height:          zkBlock.BlockNumber,
+				BLSSignature:    blsResp.Signature,
+				BLSPubKeyHex:    blsResp.PubKey,
+				RejectionReason: vt.Vote.RejectionReason,
 			}
 			if err := avcvotes.AddVote(listenerNode.VoteCRDTLayer, listenerNode.PeerID, rec); err != nil {
 				if !errors.Is(err, avcvotes.ErrHeightCompacted) {
