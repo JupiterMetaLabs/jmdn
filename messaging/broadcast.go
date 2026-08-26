@@ -759,6 +759,21 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return fmt.Errorf("failed to process block transactions: %w", err)
 	}
 
+	// Persist the committee certificate that was just verified above (2f+1
+	// fail-closed) so it survives past the in-memory blsResults and is
+	// re-verifiable on sync (P-cert / ThebeSync). Advisory field; does not affect
+	// BlockHash. Best-effort marshal — a marshal error must not block a validated
+	// block from being stored.
+	if len(blsResults) > 0 {
+		if certJSON, mErr := json.Marshal(blsResults); mErr == nil {
+			block.CommitteeCertificate = string(certJSON)
+		} else {
+			broadcastLogger().Warn(context.Background(), "committee certificate marshal failed (block stored without persisted cert)",
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.String("error", mErr.Error()))
+		}
+	}
+
 	// Store block only after transactions have been successfully applied.
 	if err := DB_OPs.StoreZKBlock(nil, block); err != nil {
 		broadcastLogger().Error(context.Background(), "Failed to store block in database after transaction processing", err,

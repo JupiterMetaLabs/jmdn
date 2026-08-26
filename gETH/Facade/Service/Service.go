@@ -233,6 +233,33 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	return block, nil
 }
 
+// BlockByHash resolves a block by its 0x-prefixed hash (eth_getBlockByHash).
+// Mirrors BlockByNumber but keyed on hash. Required by wallets (MetaMask fetches
+// the block by receipt.blockHash to finalize a mined tx — without this the tx can
+// stay perpetually "pending" despite a valid receipt).
+func (s *ServiceImpl) BlockByHash(ctx context.Context, hash string, fullTx bool) (*Types.Block, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	ZKBlock, err := DB_OPs.GetZKBlockByHash(nil, hash)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByHash failed: %v", err), "BlockByHash", -1); logErr != nil {
+			logger().Error(opCtx, "Failed to log BlockByHash error", logErr)
+		}
+		return nil, err
+	}
+
+	block := Utils.ConvertZKBlockToBlock(ZKBlock)
+	if block == nil {
+		return nil, fmt.Errorf("BlockByHash: failed to convert block %s", hash)
+	}
+
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByHash returned to the client: %d", ZKBlock.BlockNumber), "BlockByHash", 1); logErr != nil {
+		logger().Error(opCtx, "Failed to log BlockByHash success", logErr)
+	}
+	return block, nil
+}
+
 // LatestL1CommitBlock returns the most recent block that has L1 commit data.
 //
 // Fast path (O(1)): Block/Server.go maintains an atomic cache of the latest

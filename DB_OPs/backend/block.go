@@ -99,6 +99,19 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 		rec.ExtraData = map[string]any{"raw": b.ExtraData}
 	}
 
+	// CommitteeCertificate: persist the verified committee vote set (JSON) so it
+	// survives past the ephemeral gossip envelope and is re-verifiable on sync
+	// (P-cert / ThebeSync). Stashed in ExtraData JSONB; applyBlock marshals the
+	// whole map, so any key here round-trips. This is the FIRST block write in
+	// StoreZKBlock (before toBlockRecordWithZK), and blocks are append-only with
+	// ON CONFLICT DO NOTHING, so the cert must be set here to win the projection.
+	if b.CommitteeCertificate != "" {
+		if rec.ExtraData == nil {
+			rec.ExtraData = map[string]any{}
+		}
+		rec.ExtraData["committee_certificate"] = b.CommitteeCertificate
+	}
+
 	return rec
 }
 

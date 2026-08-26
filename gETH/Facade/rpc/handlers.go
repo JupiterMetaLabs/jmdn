@@ -173,6 +173,36 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
+	case "eth_getBlockByHash":
+		// params: [blockHash, fullTx(bool)]
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing block hash")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		hash, _ := req.Params[0].(string)
+		full := false
+		if len(req.Params) > 1 {
+			switch v := req.Params[1].(type) {
+			case bool:
+				full = v
+			case string:
+				full = strings.EqualFold(v, "true")
+			}
+		}
+		b, blockErr := handler.service.BlockByHash(ctx, hash, full)
+		if blockErr != nil || b == nil {
+			// Unknown/unmined hash → JSON-RPC result: null (per spec), not an error.
+			// Returning an error here makes MetaMask abort tx finalization and leave
+			// the tx perpetually "pending".
+			resp, _ := finish(req, nil, nil)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", "null (block not found)"))
+			return resp, nil
+		}
+		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
+
 	case "eth_getBalance":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "need address and block tag")

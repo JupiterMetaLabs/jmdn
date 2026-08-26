@@ -363,6 +363,14 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			broadcastLogger().Info(ctx, "All transactions processed successfully - storing block",
 				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 
+			// Persist the committee certificate that already passed
+			// verifyBlockCertificate (fail-closed 2f+1) so it survives past this
+			// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
+			// ThebeSync). Advisory field; does not affect BlockHash.
+			if cert := msg.Data["bls_results"]; cert != "" {
+				msg.Block.CommitteeCertificate = cert
+			}
+
 			// Store the validated and processed block in main DB
 			if err := DB_OPs.StoreZKBlock(nil, msg.Block); err != nil {
 				broadcastLogger().Error(ctx, "Failed to store block in database", err,

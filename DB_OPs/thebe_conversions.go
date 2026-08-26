@@ -42,6 +42,16 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// CommitteeCertificate: hydrate the persisted committee vote set (JSON) from
+	// ExtraData so a synced/read block can re-verify its certificate (P-cert /
+	// ThebeSync). Absent on the legacy prefix (blocks predating P-cert).
+	committeeCert := ""
+	if cc, ok := r.ExtraData["committee_certificate"]; ok {
+		if s, ok2 := cc.(string); ok2 {
+			committeeCert = s
+		}
+	}
+
 	return &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
@@ -52,10 +62,11 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		LogsBloom:    r.LogsBloom,
 		CoinbaseAddr: coinbase,
 		ZKVMAddr:     zkvm,
-		GasLimit:     r.GasLimit,
-		GasUsed:      r.GasUsed,
-		ExtraData:    extraData,
-		Transactions: []config.Transaction{},
+		GasLimit:             r.GasLimit,
+		GasUsed:              r.GasUsed,
+		ExtraData:            extraData,
+		CommitteeCertificate: committeeCert,
+		Transactions:         []config.Transaction{},
 	}, nil
 }
 

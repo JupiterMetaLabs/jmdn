@@ -90,6 +90,23 @@ type ZKBlock struct {
 	// cryptographic binding (committee-signed) arrives with the CON-02 v3 block
 	// hash; until then its trust rests on the single honest sequencer.
 	StateFingerprint string `json:"state_fingerprint,omitempty"`
+
+	// CommitteeCertificate is the JSON-encoded committee vote set
+	// ([]BLS_Signer.BLSresponse) that certified this block — the 2f+1 block-bound
+	// signatures verified on the live receive path (messaging.VerifyCertificate).
+	// It is stamped just before the block is persisted (gossip receive +
+	// ProcessBlockLocally) so the certificate survives past the ephemeral gossip
+	// envelope (BlockMessage.Data["bls_results"]) and can be re-verified during
+	// sync (ThebeSync / FastSync v4). Carried as a raw JSON string to avoid a
+	// config→AVC import cycle.
+	//
+	// ADVISORY, NOT CONSENSUS-HASHED (same as AccountNonces / StateFingerprint):
+	// the canonical BlockHash is tx-contents only, so this field does not change
+	// BlockHash and older builds ignore it on unmarshal — mixed fleets stay
+	// wire-compatible. Blocks produced before this field existed carry it empty
+	// (the legacy prefix); their sync trust rests on the genesis anchor + the
+	// state-root hash chain + the first certified block (see docs/THEBESYNC-DESIGN.md).
+	CommitteeCertificate string `json:"committee_certificate,omitempty"`
 }
 
 // AccountNonce binds one account address to its canonical ART identity nonce

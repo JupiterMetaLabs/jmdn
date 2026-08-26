@@ -14,6 +14,7 @@ type Service interface {
 	Accounts(ctx context.Context) ([]string, error)
 	BlockNumber(ctx context.Context) (*big.Int, error)
 	BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error)
+	BlockByHash(ctx context.Context, hash string, fullTx bool) (*Types.Block, error)
 	Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error)
 	Call(ctx context.Context, msg Types.CallMsg, block *big.Int) ([]byte, error)
 	GetTransactionCount(ctx context.Context, addr string, block string) (*big.Int, error)
