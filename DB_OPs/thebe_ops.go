@@ -548,8 +548,45 @@ func txRecordToConfig(r *thebegateway.TransactionRecord) *config.Transaction {
 		gp.SetString(r.GasPriceWei, 10)
 		tx.GasPrice = gp
 	}
+	if r.MaxFeeWei != "" {
+		if n, ok := new(big.Int).SetString(strings.TrimSpace(r.MaxFeeWei), 10); ok {
+			tx.MaxFee = n
+		}
+	}
+	if r.MaxPriorityFeeWei != "" {
+		if n, ok := new(big.Int).SetString(strings.TrimSpace(r.MaxPriorityFeeWei), 10); ok {
+			tx.MaxPriorityFee = n
+		}
+	}
 	tx.Type = uint8(r.Type)
 	tx.Data = r.Data
 	tx.Timestamp = r.BlockNumber // approximation; exact timestamp not in TransactionRecord
+
+	// Signature: SigR/SigS are stored as base-16 (no 0x) via big.Int.Text(16) in
+	// toTransactionRecord, and CHAR(66) pads with trailing spaces — so trim space
+	// and any 0x prefix before parsing base 16. Without this, R/S/V come back nil
+	// and eth_getTransactionByHash marshals r=s=v=0 even though the row is signed
+	// (breaks wallets/explorers that re-verify the signature, e.g. MetaMask never
+	// leaving "pending"). SigV=0 is a valid type-2 y-parity, so set V unconditionally.
+	parseSig := func(s string) *big.Int {
+		s = strings.TrimSpace(s)
+		s = strings.TrimPrefix(s, "0x")
+		s = strings.TrimPrefix(s, "0X")
+		if s == "" {
+			return nil
+		}
+		n, ok := new(big.Int).SetString(s, 16)
+		if !ok {
+			return nil
+		}
+		return n
+	}
+	tx.V = new(big.Int).SetUint64(r.SigV)
+	if n := parseSig(r.SigR); n != nil {
+		tx.R = n
+	}
+	if n := parseSig(r.SigS); n != nil {
+		tx.S = n
+	}
 	return tx
 }
