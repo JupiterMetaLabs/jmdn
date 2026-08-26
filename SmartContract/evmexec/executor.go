@@ -134,11 +134,13 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 	// EVM-A16 fail-closed: a non-deterministic state read aborts the tx BEFORE any
 	// effect is reported, so no node commits state derived from a defaulted read.
 	if dberr := cdb.DBError(); dberr != nil {
-		return &execbridge.ExecResult{
-			Handled: true,
-			Success: false,
-			Err:     fmt.Errorf("evmexec: aborting contract tx %s: deterministic state read failed: %w", tx.Hash.Hex(), dberr),
-		}, nil
+		// Non-deterministic infra failure — return it as the FUNCTION error so the
+		// caller ABORTS the block fail-closed, NOT as res.Err with a nil error (which
+		// the caller reads as a revert). A revert is deterministic — every node agrees
+		// and charges gas identically — but a transient read error is not, so reverting
+		// on only the erroring node would diverge balances from healthy nodes.
+		return &execbridge.ExecResult{Handled: true, Success: false},
+			fmt.Errorf("evmexec: aborting contract tx %s: deterministic state read failed: %w", tx.Hash.Hex(), dberr)
 	}
 
 	// EVM-30: intrinsic gas (Shanghai: Homestead + EIP-2028 + EIP-3860 enabled)
@@ -206,11 +208,10 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 	// balance changes for the caller to fold + apply.
 	root, commitErr := cdb.CommitToDB(false)
 	if commitErr != nil {
-		return &execbridge.ExecResult{
-			Handled: true,
-			Success: false,
-			Err:     fmt.Errorf("evmexec: commit contract state for tx %s: %w", tx.Hash.Hex(), commitErr),
-		}, nil
+		// Commit I/O failure is non-deterministic — fail the block (function error),
+		// not a revert, so nodes don't diverge on a per-node write failure.
+		return &execbridge.ExecResult{Handled: true, Success: false},
+			fmt.Errorf("evmexec: commit contract state for tx %s: %w", tx.Hash.Hex(), commitErr)
 	}
 
 	changes := make(map[common.Address]*big.Int)

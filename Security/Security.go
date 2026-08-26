@@ -855,6 +855,12 @@ func CheckTransactionValues(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("max_priority_fee %s exceeds max_fee %s",
 			tx.MaxPriorityFee.String(), tx.MaxFee.String())
 	}
+	// Ingress gas bound (anti-DoS): reject a declared GasLimit above the block gas
+	// limit. Without this an attacker sets a huge GasLimit and burns CPU fleet-wide
+	// for a trivial fee. Fixed constant → fleet-uniform validity (see config.MaxTxGasLimit).
+	if tx.GasLimit > config.MaxTxGasLimit {
+		return false, fmt.Errorf("gas_limit %d exceeds max %d", tx.GasLimit, config.MaxTxGasLimit)
+	}
 	return true, nil
 }
 

@@ -84,9 +84,11 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	// nonce they read before calling DeployContract — no off-by-one adjustments needed.
 	ret, contractAddr, leftOverGas, err := evm.Create(caller, code, gasLimit, value256)
 
-	// Increment the caller's nonce now that the deployment has been attempted
-	// (mirrors standard Ethereum: nonce counts committed transactions, successful or not).
-	state.SetNonce(caller, state.GetNonce(caller)+1, tracing.NonceChangeReason(0))
+	// NOTE: go-ethereum's evm.Create already increments the caller nonce inside
+	// create() before deriving the address. A manual SetNonce here was a DOUBLE
+	// bump — the caller nonce advanced by 2 per deploy, so every deployment after
+	// the first computed a mismatched CREATE address and failed with "contract
+	// address collision". Do NOT re-add it.
 
 	// Check for gas overflow before calculating gasUsed
 	if leftOverGas > gasLimit {

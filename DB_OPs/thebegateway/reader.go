@@ -165,10 +165,17 @@ const (
                created_at, updated_at
         FROM accounts ORDER BY created_at ASC`
 
+	// ORDER BY LOWER(address): node-INDEPENDENT (address is the unique PK, and
+	// lowercasing matches consensushash.normAddr). This is the P2.5 fingerprint's
+	// source order — ComputeAccountStateFingerprintV1 streams these pages straight
+	// into StateFingerprinterV1.FoldAccount, which REQUIRES ascending normalized-
+	// address order. The old ORDER BY created_at (per-node wall clock) made the
+	// streamed digest both non-canonical and divergent for any node with a
+	// different insertion history (late join, fast-sync, snapshot restore).
 	sqlListAccountsPaginated = `
         SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
-        FROM accounts ORDER BY created_at ASC
+        FROM accounts ORDER BY LOWER(address) ASC
         LIMIT $1 OFFSET $2`
 
 	sqlCountAccounts = `SELECT COUNT(*) FROM accounts`

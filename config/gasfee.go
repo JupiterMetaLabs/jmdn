@@ -115,6 +115,15 @@ const (
 
 	// FallbackTxGasLimit is used when a transaction carries GasLimit == 0 (21000).
 	FallbackTxGasLimit = uint64(21000)
+
+	// MaxTxGasLimit caps a single transaction's declared GasLimit at the block gas
+	// limit (30M — the ceiling exposed to the EVM in contract_apply). It bounds the
+	// per-tx work an attacker can force and closes the gas-DoS where a huge declared
+	// limit (e.g. 3e9) burned CPU fleet-wide for a trivial fee. This is a CONSENSUS
+	// VALIDATION rule (CheckTransactionValues): it must be identical on every node —
+	// a mixed fleet disagrees on block validity — so it is a fixed constant, never
+	// per-node config. Roll it out fleet-wide together.
+	MaxTxGasLimit = uint64(30_000_000)
 )
 
 // EffectiveGasPrice returns the consensus effective gas price for a transaction.

@@ -133,12 +133,15 @@ func DefaultConfig() NodeConfig {
 		//     identical network-wide, so it carries a stable default. Override
 		//     per-network via config/env if you want isolation between networks.
 		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
-		// Contract execution ENABLED by default (operator decision 2026-08-19).
-		// NOTE: with this on, contract txs execute during apply and the P2.5
-		// state-fingerprint HALT-on-divergence is active fleet-wide. See the
-		// enable-gate warnings in config.go/ContractsSettings and the deployment
-		// notes — a heterogeneously-flagged or EVM-less fleet member will fork/break.
-		Contracts: ContractsSettings{Enabled: true},
+		// Contract execution DEFAULT-OFF (cycle-5 audit). Re-enable only after the
+		// remaining apply-path items land and the 2-node/apply gate runs green:
+		// the fingerprint reader must be node-independent (ORDER BY address, not
+		// created_at), tx.GasLimit must be bounded on ingress, and the commit-
+		// before-fold residual (NEW-2) resolved. With this ON, contract txs execute
+		// during apply and the P2.5 HALT-on-divergence is fleet-wide, so a fleet with
+		// any of those gaps (or a heterogeneously-flagged / EVM-less member) can fork.
+		// Turn on per-node via jmdn.yaml / JMDN_CONTRACTS_ENABLED once validated.
+		Contracts: ContractsSettings{Enabled: false},
 		// Consensus policy: empty block_buddy blocklist by default (no peer is
 		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
 		// Committee-source: no pinned authority by default (consumer disabled

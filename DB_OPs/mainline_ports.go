@@ -62,12 +62,12 @@ func NormalizePropagatedAccountState(acc *Account) bool {
 // listing is exhausted.
 //
 // Port note: the ImmuDB implementation scanned ascending by KEY with a SeekKey
-// cursor (O(limit) per call, address order). This port pages the ThebeDB SQL
-// listing (ORDER BY created_at ASC) with the cursor carrying the numeric
-// offset. The cursor stays opaque to callers (state_fingerprint.go), so the
-// contract is unchanged; only the iteration order differs. If cross-node
-// fingerprint comparison shows tie-order instability, switch the reader query
-// to ORDER BY address.
+// cursor. This port pages the ThebeDB SQL listing (now ORDER BY LOWER(address)
+// ASC — node-independent, matching consensushash.normAddr, so the P2.5 fingerprint
+// is identical across nodes regardless of insertion history) with the cursor
+// carrying an opaque numeric offset. Offset pagination is safe here because the
+// fingerprint scan runs under the apply lock (stable snapshot). Follow-up: an
+// address keyset cursor would drop the O(N·pages) offset cost for large N.
 func ListAccountsPaginatedFrom(_ *config.PooledConnection, limit int, seekKey []byte, _ string) ([]*Account, []byte, error) {
 	offset := 0
 	if len(seekKey) > 0 {

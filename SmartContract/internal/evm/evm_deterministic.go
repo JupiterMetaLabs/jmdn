@@ -5,7 +5,6 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/holiman/uint256"
 
@@ -93,10 +92,11 @@ func (e *EVMExecutor) DeployContractWithContext(state vm.StateDB, bctx DetBlockC
 	evmInstance := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
 	evmInstance.SetTxContext(txCtx)
 
-	// Address derived from crypto.CreateAddress(caller, nonce-before-Create),
-	// then nonce incremented after — same contract as DeployContract.
+	// Address derived from crypto.CreateAddress(caller, nonce-before-Create).
+	// go-ethereum's Create already bumps the caller nonce inside create(); a manual
+	// SetNonce here double-bumped it, so deploy #2+ from any account mismatched the
+	// enrichment-stamped CREATE address and failed with "contract address collision".
 	ret, contractAddr, leftOverGas, err := evmInstance.Create(caller, code, gasLimit, value256)
-	state.SetNonce(caller, state.GetNonce(caller)+1, tracing.NonceChangeReason(0))
 
 	if leftOverGas > gasLimit {
 		gerr := fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit)
