@@ -260,11 +260,20 @@ supplies `Provider`/`Applier` + the hybrid verify/apply. P-cert and P2-persisten
    persisted per block (`ExtraData`) and served by ThebeSync, so the receiver COMPARES rather than
    re-stamps. Verify: 2-node — synced node's fingerprint == peer's; a perturbed peer halts
    (`messaging/BlockProcessing/applygate_test.go` already covers the halt in-process).
-4. **P3 — concurrency + failover + PoTS tail:** bounded batches, 3 workers, catch up blocks
-   produced during sync. Verify: sync under continuous block production converges.
-5. **P4 — coexistence + retire V2:** flag `sync.engine = thebesync|v2`, default v2 until P3
-   green on the 2-node gate, then flip and retire `FastsyncV2`.
-6. **P5 — enable + multi-node soak** on the `local-2node-gate` (extended to 3–5 nodes).
+4. **P3 — failover + PoTS tail (DONE):** `Receiver.SyncFrom` takes a peer set with round-robin
+   failover, plus a bounded PoTS tail loop (re-check head, apply blocks produced during sync,
+   `maxTailRounds`). Unit-tested (`receiver_test.go`). Fetch-ahead concurrency deferred (optimization).
+5. **P4 — retire V2 (DONE, direct cutover):** `catchup` (CLI, gRPC, and the automatic
+   `syncmonitor` ReconcileFunc) now routes through `thebesync.CatchUp`. The `FastsyncV2/` package
+   is deleted; the CLI `FastSyncerV2` interface/field is removed and `fastsync`/`accountsync`
+   commands return "retired — use catchup". The sync monitor is decoupled from FastsyncV2 init
+   (gated on `cfg.FastSync.Enabled`). **Residual:** the old `JMDN-FastSync` (Merkle-bisection)
+   dependency remains, still used by `internal/merkle`, `internal/syncmonitor`, and
+   `DB_OPs/Nodeinfo` for the seednode Merkle-root reporting — dropping it means porting the
+   monitor's reporting off the old library (separate follow-up).
+6. **P5 — validate + soak:** the `local-thebesync-gate/catchup_gate.sh` harness drives a real
+   `catchup` between two nodes and asserts B is byte-identical to A (tip, block hashes, balances),
+   including a negative (perturbed peer → P2.5 halt) check. Then multi-node soak (3–5 nodes).
 
 Each phase is host-built (`CGO_ENABLED=1 go build ./...`) and gated on the 2-node harness.
 

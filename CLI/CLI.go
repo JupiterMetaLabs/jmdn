@@ -22,9 +22,8 @@ import (
 	groMetrics "gossipnode/metrics/gro"
 	"gossipnode/node"
 	"gossipnode/seednode"
+	"gossipnode/thebesync"
 
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 	peerpb "gossipnode/seednode/proto"
 	"gossipnode/shutdown"
 
@@ -50,13 +49,8 @@ func formatTimestamp(timestamp int64) string {
 }
 
 // CommandHandler holds dependencies for CLI command execution
-// FastSyncerV2Interface is the subset of the FastsyncV2 engine used by the CLI.
-// The concrete implementation is wired in main.go once the engine is initialised.
-type FastSyncerV2Interface interface {
-	HandleSync(targetPeer string) error
-	HandleCatchUpSync(ctx context.Context, fromBlock uint64, targetPeer string) error
-	AccountSyncOnly(targetPeer string) (uint64, error)
-}
+// FastsyncV2 is retired — sync is ThebeSync (FastSync v4). The CLI catch-up
+// commands route through thebesync.CatchUp; no engine handle is held here.
 
 type CommandHandler struct {
 	Node            *config.Node
@@ -68,7 +62,6 @@ type CommandHandler struct {
 	ChainID         int
 	FacadePort      int
 	WSPort          int
-	FastSyncerV2    FastSyncerV2Interface
 	PullAllowed     bool
 }
 
@@ -605,60 +598,7 @@ func (h *CommandHandler) handleBroadcast(parts []string) {
 }
 
 func (h *CommandHandler) handleFastSync(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: fastsync <peer_multiaddr>")
-		return
-	}
-
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
-		return
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(parts[1])
-	if err != nil {
-		fmt.Printf("Invalid multiaddress: %v\n", err)
-		return
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		fmt.Printf("Failed to extract peer info: %v\n", err)
-		return
-	}
-
-	// Show pre-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
-		if err == nil {
-			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
-		}
-	}
-
-	fmt.Printf("Starting blockchain fastsync (V2 Engine) with peer %s\n", addrInfo.ID.String())
-
-	startTime := time.Now().UTC()
-	syncErr := h.FastSyncerV2.HandleSync(parts[1])
-	if syncErr != nil {
-		fmt.Printf("Fastsync failed: %v\n", syncErr)
-		return
-	}
-
-	// Show post-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
-		if err == nil {
-			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
-		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
-		if err == nil {
-			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
-		}
-	}
-
-	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
+	fmt.Println("fastsync (V2) is retired — use 'catchup <peer_multiaddr>' (ThebeSync / FastSync v4)")
 	printDashes()
 }
 
@@ -670,26 +610,25 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 		fmt.Println("                  pass 1 to force a full scan from genesis")
 		return
 	}
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
+	if h.Node == nil || h.Node.Host == nil {
+		fmt.Println("Error: node host unavailable")
 		return
 	}
 
-	var fromBlock uint64
+	// from_block is accepted for backward-compatible usage but ignored: ThebeSync
+	// auto-detects the range from the local tip and verifies parent linkage.
 	if len(parts) >= 3 {
-		var err error
-		fromBlock, err = strconv.ParseUint(parts[2], 10, 64)
-		if err != nil {
+		if _, err := strconv.ParseUint(parts[2], 10, 64); err != nil {
 			fmt.Printf("Invalid from_block %q: %v\n", parts[2], err)
 			return
 		}
-	} // fromBlock=0 → auto-detect inside HandleCatchUpSync
+	}
 
-	fmt.Printf("Starting catch-up sync (from_block=%d) with peer %s\n", fromBlock, parts[1])
+	fmt.Printf("Starting ThebeSync catch-up with peer %s\n", parts[1])
 	startTime := time.Now()
 
-	// Interactive CLI — no cancellable ctx in scope; HandleCatchUpSync applies fs.syncTimeout internally.
-	if err := h.FastSyncerV2.HandleCatchUpSync(context.Background(), fromBlock, parts[1]); err != nil {
+	// Interactive CLI — no cancellable ctx in scope; SyncFrom honors ctx cancellation.
+	if _, err := thebesync.CatchUp(context.Background(), h.Node.Host, parts[1]); err != nil {
 		fmt.Printf("CatchUpSync failed: %v\n", err)
 		return
 	}
@@ -754,25 +693,7 @@ func (h *CommandHandler) handleTxIndexStatus() {
 }
 
 func (h *CommandHandler) handleAccountSync(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: accountsync <peer_multiaddr>")
-		return
-	}
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
-		return
-	}
-
-	fmt.Printf("Starting account-only sync with peer %s\n", parts[1])
-	startTime := time.Now().UTC()
-
-	synced, err := h.FastSyncerV2.AccountSyncOnly(parts[1])
-	if err != nil {
-		fmt.Printf("AccountSync failed: %v\n", err)
-		return
-	}
-
-	fmt.Printf("AccountSync complete: %d missing accounts synced in %v\n", synced, time.Since(startTime))
+	fmt.Println("accountsync is retired — account state is synced as part of 'catchup' (ThebeSync / FastSync v4)")
 	printDashes()
 }
 
@@ -826,7 +747,7 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 // __DEAD_CODE_AUDIT__
 func (h *CommandHandler) handleSyncInfo() {
 	fmt.Println("FastSync Configuration (V2):")
-	fmt.Println("  V1 retired — engine: FastsyncV2")
+	fmt.Println("  sync engine: ThebeSync (FastSync v4) — use 'catchup'")
 	printDashes()
 }
 

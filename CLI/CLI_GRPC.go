@@ -14,6 +14,7 @@ import (
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
+	"gossipnode/thebesync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -231,17 +232,19 @@ func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string,
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
 	}
-	// fromBlock=0 → auto-detect via effectiveReconRange inside HandleCatchUpSync
+	// ThebeSync (FastSync v4) auto-detects the range from the local tip; fromBlock
+	// is accepted for wire compatibility but no longer used.
+	_ = fromBlock
 	if !h.PullAllowed {
 		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
 	}
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	if h.Node == nil || h.Node.Host == nil {
+		return SyncStats{}, fmt.Errorf("node host unavailable")
 	}
 
 	startTime := time.Now().UTC()
-	if err := h.FastSyncerV2.HandleCatchUpSync(ctx, fromBlock, peeraddr); err != nil {
-		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
+	if _, err := thebesync.CatchUp(ctx, h.Node.Host, peeraddr); err != nil {
+		return SyncStats{}, fmt.Errorf("ThebeSync catchup failed: %w", err)
 	}
 
 	var newMainState, newAccountsState *DB_OPs.DatabaseState
@@ -260,31 +263,8 @@ func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string,
 }
 
 func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
-	}
-	if !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
-	}
-
-	startTime := time.Now().UTC()
-	err := h.FastSyncerV2.HandleSync(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("AccountSync failed: %w", err)
-	}
-
-	var newAccountsState *DB_OPs.DatabaseState
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		AccountsState: newAccountsState,
-	}, nil
+	// Retired: account state is synced as part of ThebeSync (FastSync v4) catchup.
+	return SyncStats{}, fmt.Errorf("accountsync is retired — use 'catchup <peer_multiaddr>' (ThebeSync)")
 }
 
 // HandleFirstSync — RETIRED (fastsync V1 AVRO whole-DB exchange). Superseded

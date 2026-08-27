@@ -43,7 +43,6 @@ import (
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/DID"
-	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -66,6 +65,7 @@ import (
 	"gossipnode/node"
 	"gossipnode/profiler"
 	"gossipnode/seednode"
+	"gossipnode/thebesync"
 
 	ion "github.com/JupiterMetaLabs/ion"
 	"github.com/redis/go-redis/v9"
@@ -112,7 +112,6 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncerV2 *FastsyncV2.FastsyncV2
 	globalPubSub *Pubsub.StructGossipPubSub
 )
 
@@ -756,18 +755,9 @@ func initAccountsDBPool() error {
 	return nil
 }
 
-// initFastsyncV2 initializes the FastSync V2 service.
-// ctx is the node's top-level shutdown context — it governs the lifetime of
-// server-side network handler goroutines inside the engine.
-func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
-		return nil
-	}
-	log.Info().Msg("FastsyncV2 service initialized")
-	return fs
-}
+// FastsyncV2 retired: sync serving is handled by the ThebeSync (FastSync v4)
+// handlers registered in node.go, and catch-up by thebesync.CatchUp (wired into
+// the sync monitor below). No engine object is initialized.
 
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
@@ -1386,20 +1376,18 @@ func main() {
 	// process-wide ThebeHandle (config.SetGlobalHandleFactory above); helpers
 	// take a nil conn and resolve getHandle(nil) internally.
 
-	// fastsync V1 retired — FastsyncV2 only.
-	// Initialize FastsyncV2 service
-	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
-	} else {
-		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	// Sync engine: ThebeSync (FastSync v4). FastsyncV2 is retired — serving is via
+	// the thebesync handlers registered in node.go, catch-up via thebesync.CatchUp.
+	if !cfg.FastSync.Enabled {
+		log.Info().Msg("[Sync] disabled by config — sync monitor not started")
 	}
 
-	// SeedMonitor: every node with fastsync enabled reports its Merkle root to the
+	// SeedMonitor: every node with sync enabled reports its Merkle root to the
 	// seednode periodically (outbound only, no DB writes ever).
 	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
 	// enable_pulling guards CLI pull commands and the reconcile path independently.
 	var syncMonitor *syncmonitor.Monitor
-	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
+	if cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
 			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
 		} else {
@@ -1432,7 +1420,10 @@ func main() {
 								Str("addr", targetMultiaddr).
 								Uint64("from_block", fromBlock).
 								Msg("[ReconcileFunc] attempting catchup")
-							if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+							// ThebeSync (FastSync v4) log-shipping catch-up replaces the
+							// FastsyncV2 Merkle-bisection path. It auto-detects the range
+							// from the local tip, so fromBlock is no longer passed.
+							if _, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr); err != nil {
 								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
 								continue
 							}
@@ -1751,7 +1742,6 @@ func main() {
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
 		PullAllowed:     cfg.FastSync.EnablePulling,
-		FastSyncerV2:    fastSyncerV2,
 	}
 
 	if cfg.Ports.Facade > 0 {

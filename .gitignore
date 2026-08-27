@@ -87,3 +87,4 @@ test_results/
 jmdn2
 docs/FASTSYNC_V3_MIGRATION_PLAN.md
 Scripts/sign_tx.go
+local-thebesync-gate/
