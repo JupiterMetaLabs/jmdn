@@ -112,6 +112,18 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 		rec.ExtraData["committee_certificate"] = b.CommitteeCertificate
 	}
 
+	// StateFingerprint: persist the P2.5 post-apply state fingerprint (stamped by
+	// ProcessBlockTransactions before store) so a block served on the sync path
+	// (ThebeSync) still carries it — the receiver's ProcessBlockTransactions then
+	// COMPARES (and halts on divergence) instead of re-stamping. Without this the
+	// P2.5 gate silently no-ops on sync. Same ExtraData round-trip as the cert.
+	if b.StateFingerprint != "" {
+		if rec.ExtraData == nil {
+			rec.ExtraData = map[string]any{}
+		}
+		rec.ExtraData["state_fingerprint"] = b.StateFingerprint
+	}
+
 	return rec
 }
 

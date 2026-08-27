@@ -162,6 +162,8 @@ const (
 	ContractPropagationProtocol protocol.ID = "/gossipnode/contract/1.0.0"
 	MaxContractHops             int         = 7
 	ContractPullProtocol        protocol.ID = "/gossipnode/contract/pull/1.0.0"
+	// ThebeSync (FastSync v4) protocol IDs live in the JMDN-FastSync module
+	// (thebesync.HeadProtocol / thebesync.GetBlocksProtocol), not here.
 )
 
 // Network addresses

@@ -15,7 +15,9 @@ import (
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
+	"gossipnode/thebesync"
 
+	fssync "github.com/JupiterMetaLabs/JMDN-FastSync/thebesync"
 	"github.com/JupiterMetaLabs/ion"
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -199,6 +201,14 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
 	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
 	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
+	// ThebeSync (FastSync v4) read-only serving handlers: head handshake + bounded
+	// GetBlocks range serve. The engine lives in the JMDN-FastSync module (opaque
+	// blocks); jmdn supplies the block store via thebesync.Provider. Safe to
+	// register unconditionally — read-only, answers explicit peer requests only.
+	// See docs/THEBESYNC-DESIGN.md.
+	thebeSyncServer := &fssync.Server{Provider: thebesync.Provider{}}
+	h.SetStreamHandler(fssync.HeadProtocol, thebeSyncServer.HeadHandler)
+	h.SetStreamHandler(fssync.GetBlocksProtocol, thebeSyncServer.GetBlocksHandler)
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	})

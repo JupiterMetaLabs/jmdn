@@ -52,6 +52,16 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// StateFingerprint: hydrate the persisted P2.5 fingerprint so a synced/read
+	// block carries it and ProcessBlockTransactions compares (halts on divergence)
+	// rather than re-stamping. Absent on blocks stored before P2 persistence.
+	stateFingerprint := ""
+	if sf, ok := r.ExtraData["state_fingerprint"]; ok {
+		if s, ok2 := sf.(string); ok2 {
+			stateFingerprint = s
+		}
+	}
+
 	return &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
@@ -66,6 +76,7 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		GasUsed:              r.GasUsed,
 		ExtraData:            extraData,
 		CommitteeCertificate: committeeCert,
+		StateFingerprint:     stateFingerprint,
 		Transactions:         []config.Transaction{},
 	}, nil
 }

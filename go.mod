@@ -4,6 +4,10 @@ go 1.26.0
 
 replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
 
+// Local dev against the ThebeSync (FastSync v4) branch. Remove/replace with a
+// pinned pseudo-version once feat/thebesync-v4 is pushed and tagged.
+replace github.com/JupiterMetaLabs/JMDN-FastSync => ../JMDN-FastSync
+
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260731093426-d27320b363ba
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
