@@ -21,9 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	fastsync_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-
-	"gossipnode/internal/merkle"
 	"gossipnode/seednode"
 )
 
@@ -66,10 +63,17 @@ type SeedReporter interface {
 // ReconcileFunc is called when the seednode says this node is out of sync.
 type ReconcileFunc func(ctx context.Context, goodPeers []PeerInfo) error
 
-// blockTimer is an optional interface for Fix 2 (propagation guard).
-// sync_struct in DB_OPs/Nodeinfo implements this; stubs may omit it.
-// If the type-assert fails the guard is silently skipped.
-type blockTimer interface {
+// ChainReporter supplies the periodic sync-report inputs from the local chain.
+// The host node implements it over its block store (see thebesync.ChainReporter).
+// The reported root is a 32-byte cumulative commitment identical across honest
+// nodes at the same height — the tip block's StateRoot
+// (StateRoot_n = Keccak256(StateRoot_{n-1} || BlockHash_n)) — an O(1) read that
+// replaces the retired O(N) Merkle-tree-over-block-hashes fingerprint.
+type ChainReporter interface {
+	// TipState returns the local tip height and its 32-byte state root.
+	TipState(ctx context.Context) (head uint64, root []byte, err error)
+	// LastBlockReceivedAt is the propagation-guard signal (Fix 2); a zero time
+	// disables the guard for that cycle.
 	LastBlockReceivedAt() time.Time
 }
 
@@ -128,8 +132,7 @@ type Status struct {
 
 // Monitor runs the periodic sync-check loop.
 type Monitor struct {
-	blockInfo    fastsync_types.BlockInfo
-	fingerprint  *merkle.Fingerprinter
+	reporter     ChainReporter
 	seedClient   SeedReporter
 	baseInterval time.Duration
 
@@ -175,11 +178,11 @@ type Monitor struct {
 
 // New creates a Monitor with production defaults.
 //
-//	blockInfo     — NodeInfo adapter (call NodeInfo.NewSyncStruct())
+//	reporter      — ChainReporter over the local chain (thebesync.ChainReporter{})
 //	seedReporter  — SeedReporter (use NewSeednodeReporter or a test stub)
 //	checkInterval — base reporting interval; 0 or < 1 min → 10 min default
 func New(
-	blockInfo fastsync_types.BlockInfo,
+	reporter ChainReporter,
 	seedReporter SeedReporter,
 	checkInterval time.Duration,
 ) *Monitor {
@@ -187,8 +190,7 @@ func New(
 		checkInterval = defaultBaseInterval
 	}
 	return &Monitor{
-		blockInfo:                  blockInfo,
-		fingerprint:                merkle.NewFingerprinter(merkle.DefaultFullRebuildEvery),
+		reporter:                   reporter,
 		seedClient:                 seedReporter,
 		baseInterval:               checkInterval,
 		currentInterval:            checkInterval,
@@ -294,23 +296,21 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 
 	// Fix 2: propagation guard — if a block was written recently, skip this cycle.
 	// The node may be mid-propagation; reporting a stale root causes a false out-of-sync.
-	if bt, ok := m.blockInfo.(blockTimer); ok {
-		last := bt.LastBlockReceivedAt()
-		if !last.IsZero() {
-			if since := time.Since(last); since < m.blockPropagationWindow {
-				log.Printf("[syncmonitor] skipping check — block received %v ago (propagation window %v)",
-					since.Round(time.Millisecond), m.blockPropagationWindow)
-				return m.getStatusLocked()
-			}
+	last := m.reporter.LastBlockReceivedAt()
+	if !last.IsZero() {
+		if since := time.Since(last); since < m.blockPropagationWindow {
+			log.Printf("[syncmonitor] skipping check — block received %v ago (propagation window %v)",
+				since.Round(time.Millisecond), m.blockPropagationWindow)
+			return m.getStatusLocked()
 		}
 	}
 
 	start := time.Now()
 
-	// ── 1. Build local Merkle root (incremental — folds only new blocks) ──────
-	result, err := m.fingerprint.Compute(ctx, m.blockInfo)
+	// ── 1. Read local tip height + cumulative StateRoot (O(1), Thebe-native) ──
+	head, root, err := m.reporter.TipState(ctx)
 	if err != nil {
-		log.Printf("[syncmonitor] Merkle build failed: %v", err)
+		log.Printf("[syncmonitor] tip-state read failed: %v", err)
 		st := Status{
 			Error:           err.Error(),
 			LastCheckedAt:   time.Now(),
@@ -321,7 +321,7 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 	}
 
 	// ── 2. Report to seednode ─────────────────────────────────────────────────
-	syncSt, err := m.seedClient.ReportBlockState(ctx, result.Head, result.Root[:])
+	syncSt, err := m.seedClient.ReportBlockState(ctx, head, root)
 	if err != nil {
 		// Fix 5: seednode grace period — short outages keep IsSynced=true;
 		// extended unreachability flips SeednodeUnreachable and clears IsSynced.
@@ -335,8 +335,8 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 				m.consecutiveSeednodeErrors, m.seednodeGracePeriod, err)
 		}
 		st := Status{
-			LocalHead:            result.Head,
-			MerkleRoot:           hex.EncodeToString(result.Root[:]),
+			LocalHead:            head,
+			MerkleRoot:           hex.EncodeToString(root),
 			IsSynced:             !unreachable,
 			SeednodeUnreachable:  unreachable,
 			ConsecutiveOutOfSync: m.consecutiveOutOfSync,
@@ -357,8 +357,8 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 	}
 
 	st := Status{
-		LocalHead:       result.Head,
-		MerkleRoot:      hex.EncodeToString(result.Root[:]),
+		LocalHead:       head,
+		MerkleRoot:      hex.EncodeToString(root),
 		SequencerHead:   syncSt.SequencerHead,
 		SequencerRoot:   hex.EncodeToString(syncSt.SequencerRoot),
 		GoodPeers:       goodPeerIDs,
@@ -379,10 +379,10 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 		// Fix 4: block-delta filter — a small head gap is almost certainly
 		// propagation lag (block in flight), not a genuine divergence.
 		seqHead := syncSt.SequencerHead
-		if seqHead > result.Head && seqHead-result.Head <= m.propagationToleranceBlocks {
-			delta := seqHead - result.Head
+		if seqHead > head && seqHead-head <= m.propagationToleranceBlocks {
+			delta := seqHead - head
 			log.Printf("[syncmonitor] propagation lag: local=%d seq=%d delta=%d ≤ %d — not counting as divergence",
-				result.Head, seqHead, delta, m.propagationToleranceBlocks)
+				head, seqHead, delta, m.propagationToleranceBlocks)
 			st.IsSynced = true
 			st.Message = fmt.Sprintf("propagation lag: behind by %d block(s)", delta)
 			m.setStatus(st)
@@ -397,7 +397,7 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 		m.adjustInterval(false)
 
 		log.Printf("[syncmonitor] out of sync (%d/%d consecutive), head=%d seq=%d",
-			m.consecutiveOutOfSync, m.outOfSyncThreshold, result.Head, seqHead)
+			m.consecutiveOutOfSync, m.outOfSyncThreshold, head, seqHead)
 
 		if m.consecutiveOutOfSync >= m.outOfSyncThreshold {
 			m.triggerReconcile(syncSt.GoodPeers)

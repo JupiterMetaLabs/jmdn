@@ -43,6 +43,7 @@ import (
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -112,7 +113,10 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	globalPubSub *Pubsub.StructGossipPubSub
+	// legacyFastsyncServer retains the FastsyncV2 /fastsync/v1 serving engine when
+	// serve_legacy=true (sequencer only), keeping its stream handlers alive.
+	legacyFastsyncServer *FastsyncV2.FastsyncV2
+	globalPubSub         *Pubsub.StructGossipPubSub
 )
 
 // Global connection pools
@@ -1382,6 +1386,20 @@ func main() {
 		log.Info().Msg("[Sync] disabled by config — sync monitor not started")
 	}
 
+	// Legacy interop: register the retired FastsyncV2 (/fastsync/v1) SERVING
+	// handlers so legacy ImmuDB + old-FastSync nodes can still pull. Set
+	// serve_legacy=true ONLY on the sequencer — the sole authoritative source
+	// legacy nodes sync from. Serve-only: this path never pulls. The engine object
+	// is retained so its stream handlers stay live for the node's lifetime.
+	if cfg.FastSync.ServeLegacy {
+		if legacyServer, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, cfg.FastSync.SyncTimeout); err != nil {
+			log.Error().Err(err).Msg("[FastSync-legacy] failed to register /fastsync/v1 serving handlers")
+		} else {
+			legacyFastsyncServer = legacyServer
+			log.Info().Msg("[FastSync-legacy] serving /fastsync/v1 for legacy ImmuDB nodes (sequencer)")
+		}
+	}
+
 	// SeedMonitor: every node with sync enabled reports its Merkle root to the
 	// seednode periodically (outbound only, no DB writes ever).
 	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
@@ -1396,9 +1414,10 @@ func main() {
 			if err != nil {
 				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
 			} else {
-				blockInfo := NodeInfo.NewSyncStruct()
 				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
-				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
+				// Thebe-native reporter: reports (tip height, tip StateRoot) — an
+				// O(1) cumulative commitment — instead of the retired MMR fingerprint.
+				syncMonitor = syncmonitor.New(thebesync.ChainReporter{}, reporter, cfg.FastSync.SyncCheckInterval)
 
 				// Only wire reconciliation on non-sequencer nodes.
 				// The sequencer sets enable_catchup=false — it is the authoritative source,

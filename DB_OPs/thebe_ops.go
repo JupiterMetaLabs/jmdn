@@ -22,6 +22,22 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// lastBlockStoredUnixNano records when the most recent block was durably stored
+// (StoreZKBlock success). The sync monitor reads it as a propagation guard so a
+// periodic sync-report does not race an in-flight block write. Thebe-native
+// replacement for the old FastsyncV2 sync-struct timestamp.
+var lastBlockStoredUnixNano atomic.Int64
+
+// LastBlockStoredAt returns the wall-clock time of the most recent successful
+// StoreZKBlock, or the zero time if no block has been stored this process.
+func LastBlockStoredAt() time.Time {
+	ns := lastBlockStoredUnixNano.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
 // ========================================
 // BLOCK-LEVEL OPERATIONS (from immuclient.go)
 // ========================================
@@ -164,6 +180,8 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	for addr := range senders {
 		_ = h.RefreshAccountTxStats(ctx, addr) // best-effort; don't fail block write
 	}
+	// Record the store time for the sync monitor's propagation guard.
+	lastBlockStoredUnixNano.Store(time.Now().UnixNano())
 	return nil
 }
 

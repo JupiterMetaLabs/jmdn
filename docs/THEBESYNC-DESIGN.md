@@ -271,6 +271,12 @@ supplies `Provider`/`Applier` + the hybrid verify/apply. P-cert and P2-persisten
    dependency remains, still used by `internal/merkle`, `internal/syncmonitor`, and
    `DB_OPs/Nodeinfo` for the seednode Merkle-root reporting — dropping it means porting the
    monitor's reporting off the old library (separate follow-up).
+   **Update:** the sync monitor now reports the tip block's `StateRoot` (O(1) cumulative
+   commitment) via a Thebe-native `ChainReporter`, replacing the O(N) MMR fingerprint. This
+   orphaned `internal/merkle` entirely (no importers) and removed `fastsync_types` from the
+   monitor. The old `JMDN-FastSync` dep now survives only through `DB_OPs/Nodeinfo` (the account-
+   sync worker + redis streamer); once those are ported/retired, `internal/merkle` +
+   `DB_OPs/Nodeinfo` can be deleted and the dependency dropped via `go mod tidy`.
 6. **P5 — validate + soak:** the `local-thebesync-gate/catchup_gate.sh` harness drives a real
    `catchup` between two nodes and asserts B is byte-identical to A (tip, block hashes, balances),
    including a negative (perturbed peer → P2.5 halt) check. Then multi-node soak (3–5 nodes).
@@ -278,6 +284,40 @@ supplies `Provider`/`Applier` + the hybrid verify/apply. P-cert and P2-persisten
 Each phase is host-built (`CGO_ENABLED=1 go build ./...`) and gated on the 2-node harness.
 
 ---
+
+## 10.5 Legacy interop (ImmuDB + old FastSync nodes)
+
+The network will run a few legacy nodes still on ImmuDB + the old `/fastsync/v1`
+Merkle-bisection engine. They must keep syncing; policy is **they sync only from the sequencer**.
+
+- **Sequencer (ThebeDB, authoritative)** dual-serves: `/fastsync/v1` (legacy) **and** `/fastsync/v4`
+  (ThebeSync). It pulls nothing.
+- **New nodes (ThebeDB)** serve + pull `/fastsync/v4` only.
+- **Legacy nodes (ImmuDB)** pull `/fastsync/v1` from the sequencer only.
+
+Implementation: a `sync.serve_legacy` flag (default false) set **only on the sequencer** re-registers
+the FastsyncV2 serving handlers (`FastsyncV2.NewFastsyncV2`, serve-only — never pulls). New nodes leave
+it false. The old catch-up *client* stays retired everywhere; only the *server* is restored, and only on
+the sequencer. This keeps the old `JMDN-FastSync` dependency in the tree until the last legacy node is
+retired, at which point `serve_legacy` and the FastsyncV2 package can be removed for good.
+
+**Constraint:** legacy nodes are frozen — they cannot be updated — so 100% of the compatibility burden
+is on the sequencer's serving path.
+
+**Audit finding (verified):** `git diff d27320b363ba..HEAD` on the JMDN-FastSync branch touches ONLY the
+new `thebesync/` files — zero changes to protocol IDs, the 15 protos, the MMR/merkletree, the serving
+routers, or messaging/auth/transport. So serving legacy `/fastsync/v1` from the ThebeSync branch is
+byte-identical, on every wire surface, to serving from the commit the fleet already pins
+(`d27320b363ba`); the `replace` directive introduces no legacy-wire drift. This is NOT a "did we break
+the protocol" risk — the protocol is unchanged.
+
+**Two residual checks (neither is protocol drift):**
+1. *Operator fact:* confirm the frozen legacy nodes were deployed wire-compatible with `d27320b363ba`
+   — `git diff <legacy_commit> d27320b363ba -- common/proto common/types/constants merkletree` (empty = ok).
+2. *Adapter fidelity (the real unknown):* the unchanged protocol is now fed from ThebeDB via the
+   `DB_OPs/Nodeinfo` adapter; the only open question is whether it supplies the correct block hashes in
+   the correct order so the legacy node's MMR bisection converges. Gate legacy rollout on an end-to-end
+   test: one legacy ImmuDB node fully syncing from the ThebeDB sequencer.
 
 ## 11. Risks
 

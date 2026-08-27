@@ -116,6 +116,7 @@ func DefaultConfig() NodeConfig {
 			Enabled:           false,
 			EnablePulling:     true,
 			EnableCatchup:     false,
+			ServeLegacy:       false, // set true ONLY on the sequencer (legacy ImmuDB nodes)
 			SyncTimeout:       10 * time.Minute,
 			CatchUpFromBlock:  0,
 			SyncCheckInterval: 10 * time.Minute,

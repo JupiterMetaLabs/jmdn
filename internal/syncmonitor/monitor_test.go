@@ -2,10 +2,13 @@ package syncmonitor_test
 
 // monitor_test.go — integration-level tests for the SyncMonitor.
 //
-// Tests without live infrastructure using:
-//   - stubBlockInfo: minimal BlockInfo with a fixed head + hashes.
-//   - stubBlockInfoWithTimer: adds LastBlockReceivedAt() for Fix 2 tests.
+// Uses in-process stubs (no live infrastructure):
+//   - stubReporter: a ChainReporter with a fixed tip height + optional
+//     last-block-received time (for the Fix 2 propagation-guard tests).
 //   - stubSeedClient: in-process stand-in for the seednode gRPC client.
+//
+// The monitor's sync decision is driven by the seednode's IsSynced + head delta,
+// not by the reported root value, so the stub's root is opaque here.
 //
 // Existing tests use WithOutOfSyncThreshold(1) to preserve single-TriggerCheck
 // behaviour; the default threshold (2) is exercised in TestFix3_*.
@@ -17,74 +20,25 @@ import (
 	"testing"
 	"time"
 
-	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
-	fastsync_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-	merkletree "github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
-
 	"gossipnode/internal/syncmonitor"
 )
 
-// ─── stub BlockInfo ───────────────────────────────────────────────────────────
+// ─── stub ChainReporter ────────────────────────────────────────────────────────
 
-type stubBlockInfo struct {
-	head   uint64
-	hashes [][]byte
-}
-
-func (s *stubBlockInfo) GetBlockNumber() uint64 { return s.head }
-func (s *stubBlockInfo) GetBlockDetails() fastsync_types.PriorSync {
-	return fastsync_types.PriorSync{Blocknumber: s.head}
-}
-func (s *stubBlockInfo) AUTH() fastsync_types.AUTHHandler                         { return nil }
-func (s *stubBlockInfo) NewBlockHeaderIterator() fastsync_types.BlockHeader       { return nil }
-func (s *stubBlockInfo) NewBlockNonHeaderIterator() fastsync_types.BlockNonHeader { return nil }
-func (s *stubBlockInfo) NewHeadersWriter() fastsync_types.WriteHeaders            { return nil }
-func (s *stubBlockInfo) NewDataWriter() fastsync_types.WriteData                  { return nil }
-func (s *stubBlockInfo) NewAccountManager() fastsync_types.AccountManager         { return nil }
-func (s *stubBlockInfo) NewBlockIterator(start, end uint64, batchSize int) fastsync_types.BlockIterator {
-	return &stubBlockIter{info: s, cursor: start, end: end, batchSize: batchSize}
-}
-
-// stubBlockInfoWithTimer extends stubBlockInfo with LastBlockReceivedAt
-// so Fix 2 (propagation guard) tests can control the timestamp.
-type stubBlockInfoWithTimer struct {
-	stubBlockInfo
+type stubReporter struct {
+	head         uint64
+	root         []byte
 	lastReceived time.Time
 }
 
-func (s *stubBlockInfoWithTimer) LastBlockReceivedAt() time.Time { return s.lastReceived }
-
-// ─── stub BlockIterator ───────────────────────────────────────────────────────
-
-type stubBlockIter struct {
-	info      *stubBlockInfo
-	cursor    uint64
-	end       uint64
-	batchSize int
+func (s *stubReporter) TipState(_ context.Context) (uint64, []byte, error) {
+	return s.head, s.root, nil
 }
+func (s *stubReporter) LastBlockReceivedAt() time.Time { return s.lastReceived }
 
-func (it *stubBlockIter) Next() ([]*fastsync_types.ZKBlock, error) {
-	if it.cursor > it.end {
-		return nil, nil
-	}
-	var batch []*fastsync_types.ZKBlock
-	for i := 0; i < it.batchSize && it.cursor <= it.end; i++ {
-		var bh [32]byte
-		if int(it.cursor) < len(it.info.hashes) {
-			copy(bh[:], it.info.hashes[it.cursor])
-		}
-		batch = append(batch, &fastsync_types.ZKBlock{
-			BlockNumber: it.cursor,
-			BlockHash:   bh,
-		})
-		it.cursor++
-	}
-	return batch, nil
-}
-func (it *stubBlockIter) Prev() ([]*fastsync_types.ZKBlock, error) { return nil, nil }
-func (it *stubBlockIter) Close()                                   {}
+var _ syncmonitor.ChainReporter = (*stubReporter)(nil)
 
-// ─── stub SeedReporter ───────────────────────────────────────────────────────
+// ─── stub seednode client ──────────────────────────────────────────────────────
 
 type stubSeedClient struct {
 	isSynced      bool
@@ -113,31 +67,6 @@ var _ syncmonitor.SeedReporter = (*stubSeedClient)(nil)
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func computeExpectedRoot(bi *stubBlockInfo) []byte {
-	if bi.head == 0 {
-		return nil
-	}
-	cfg := merkletree.Config{ExpectedTotal: bi.head + 1}
-	builder, err := merkletree.NewBuilder(cfg)
-	if err != nil {
-		return nil
-	}
-	for i := uint64(0); i <= bi.head; i++ {
-		var h merkletree.Hash32
-		if int(i) < len(bi.hashes) {
-			copy(h[:], bi.hashes[i])
-		}
-		if _, err := builder.Push(i, []merkletree.Hash32{h}); err != nil {
-			return nil
-		}
-	}
-	root, err := builder.Finalize()
-	if err != nil {
-		return nil
-	}
-	return root[:]
-}
-
 func goodPeer() syncmonitor.PeerInfo {
 	return syncmonitor.PeerInfo{PeerID: "12D3KooWFakePeer", Multiaddrs: []string{"/ip4/127.0.0.1/tcp/9999"}}
 }
@@ -146,7 +75,7 @@ func goodPeer() syncmonitor.PeerInfo {
 
 func TestSyncMonitor_OutOfSync(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 3, hashes: [][]byte{{1}, {2}, {3}, {4}}}
+	bi := &stubReporter{head: 3}
 	sc := &stubSeedClient{
 		isSynced: false, sequencerHead: 10, sequencerRoot: []byte{0xFF},
 		goodPeers: []syncmonitor.PeerInfo{goodPeer()},
@@ -183,9 +112,8 @@ func TestSyncMonitor_OutOfSync(t *testing.T) {
 
 func TestSyncMonitor_AlreadySynced(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 5, hashes: [][]byte{{1}, {2}, {3}, {4}, {5}, {6}}}
-	seqRoot := computeExpectedRoot(bi)
-	sc := &stubSeedClient{isSynced: true, sequencerHead: 5, sequencerRoot: seqRoot}
+	bi := &stubReporter{head: 5, root: []byte{0x01}}
+	sc := &stubSeedClient{isSynced: true, sequencerHead: 5, sequencerRoot: []byte{0x01}}
 	mon := syncmonitor.New(bi, sc, 0).WithOutOfSyncThreshold(1)
 
 	var reconcileCalled atomic.Bool
@@ -208,7 +136,7 @@ func TestSyncMonitor_AlreadySynced(t *testing.T) {
 
 func TestSyncMonitor_ConcurrentReconcilePrevented(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 2, hashes: [][]byte{{0xAA}, {0xBB}, {0xCC}}}
+	bi := &stubReporter{head: 2}
 	sc := &stubSeedClient{
 		isSynced:  false,
 		goodPeers: []syncmonitor.PeerInfo{goodPeer()},
@@ -250,7 +178,7 @@ func TestFix1_StartupJitter(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		i := i
-		bi := &stubBlockInfo{head: 1, hashes: [][]byte{{byte(i)}, {byte(i + 1)}}}
+		bi := &stubReporter{head: 1}
 		sc := &stubSeedClient{isSynced: true}
 		mon := syncmonitor.New(bi, sc, interval)
 		mon.SetReconcileFunc(func(_ context.Context, _ []syncmonitor.PeerInfo) error { return nil })
@@ -270,9 +198,6 @@ func TestFix1_StartupJitter(t *testing.T) {
 	if diff < 0 {
 		diff = -diff
 	}
-	// With random jitter over [0, 200ms), two independent monitors should rarely
-	// fire within 5ms of each other. We assert they don't fire at the exact same time.
-	// (This is a probabilistic test; flake probability ≈ 5/200 = 2.5%.)
 	if diff < 5*time.Millisecond && !fires[0].IsZero() && !fires[1].IsZero() {
 		t.Logf("jitter diff=%v — monitors may have fired simultaneously (low-probability flake)", diff)
 	}
@@ -282,19 +207,15 @@ func TestFix1_StartupJitter(t *testing.T) {
 
 func TestFix2_PropagationGuardSkipsCheck(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfoWithTimer{
-		stubBlockInfo: stubBlockInfo{head: 5, hashes: [][]byte{{1}, {2}, {3}, {4}, {5}, {6}}},
-		lastReceived:  time.Now(), // block arrived just now — within propagation window
-	}
+	bi := &stubReporter{head: 5}
 	sc := &stubSeedClient{isSynced: true}
 	mon := syncmonitor.New(bi, sc, 0).WithOutOfSyncThreshold(1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// First check primes the lastStatus (no prior status → propagation guard returns zero Status).
-	// Set a known prior status by running a check with an old timestamp first.
-	bi.lastReceived = time.Now().Add(-time.Hour) // old — guard passes
+	// First check primes lastStatus with the guard passing (old timestamp).
+	bi.lastReceived = time.Now().Add(-time.Hour)
 	first := mon.TriggerCheck(ctx)
 	if first.Error != "" {
 		t.Fatalf("setup check failed: %s", first.Error)
@@ -309,7 +230,6 @@ func TestFix2_PropagationGuardSkipsCheck(t *testing.T) {
 	if callsAfter != callsBefore {
 		t.Fatalf("expected seednode NOT called during propagation window, got %d additional calls", callsAfter-callsBefore)
 	}
-	// Returned status should be the previous (first) status, not a fresh one.
 	if skipped.LastCheckedAt != first.LastCheckedAt {
 		t.Fatalf("expected propagation-guard skip to return previous status (LastCheckedAt=%v), got %v",
 			first.LastCheckedAt, skipped.LastCheckedAt)
@@ -320,7 +240,7 @@ func TestFix2_PropagationGuardSkipsCheck(t *testing.T) {
 
 func TestFix3_ConsecutiveThresholdGatesReconcile(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 3, hashes: [][]byte{{1}, {2}, {3}, {4}}}
+	bi := &stubReporter{head: 3}
 	sc := &stubSeedClient{
 		isSynced:      false,
 		sequencerHead: 10,
@@ -366,7 +286,7 @@ func TestFix3_ConsecutiveThresholdGatesReconcile(t *testing.T) {
 
 func TestFix4_BlockDeltaFilterPropagationLag(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 5, hashes: [][]byte{{1}, {2}, {3}, {4}, {5}, {6}}}
+	bi := &stubReporter{head: 5}
 	sc := &stubSeedClient{
 		isSynced:      false,
 		sequencerHead: 6, // delta = 1, within propagation tolerance of 1
@@ -389,7 +309,6 @@ func TestFix4_BlockDeltaFilterPropagationLag(t *testing.T) {
 	if !st.IsSynced {
 		t.Fatal("expected IsSynced=true for propagation lag (delta ≤ toleranceBlocks)")
 	}
-	// ConsecutiveOutOfSync must NOT increment for a lag-only mismatch.
 	if st.ConsecutiveOutOfSync != 0 {
 		t.Fatalf("expected ConsecutiveOutOfSync=0 for propagation lag, got %d", st.ConsecutiveOutOfSync)
 	}
@@ -403,7 +322,7 @@ func TestFix4_BlockDeltaFilterPropagationLag(t *testing.T) {
 
 func TestFix5_SeednodeGracePeriod(t *testing.T) {
 	t.Parallel()
-	bi := &stubBlockInfo{head: 3, hashes: [][]byte{{1}, {2}, {3}, {4}}}
+	bi := &stubReporter{head: 3}
 	sc := &stubSeedClient{err: errors.New("connection refused")}
 	// Default grace period is 3.
 	mon := syncmonitor.New(bi, sc, 0)
@@ -442,17 +361,4 @@ func TestFix5_SeednodeGracePeriod(t *testing.T) {
 	if reconcileFired.Load() {
 		t.Fatal("ReconcileFunc must NOT fire when seednode is unreachable")
 	}
-}
-
-// ─── Satisfy interfaces ───────────────────────────────────────────────────────
-
-var _ fastsync_types.BlockHeader = (*stubBlockHeader)(nil)
-
-type stubBlockHeader struct{}
-
-func (s *stubBlockHeader) GetBlockHeaders(blocknumbers []uint64) ([]*blockpb.Header, error) {
-	return nil, nil
-}
-func (s *stubBlockHeader) GetBlockHeadersRange(start, end uint64) ([]*blockpb.Header, error) {
-	return nil, nil
 }

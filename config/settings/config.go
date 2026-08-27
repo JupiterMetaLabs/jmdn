@@ -360,6 +360,13 @@ type FastSyncSettings struct {
 	// Requires enable_pulling=true. Never set on the sequencer.
 	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
 
+	// ServeLegacy registers the retired FastsyncV2 (/fastsync/v1 Merkle-bisection)
+	// SERVING handlers so legacy ImmuDB + old-FastSync nodes can still sync. Set
+	// TRUE only on the sequencer (the sole authoritative source legacy nodes pull
+	// from); new ThebeDB nodes use ThebeSync (/fastsync/v4) and leave this false.
+	// Independent of Enabled/EnablePulling — it is serve-only and never pulls.
+	ServeLegacy bool `mapstructure:"serve_legacy" yaml:"serve_legacy"`
+
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.
 	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
