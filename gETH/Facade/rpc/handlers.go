@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"time"
 
 	"encoding/json"
 
@@ -19,6 +20,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/txstatus"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -435,7 +437,52 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
+		if tx == nil {
+			// Unknown hash. eth_getTransactionByHash is specified to return
+			// null, not an error — an error makes wallets and libraries treat
+			// the call as a transport failure and retry, instead of concluding
+			// the transaction is not known. marshalTx would dereference tx, so
+			// this must short-circuit before it.
+			resp, _ := finish(req, nil, nil)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
 		resp, _ := finish(req, marshalTx(tx, handler.service.GetChainIDValue()), nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
+
+	case "jmdt_getTransactionStatus":
+		// Non-standard method, deliberately. Rich pending state cannot go on
+		// eth_getTransactionByHash (which has a fixed response shape) and MUST
+		// NOT go on eth_getTransactionReceipt (where a non-null receipt is read
+		// as proof of mining). jmdn already has non-standard precedent with
+		// eth_getTransactionsByAddress, so this fits the existing surface.
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx hash")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		hash := mustString(req.Params[0])
+		if hash == "" {
+			resp, _ := invalidParams(req, "tx hash must be a string")
+			return resp, nil
+		}
+
+		status, err := handler.service.TxStatus(ctx, hash)
+		if errors.Is(err, txstatus.ErrDisabled) {
+			// -32601 (method not found) rather than a server error: from the
+			// caller's point of view this node does not offer the method.
+			resp := RespErr(req.ID, -32601, "jmdt_getTransactionStatus is not enabled on this node")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+
+		resp, _ := finish(req, marshalTxStatus(status), nil)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
@@ -804,7 +851,7 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 		"receiptsRoot":     "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
 		"transactionsRoot": "0x" + hex.EncodeToString(b.Header.TxnsRoot), // required by alloy/cast/viem
 		"logsBloom":        "0x" + hex.EncodeToString(b.Header.LogsBloom),
-		"extraData":    "0x" + hex.EncodeToString(b.Header.ExtraData),
+		"extraData":        "0x" + hex.EncodeToString(b.Header.ExtraData),
 
 		// Miner / sequencer address (ZKVMAddr in ZKBlock → Miner in BlockHeader)
 		"miner": "0x" + hex.EncodeToString(b.Header.Miner),
@@ -860,6 +907,53 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 	}
 
 	return result
+}
+
+// marshalTxStatus renders a resolved status for jmdt_getTransactionStatus.
+//
+// Field notes:
+//   - `status` is one of mined | queued | processing | failed | unknown.
+//   - `degraded` is the field a caller must not ignore. It means the resolver
+//     could not complete — a shard was unreachable, a deadline expired, a
+//     breaker was open. A degraded `unknown` is "we could not tell", NOT "this
+//     transaction does not exist", so a client should keep polling rather than
+//     conclude anything from it.
+//   - optional fields are omitted rather than emitted null, so a caller can tell
+//     "not applicable" from "known to be empty".
+func marshalTxStatus(res *txstatus.Result) map[string]any {
+	if res == nil {
+		// No result and no error should not happen, but if it does, the only
+		// safe rendering is an inconclusive unknown — never a clean one.
+		return map[string]any{
+			"status":   string(txstatus.StatusUnknown),
+			"source":   string(txstatus.SourceNone),
+			"degraded": true,
+			"detail":   "resolver returned no result",
+		}
+	}
+
+	out := map[string]any{
+		"hash":     res.Hash,
+		"status":   string(res.Status),
+		"source":   string(res.Source),
+		"degraded": res.Degraded,
+	}
+	if res.Detail != "" {
+		out["detail"] = res.Detail
+	}
+	if res.SubmittedAt != nil {
+		out["submitted_at"] = res.SubmittedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if res.MempoolNode != "" {
+		out["mempool_node"] = res.MempoolNode
+	}
+	if res.ShardID != nil {
+		out["shard_id"] = *res.ShardID
+	}
+	if res.Reason != "" {
+		out["reason"] = res.Reason
+	}
+	return out
 }
 
 func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {

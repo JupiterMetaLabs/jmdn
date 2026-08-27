@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/txstatus"
 	"math/big"
 )
 
@@ -21,8 +22,35 @@ type Service interface {
 	EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error)
 	GasPrice(ctx context.Context) (*big.Int, error) // or return base+tip separately
 	SendRawTx(ctx context.Context, rawHex string) (string, error)
+	// TxByHash returns a transaction by hash.
+	//
+	// When tx_status.pending_tx_by_hash is enabled it may also answer from the
+	// mempool, returning a transaction with nil BlockNumber/BlockHash/
+	// TransactionIndex — the standard Ethereum pending representation. In that
+	// mode a hash that is not known anywhere returns (nil, nil), which the RPC
+	// layer serialises as null per spec. With the flag off, behaviour is
+	// unchanged: a hash that is not in a block yields an error.
 	TxByHash(ctx context.Context, hash string) (*Types.Tx, error)
+
+	// ReceiptByHash returns a transaction receipt, or (nil, nil) when the
+	// transaction is not yet mined.
+	//
+	// This MUST stay null for anything not in a block, and no status feature
+	// changes that. Wallets and client libraries treat a non-null receipt as
+	// proof of mining and read its status field, so a synthesised receipt
+	// carrying status 0x0 would render a merely-queued transaction as FAILED,
+	// and one carrying a fabricated block number is worse. Rich pending state
+	// belongs on jmdt_getTransactionStatus, not here.
 	ReceiptByHash(ctx context.Context, hash string) (map[string]any, error)
+
+	// TxStatus resolves where a transaction is: mined, queued in the mempool,
+	// in flight, failed, or unknown. Returns txstatus.ErrDisabled when the
+	// feature is off, so a caller can tell that apart from a negative answer.
+	TxStatus(ctx context.Context, hash string) (*txstatus.Result, error)
+
+	// PendingTxByHash returns a queued mempool transaction with no block
+	// fields, or (nil, nil) when the hash is not queued or the feature is off.
+	PendingTxByHash(ctx context.Context, hash string) (*Types.Tx, error)
 	GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error)
 	GetCode(ctx context.Context, addr string, block *big.Int) (string, error)
 	FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error)
