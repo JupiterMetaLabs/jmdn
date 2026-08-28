@@ -5,6 +5,7 @@ package DB_OPs
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -62,6 +63,17 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// AccountNonces: hydrate the persisted canonical ART identities so a synced/read
+	// block carries them and ProcessBlockTransactions creates new accounts with the
+	// exact sequencer-assigned identity (no per-node recomputation). Absent on blocks
+	// stored before this persistence landed.
+	var accountNonces []config.AccountNonce
+	if an, ok := r.ExtraData["account_nonces"]; ok {
+		if s, ok2 := an.(string); ok2 && s != "" {
+			_ = json.Unmarshal([]byte(s), &accountNonces)
+		}
+	}
+
 	return &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
@@ -77,6 +89,7 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		ExtraData:            extraData,
 		CommitteeCertificate: committeeCert,
 		StateFingerprint:     stateFingerprint,
+		AccountNonces:        accountNonces,
 		Transactions:         []config.Transaction{},
 	}, nil
 }

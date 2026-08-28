@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -122,6 +123,22 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 			rec.ExtraData = map[string]any{}
 		}
 		rec.ExtraData["state_fingerprint"] = b.StateFingerprint
+	}
+
+	// AccountNonces: persist the canonical per-account ART identities the sequencer
+	// stamped (DB_OPs.EnrichBlockAccountNonces) so a block served on the sync path
+	// (ThebeSync) carries them and the receiver's ProcessBlockTransactions creates
+	// new accounts with the IDENTICAL identity — matching the gossip path, which
+	// reads the in-memory carried value. Without this, catch-up ships
+	// AccountNonces=nil and apply fails on the first new-account (contract-deploy)
+	// block. JSON string in ExtraData; same round-trip as the cert/fingerprint.
+	if len(b.AccountNonces) > 0 {
+		if rec.ExtraData == nil {
+			rec.ExtraData = map[string]any{}
+		}
+		if raw, err := json.Marshal(b.AccountNonces); err == nil {
+			rec.ExtraData["account_nonces"] = string(raw)
+		}
 	}
 
 	return rec

@@ -41,8 +41,17 @@ verify it, replay it**." No Merkle bisection, no account-set ART diff, no reconc
   hashes and `TxnsRoot` = SHA256 Merkle root, both recomputable from txs
   (`messaging.RecomputeBlockHashFromTxs`/`RecomputeTxnsRoot`); `StateRoot_n = Keccak256(StateRoot_{n-1}
   ‖ BlockHash_n)` (`stateRootChain`) — a state-root hash chain; genesis is the baked-in constant
-  `DB_OPs.GenesisBlockHash`. **The committee certificate is NOT persisted** — it rides on
-  `BlockMessage.Data["bls_results"]`, is verified once by `VerifyCertificate`, then dropped (see §4).
+  `DB_OPs.GenesisBlockHash`.
+- **Advisory `ZKBlock` fields must be `ExtraData`-persisted for sync fidelity (rule).** Three fields are
+  advisory (not consensus-hashed) and were originally live-path-only — they ride on the in-memory
+  gossip block and were dropped by `StoreZKBlock`, so a block *read back from storage and shipped by
+  ThebeSync* lost them, breaking catch-up. All three are now persisted via
+  `BlockRecord.ExtraData` (write in `toBlockRecord`, read in `blockRecordToZKBlock`):
+  `committee_certificate` (§4, cert re-verify), `state_fingerprint` (P2.5 halt), and
+  `account_nonces` (canonical ART identities — without them, catch-up fails on the first
+  new-account/contract-deploy block). **Any future advisory field the apply path reads must be added to
+  this ExtraData round-trip**, or ThebeSync (which serves from storage, not the in-memory block) will
+  ship it empty. The gossip path is unaffected because it carries the in-memory block directly.
 
 ---
 
