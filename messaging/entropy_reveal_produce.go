@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 	ic "github.com/libp2p/go-libp2p/core/crypto"
 
@@ -115,7 +116,7 @@ func SelfOnEntropyCommittee(epoch uint64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	members, err := SelectEntropyCommittee(epoch)
+	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
 	if err != nil {
 		return false, err
 	}

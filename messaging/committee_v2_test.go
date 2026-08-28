@@ -62,7 +62,7 @@ func cappedAlphabetically(t *testing.T, k int) []string {
 }
 
 func round(height, period uint64) RoundContext {
-	return RoundContext{Epoch: 421, PrevHash: []byte("parent-hash"), Height: height, Period: period}
+	return RoundContext{SelectionPeriod: 421, EntropyEpoch: 421, PrevHash: []byte("parent-hash"), Height: height, Period: period}
 }
 
 func ids(ms []committee.Member) []string {

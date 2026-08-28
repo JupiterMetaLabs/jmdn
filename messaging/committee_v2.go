@@ -78,9 +78,28 @@ const UniformSelectionWeight = 1.0
 // alone. PrevHash and Period are what make the draw un-grindable and make a
 // timed-out round re-draw, and neither is available inside VerifyCertificate
 // today - which is why the call sites must pass them in.
+// SelectionPeriod is the block-counted clock (EpochForHeight,
+// consensus.committee_epoch_blocks) that determines how often the buddy
+// candidate pool refreshes. Distinct from committee.EntropyEpoch
+// (slot-counted, EpochForSlot) — the two happen to both be called "epoch" in
+// casual conversation, but they have never been the same number and must not
+// become interchangeable by accident. See
+// docs/VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §14.
+type SelectionPeriod uint64
+
 type RoundContext struct {
-	// Epoch selects the entropy. At Stage 1 the SeedSource ignores it.
-	Epoch uint64
+	// SelectionPeriod selects the frozen validator-pool snapshot
+	// (committeeSnapshotFor) — the buddy committee's own clock, refreshed
+	// every consensus.committee_epoch_blocks blocks. Feeds ONLY the pool
+	// fetch, never entropy.
+	SelectionPeriod SelectionPeriod
+
+	// EntropyEpoch selects the entropy (committee.SeedSource.EpochEntropy) —
+	// always the slot-based clock (EpochForSlot), independent of
+	// SelectionPeriod. At Stage 1 the SeedSource (SaltSource) ignores it;
+	// Stage 2's real beacon does not, which is the whole reason these two
+	// fields must never collapse into one "Epoch" again.
+	EntropyEpoch committee.EntropyEpoch
 
 	// PrevHash is the PARENT block's hash (config.ZKBlock.PrevHash).
 	//
@@ -116,9 +135,10 @@ func RoundContextForBlock(b *config.ZKBlock) RoundContext {
 		return RoundContext{}
 	}
 	return RoundContext{
-		Epoch:    EpochForHeight(b.BlockNumber),
-		PrevHash: b.PrevHash.Bytes(),
-		Height:   b.BlockNumber,
+		SelectionPeriod: SelectionPeriod(EpochForHeight(b.BlockNumber)),
+		EntropyEpoch:    committee.EntropyEpoch(EpochForSlot(b.Slot)),
+		PrevHash:        b.PrevHash.Bytes(),
+		Height:          b.BlockNumber,
 		// Period is chain-derived via DefaultPeriodStore (M0,
 		// timeout_certificates.go): it advances only when a quorum-certified
 		// TimeoutCertificate lands for this height, never from a local guess.
@@ -210,16 +230,16 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 	if CommitteeV2Enabled && !seedAuthorityPinned() {
 		return nil, ErrLegacySourceUnderV2
 	}
-	snap, err := committeeSnapshotFor(rc.Epoch)
+	snap, err := committeeSnapshotFor(uint64(rc.SelectionPeriod))
 	if err != nil {
 		return nil, err
 	}
 
-	seed, err := committee.DeriveSeed(SeedSourceFor(rc.Epoch), committee.SeedInput{
-		Epoch:    rc.Epoch,
-		PrevHash: rc.PrevHash,
-		Height:   rc.Height,
-		Period:   rc.Period,
+	seed, err := committee.DeriveSeed(SeedSourceFor(rc.EntropyEpoch), committee.SeedInput{
+		EntropyEpoch: rc.EntropyEpoch,
+		PrevHash:     rc.PrevHash,
+		Height:       rc.Height,
+		Period:       rc.Period,
 	})
 	if err != nil {
 		return nil, err
@@ -358,8 +378,8 @@ func blsKeyBytes(hexKey string) []byte {
 // THIS IS THE STAGE-2 SEAM. Stage 1 is a configured salt. Stage 2 returns the
 // RANDAO+VDF beacon (committee.BeaconSource) and nothing else in this file, or
 // anywhere downstream, changes.
-func SeedSourceFor(epoch uint64) committee.SeedSource {
-	if beacon := activeBeacon(); beacon != nil && beacon.Has(epoch) {
+func SeedSourceFor(epoch committee.EntropyEpoch) committee.SeedSource {
+	if beacon := activeBeacon(); beacon != nil && beacon.Has(uint64(epoch)) {
 		return beacon
 	}
 	return committee.SaltSource{Salt: stage1Salt()}

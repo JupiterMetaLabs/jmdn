@@ -122,7 +122,7 @@ func EntropyCommitteeSeed(chainID, epoch uint64, entropyE []byte) committee.Seed
 // On success, the returned slice always has exactly EntropyCommitteeSize
 // members unless the eligible pool itself has fewer than that (CommitteeFor
 // seats everyone when k >= n — the same rule block committees follow).
-func SelectEntropyCommittee(epoch uint64) ([]committee.Member, error) {
+func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, error) {
 	beacon := activeBeacon()
 	if beacon == nil {
 		return nil, ErrNoBeaconInstalled
@@ -133,12 +133,12 @@ func SelectEntropyCommittee(epoch uint64) ([]committee.Member, error) {
 		return nil, fmt.Errorf("messaging: ENTROPY-%d unavailable (needed to seed epoch %d's entropy committee): %w", epoch, epoch, err)
 	}
 
-	snap, err := committeeSnapshotFor(epoch)
+	snap, err := committeeSnapshotFor(uint64(epoch))
 	if err != nil {
 		return nil, fmt.Errorf("messaging: committee snapshot for epoch %d: %w", epoch, err)
 	}
 
-	seed := EntropyCommitteeSeed(BLS_Signer.DomainChainID(), epoch, entropy)
+	seed := EntropyCommitteeSeed(BLS_Signer.DomainChainID(), uint64(epoch), entropy)
 
 	members, err := committee.CommitteeFor(seed, snap, EntropyCommitteeSize)
 	if err != nil {

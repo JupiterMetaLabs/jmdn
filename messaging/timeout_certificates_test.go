@@ -105,11 +105,11 @@ func TestFailedRoundAdvancesPeriodAndChangesCommittee(t *testing.T) {
 	snap := committee.Snapshot{Epoch: 0, Members: members}
 	prevHash := []byte("some-parent-block-hash-32-bytes")
 
-	seedAtPeriod0, err := committee.DeriveSeed(salt, committee.SeedInput{Epoch: 0, PrevHash: prevHash, Height: testHeight, Period: 0})
+	seedAtPeriod0, err := committee.DeriveSeed(salt, committee.SeedInput{EntropyEpoch: 0, PrevHash: prevHash, Height: testHeight, Period: 0})
 	if err != nil {
 		t.Fatalf("derive seed period 0: %v", err)
 	}
-	seedAtPeriod1, err := committee.DeriveSeed(salt, committee.SeedInput{Epoch: 0, PrevHash: prevHash, Height: testHeight, Period: newPeriod})
+	seedAtPeriod1, err := committee.DeriveSeed(salt, committee.SeedInput{EntropyEpoch: 0, PrevHash: prevHash, Height: testHeight, Period: newPeriod})
 	if err != nil {
 		t.Fatalf("derive seed period 1: %v", err)
 	}

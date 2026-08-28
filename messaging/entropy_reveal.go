@@ -62,6 +62,7 @@ package messaging
 import (
 	"sync"
 
+	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 	"github.com/rs/zerolog/log"
 
@@ -108,7 +109,7 @@ func entropyAccumulatorFor(epoch uint64) (*randao.Accumulator, error) {
 		return acc, nil
 	}
 
-	members, err := SelectEntropyCommittee(epoch)
+	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
 	if err != nil {
 		return nil, err
 	}
