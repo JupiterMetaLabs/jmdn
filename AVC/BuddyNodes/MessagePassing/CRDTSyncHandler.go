@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -745,13 +746,31 @@ func mergeLegacyVoteElement(listenerNode *AVCStruct.BuddyNode, votePeerIDStr str
 // is already encoded in the element string itself and is what
 // votes.TallyBlock authenticates against later.
 //
-// Deliberately does NOT apply the compaction watermark. That gate does not
-// exist yet on the v2 engine (Watermark.Set is first called in Stage 6); a
-// merge writer that checked it today would be adding a permanently-false
-// condition, not real protection. See the LLD's Stage 6 section.
+// A8-1 (docs/VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md): applies the same two
+// guards AddVote enforces on its own write path — the compaction watermark
+// and the per-peer ingest cap — which this merge path bypassed by writing
+// through avcdatalayer.Add directly instead of through AddVote. That bypass
+// predates Stage 6 (avc/crdt/votes.DefaultWatermark.ConvergeAndCompact,
+// wired live via vote_crdt_compaction.go), when the watermark genuinely
+// never advanced past 0 and the check really was a no-op; Stage 6 has since
+// landed, so a lagging or hostile peer's sync data can now resurrect votes
+// for a height ConvergeAndCompact already evaluated and deleted, and can
+// flood one peer's element count on a key with no bound. AddVote's own
+// signature still does not fit here (a votes:/votesig: element carries no
+// height of its own — it's implicit in the key — and CRDT sync delivers the
+// two keys as independent objects, not matched VoteRecord pairs), so the
+// checks are replicated at the same key/element granularity instead of
+// routing through AddVote itself.
 func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.ID, key string, rawData json.RawMessage) (merged int, err error) {
 	if listenerNode.VoteCRDTLayer == nil || listenerNode.VoteCRDTLayer.CRDTLayer == nil {
 		return 0, fmt.Errorf("v2 vote CRDT layer not available on this node")
+	}
+
+	if height, ok := avcvotes.HeightFromKey(key); ok && height <= avcvotes.DefaultWatermark.Current() {
+		// Expected, not a bug: a lagging peer replaying sync data for a
+		// height already converged and compacted. Same "discard at the
+		// write boundary" reasoning as AddVote's own ErrHeightCompacted.
+		return 0, nil
 	}
 
 	var remoteCRDT rawLWWSet
@@ -760,6 +779,13 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 	}
 
 	for element := range remoteCRDT.Adds {
+		peerID, _, found := strings.Cut(element, ":")
+		if found && avcvotes.CountElementsForPeer(listenerNode.VoteCRDTLayer, key, peerID) >= avcvotes.MaxElementsPerPeerPerBlock {
+			// Ingest cap reached for this peer on this key — same bound
+			// AddVote enforces, applied here since a merge can inject many
+			// elements at once, unlike AddVote's one-call-one-vote shape.
+			continue
+		}
 		if err := avcdatalayer.Add(listenerNode.VoteCRDTLayer, senderPeerID, key, element); err != nil {
 			logger().Info(context.Background(), "⚠️ Failed to add v2 vote element for key",
 				ion.String("args", fmt.Sprintf("⚠️ Failed to add v2 vote element for key %s: %v", key, err)))
