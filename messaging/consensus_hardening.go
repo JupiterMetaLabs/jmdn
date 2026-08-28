@@ -397,17 +397,95 @@ type CertificateResult struct {
 // EnforceCommitteeRegistry only controls whether votes from non-members are
 // filtered out. Turning enforcement off does NOT remove the 2f+1 requirement,
 // so a node with no committee source fails closed regardless.
+// authenticatedCommittee returns the FLEET-AGREED committee used as the quorum
+// DENOMINATOR n: the authenticated eligibility source trimmed ONLY by the
+// consensus.max_validators cap (deterministic, sorted by peer_id), WITHOUT the
+// operator-LOCAL block_buddy blocklist. So n is identical on every node
+// regardless of any node's local blocklist — the CON-12 fix. A local blocklist
+// removes a peer from the NUMERATOR (a non-voter) but its seat still counts here,
+// so blocking can only make quorum HARDER, never lower this node's Byzantine
+// threshold below the fleet's. FAIL CLOSED: an unset/failing/empty source errors.
+//
+// Legacy (JMDN_COMMITTEE_V2 off) path only — the v2 verifier derives n from the
+// seed-ranked selected committee (committee_v2.go) instead.
+func authenticatedCommittee() (map[string]string, error) {
+	committeeEligibilityMu.RLock()
+	fn := committeeEligibilityFn
+	committeeEligibilityMu.RUnlock()
+
+	if fn == nil {
+		return nil, fmt.Errorf("committee eligibility source not configured (fail closed): call messaging.SetCommitteeEligibilitySource at startup")
+	}
+	buddies, err := fn(0, false)
+	if err != nil {
+		return nil, fmt.Errorf("committee eligibility source failed: %w", err)
+	}
+	if len(buddies) == 0 {
+		return nil, fmt.Errorf("committee eligibility source returned an empty buddy set")
+	}
+
+	// Fleet-agreed set: normalize, but deliberately do NOT apply the local
+	// block_buddy blocklist (that would make n depend on this node's config).
+	committee := make(map[string]string, len(buddies))
+	for pid, blsPub := range buddies {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		committee[pid] = normalizeBLSPub(blsPub)
+	}
+	if len(committee) == 0 {
+		return nil, fmt.Errorf("committee eligibility source returned only empty peer ids (fail closed)")
+	}
+
+	// Fleet-uniform hard cap, sorted by peer_id so every node computes the SAME
+	// capped set and therefore the SAME threshold (0 = no cap).
+	if lim := committeeSizeLimit(); lim > 0 && len(committee) > lim {
+		ids := make([]string, 0, len(committee))
+		for pid := range committee {
+			ids = append(ids, pid)
+		}
+		sort.Strings(ids)
+		capped := make(map[string]string, lim)
+		for _, pid := range ids[:lim] {
+			capped[pid] = committee[pid]
+		}
+		committee = capped
+	}
+	return committee, nil
+}
+
 func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64) (CertificateResult, error) {
 	var res CertificateResult
 
-	committee, err := eligibleMembers()
+	// Denominator n: the FLEET-AGREED committee (capped, WITHOUT the local
+	// block_buddy blocklist), so the Byzantine threshold is identical on every node
+	// regardless of any node's local blocklist (CON-12). NOTE: intentionally NOT
+	// eligibleMembers(), which applies the blocklist and would let a local blocklist
+	// shrink n and diverge this node's threshold from the fleet.
+	quorumCommittee, err := authenticatedCommittee()
 	if err != nil {
 		// No authenticated committee => cannot compute a Byzantine threshold.
 		return res, err
 	}
-	n := len(committee)
+	n := len(quorumCommittee)
 
-	res.YesVotes = countEligibleYes(responses, blockHashHex, height, committee, EnforceCommitteeRegistry)
+	// Numerator: the denominator MINUS this node's local block_buddy blocklist, so a
+	// blocked peer is a non-voter while its seat still sizes n above (numerator ⊆
+	// denominator). Blocking can only make quorum HARDER, never lower the bar.
+	blocked := blockedBuddies()
+	votingMembers := quorumCommittee
+	if len(blocked) > 0 {
+		votingMembers = make(map[string]string, len(quorumCommittee))
+		for pid, blsPub := range quorumCommittee {
+			if _, isBlocked := blocked[pid]; isBlocked {
+				continue
+			}
+			votingMembers[pid] = blsPub
+		}
+	}
+
+	res.YesVotes = countEligibleYes(responses, blockHashHex, height, votingMembers, EnforceCommitteeRegistry)
 	res.CommitteeSize = n
 	res.Threshold = ByzantineQuorum(n)
 	res.Reached = res.YesVotes >= res.Threshold
