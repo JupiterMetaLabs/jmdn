@@ -394,8 +394,7 @@ func BenchmarkVRF_SelectBuddy_100Nodes(b *testing.B) {
 	nodes := createTestNodes(100, 5)
 	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = selector.SelectBuddy(ctx, "node-orchestrator", nodes)
 	}
 }
@@ -411,8 +410,7 @@ func BenchmarkVRF_SelectMultipleBuddies_13of100(b *testing.B) {
 	nodes := createTestNodes(100, 5)
 	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = vrfSelector.SelectMultipleBuddies(ctx, "node-orchestrator", nodes, 13)
 	}
 }
@@ -428,8 +426,7 @@ func BenchmarkVRF_SelectMultipleBuddies_25of1000(b *testing.B) {
 	nodes := createTestNodes(1000, 10)
 	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = vrfSelector.SelectMultipleBuddies(ctx, "node-orchestrator", nodes, 25)
 	}
 }
@@ -446,8 +443,7 @@ func BenchmarkVRF_FisherYatesShuffle(b *testing.B) {
 	nodes := createTestNodes(100, 5)
 	seed := uint64(12345)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		nodesCopy := make([]Node, len(nodes))
 		copy(nodesCopy, nodes)
 		vrfSelector.fisherYatesShuffle(nodesCopy, seed)

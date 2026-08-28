@@ -41,7 +41,7 @@ var defaultCommitteePeerIDs = []string{"peerA", "peerB", "peerC", "peerD"}
 
 // defaultTestEligibility is the eligibility source used by the harness and
 // restored by per-test cleanups.
-func defaultTestEligibility() (map[string]string, error) {
+func defaultTestEligibility(_ uint64, _ bool) (map[string]string, error) {
 	// Bind each default committee peer_id to its minted member key, so the
 	// harness exercises the key binding (votes are signed with these same keys).
 	set := make(map[string]string, len(defaultCommitteePeerIDs))

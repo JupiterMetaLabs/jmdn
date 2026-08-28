@@ -20,6 +20,10 @@ func DefaultConfig() NodeConfig {
 			Mempool:           "",
 			Yggdrasil:         true,
 			HeartbeatInterval: 10,
+			// Fail-safe default: an operator who never sets this gets "mainnet",
+			// which keeps Features.AvcValidation off regardless of its own
+			// Enabled flag (see AvcValidationSettings doc comment).
+			Environment: "mainnet",
 		},
 		Ports: PortSettings{
 			API:        0, // disabled
@@ -107,6 +111,12 @@ func DefaultConfig() NodeConfig {
 		Features: FeatureSettings{
 			UseLegacyBFT: false,
 			GROTrack:     false,
+			// Off by default everywhere; opt in per-node via yaml, and only takes
+			// effect on a node whose Network.Environment is "testnet".
+			AvcValidation: AvcValidationSettings{
+				Enabled: false,
+				Mode:    "shadow",
+			},
 		},
 		FastSync: FastSyncSettings{
 			// DISABLED pending the ThebeDB FastSync redesign (log-shipping model).
@@ -154,8 +164,35 @@ func DefaultConfig() NodeConfig {
 			BlockBuddy:            nil,
 			SeedAuthorityBLSPub:   "",
 			CommitteeEpochSeconds: 3600,
-			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
-			P2P:                   1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
+			// Selection-epoch length in BLOCKS (messaging.EpochForHeight).
+			//
+			// SET TO 1 (2026-08-27, operator decision): every height is its own
+			// selection epoch, so the buddy-selection validator pool is frozen
+			// PER BLOCK rather than per multi-block epoch. A validator that
+			// registers between block N and N+1 is eligible for N+1's draw
+			// instead of waiting for an epoch boundary. Consensus-critical and
+			// must be identical network-wide - see config.go.
+			//
+			// !! REVISIT BEFORE STAGE-2 (RANDAO+VDF) BEACON INSTALL !!
+			// config.go's own contract for this field is "Stage 2 keys its
+			// beacon on this epoch", and messaging.SeedSourceFor does
+			// beacon.Has(epoch) with THIS epoch value. At 1, epoch == height,
+			// so a beacon that stores entropy under 50-slot entropy epochs
+			// (messaging.EpochForSlot, N=50) will miss on essentially every
+			// lookup and silently fall back to SaltSource - the wrong-entropy
+			// bug, not a loud failure. The fix is to split committee.SeedInput
+			// into EntropyEpoch (slot-based) and the selection period
+			// (block-based); until that lands, 1 is only safe while the beacon
+			// is NOT installed (i.e. JMDN_AVC_VDF_MODULUS_HEX /
+			// JMDN_AVC_VDF_DIFFICULTY_T unset - see Sequencer.InstallAVCBeaconFromEnv).
+			CommitteeEpochBlocks: 1,
+			// W1 pool pinning: OFF. Needs a source that can serve a past epoch,
+			// and a non-zero committee_epoch_blocks. See config.go.
+			RequirePinnedCommittee: false,
+			// Boundary bridging: permissive, as today. See config.go.
+			CommitteeStrictBoundary: false,
+			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
+			P2P:                     1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
 		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below

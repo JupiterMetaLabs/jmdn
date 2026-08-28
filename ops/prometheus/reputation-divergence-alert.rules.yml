@@ -1,0 +1,70 @@
+# A4-COMPLETION-LLD.md §3.4's ordering mechanism.
+#
+# NOT Design B. This does not fix the cross-node equivocation convergence
+# gap (§3.1) -- it operationalizes Design A's stated goal (§3.3): make the
+# gap OBSERVABLE, so the decision to build Design B (§3.4, specced but not
+# queued) is made from real recurring evidence, not a guess.
+#
+# What it watches: reputation_equivocations_reported_total{peer_id} is
+# incremented independently by EVERY node (metrics/reputation_metrics.go),
+# each against its own local CRDT view. In steady state, once gossip has
+# converged (the existing K=128 compaction buffer already gives this
+# seconds-vs-blocks of headroom), the sequencer's own count for a given
+# peer_id should match the highest count any buddy node has recorded for
+# that same peer_id. If the sequencer's count is LOWER and stays lower past
+# a real convergence window, that's the signal: the sequencer missed a fault
+# its own reputation.Default (and therefore Phase A4.2's seed push) never
+# saw -- exactly the §3.1 gap, now caught instead of assumed away.
+#
+# UNTESTED against a real Prometheus instance -- written from the metric
+# and label shapes that exist in code (confirmed: reputation_node_is_sequencer
+# gauge, reputation_equivocations_reported_total{peer_id} counter, both on
+# the same /metrics endpoint per node so they share Prometheus's own
+# auto-attached `instance` label), not run. Validate the `instance` label
+# actually matches your scrape config before trusting this to fire -- if
+# nodes are scraped through a proxy/relabeling setup that drops or rewrites
+# `instance`, the `on(instance)` join below needs to use whatever label
+# your setup actually preserves per-target instead.
+groups:
+  - name: reputation-cross-node-divergence
+    rules:
+      # Recording rule: this node's own reported-equivocation count, only
+      # for whichever single instance is currently the sequencer.
+      - record: reputation:equivocations_reported:sequencer
+        expr: |
+          reputation_equivocations_reported_total
+            * on(instance) group_left() (reputation_node_is_sequencer == 1)
+
+      # Recording rule: the highest count any node (sequencer or buddy) has
+      # reported for a given peer_id -- the fleet's shared ground truth.
+      - record: reputation:equivocations_reported:fleet_max
+        expr: |
+          max by (peer_id) (reputation_equivocations_reported_total)
+
+      - alert: ReputationEquivocationConvergenceGap
+        # `for: 30m` is a starting point, not a validated value -- pick
+        # something comfortably longer than this deployment's actual
+        # K=128-block wall-clock time (JMDN_VOTE_CRDT_COMPACT_K), so normal
+        # gossip-convergence lag never fires this, only a genuine stall.
+        expr: |
+          sum by (peer_id) (reputation:equivocations_reported:fleet_max)
+            - on(peer_id) group_left()
+              sum by (peer_id) (reputation:equivocations_reported:sequencer)
+            > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sequencer's reputation view lags a buddy's for peer {{ $labels.peer_id }}"
+          description: >-
+            At least one buddy node has recorded more equivocation reports
+            for peer {{ $labels.peer_id }} than the sequencer's own
+            reputation.Default has, for over 30 minutes. Per
+            A4-COMPLETION-LLD.md §3.1/§3.4: this is the trigger condition
+            for evaluating Design B (evidence-based equivocation reporting,
+            specced in §3.4) -- it means Design A's assumption (K-buffer
+            convergence is fast enough that this never happens in practice)
+            has been observed to not hold, at least once, for this peer.
+            Not itself proof the seed's peer.Weights value for this peer is
+            wrong -- confirm by comparing this node's and the sequencer's
+            /metrics before deciding Design B is warranted.

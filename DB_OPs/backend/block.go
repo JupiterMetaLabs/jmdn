@@ -140,6 +140,52 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 			rec.ExtraData["account_nonces"] = string(raw)
 		}
 	}
+	// Slot/Period: persisted so a restarted node can recover its slot counter
+	// from the tip block instead of resetting to 0 - see
+	// messaging.SlotStore.SeedFromCommittedTip and
+	// docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8. Written unconditionally,
+	// including when both are legitimately 0 (genesis / first commit) - a
+	// value must always be present for the reseed to distinguish "no data
+	// persisted yet" from "this block's slot really is 0".
+	if rec.ExtraData == nil {
+		rec.ExtraData = map[string]any{}
+	}
+	rec.ExtraData["slot"] = b.Slot
+	rec.ExtraData["period"] = b.Period
+
+	// The remaining AVC consensus fields, added 2026-08-26. Slot/Period were
+	// persisted first because the slot-clock recovery needed them; the other
+	// six were left behind, and that gap turned out to be load-bearing in
+	// three separate places:
+	//
+	//   - PrevAggCert is blocker B1's own field. It rides the wire correctly
+	//     and every node re-verifies it live, but dropping it here means a
+	//     node replaying its own history — or fast-syncing from a peer, which
+	//     serves from these records — cannot reconstruct the fallback seed for
+	//     any epoch that fell back. "Persisted aggSig" was only ever true of
+	//     the in-memory path.
+	//   - VdfProof exists so a node that hasn't finished its own VDF
+	//     evaluation can take the millisecond verify path instead of the
+	//     ~20-minute one. Dropped here, a rejoining node always pays the full
+	//     evaluation, which is the exact cost the field was added to avoid.
+	//   - All six are covered by the M2b block hash
+	//     (Security.RecomputeBlockHashWithConsensusFields). A record that
+	//     loses them cannot be used to re-derive its own block's hash.
+	//
+	// Written unconditionally, nil and zero included, for the same reason
+	// slot/period are: a reader must be able to tell "this block genuinely
+	// carried no reveals" from "this record predates the fix". For the fold
+	// window that distinction is the difference between a real gap and an
+	// artifact, and a fold cannot be correct without it.
+	//
+	// Keys match each field's own JSON tag on config.ZKBlock, so the stored
+	// JSONB reads the same as the wire format.
+	rec.ExtraData["randao_reveals"] = b.RandaoReveals
+	rec.ExtraData["vdf_proof"] = b.VdfProof
+	rec.ExtraData["seed_epoch"] = b.SeedEpoch
+	rec.ExtraData["voting_snapshot_epoch"] = b.VotingSnapshotEpoch
+	rec.ExtraData["prev_agg_cert"] = b.PrevAggCert
+	rec.ExtraData["committee_snapshot_hash"] = b.CommitteeSnapshotHash
 
 	return rec
 }

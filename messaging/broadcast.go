@@ -152,6 +152,15 @@ func HandleBroadcastStream(stream network.Stream) {
 	if msg.Type == "vote_trigger" {
 		handleVoteTriggerBroadcast(msg)
 	}
+	// Timeout-certificate wiring (M0/§7.1c, timeout_gossip.go) — reuses this
+	// exact flood-broadcast transport with two new msg.Type values. Both
+	// handlers no-op unless TimeoutCertWiringEnabled is set.
+	if msg.Type == timeoutVoteBroadcastType {
+		handleTimeoutVoteBroadcast(getHostInstance(), msg)
+	}
+	if msg.Type == timeoutCertBroadcastType {
+		handleTimeoutCertificateBroadcast(getHostInstance(), msg)
+	}
 
 	// Only rebroadcast if we haven't reached max hops
 	if msg.Hops < config.MaxHops {
@@ -716,7 +725,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
 		// authenticated committee size (never a simple majority of whoever
 		// responded).
-		res, err := VerifyCertificate(blsResults, block.BlockHash.Hex(), block.BlockNumber)
+		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.BlockNumber,
+			RoundContextForBlock(block))
 		if err != nil {
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): committee eligibility source invalid", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
@@ -790,6 +800,35 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.String("error", err.Error()),
 			ion.Uint64("block_number", block.BlockNumber))
 	}
+
+	// M0.1 (Architecture §7.1) — fold this now-committed height into the
+	// live slot counter, using its OWN final Period (how many certified
+	// timeouts it burned before committing). Producer-side commit hook; see
+	// slot_store.go's header comment for the receiver-side twin and the
+	// documented live-only/no-persistence limitation.
+	DefaultSlotStore.AdvanceOnCommit(block.BlockNumber, block.Period)
+
+	// M4 §C (Architecture §4.2 Rule 2, §4.5) — fold whatever entropy-committee
+	// reveals this block declares into its epoch's Accumulator. See
+	// entropy_reveal.go's header comment for what this does and does not yet
+	// do (currently a no-op: block.RandaoReveals is always empty until §4.3's
+	// secret generator and §A/§F's beacon wiring exist).
+	foldBlockDeclaredReveals(block)
+
+	// M4 §D (Architecture §4.5 "Finalise() runs once per epoch at the
+	// cutoff slot") — finalise any epoch this block's own epoch proves is
+	// now closed, and notify Stage E (VDF sealing) for each one. See
+	// entropy_finalise.go's header for the interim-fallback override this
+	// applies and the genesis gap it does not yet solve. Must run after
+	// both hooks above: this block's own reveal and state root need to be
+	// folded in first.
+	// B1 — verify the parent's commit certificate and DERIVE its aggregate
+	// locally, then record it for the fallback fold. Runs BEFORE
+	// maybeFinaliseCompletedEpochs so a window slot recorded by this block
+	// is available to any epoch this same block finalises.
+	VerifyAndRecordPrevCert(block)
+
+	maybeFinaliseCompletedEpochs(block)
 
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.

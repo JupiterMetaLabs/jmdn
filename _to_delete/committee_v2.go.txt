@@ -1,0 +1,394 @@
+// Committee selection v2 - the wiring that removes F1, F2 and F5 from the live
+// path.
+//
+// # Rollout: this file is INERT until a flag is set
+//
+// Everything here is gated on JMDN_COMMITTEE_V2, which defaults to FALSE. With
+// the flag off, VerifyCertificateForRound delegates to the existing
+// VerifyCertificate and behaviour is byte-identical to today. That is
+// deliberate: the committee travels on the wire inside ConsensusMessage
+// (Sequencer/helper/buddynodes_operations.go:73), so old and new nodes running
+// different selection would exchange messages carrying different committees.
+//
+// This is F3. It is not a bug to fix in code - it is a rollout constraint. The
+// flag makes it a COORDINATED FLAG FLIP rather than a fork: ship the binary
+// everywhere with the flag off, verify, then flip the fleet together.
+//
+// # What each finding needed
+//
+//	F1  selection and the certificate drew from DIFFERENT sources, so at P > k
+//	    they seat different committees and votes are rejected -> halt.
+//	    FIX: SelectCommittee is the ONLY committee producer. Both the vote path
+//	    and the tally call it. There is no second query in this file.
+//
+//	F2  the alphabetical cap froze the voting set to the k first peer ids.
+//	    FIX: eligibleMembersUncapped + seed-ranked CommitteeFor. Determinism is
+//	    preserved - every node computes the same set - but it now rotates.
+//
+//	F5  the seed was Sprintf(nodeID, networkSalt): node-local, and with no
+//	    height it never changed.
+//	    FIX: seed = H(domain || entropy || prevHash || height || period). No node
+//	    identity, and PrevHash rather than the block under vote so a proposer
+//	    cannot grind its own jury.
+//
+// F4 is a placement decision, already taken: the pure functions live in the avc
+// module (github.com/JupiterMetaLabs/avc/committee), which jmdn already reaches
+// through the existing `replace ... => ../avc` directive. This file is the only
+// jmdn-side code, and it holds no algorithm - just adaptation.
+
+package messaging
+
+import (
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/JupiterMetaLabs/avc/committee"
+
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
+	"gossipnode/config/settings"
+)
+
+// CommitteeV2Enabled gates every behaviour change in this file.
+//
+// DEFAULT FALSE. Turning it on changes which peers vote, so it must be flipped
+// across the whole fleet together. See the rollout note above.
+var CommitteeV2Enabled = envOn("JMDN_COMMITTEE_V2", false)
+
+// UniformSelectionWeight is the weight given to every member.
+//
+// The signed snapshot (seednode/committee/contracts.go:106) carries peer_id and
+// bls_pub only - there is no weight field - and every peer in the live system
+// scores defaultSeedPeerSelectionScore = 0.7, so weighting is inert today and
+// uniform is the honest default.
+//
+// Do NOT compute per-peer weights here. Weights are a REPLICATED INPUT: if two
+// nodes disagree about a weight they seat different committees. When reputation
+// arrives it must travel inside the authenticated snapshot, signed alongside the
+// peer ids.
+const UniformSelectionWeight = 1.0
+
+// RoundContext is the per-round input selection needs beyond the eligible set.
+//
+// It exists because a committee cannot be derived from (blockHash, height)
+// alone. PrevHash and Period are what make the draw un-grindable and make a
+// timed-out round re-draw, and neither is available inside VerifyCertificate
+// today - which is why the call sites must pass them in.
+type RoundContext struct {
+	// Epoch selects the entropy. At Stage 1 the SeedSource ignores it.
+	Epoch uint64
+
+	// PrevHash is the PARENT block's hash (config.ZKBlock.PrevHash).
+	//
+	// It must NEVER be the hash of the block being voted on. A proposer able to
+	// stir the block under vote into the seed could re-roll its own block until
+	// the draw returned a jury it liked. This is F5.
+	PrevHash []byte
+
+	// Height is the block height.
+	Height uint64
+
+	// Period increments on each round timeout, so a stalled height re-draws
+	// instead of retrying the same members. Callers that do not yet track
+	// timeouts pass 0; see the migration note on VerifyCertificateForRound.
+	Period uint64
+}
+
+// ---------------------------------------------------------------------------
+// The single committee source
+// ---------------------------------------------------------------------------
+
+// SelectCommittee returns the committee seated for one round.
+//
+// This is the ONLY producer of a committee. The vote path and the tally both
+// call it, which is what makes F1 unreachable: there is no second source to
+// disagree with.
+//
+// It fails closed. Any error means no committee, and the caller must refuse the
+// block rather than fall back to an unauthenticated or differently-derived set.
+func SelectCommittee(rc RoundContext) ([]committee.Member, error) {
+	return SelectCommitteeWithSize(rc, committeeSizeLimit())
+}
+
+// ErrLegacySourceUnderV2 is returned when v2 selection is enabled but the
+// committee source is still the unauthenticated legacy one.
+//
+// This is a PRECONDITION, not a preference. Under the legacy source
+// eligibleMembers derives from PeerList.MainPeers, which derives from the
+// per-node VRF shuffle in jmdn/AVC/NodeSelection - a set the nodes already
+// disagree about. Seed-ranking it would order a different input on every node
+// and produce a different committee, which is the exact failure v2 exists to
+// remove. Garbage in.
+//
+// So v2 refuses to run without consensus.seed_authority_bls_pub pinned. Failing
+// closed here is far better than silently seeding from a divergent set.
+var ErrLegacySourceUnderV2 = errors.New(
+	"committee: JMDN_COMMITTEE_V2 requires consensus.seed_authority_bls_pub to be pinned " +
+		"(the legacy source derives from a per-node shuffle, so seed-ranking it would still diverge)")
+
+// SelectCommitteeWithSize is SelectCommittee with the committee size supplied
+// explicitly rather than read from consensus.max_validators.
+//
+// Exported so tests can exercise P > k without mutating global configuration.
+// Production calls SelectCommittee; k <= 0 means "no cap", which seats the whole
+// eligible set.
+func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error) {
+	if CommitteeV2Enabled && !seedAuthorityPinned() {
+		return nil, ErrLegacySourceUnderV2
+	}
+	snap, err := committeeSnapshotFor(rc.Epoch)
+	if err != nil {
+		return nil, err
+	}
+
+	seed, err := committee.DeriveSeed(SeedSourceFor(rc.Epoch), committee.SeedInput{
+		Epoch:    rc.Epoch,
+		PrevHash: rc.PrevHash,
+		Height:   rc.Height,
+		Period:   rc.Period,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if k <= 0 || k > len(snap.Members) {
+		// No cap configured, or the pool is not larger than the cap: seat
+		// everyone. This is today's shape (MaxValidators = 7 = pool size), where
+		// the draw is a determinism fix rather than a sampling one.
+		k = len(snap.Members)
+	}
+	return committee.CommitteeFor(seed, snap, k)
+}
+
+// committeeSnapshotFor builds the pure-package snapshot from the authenticated
+// eligible set, WITHOUT the alphabetical cap.
+//
+// Dropping the cap here is F2. The cap's purpose was to make every node compute
+// the same n and therefore the same threshold; seed-ranked selection preserves
+// that property exactly, and adds rotation the cap could never have.
+func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
+	eligible, err := eligibleMembersUncapped()
+	if err != nil {
+		return committee.Snapshot{}, err
+	}
+
+	ids := make([]string, 0, len(eligible))
+	for pid := range eligible {
+		ids = append(ids, pid)
+	}
+	// Canonical order before constructing the snapshot. CommitteeFor sorts
+	// internally too, but Go map iteration is randomised and this keeps the
+	// intermediate value stable for logging.
+	sort.Strings(ids)
+
+	members := make([]committee.Member, 0, len(ids))
+	for _, pid := range ids {
+		members = append(members, committee.Member{
+			PeerID: pid,
+			BLSPub: blsKeyBytes(eligible[pid]),
+			Weight: UniformSelectionWeight,
+		})
+	}
+	return committee.Snapshot{Epoch: epoch, Members: members}, nil
+}
+
+// blsKeyBytes decodes a bls_pub to raw bytes for the binding comparison, making
+// it independent of case and of any 0x prefix. A key that will not decode is
+// treated as ABSENT rather than as a mismatch, which preserves today's
+// behaviour under the legacy source (empty keys).
+func blsKeyBytes(hexKey string) []byte {
+	s := normalizeBLSPub(hexKey)
+	if s == "" {
+		return nil
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// SeedSourceFor returns the entropy source for an epoch.
+//
+// THIS IS THE STAGE-2 SEAM. Stage 1 is a configured salt. Stage 2 returns the
+// RANDAO+VDF beacon (committee.BeaconSource) and nothing else in this file, or
+// anywhere downstream, changes.
+func SeedSourceFor(epoch uint64) committee.SeedSource {
+	if beacon := activeBeacon(); beacon != nil && beacon.Has(epoch) {
+		return beacon
+	}
+	return committee.SaltSource{Salt: stage1Salt()}
+}
+
+// stage1Salt binds the salt to the pinned authority key when one is configured,
+// so two networks with different authorities cannot share a committee schedule.
+func stage1Salt() []byte {
+	salt := []byte("jmdt/committee/v1")
+	if settings.IsLoaded() {
+		if s := strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub); s != "" {
+			salt = append(salt, []byte("|"+strings.ToLower(s))...)
+		}
+	}
+	return salt
+}
+
+// beaconSource is the optional Stage-2 entropy source, wired at startup once
+// RANDAO+VDF is deployed. Nil means Stage 1.
+var beaconSource *committee.BeaconSource
+
+// SetBeaconSource installs the Stage-2 beacon. Call once at startup.
+func SetBeaconSource(b *committee.BeaconSource) { beaconSource = b }
+
+func activeBeacon() *committee.BeaconSource { return beaconSource }
+
+// DialTargetsForRound is the node-local view: the seated committee minus this
+// node. Selection is global and self-included; only dialling excludes self.
+// That split is the fix for FilterEligible (avc/nodeselection/.../filter.go:39),
+// which did both jobs in one function and made the eligible set node-local.
+func DialTargetsForRound(seated []committee.Member, selfPeerID string) []committee.Member {
+	return committee.DialTargets(seated, selfPeerID)
+}
+
+// ---------------------------------------------------------------------------
+// The tally
+// ---------------------------------------------------------------------------
+
+// blsVerifier adapts the production BLS verifier to committee.SigVerifier.
+//
+// CRITICAL - `bindings` is the ORIGINAL caller string, not a re-encoding.
+// VerifyForBlock feeds it straight into CanonicalVoteMessageV3, so it is hashed
+// into the signed message byte for byte. Decoding block.BlockHash.Hex() and
+// re-encoding it would change the message on any casing or prefix difference
+// and fail EVERY signature - a total halt, not a degraded mode.
+//
+// The original BLSresponse is preserved for the same reason at one remove: its
+// PubKey and Signature are hex-decoded rather than hashed, so casing is
+// harmless, but silently stripping a "0x" prefix would ACCEPT votes the current
+// code rejects. Behaviour must be identical, so the original is verified.
+type blsVerifier struct {
+	bindings string
+	orig     map[string]BLS_Signer.BLSresponse
+}
+
+func voteKey(peerID string, sig []byte) string {
+	return peerID + "|" + hex.EncodeToString(sig)
+}
+
+func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []byte) bool {
+	resp, ok := b.orig[voteKey(v.PeerID, v.Signature)]
+	if !ok {
+		return false
+	}
+	vote := int8(-1)
+	if v.Approve {
+		vote = 1
+	}
+	if BLS_Verifier.VerifyForBlock(resp, chainID, height, b.bindings, vote) == nil {
+		return true
+	}
+	if !RejectLegacyVotes {
+		return BLS_Verifier.Verify(resp, vote) == nil
+	}
+	return false
+}
+
+// VerifyCertificateForRound is the new entry point for the three certificate
+// call sites.
+//
+// With CommitteeV2Enabled false it delegates to VerifyCertificate and is
+// byte-identical to today. With it true, the tally runs against the SEATED
+// committee that SelectCommittee produced - the same one the voters used.
+//
+// MIGRATION NOTE ON Period: callers that do not yet track round timeouts pass
+// 0. That is correct but incomplete - with Period pinned at 0 a timed-out round
+// re-derives the SAME committee, so an offline or hostile committee can stall
+// the height. Thread the real period through as soon as the round loop tracks
+// it; the seed already accounts for it.
+func VerifyCertificateForRound(
+	responses []BLS_Signer.BLSresponse,
+	blockHashHex string,
+	height uint64,
+	rc RoundContext,
+) (CertificateResult, error) {
+	if !CommitteeV2Enabled {
+		return verifyCertificateLegacy(responses, blockHashHex, height)
+	}
+
+	seated, err := SelectCommittee(rc)
+	if err != nil {
+		return CertificateResult{}, err
+	}
+	return TallyAgainst(responses, seated, blockHashHex, height)
+}
+
+// TallyAgainst counts a certificate against an explicitly supplied committee.
+//
+// Everything the existing verifier guarantees is preserved: YES-only counting,
+// dedupe by peer_id AND bls_pub, the peer_id-to-bls_pub binding, T = ceil(2n/3)
+// fixed from n before any vote is read, and fail-closed on every error. The
+// only change is WHERE the committee comes from.
+func TallyAgainst(
+	responses []BLS_Signer.BLSresponse,
+	seated []committee.Member,
+	blockHashHex string,
+	height uint64,
+) (CertificateResult, error) {
+	var out CertificateResult
+
+	// Decoded only to satisfy TallyInput.BlockHash's non-emptiness check; the
+	// verifier uses blockHashHex verbatim.
+	blockHash, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(blockHashHex), "0x"))
+	if err != nil {
+		return out, fmt.Errorf("committee: bad block hash %q: %w", blockHashHex, err)
+	}
+
+	votes := make([]committee.Vote, 0, len(responses))
+	orig := make(map[string]BLS_Signer.BLSresponse, len(responses))
+	for _, r := range responses {
+		sigBytes, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(r.Signature), "0x"))
+		if err != nil {
+			// An undecodable signature can never verify; drop it rather than
+			// pass garbage into the tally.
+			continue
+		}
+		v := committee.Vote{
+			PeerID:    r.PeerID,
+			BLSPub:    blsKeyBytes(r.PubKey),
+			Approve:   r.Agree,
+			Signature: sigBytes,
+		}
+		votes = append(votes, v)
+		orig[voteKey(v.PeerID, v.Signature)] = r
+	}
+
+	res, err := committee.Tally(committee.TallyInput{
+		ChainID:   BLS_Signer.DomainChainID(),
+		Height:    height,
+		BlockHash: blockHash,
+		Committee: seated,
+		Votes:     votes,
+		Verifier:  blsVerifier{bindings: blockHashHex, orig: orig},
+		// Members carrying a bound key are always checked. This flag only
+		// decides whether an EMPTY bound key is tolerated, and the legacy
+		// source supplies empty keys - so requiring the binding is safe exactly
+		// when the authenticated snapshot is pinned.
+		RequireKeyBinding: EnforceCommitteeRegistry && seedAuthorityPinned(),
+	})
+	if err != nil {
+		return out, err
+	}
+
+	out.YesVotes = res.YesVotes
+	out.CommitteeSize = res.CommitteeSize
+	out.Threshold = res.Threshold
+	out.Reached = res.Reached
+	return out, nil
+}
+
+func seedAuthorityPinned() bool {
+	return settings.IsLoaded() &&
+		strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != ""
+}

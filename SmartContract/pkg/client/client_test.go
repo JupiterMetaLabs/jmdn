@@ -76,7 +76,7 @@ func TestClientIntegration(t *testing.T) {
 	// "0xTestUser" is invalid hex, let's use a real random address
 	randomBytes := make([]byte, 20)
 	// simple pseudo-random for test
-	copy(randomBytes, []byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+	copy(randomBytes, fmt.Appendf(nil, "%d", time.Now().UnixNano()))
 	caller := common.BytesToAddress(randomBytes)
 
 	deployOpts := &client.DeployOptions{

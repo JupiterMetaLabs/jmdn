@@ -24,6 +24,7 @@ const (
 	AuthHTTP                     = "log:AuthHTTP"
 	JSONRPC                      = "log:JSONRPC"
 	DID                          = "log:DID"
+	AvcAdapter                   = "log:AvcAdapter"
 	SmartContract                = "log:SmartContract"
 	ContractDB                   = "log:ContractDB"
 	ContractPropagation          = "log:ContractPropagation"
@@ -54,3 +55,4 @@ const (
 	CRDTLayer                    = "log:CRDTLayer"
 	DB_OPs_MerkleTree            = "log:DB_OPs_MerkleTree"
 )
+

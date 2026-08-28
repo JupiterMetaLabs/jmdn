@@ -908,18 +908,46 @@ func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 	return common.BytesToHash(crypto.Keccak256(buf))
 }
 
-// CheckBlockHash recomputes the block hash from transaction CONTENTS and compares
-// it to block.BlockHash. Returns (true,nil) only on match. Call on the block
-// receive path so a block cannot claim a BlockHash that does not correspond to
-// the transactions it actually carries, independent of whether the
-// per-transaction tx.Hash fields were pre-verified.
+// M2bHashEnabled gates whether CheckBlockHash (and messaging.checkBodyBinding,
+// which reads this same flag) validates against the M2b six-field hash
+// (RecomputeBlockHashWithConsensusFields) instead of the legacy
+// transactions-only hash. Defaults FALSE, same rollout pattern as
+// messaging.CommitteeV2Enabled (JMDN_COMMITTEE_V2): with the flag off,
+// behavior is byte-identical to before M2b existed.
+//
+// Do NOT flip this until the block generator (JMDT-Sequencer-Orchestrator)
+// also computes BlockHash via RecomputeBlockHashWithConsensusFields. Flipping
+// only the validator side makes every real block fail this check - the
+// generator and validator must agree on the hash formula, which is exactly
+// why this is a flag (a coordinated flip) and not an automatic cutover.
+var M2bHashEnabled = envOn("JMDN_M2B_HASH", false)
+
+// CheckBlockHash recomputes the block hash and compares it to block.BlockHash.
+// Returns (true,nil) only on match. Call on the block receive path so a block
+// cannot claim a BlockHash that does not correspond to what it actually
+// carries.
+//
+// With M2bHashEnabled off (default), this covers transaction CONTENTS only
+// (Keccak256 over each transaction's content hash), independent of whether
+// the per-transaction tx.Hash fields were pre-verified - unchanged from
+// before M2b existed.
+//
+// With M2bHashEnabled on, this covers the six AVC consensus fields
+// (Slot/Period/RandaoReveals/VdfProof/SeedEpoch/VotingSnapshotEpoch) plus
+// transaction contents, via RecomputeBlockHashWithConsensusFields - see that
+// function's doc for the exact preimage.
 func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")
 	}
-	want := RecomputeBlockHashFromContents(block.Transactions)
+	var want common.Hash
+	if M2bHashEnabled {
+		want = RecomputeBlockHashWithConsensusFields(block)
+	} else {
+		want = RecomputeBlockHashFromContents(block.Transactions)
+	}
 	if block.BlockHash != want {
-		return false, fmt.Errorf("block hash mismatch: recomputed %s from tx contents, block claims %s",
+		return false, fmt.Errorf("block hash mismatch: recomputed %s, block claims %s",
 			want.Hex(), block.BlockHash.Hex())
 	}
 	return true, nil

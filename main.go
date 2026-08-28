@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,6 +33,7 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	Structs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Block"
 	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
@@ -759,9 +762,49 @@ func initAccountsDBPool() error {
 	return nil
 }
 
-// FastsyncV2 retired: sync serving is handled by the ThebeSync (FastSync v4)
-// handlers registered in node.go, and catch-up by thebesync.CatchUp (wired into
-// the sync monitor below). No engine object is initialized.
+// slotStoreRecoveryGetTip reads this node's own latest LOCALLY committed
+// block, for messaging.RecoverSlotStoreAtStartup / EnsureSlotStoreRecovered
+// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 — the slot-restart
+// fail-closed fix). Requires ThebeDB (DB_OPs.SetGlobalHandle already called
+// by the caller) — see the cfg.Thebe.Enabled branch at this function's call
+// site for the legacy-DB fallback.
+//
+// Returns messaging.ErrNoCommittedBlock (wrapped) when this node's local
+// chain has no committed block at all — surfaced as sql.ErrNoRows from the
+// underlying SQL MAX(block_number) lookup (DB_OPs/thebegateway/reader.go's
+// sqlGetLatestBlock) and identified by errors.Is, which %w-wrapping preserves
+// through every layer between here and that query (backend -> cache decorator
+// -> DB_OPs shim). That is a legitimate state (true network genesis, or a
+// brand-new/not-yet-synced node), never treated as a read failure. Any other
+// error is returned as-is, so the caller fails closed rather than guessing.
+func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
+	ctx := context.Background()
+	height, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("slot recovery: %w", messaging.ErrNoCommittedBlock)
+		}
+		return nil, fmt.Errorf("slot recovery: reading latest local block number: %w", err)
+	}
+	blk, err := DB_OPs.GetZKBlockByNumber(nil, height)
+	if err != nil {
+		return nil, fmt.Errorf("slot recovery: reading locally committed block %d: %w", height, err)
+	}
+	return blk, nil
+}
+
+// initFastsyncV2 initializes the FastSync V2 service.
+// ctx is the node's top-level shutdown context — it governs the lifetime of
+// server-side network handler goroutines inside the engine.
+func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
+	return fs
+}
 
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
@@ -1343,6 +1386,71 @@ func main() {
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
 
+	// Fallback-window parameter sanity check (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md,
+	// "Fallback window" section, item 3 of the 2026-08-24 verification pass).
+	// FallbackFoldBufferB/FallbackFoldMaxSlotOffset are compiled-in constants,
+	// not per-node config, but nothing enforced them against §7.2's liveness
+	// rule at startup — this is that missing wiring, same "built the checker,
+	// never called it" shape the SlotStore recovery gap (item 8) had. A
+	// failure here means N/K/B/MaxOffset cannot satisfy the liveness bound
+	// M4-1 already found broken once, so this hard-exits rather than
+	// failing closed-but-running: unlike a per-node recovery failure, a bad
+	// build affects every node identically and there is nothing to recover
+	// into. No cfg/node dependency, so it can run this early.
+	if err := messaging.ValidateFallbackWindowParams(); err != nil {
+		log.Fatal().Err(err).Msg("fallback window: N/K/B/MaxOffset are not a usable liveness-safe combination (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md, Fallback window section)")
+	}
+
+	// VDF timing self-consistency (messaging/vdf_timing_params.go, Architecture
+	// §10 decision 12b) — same "built the checker, never called it" shape as
+	// the fallback-window check directly above, and the same reason to
+	// hard-exit: a bad T_vdf/N/K/s_min/S combination is a build defect
+	// identical on every node, not a per-node recovery case.
+	if err := messaging.ValidateVDFTimingParams(); err != nil {
+		log.Fatal().Err(err).Msg("VDF timing: T_vdf/N/K/s_min are not a bias-resistant, live combination (§10 decision 12b)")
+	}
+
+	// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// item 8). MUST run here, BEFORE node.NewNode() below: that call creates
+	// the libp2p host and registers its stream handlers, which is what lets a
+	// live commit hook (broadcast.go's HandleBroadcastStream path,
+	// blockPropagation.go's receive-and-store path) ever fire
+	// DefaultSlotStore.AdvanceOnCommit. Running recovery before the host
+	// exists means no such hook can possibly race an unseeded SlotStore —
+	// the ordering here is the actual race-freedom guarantee, not any lock
+	// inside RecoverSlotStoreAtStartup itself.
+	if cfg.Thebe.Enabled {
+		if err := messaging.RecoverSlotStoreAtStartup(slotStoreRecoveryGetTip); err != nil {
+			fmt.Printf("⚠️  slot recovery failed — this node will NOT vote or propose until this is resolved: %v\n", err)
+			log.Error().Err(err).Msg("slot recovery: startup recovery failed — consensus participation blocked (fail-closed, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)")
+		} else {
+			fmt.Println("✅ slot/epoch clock recovered from local committed history")
+		}
+	} else {
+		// No ThebeDB means no ExtraData persistence (DB_OPs/backend/block.go's
+		// Slot/Period write only exists on that path), so there is nothing to
+		// recover from and no way to detect a stale post-restart slot on this
+		// configuration. Marking ready preserves this legacy path's
+		// pre-existing (unprotected) behavior instead of permanently blocking
+		// consensus on a fleet that predates ThebeDB — this fix's scope is the
+		// ThebeDB-backed path, and that scoping is disclosed loudly rather
+		// than silently applied.
+		log.Warn().Msg("slot recovery: ThebeDB disabled — slot/epoch clock cannot be recovered from storage; running without restart protection (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 is scoped to the ThebeDB-backed path)")
+		messaging.MarkSlotStoreReady()
+	}
+	// Wire the vote-side gate (AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go)
+	// to the same readiness state — injected rather than imported directly to
+	// avoid an import cycle (messaging -> Vote -> MessagePassing already
+	// exists); see SetSlotStoreReadyFn's doc.
+	MessagePassing.SetSlotStoreReadyFn(messaging.SlotStoreReady)
+	// Vote-CRDT read path's committee source (Stage 3.5 of
+	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md). Lives in package Structs (not
+	// MessagePassing) because Structs is the actual caller (Stage 4's
+	// ProcessVotesFromCRDT in AVC/BuddyNodes/MessagePassing/Structs/Utils.go)
+	// and MessagePassing -> Structs already exists, so Structs ->
+	// MessagePassing would be an import cycle.
+	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommittee)
+
 	// Start the node
 	fmt.Println("Creating libp2p node...")
 	n, err := node.NewNode(logger_ctx)
@@ -1356,6 +1464,44 @@ func main() {
 	// Set the host instance for broadcast messaging
 	messaging.SetHostInstance(n.Host)
 	profiler.RegisterHost(n.Host)
+
+	// AVC M4 Decision A — install this node's ed25519 identity so it can
+	// produce RANDAO reveals when it is drawn onto an entropy committee
+	// (Architecture §4.3). Added 2026-08-20; without this, ProduceRevealForEpoch
+	// has no key, so this node is counted as withheld in every epoch it is
+	// seated for, taking the whole epoch to fallback under Rule 1.
+	//
+	// The key is the node's EXISTING libp2p identity, read back from the
+	// peerstore rather than threaded down from node.NewNode — no new key
+	// material and no new provisioning step. That reuse is safe because reveal
+	// signatures are domain-separated (randao.RevealMessage) from every other
+	// use of this key, and it is what lets any peer verify a reveal with no key
+	// directory at all: an ed25519 peer ID self-certifies its own public key.
+	//
+	// Non-fatal on failure. A node that cannot install an identity still
+	// validates, votes and commits normally; it simply cannot contribute
+	// entropy — so this must never stop startup.
+	if selfPriv := n.Host.Peerstore().PrivKey(n.Host.ID()); selfPriv == nil {
+		fmt.Println("⚠️  no private key in the peerstore for this host — RANDAO reveals disabled for this node")
+	} else if idErr := messaging.SetNodeIdentity(selfPriv, n.Host.ID().String()); idErr != nil {
+		fmt.Printf("⚠️  could not install AVC M4 reveal identity: %v\n", idErr)
+	} else {
+		fmt.Println("✅ AVC M4 reveal identity installed")
+	}
+
+	// AVC M4 Stage F — install the RANDAO+VDF beacon (Stage 2 committee
+	// entropy) if it has been genuinely configured via env (see
+	// Sequencer/beacon_install.go's header for why the two required crypto
+	// parameters, the VDF group modulus and the calibrated difficulty T,
+	// are read from environment rather than pinned in code). A safe no-op
+	// when unset: the node stays on Stage 1 (salt-based) committee
+	// selection exactly as it does today.
+	if beaconInstalled, beaconErr := Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
+		fmt.Printf("AVC beacon (Stage 2 RANDAO+VDF) configuration present but invalid: %v\n", beaconErr)
+		log.Error().Err(beaconErr).Msg("entropy: AVC beacon (Stage 2) misconfigured — refusing to install, staying on Stage 1")
+	} else if beaconInstalled {
+		fmt.Println("✅ AVC beacon (Stage 2 RANDAO+VDF) installed")
+	}
 
 	// Initialize the listener node for handling submit message protocol
 	// This sets up the SubmitMessageProtocol handler for vote submission
@@ -1422,6 +1568,37 @@ func main() {
 	// seednode periodically (outbound only, no DB writes ever).
 	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
 	// enable_pulling guards CLI pull commands and the reconcile path independently.
+	// Stage 6 (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §8): register the vote-CRDT
+	// compaction hook unconditionally, BEFORE the sync-monitor wiring below,
+	// which is gated behind FastSync.Enabled + a configured seed node + a
+	// live seednode client + syncMonitor.Start succeeding — any one of which
+	// failing must not also silently disable compaction. Compaction bounds
+	// THIS node's own vote-CRDT memory growth and has nothing to do with
+	// whether it talks to a seednode. If the sync-monitor block below does
+	// start successfully, it composes with this hook rather than overwriting
+	// it (DB_OPs.SetLatestBlockAdvanceHook holds exactly one function).
+	voteCompactionHook := startVoteCRDTCompactionHook(ctx)
+	DB_OPs.SetLatestBlockAdvanceHook(voteCompactionHook)
+
+	// Phase A4.2 (docs/A4-REPUTATION-WEIGHTING-PLAN.md): push observed
+	// reputation to the seed as peer.Weights, independently of FastSync/the
+	// sync monitor, for the same reason compaction is registered
+	// unconditionally above — this has nothing to do with whether this node
+	// pulls from a seed for sync. Only meaningful when a seed is configured;
+	// startReputationSeedPusher itself no-ops (with a log line) on a nil
+	// client, and PushReputationWeights no-ops per-tick on every node that
+	// isn't the sequencer. See seednode/sequencer_reputation_push.go's PHASE
+	// A4.2 CAVEAT for what this does and does not guarantee today.
+	if cfg.Network.SeedNode != "" {
+		if reputationSeedClient, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
+			log.Error().Err(err).Msg("[ReputationPush] failed to create seednode client — reputation push disabled")
+		} else {
+			startReputationSeedPusher(ctx, reputationSeedClient)
+		}
+	} else {
+		log.Warn().Msg("[ReputationPush] cfg.network.seed_node not set — reputation push disabled")
+	}
+
 	var syncMonitor *syncmonitor.Monitor
 	if cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
@@ -1465,6 +1642,20 @@ func main() {
 								continue
 							}
 							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							// Slot-restart recovery, fast-sync half
+							// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8,
+							// point 5): bulk catch-up writes bypass the live
+							// commit hooks entirely (slot_store.go's own
+							// documented scope), so DefaultSlotStore.haveCommitted
+							// is still false here even after this node just
+							// wrote thousands of blocks — re-running recovery
+							// against the now-populated local tip is what
+							// actually seeds it. No-ops if this node is
+							// already live (e.g. it was never behind and this
+							// reconcile was a no-op tick).
+							if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
+								log.Error().Err(err).Msg("[ReconcileFunc] slot recovery after catchup failed — this node remains blocked from voting/proposing")
+							}
 							return nil
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
@@ -1503,9 +1694,18 @@ func main() {
 					// only signals a debounced, async pusher (never blocks the
 					// apply path); the periodic timer remains the backstop.
 					localMon := syncMonitor
-					DB_OPs.SetLatestBlockAdvanceHook(startSeedBlockHeadPusher(ctx, func(c context.Context) {
+					seedPushHook := startSeedBlockHeadPusher(ctx, func(c context.Context) {
 						localMon.TriggerCheck(c)
-					}))
+					})
+					// Compose with the unconditionally-registered Stage 6
+					// compaction hook above rather than overwriting it —
+					// DB_OPs.SetLatestBlockAdvanceHook holds exactly one
+					// function, and voteCompactionHook is already running
+					// regardless of whether this branch is ever reached.
+					DB_OPs.SetLatestBlockAdvanceHook(func(head uint64) {
+						seedPushHook(head)
+						voteCompactionHook(head)
+					})
 					log.Info().Msg("[SeedPush] event-driven block-head reporting wired")
 				}
 			}
@@ -1566,6 +1766,7 @@ func main() {
 				seednode.SeedAuthPinPath(),
 				cfg.Network.SeedNode,
 				60*time.Second,
+				cfg.Consensus.CommitteeStrictBoundary,
 			))
 			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}

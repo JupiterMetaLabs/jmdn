@@ -52,25 +52,52 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 // Fail-closed: an unset pin, a fetch error, a signature/pin-mismatch, or an
 // empty snapshot all return an error (never "allow all"), so a node with no
 // authenticated committee refuses consensus participation.
-func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds int64) func() (map[string]string, error) {
-	return func() (map[string]string, error) {
+// (epoch, pinned): pinned=false is the live read and behaves exactly as before.
+// pinned=true asks for one specific selection epoch (W1 pool pinning), reached
+// only when consensus.require_pinned_committee is set.
+func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds int64) func(uint64, bool) (map[string]string, error) {
+	return func(epoch uint64, pinned bool) (map[string]string, error) {
 		if pinnedAuthorityHex == "" {
 			return nil, fmt.Errorf("committee source disabled: no pinned seed authority key (fail closed)")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		snap, err := c.FetchCommitteeSnapshot(ctx, 0) // 0 = current epoch
+		want := uint64(0) // 0 = current epoch, per the seed's wire convention
+		if pinned {
+			want = epoch
+		}
+		snap, err := c.FetchCommitteeSnapshot(ctx, want)
 		if err != nil {
 			return nil, err
 		}
 		if err := committee.VerifyCommitteeSnapshot(snap, pinnedAuthorityHex); err != nil {
 			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 		}
-		// Freshness: a valid signature is not enough — reject a stale but
-		// authority-signed snapshot (an old, pre-rotation/revocation committee)
-		// that could be re-presented over the unauthenticated read.
-		if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
-			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+		if pinned {
+			// The freshness carve-out for historical reads.
+			//
+			// CheckSnapshotEpochFresh compares against time.Now(), so it rejects
+			// every past epoch (a week-old snapshot misses by ~168). But a pinned
+			// read NEEDS that snapshot: re-deriving block 95's committee means
+			// resolving epoch 9 exactly, whenever we happen to ask.
+			//
+			// An EXACT epoch match is strictly stronger here, not weaker.
+			// Freshness stops an old signed snapshot being re-presented in place
+			// of the CURRENT one; an exact match stops ANY snapshot being
+			// substituted for the one requested — including the current one. The
+			// seed cannot satisfy "epoch 9" with epoch 10.
+			if snap.Epoch != epoch {
+				return nil, fmt.Errorf(
+					"committee snapshot rejected: asked for epoch %d, seed served epoch %d (fail closed)",
+					epoch, snap.Epoch)
+			}
+		} else {
+			// Freshness: a valid signature is not enough — reject a stale but
+			// authority-signed snapshot (an old, pre-rotation/revocation committee)
+			// that could be re-presented over the unauthenticated read.
+			if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
+				return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+			}
 		}
 		// peer_id -> authenticated bls_pub, so the verifier can enforce the
 		// peer_id↔bls_pub binding, not just membership.
@@ -147,6 +174,10 @@ type committeeSource struct {
 	seedURL      string // informational, recorded in the pin file
 	ttl          time.Duration
 
+	// strictBoundary controls serveLastGoodOr across an epoch change. See
+	// consensus.committee_strict_boundary and serveLastGoodOr.
+	strictBoundary bool
+
 	mu         sync.Mutex
 	authority  string                       // resolved authority pubkey (lowercased)
 	cachedSnap *committee.CommitteeSnapshot // last authenticated + fresh snapshot
@@ -157,17 +188,19 @@ type committeeSource struct {
 // the authority key by pin-or-TOFU (see the block comment above) and caches the
 // verified snapshot for ttl. Use on non-sequencer nodes so the mandatory block
 // certificate check has a committee source instead of failing closed.
-func (c *Client) CommitteeEligibilityAuto(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration) func() (map[string]string, error) {
+// strictBoundary=false preserves today's behaviour exactly.
+func (c *Client) CommitteeEligibilityAuto(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration, strictBoundary bool) func(uint64, bool) (map[string]string, error) {
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
 	s := &committeeSource{
-		fetch:        c.FetchCommitteeSnapshot,
-		configPin:    configPin,
-		epochSeconds: epochSeconds,
-		pinFile:      pinFile,
-		seedURL:      seedURL,
-		ttl:          ttl,
+		fetch:          c.FetchCommitteeSnapshot,
+		configPin:      configPin,
+		epochSeconds:   epochSeconds,
+		pinFile:        pinFile,
+		seedURL:        seedURL,
+		ttl:            ttl,
+		strictBoundary: strictBoundary,
 	}
 	return s.eligible
 }
@@ -226,17 +259,46 @@ func (s *committeeSource) resolveAuthority(ctx context.Context) (string, error) 
 // a peer_id -> bls_pub map. FAIL CLOSED: a fetch/verify/freshness failure returns
 // an error unless a still-epoch-fresh cached snapshot can bridge a transient seed
 // outage.
-func (s *committeeSource) eligible() (map[string]string, error) {
+func (s *committeeSource) eligible(epoch uint64, pinned bool) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if pinned {
+		// PINNED (W1) read: one specific selection epoch.
+		//
+		// No TTL cache and no serveLastGoodOr on this path, deliberately. The
+		// cache holds the CURRENT snapshot; serving it for a request that named a
+		// past epoch is exactly the substitution this whole change exists to
+		// prevent, and it would be invisible. A pinned read either resolves the
+		// epoch it asked for, or fails.
+		authority, err := s.resolveAuthority(ctx)
+		if err != nil {
+			return nil, err
+		}
+		snap, err := s.fetch(ctx, epoch)
+		if err != nil {
+			return nil, err
+		}
+		if err := committee.VerifyCommitteeSnapshot(snap, authority); err != nil {
+			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+		}
+		// Exact match replaces wall-clock freshness for historical reads — see
+		// the same carve-out in CommitteeEligibility for why it is stronger.
+		if snap.Epoch != epoch {
+			return nil, fmt.Errorf(
+				"committee snapshot rejected: asked for epoch %d, seed served epoch %d (fail closed)",
+				epoch, snap.Epoch)
+		}
+		return snap.BLSPubByPeer(), nil
+	}
 
 	// Fast path: a recently-verified snapshot within the TTL.
 	if s.cachedSnap != nil && time.Since(s.cachedAt) < s.ttl {
 		return s.cachedSnap.BLSPubByPeer(), nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	authority, err := s.resolveAuthority(ctx)
 	if err != nil {
@@ -261,9 +323,34 @@ func (s *committeeSource) eligible() (map[string]string, error) {
 // else err. Lets a brief seed outage not drop blocks while the previously
 // authenticated committee remains valid; fails closed once it goes stale. Caller
 // holds s.mu.
+// THE BOUNDARY SPLIT, and what strictBoundary does about it.
+//
+// The freshness window is ±1 epoch, so just after an epoch 9->10 change a node
+// that cannot reach the seed serves its cached EPOCH 9 set and passes freshness
+// (|9-10| = 1), while a node that fetched successfully uses EPOCH 10. Both
+// believe they are correct. Different sets => different n => different
+// T = ceil(2n/3). One finalises a certificate the other rejects.
+//
+// That is tolerable while the pool is unpinned and static; it is not tolerable
+// once membership actually rotates per epoch. strictBoundary=true refuses to
+// bridge ACROSS an epoch change (it still bridges a seed blip WITHIN the same
+// epoch, which is what this helper was written for).
+//
+// The trade is deliberate: a node that stalls rejoins cleanly, a node that
+// splits does not. Default false = today's behaviour.
 func (s *committeeSource) serveLastGoodOr(err error) (map[string]string, error) {
 	if s.cachedSnap != nil &&
 		committee.CheckSnapshotEpochFresh(s.cachedSnap.Epoch, time.Now().Unix(), s.epochSeconds) == nil {
+		if s.strictBoundary {
+			if cur := committee.EpochForTime(time.Now().Unix(), s.epochSeconds); cur != s.cachedSnap.Epoch {
+				log.Error().Err(err).
+					Uint64("cached_epoch", s.cachedSnap.Epoch).Uint64("current_epoch", cur).
+					Msg("committee source: refusing to bridge an epoch boundary with a cached snapshot (strict; fail closed)")
+				return nil, fmt.Errorf(
+					"committee source: cached snapshot is epoch %d but current epoch is %d (strict boundary; fail closed): %w",
+					s.cachedSnap.Epoch, cur, err)
+			}
+		}
 		log.Warn().Err(err).
 			Msg("committee source: serving last-good epoch-fresh snapshot (seed unreachable/invalid)")
 		return s.cachedSnap.BLSPubByPeer(), nil

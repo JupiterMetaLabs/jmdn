@@ -2,6 +2,7 @@ package Block
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"net"
@@ -84,6 +85,20 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 			s.logger.Error(ctx, "gRPC: Block not verified", nil, ion.String("status", block.Status))
 		}
 		return nil, status.Errorf(codes.InvalidArgument, "block has not been verified by ZKVM")
+	}
+
+	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
+	// attachment point — set Slot/Period from jmdn's own live tracking and,
+	// when the rollout flag is on, recompute BlockHash to bind them. Must run
+	// after all other validation above and before consensus.Start below —
+	// see Block/consensus_fields.go for the full rationale. Fails closed
+	// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8) if this node's
+	// slot/epoch clock has not been recovered from its committed history.
+	if err := attachAVCConsensusFields(block); err != nil {
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: refusing to propose — slot/epoch clock not recovered", err)
+		}
+		return nil, status.Errorf(codes.Unavailable, "%v", err)
 	}
 
 	// Create consensus instance and start consensus process
@@ -222,9 +237,14 @@ func (s *BlockServer) convertProtoToZKBlock(pbBlock *pb.ZKBlock) (*config.ZKBloc
 		LogsBloom:    pbBlock.LogsBloom,
 		PrevHash:     common.BytesToHash(pbBlock.PrevHash),
 		BlockHash:    common.BytesToHash(pbBlock.BlockHash),
-		GasLimit:     pbBlock.GasLimit,
-		GasUsed:      pbBlock.GasUsed,
-		BlockNumber:  pbBlock.BlockNumber,
+		GasLimit:            pbBlock.GasLimit,
+		GasUsed:             pbBlock.GasUsed,
+		BlockNumber:         pbBlock.BlockNumber,
+		Slot:                pbBlock.Slot,
+		Period:              pbBlock.Period,
+		VdfProof:            pbBlock.VdfProof,
+		SeedEpoch:           pbBlock.SeedEpoch,
+		VotingSnapshotEpoch: pbBlock.VotingSnapshotEpoch,
 	}
 
 	// Convert addresses if they're not empty
@@ -235,6 +255,12 @@ func (s *BlockServer) convertProtoToZKBlock(pbBlock *pb.ZKBlock) (*config.ZKBloc
 	if len(pbBlock.ZkvmAddr) > 0 {
 		addr := common.BytesToAddress(pbBlock.ZkvmAddr)
 		block.ZKVMAddr = &addr
+	}
+
+	if len(pbBlock.RandaoReveals) > 0 {
+		if err := json.Unmarshal(pbBlock.RandaoReveals, &block.RandaoReveals); err != nil {
+			return nil, fmt.Errorf("failed to decode randao reveals: %w", err)
+		}
 	}
 
 	return block, nil

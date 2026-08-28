@@ -270,6 +270,23 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 				blockHash = "" // Will cause processVotesAndTriggerBFT to skip processing
 			}
 
+			// Stage 4 (JMDN-CRDT-VOTE-MIGRATION-LLD.md): extract height so it
+			// can be threaded to ProcessVotesFromCRDT, which now requires it
+			// (avcvotes.TallyBlock keys by height+blockHash, not blockHash
+			// alone). encoding/json decodes a JSON number into interface{} as
+			// float64, never uint64 directly — must convert explicitly. Zero
+			// on messages from nodes that predate the Height field
+			// (PubSubMessages.Vote.Height); the v2 read path treats
+			// height==0 as "unknown" rather than a real genesis vote (see
+			// that field's doc comment), same posture the legacy path (which
+			// ignores height entirely) already has by omission.
+			var blockHeight uint64
+			if heightRaw, hasHeight := voteData["height"]; hasHeight {
+				if heightF, ok := heightRaw.(float64); ok && heightF >= 0 {
+					blockHeight = uint64(heightF)
+				}
+			}
+
 			// Use the sender's peer ID as the CRDT set key to separate votes by sender
 			OP := &Types.OP{
 				NodeID: msg.Data.Sender,
@@ -301,7 +318,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 				// Increased from 10s to 30s to handle network delays and ensure votes are collected
 				LocalGRO.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
 					time.Sleep(30 * time.Second) // Wait 30 seconds to collect more votes
-					processVotesAndTriggerBFT(logger_ctx, listenerNode, blockHash)
+					processVotesAndTriggerBFT(logger_ctx, listenerNode, blockHash, blockHeight)
 					voteProcessingMutex.Lock()
 					voteProcessingTriggered = false // Reset flag after processing
 					voteProcessingMutex.Unlock()
@@ -705,7 +722,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 
 // processVotesAndTriggerBFT processes votes from CRDT and triggers BFT consensus
 // If blockHash is empty, processing is skipped to avoid mixing votes from different blocks
-func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string) {
+func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string, blockHeight uint64) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		err := errors.New("cannot process votes - listener node or CRDT layer not initialized")
 		logger().Error(logger_ctx, err.Error(),
@@ -726,7 +743,7 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
 	// Process votes from CRDT with block hash filtering
-	result, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
+	result, _, _, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash, blockHeight)
 	if err != nil {
 		logger().Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))

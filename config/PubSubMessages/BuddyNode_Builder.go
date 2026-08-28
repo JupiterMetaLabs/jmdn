@@ -6,6 +6,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/config"
 
+	avctypes "github.com/JupiterMetaLabs/avc/types"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -16,6 +17,7 @@ func NewBuddyNodeBuilder(buddy *BuddyNode) *BuddyNode {
 	if buddy != nil {
 		return &BuddyNode{
 			CRDTLayer:       buddy.CRDTLayer,
+			VoteCRDTLayer:   buddy.VoteCRDTLayer, // omitting this silently drops the field on every clone
 			Host:            buddy.Host,
 			Network:         buddy.Network,
 			PeerID:          buddy.PeerID,
@@ -33,6 +35,13 @@ func NewBuddyNodeBuilder(buddy *BuddyNode) *BuddyNode {
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (buddy *BuddyNode) SetCRDTLayer(crdtlayer *Types.Controller) *BuddyNode {
 	buddy.CRDTLayer = crdtlayer
+	return buddy
+}
+
+// SetVoteCRDTLayer installs the block-keyed vote CRDT controller. See
+// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md — Stage 1.
+func (buddy *BuddyNode) SetVoteCRDTLayer(c *avctypes.Controller) *BuddyNode {
+	buddy.VoteCRDTLayer = c
 	return buddy
 }
 
@@ -108,6 +117,10 @@ func (buddy *BuddyNode) GetPubSub() *GossipPubSub {
 
 func (buddy *BuddyNode) GetCRDTLayer() *Types.Controller {
 	return buddy.CRDTLayer
+}
+
+func (buddy *BuddyNode) GetVoteCRDTLayer() *avctypes.Controller {
+	return buddy.VoteCRDTLayer
 }
 
 func (buddy *BuddyNode) GetHost() host.Host {

@@ -126,7 +126,61 @@ type ConsensusSettings struct {
 	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
+	//
+	// WALL CLOCK. It selects which committee SNAPSHOT the seed node serves. It
+	// must never be used to derive a selection seed - see CommitteeEpochBlocks.
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+
+	// CommitteeEpochBlocks is the selection-epoch length in BLOCKS, used by
+	// messaging.EpochForHeight to map a height to the epoch that is hashed into
+	// the committee seed.
+	//
+	// This is consensus-critical and must be identical network-wide: two nodes
+	// with different values derive different seeds for the same block, seat
+	// different committees, and reject each other's certificates. Change it only
+	// as a coordinated fleet-wide flip.
+	//
+	// 0 (the default) means "one epoch" - every height maps to epoch 0. That is
+	// correct for Stage 1, where the seed source is a fixed salt that ignores the
+	// epoch and the draw already rotates on height and prev_hash. Stage 2
+	// (RANDAO + VDF) keys its beacon on this epoch and needs a real value.
+	CommitteeEpochBlocks int64 `mapstructure:"committee_epoch_blocks" yaml:"committee_epoch_blocks"`
+
+	// RequirePinnedCommittee makes committee selection resolve its candidate pool
+	// from the FROZEN snapshot of the block's selection epoch, instead of reading
+	// the current one live (W1 pool pinning).
+	//
+	// Unpinned, the seed is derived from the block but the pool is not: two nodes
+	// resolving the pool either side of a membership change seat different
+	// committees and compute different n, hence different T = ceil(2n/3). Live
+	// that is a split; retroactively it means a synced node cannot re-derive the
+	// committee that already voted on an old block.
+	//
+	// FAIL CLOSED: with this set, an eligibility source that cannot serve a
+	// specific epoch returns messaging.ErrCommitteeNotPinned and the round is
+	// refused. Do NOT enable until the seed node can serve GetCommitteeSnapshot
+	// for a PAST epoch, or jmdn persists each epoch's snapshot with its signature.
+	//
+	// Also requires committee_epoch_blocks to be non-zero — at 0 every height maps
+	// to epoch 0, so "pin per epoch" pins all history to a single snapshot.
+	//
+	// Default false = today's behaviour, unchanged.
+	RequirePinnedCommittee bool `mapstructure:"require_pinned_committee" yaml:"require_pinned_committee"`
+
+	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
+	// committee snapshot when the seed is unreachable.
+	//
+	// The snapshot freshness window is ±1 epoch, so just after an epoch boundary a
+	// node serving its cached previous-epoch set still passes freshness while a
+	// node that fetched successfully uses the new set — different sets, different
+	// n, different T, and each believes it is right. Bridging WITHIN an epoch is
+	// unaffected; that is what the cache is for.
+	//
+	// Trade: a stalled node rejoins cleanly, a split node does not. Becomes
+	// important once membership actually rotates per epoch.
+	//
+	// Default false = today's behaviour, unchanged.
+	CommitteeStrictBoundary bool `mapstructure:"committee_strict_boundary" yaml:"committee_strict_boundary"`
 
 	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
 	// consensus. The certificate verifier trims the eligible committee to this many
@@ -201,6 +255,16 @@ type NetworkSettings struct {
 	Mempool           string `mapstructure:"mempool"            yaml:"mempool"`
 	Yggdrasil         bool   `mapstructure:"yggdrasil"          yaml:"yggdrasil"`
 	HeartbeatInterval int    `mapstructure:"heartbeat_interval" yaml:"heartbeat_interval"`
+
+	// Environment names which network this node is part of: "mainnet" or
+	// "testnet". This is a SAFETY GATE, not just metadata — Features.AvcValidation
+	// (the avc consensus-adapter rollout) refuses to run unless this is exactly
+	// "testnet", regardless of the AvcValidation.Enabled flag. Defaults to
+	// "mainnet" (see DefaultConfig) so an operator who never sets this field gets
+	// the safe behavior: the new validation path stays off everywhere until
+	// explicitly opted into on a testnet node. Empty or any other value is
+	// treated as "not testnet" (fail-closed), never as an implicit yes.
+	Environment string `mapstructure:"environment" yaml:"environment"`
 }
 
 // PortSettings groups all port/address assignments.
@@ -332,6 +396,38 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+
+	// AvcValidation controls the staged rollout of the avc-based consensus
+	// validator (consensus/adapters) alongside jmdn's existing
+	// Security.CheckZKBlockValidation. See AvcValidationSettings for the
+	// mode semantics and NetworkSettings.Environment for the testnet-only gate.
+	AvcValidation AvcValidationSettings `mapstructure:"avc_validation" yaml:"avc_validation"`
+}
+
+// AvcValidationSettings controls the staged rollout described in the A3
+// adapter work: shadow mode (compare, don't act) -> feature-flagged enforce
+// (per-node opt-in) -> full cutover (flip the default). Both stages are the
+// SAME code path here; "full cutover" is simply flipping this config's
+// default in DefaultConfig() once shadow mode has run clean for the agreed
+// period — no further code change needed for that step.
+//
+// SAFETY: even with Enabled=true, the validator only runs when
+// NetworkSettings.Environment == "testnet" (see EvaluateShadow in
+// consensus/adapters/shadow.go). This lets ops enable it per-node via yaml
+// without a redeploy, restricted to testnet nodes only, exactly matching the
+// "gradually enable on a few validators, testnet only" rollout plan.
+type AvcValidationSettings struct {
+	// Enabled is the master per-node switch. Default false — opt-in only.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// Mode is "shadow" (default/safe: run the new validator, log any
+	// disagreement with the legacy decision, but the legacy decision still
+	// determines the actual vote) or "enforce" (the new validator's verdict
+	// BECOMES the vote decision; an internal error in this mode fails closed
+	// — rejects the block — rather than silently falling back to legacy).
+	// Any value other than "enforce" (including empty/unrecognized) is
+	// treated as "shadow" — the safe default.
+	Mode string `mapstructure:"mode" yaml:"mode"`
 }
 
 // FastSyncSettings controls FastSync V2 behaviour for this node.

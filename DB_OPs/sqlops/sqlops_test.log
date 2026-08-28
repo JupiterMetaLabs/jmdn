@@ -1,0 +1,40 @@
+2026/08/03 14:08:39.416295 sqlops_test.go:32: ===== DB Test Log Started =====
+2026/08/03 14:08:39.416494 sqlops_test.go:33: Test started at: 2026-08-03T08:38:39Z
+2026/08/03 14:08:39.416717 sqlops_test.go:84: Starting TestUnifiedDB
+2026/08/03 14:08:39.416879 sqlops_test.go:87: === Starting Test: Add and Retrieve Peer ===
+2026/08/03 14:08:39.417033 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Add_and_Retrieve_Peer
+2026/08/03 14:08:39.417190 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.417338 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.417488 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.417691 sqlops_test.go:127: === Starting Test: Update Peer Connections ===
+2026/08/03 14:08:39.417835 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Update_Peer_Connections
+2026/08/03 14:08:39.417985 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.418137 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.418288 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.418457 sqlops_test.go:172: === Starting Test: Delete Peer ===
+2026/08/03 14:08:39.418601 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Delete_Peer
+2026/08/03 14:08:39.418743 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.418887 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.419038 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.419224 sqlops_test.go:214: === Starting Test: Store and Retrieve KeyValue ===
+2026/08/03 14:08:39.419378 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Store_and_Retrieve_KeyValue
+2026/08/03 14:08:39.419514 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.419651 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.419805 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.419973 sqlops_test.go:245: === Starting Test: Delete KeyValue ===
+2026/08/03 14:08:39.420121 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Delete_KeyValue
+2026/08/03 14:08:39.420257 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.420414 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.420559 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.420714 sqlops_test.go:283: === Starting Test: Store and Retrieve Merkle Hashes ===
+2026/08/03 14:08:39.420854 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Store_and_Retrieve_Merkle_Hashes
+2026/08/03 14:08:39.420990 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.421135 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.421272 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.421421 sqlops_test.go:318: === Starting Test: Concurrent Operations ===
+2026/08/03 14:08:39.421557 sqlops_test.go:44: Setting up test DB for TestUnifiedDB/Test_Concurrent_Operations
+2026/08/03 14:08:39.421690 sqlops_test.go:46: Test DB path: test.db
+2026/08/03 14:08:39.421841 sqlops_test.go:53: Using tables: peers=peers, kv=key_value, merkle=merkle
+2026/08/03 14:08:39.421992 sqlops_test.go:58: ERROR: Failed to create DB: database ping failed: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2026/08/03 14:08:39.422246 sqlops_test.go:410: All tests completed
+2026/08/03 14:08:39.422400 sqlops_test.go:38: ===== DB Test Log Ended =====

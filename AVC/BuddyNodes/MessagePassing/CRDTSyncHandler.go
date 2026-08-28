@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,11 @@ import (
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/crdt"
 	"gossipnode/seednode"
 
+	avcdatalayer "github.com/JupiterMetaLabs/avc/buddynodes/datalayer"
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -245,20 +249,16 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		return fmt.Errorf("failed to subscribe to sync topic: %w", err)
 	}
 
-	// Publish our own CRDT state ONCE to the pubsub channel
-	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
-	logger().Info(context.Background(), "📤 Publishing local CRDT state (", ion.String("args", fmt.Sprintf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s", len(allCRDTs), topicName)))
+	// Publish our own CRDT state ONCE to the pubsub channel. Stage 3
+	// (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md) — buildLocalSyncData combines
+	// the legacy peer-keyed engine and the new block-keyed vote engine into
+	// one map, so this stays one topic, one message, one round trip. Safe to
+	// combine: the two keyspaces cannot collide (votes.OwnsKey's own
+	// guarantee — see its doc comment).
+	syncData := buildLocalSyncData(listenerNode)
+	logger().Info(context.Background(), "📤 Publishing local CRDT state (", ion.String("args", fmt.Sprintf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s", len(syncData), topicName)))
 
-	if len(allCRDTs) > 0 {
-		syncData := make(map[string]json.RawMessage)
-		for key, crdt := range allCRDTs {
-			data, err := json.Marshal(crdt)
-			if err != nil {
-				logger().Info(context.Background(), "⚠️ Failed to marshal CRDT for key", ion.String("args", fmt.Sprintf("⚠️ Failed to marshal CRDT for key %s: %v", key, err)))
-				continue
-			}
-			syncData[key] = data
-		}
+	if len(syncData) > 0 {
 
 		// Create sync message
 		syncMsg := CRDTSync.Message{
@@ -597,8 +597,74 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 	return nil
 }
 
-// mergeCRDTData merges received CRDT data into the local CRDT layer
-// The key is the peer ID, and elements are vote JSON strings
+// rawLWWSet is the wire shape both the legacy jmdn CRDT engine and avc's
+// share byte-for-byte (verified: crdt.LWWSet in both repos carries identical
+// `json:"key"/"adds"/"removes"` tags). One decode target serves both
+// keyspaces — only the ELEMENT strings inside Adds differ in meaning between
+// them, never the envelope.
+type rawLWWSet struct {
+	Key     string                 `json:"key"`
+	Adds    map[string]interface{} `json:"adds"`
+	Removes map[string]interface{} `json:"removes"`
+}
+
+// buildLocalSyncData gathers this node's outgoing CRDT state for one sync
+// round, from both engines. Stage 3
+// (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md) — extracted from
+// TriggerCRDTSyncForBuddyNode so the two-engine union has one place to
+// change and one place to test, rather than living inline in a 380-line
+// function.
+//
+// Combining both engines into a single map is safe, not just convenient:
+// votes.OwnsKey's own guarantee is that a block-keyed key can never collide
+// with a legacy peer-ID key, so there is no ambiguity for the receiver to
+// resolve later.
+func buildLocalSyncData(listenerNode *AVCStruct.BuddyNode) map[string]json.RawMessage {
+	syncData := make(map[string]json.RawMessage)
+
+	addAll := func(all map[string]crdt.CRDT) {
+		for key, obj := range all {
+			data, err := json.Marshal(obj)
+			if err != nil {
+				logger().Info(context.Background(), "⚠️ Failed to marshal CRDT for key",
+					ion.String("args", fmt.Sprintf("⚠️ Failed to marshal CRDT for key %s: %v", key, err)))
+				continue
+			}
+			syncData[key] = data
+		}
+	}
+
+	if listenerNode.CRDTLayer != nil && listenerNode.CRDTLayer.CRDTLayer != nil {
+		addAll(listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs())
+	}
+	// VoteCRDTLayer is nil-guarded, not required: a node mid-migration (or
+	// with JMDN_VOTE_CRDT_V2 never having written anything yet) still
+	// publishes its legacy state exactly as before this stage.
+	if listenerNode.VoteCRDTLayer != nil && listenerNode.VoteCRDTLayer.CRDTLayer != nil {
+		for key, obj := range listenerNode.VoteCRDTLayer.CRDTLayer.GetAllCRDTs() {
+			data, err := json.Marshal(obj)
+			if err != nil {
+				logger().Info(context.Background(), "⚠️ Failed to marshal v2 vote CRDT for key",
+					ion.String("args", fmt.Sprintf("⚠️ Failed to marshal v2 vote CRDT for key %s: %v", key, err)))
+				continue
+			}
+			syncData[key] = data
+		}
+	}
+
+	return syncData
+}
+
+// mergeCRDTData merges received CRDT data into the local CRDT layer(s).
+//
+// Two keyspaces travel in one sync message as of Stage 3
+// (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §4): the legacy scheme, keyed by the
+// voting peer's ID, and the new block-keyed scheme
+// (votes:<height>:<blockHash> / votesig:<height>:<blockHash>) written by
+// avc/crdt/votes.AddVote. Every key is routed by votes.OwnsKey before
+// anything else happens to it — never by trying to decode it as a peer ID
+// first, which is what would make the two keyspaces ambiguous instead of
+// merely different.
 func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) error {
 	if listenerNode.CRDTLayer == nil || listenerNode.CRDTLayer.CRDTLayer == nil {
 		return fmt.Errorf("CRDT layer not available")
@@ -612,48 +678,120 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 
 	logger().Info(context.Background(), "🔄 Merging CRDT data from peer", ion.String("args", fmt.Sprintf("🔄 Merging CRDT data from peer %s", senderPeerID.String()[:8])))
 
-	// Merge each CRDT from the sync message
-	// Key is the vote peer ID, value is the CRDT set containing vote elements
-	for votePeerIDStr, rawData := range syncMsg.SyncData {
-		// Parse the vote peer ID
-		votePeerID, err := peer.Decode(votePeerIDStr)
-		if err != nil {
-			logger().Info(context.Background(), "⚠️ Invalid peer ID in sync data:", ion.String("args", fmt.Sprintf("⚠️ Invalid peer ID in sync data: %s", votePeerIDStr)))
-			continue
-		}
-
-		// Unmarshal the CRDT structure (LWWSet)
-		var remoteCRDT struct {
-			Key     string                 `json:"key"`
-			Adds    map[string]interface{} `json:"adds"`
-			Removes map[string]interface{} `json:"removes"`
-		}
-
-		if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to unmarshal CRDT for peer", ion.String("args", fmt.Sprintf("⚠️ Failed to unmarshal CRDT for peer %s: %v", votePeerIDStr[:8], err)))
-			continue
-		}
-
-		// Extract all elements from the Adds map (these are the vote JSON strings)
-		if remoteCRDT.Adds != nil {
-			for element := range remoteCRDT.Adds {
-				// Add this vote element to our local CRDT
-				// DataLayer.Add(controller, nodeID peer.ID, key string, value string)
-				// For votes: key is the vote peer ID, value is the vote JSON element
-				if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
-					logger().Info(context.Background(), "⚠️ Failed to add vote element to CRDT for peer", ion.String("args", fmt.Sprintf("⚠️ Failed to add vote element to CRDT for peer %s: %v", votePeerIDStr[:8], err)))
-				} else {
-					if len(element) > 50 {
-						logger().Info(context.Background(), "✅ Added vote element from peer ...", ion.String("args", fmt.Sprintf("✅ Added vote element from peer ...%s: %s...", votePeerIDStr[8:], element[:50])))
-					} else {
-						logger().Info(context.Background(), "✅ Added vote element from peer", ion.String("args", fmt.Sprintf("✅ Added vote element from peer %s: %s", votePeerIDStr[:8], element)))
-					}
-				}
+	legacyMerged, voteMerged := 0, 0
+	for key, rawData := range syncMsg.SyncData {
+		if avcvotes.OwnsKey(key) {
+			n, err := mergeVoteCRDTElement(listenerNode, senderPeerID, key, rawData)
+			if err != nil {
+				logger().Info(context.Background(), "⚠️ Failed to merge v2 vote CRDT for key",
+					ion.String("args", fmt.Sprintf("⚠️ Failed to merge v2 vote CRDT for key %s: %v", key, err)))
+				continue
 			}
+			voteMerged += n
+			continue
 		}
+
+		n, err := mergeLegacyVoteElement(listenerNode, key, rawData)
+		if err != nil {
+			logger().Info(context.Background(), "⚠️ Failed to merge legacy CRDT for key",
+				ion.String("args", fmt.Sprintf("⚠️ Failed to merge legacy CRDT for key %s: %v", key, err)))
+			continue
+		}
+		legacyMerged += n
 	}
 
-	logger().Info(context.Background(), "✅ Completed merging CRDT data from peer", ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s", senderPeerID.String()[:8])))
+	logger().Info(context.Background(), "✅ Completed merging CRDT data from peer",
+		ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s (%d legacy, %d v2 elements)",
+			senderPeerID.String()[:8], legacyMerged, voteMerged)))
 
 	return nil
+}
+
+// mergeLegacyVoteElement applies one remote CRDT object's elements into the
+// legacy engine, keyed by the voting peer's own ID — unchanged behavior from
+// before Stage 3, just factored out of mergeCRDTData's loop body.
+func mergeLegacyVoteElement(listenerNode *AVCStruct.BuddyNode, votePeerIDStr string, rawData json.RawMessage) (merged int, err error) {
+	votePeerID, err := peer.Decode(votePeerIDStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid peer ID in sync data: %w", err)
+	}
+
+	var remoteCRDT rawLWWSet
+	if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
+		return 0, fmt.Errorf("unmarshaling CRDT: %w", err)
+	}
+
+	for element := range remoteCRDT.Adds {
+		if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
+			logger().Info(context.Background(), "⚠️ Failed to add vote element to CRDT for peer",
+				ion.String("args", fmt.Sprintf("⚠️ Failed to add vote element to CRDT for peer %s: %v", votePeerIDStr[:8], err)))
+			continue
+		}
+		merged++
+	}
+	return merged, nil
+}
+
+// mergeVoteCRDTElement applies one remote block-keyed CRDT object's elements
+// into the v2 (avc) engine. Written via avc/buddynodes/datalayer.Add — the
+// same low-level primitive AddVote itself writes through — rather than
+// re-parsing elements back into a votes.VoteRecord and re-calling AddVote:
+// a votes: element is only "<peerID>:<vote>", with height/blockHash implicit
+// in the KEY, not recoverable from the element alone, so AddVote's own
+// signature does not fit a merge. This mirrors mergeLegacyVoteElement's own
+// shape exactly, just against the other engine.
+//
+// senderPeerID is attributed as the writing actor for this merge — the same
+// role votePeerID plays in the legacy path — not the original voter, which
+// is already encoded in the element string itself and is what
+// votes.TallyBlock authenticates against later.
+//
+// A8-1 (docs/VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md): applies the same two
+// guards AddVote enforces on its own write path — the compaction watermark
+// and the per-peer ingest cap — which this merge path bypassed by writing
+// through avcdatalayer.Add directly instead of through AddVote. That bypass
+// predates Stage 6 (avc/crdt/votes.DefaultWatermark.ConvergeAndCompact,
+// wired live via vote_crdt_compaction.go), when the watermark genuinely
+// never advanced past 0 and the check really was a no-op; Stage 6 has since
+// landed, so a lagging or hostile peer's sync data can now resurrect votes
+// for a height ConvergeAndCompact already evaluated and deleted, and can
+// flood one peer's element count on a key with no bound. AddVote's own
+// signature still does not fit here (a votes:/votesig: element carries no
+// height of its own — it's implicit in the key — and CRDT sync delivers the
+// two keys as independent objects, not matched VoteRecord pairs), so the
+// checks are replicated at the same key/element granularity instead of
+// routing through AddVote itself.
+func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.ID, key string, rawData json.RawMessage) (merged int, err error) {
+	if listenerNode.VoteCRDTLayer == nil || listenerNode.VoteCRDTLayer.CRDTLayer == nil {
+		return 0, fmt.Errorf("v2 vote CRDT layer not available on this node")
+	}
+
+	if height, ok := avcvotes.HeightFromKey(key); ok && height <= avcvotes.DefaultWatermark.Current() {
+		// Expected, not a bug: a lagging peer replaying sync data for a
+		// height already converged and compacted. Same "discard at the
+		// write boundary" reasoning as AddVote's own ErrHeightCompacted.
+		return 0, nil
+	}
+
+	var remoteCRDT rawLWWSet
+	if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
+		return 0, fmt.Errorf("unmarshaling v2 CRDT: %w", err)
+	}
+
+	for element := range remoteCRDT.Adds {
+		peerID, _, found := strings.Cut(element, ":")
+		if found && avcvotes.CountElementsForPeer(listenerNode.VoteCRDTLayer, key, peerID) >= avcvotes.MaxElementsPerPeerPerBlock {
+			// Ingest cap reached for this peer on this key — same bound
+			// AddVote enforces, applied here since a merge can inject many
+			// elements at once, unlike AddVote's one-call-one-vote shape.
+			continue
+		}
+		if err := avcdatalayer.Add(listenerNode.VoteCRDTLayer, senderPeerID, key, element); err != nil {
+			logger().Info(context.Background(), "⚠️ Failed to add v2 vote element for key",
+				ion.String("args", fmt.Sprintf("⚠️ Failed to add v2 vote element for key %s: %v", key, err)))
+			continue
+		}
+		merged++
+	}
+	return merged, nil
 }

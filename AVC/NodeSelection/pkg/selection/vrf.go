@@ -111,7 +111,7 @@ func (s *VRFSelector) SelectBuddy(
 // gated step, not silently here. This default message is unchanged to keep the
 // current selection behavior byte-identical until that rollout.
 func (s *VRFSelector) buildRoundMessage(nodeID string) []byte {
-	return []byte(fmt.Sprintf("%s:%s", nodeID, string(s.networkSalt)))
+	return fmt.Appendf(nil, "%s:%s", nodeID, string(s.networkSalt))
 }
 
 // VRFRoundDomain is the domain-separation tag for the round-bound VRF message.

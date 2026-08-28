@@ -24,7 +24,7 @@ func curEpoch() uint64 { return uint64(time.Now().Unix() / testEpochSeconds) }
 func makeAuthority(t *testing.T, seed string) (priv []byte, pubHex string) {
 	t.Helper()
 	for i := 0; i < 1000; i++ {
-		p, pub, err := blssign.GenerateBLSKeyPairFromRawPrivKey([]byte(fmt.Sprintf("%s-%d", seed, i)))
+		p, pub, err := blssign.GenerateBLSKeyPairFromRawPrivKey(fmt.Appendf(nil, "%s-%d", seed, i))
 		if err == nil {
 			return p, hex.EncodeToString(pub)
 		}
@@ -68,7 +68,7 @@ func TestCommitteeSourceAuto_TOFUAdoptsAndPersists(t *testing.T) {
 		ttl:          time.Minute,
 	}
 
-	m, err := s.eligible()
+	m, err := s.eligible(0, false)
 	if err != nil {
 		t.Fatalf("eligible: %v", err)
 	}
@@ -105,13 +105,13 @@ func TestCommitteeSourceAuto_KeySwapNotHonored(t *testing.T) {
 		ttl:          time.Minute,
 	}
 
-	if _, err := s.eligible(); err != nil { // adopt A
+	if _, err := s.eligible(0, false); err != nil { // adopt A
 		t.Fatalf("adopt A: %v", err)
 	}
 	cur = snapB              // rogue seed swaps the authority key
 	s.cachedAt = time.Time{} // force a refetch past the TTL
 
-	m, err := s.eligible()
+	m, err := s.eligible(0, false)
 	if err != nil {
 		t.Fatalf("expected last-good serve, got error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCommitteeSourceAuto_RejectFailClosedNoCache(t *testing.T) {
 		pinFile:      pinFile,
 		ttl:          time.Minute,
 	}
-	if _, err := s.eligible(); err == nil {
+	if _, err := s.eligible(0, false); err == nil {
 		t.Fatal("expected fail-closed rejection for wrong-authority snapshot with no cache")
 	}
 }
@@ -162,7 +162,7 @@ func TestCommitteeSourceAuto_ConfigPinOverridesTOFU(t *testing.T) {
 		pinFile:      pinFile,
 		ttl:          time.Minute,
 	}
-	if _, err := s.eligible(); err == nil {
+	if _, err := s.eligible(0, false); err == nil {
 		t.Fatal("pinned source must reject a snapshot not signed by the pin")
 	}
 	if _, err := os.Stat(pinFile); err == nil {
@@ -186,7 +186,7 @@ func TestCommitteeSourceAuto_CachesWithinTTL(t *testing.T) {
 		ttl:          time.Minute,
 	}
 	for i := 0; i < 3; i++ {
-		if _, err := s.eligible(); err != nil {
+		if _, err := s.eligible(0, false); err != nil {
 			t.Fatalf("eligible #%d: %v", i, err)
 		}
 	}
@@ -212,7 +212,7 @@ func TestCommitteeSourceAuto_StaleCacheFailsClosed(t *testing.T) {
 		epochSeconds: testEpochSeconds,
 		ttl:          time.Minute,
 	}
-	if _, err := s.eligible(); err != nil { // prime the cache
+	if _, err := s.eligible(0, false); err != nil { // prime the cache
 		t.Fatalf("prime: %v", err)
 	}
 	// Seed goes down AND the cached snapshot is now stale (old epoch).
@@ -220,7 +220,7 @@ func TestCommitteeSourceAuto_StaleCacheFailsClosed(t *testing.T) {
 	s.cachedAt = time.Time{}
 	s.cachedSnap.Epoch = curEpoch() - uint64(committee.EpochFreshnessWindow) - 5
 
-	if _, err := s.eligible(); err == nil {
+	if _, err := s.eligible(0, false); err == nil {
 		t.Fatal("expected fail-closed when seed is down and cache is stale")
 	}
 }

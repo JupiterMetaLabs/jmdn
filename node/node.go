@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/config"
@@ -209,6 +210,20 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	thebeSyncServer := &fssync.Server{Provider: thebesync.Provider{}}
 	h.SetStreamHandler(fssync.HeadProtocol, thebeSyncServer.HeadHandler)
 	h.SetStreamHandler(fssync.GetBlocksProtocol, thebeSyncServer.GetBlocksHandler)
+	// Architecture §4.4 RevealPush — receive an entropy-committee member's
+	// RANDAO reveal pushed directly to this node when it is the current slot's
+	// proposer. Registered on EVERY node, not only proposers: which node
+	// proposes a given slot changes, and a node without the handler would
+	// refuse the stream outright, which under Rule 1 costs the whole epoch.
+	// Added 2026-08-20 with M4 Decision A.
+	h.SetStreamHandler(config.RevealPushProtocol, messaging.HandleRevealPushStream)
+	// M0/§7.1c timeout-certificate rejoin RPC — answer "what's your latest
+	// accepted TimeoutCertificate for height H" for a peer that just synced
+	// or restarted. Registered on EVERY node (not just ones expecting to be
+	// asked) for the same reason as RevealPushProtocol above: any peer could
+	// be the one asked. Added 2026-08-24; no-op while JMDN_TIMEOUT_CERT_REJOIN
+	// is unset (default OFF) — see messaging/timeout_rejoin.go.
+	h.SetStreamHandler(config.TimeoutCertRejoinProtocol, messaging.HandleTimeoutCertRejoinStream)
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	})
@@ -235,13 +250,19 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			// Initialize CRDT Layer
 			CRDTLayer := ServiceLayer.GetServiceController()
 
+			// VoteCRDTLayer: Stage 1 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md.
+			// Constructed and reachable from here on; unused until Stage 2's
+			// dual-write lands. CRDTLayer above remains the live vote store.
+			VoteCRDTLayer := DataLayer.GetVoteCRDTLayer()
+
 			basicBuddyNode := &AVCStruct.BuddyNode{
-				PeerID:      h.ID(),
-				Host:        h,
-				PubSub:      nil, // Will be set when needed
-				BuddyNodes:  *defaultBuddies,
-				StreamCache: streamCache, // Initialize with proper StreamCache
-				CRDTLayer:   CRDTLayer,   // Initialize CRDT Layer
+				PeerID:        h.ID(),
+				Host:          h,
+				PubSub:        nil, // Will be set when needed
+				BuddyNodes:    *defaultBuddies,
+				StreamCache:   streamCache, // Initialize with proper StreamCache
+				CRDTLayer:     CRDTLayer,   // Initialize CRDT Layer
+				VoteCRDTLayer: VoteCRDTLayer,
 				MetaData: AVCStruct.MetaData{
 					Received:  0,
 					Sent:      0,

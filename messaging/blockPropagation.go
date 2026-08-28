@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
@@ -96,7 +97,7 @@ func InitBlockPropagation(h host.Host) error {
 // generateBlockMessageID creates a unique ID for a block message
 func generateBlockMessageID(sender, nonce string, timestamp int64) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, nonce, timestamp)))
+	hasher.Write(fmt.Appendf(nil, "%s-%s-%d", sender, nonce, timestamp))
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }
@@ -387,6 +388,54 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 					ion.Uint64("block_number", msg.Block.BlockNumber))
 			}
 
+			// M0.1 (Architecture §7.1) — receiver-side twin of the hook in
+			// broadcast.go's ProcessBlockLocally. Every node folds a
+			// committed height into its OWN slot counter independently
+			// (§7.1b) — this is not receiving a peer's slot value, it is
+			// deriving the same one locally from the same certified event.
+			DefaultSlotStore.AdvanceOnCommit(msg.Block.BlockNumber, msg.Block.Period)
+
+			// M4 §C (Architecture §4.2 Rule 2, §4.5) — receiver-side twin of the
+			// hook in broadcast.go's ProcessBlockLocally. See entropy_reveal.go's
+			// header comment for scope (currently a no-op in the live system).
+			foldBlockDeclaredReveals(msg.Block)
+
+			// M4 §D, receiver-side twin — see entropy_finalise.go's header
+			// comment and broadcast.go's ProcessBlockLocally twin.
+			// B1 — verify the parent's commit certificate and DERIVE its aggregate
+			// locally, then record it for the fallback fold. Runs BEFORE
+			// maybeFinaliseCompletedEpochs so a window slot recorded by this block
+			// is available to any epoch this same block finalises.
+			VerifyAndRecordPrevCert(msg.Block)
+
+			maybeFinaliseCompletedEpochs(msg.Block)
+
+			// M4 §4.4 RevealPush — added 2026-08-20. If this node is on the
+			// current epoch's entropy committee and its reveal has not landed
+			// in a committed block yet, push it to whoever proposed this one.
+			//
+			// msg.Sender is the peer that broadcast this block, i.e. the
+			// proposer — a real, already-present value, not a resolver seam.
+			// §4.4 requires pushing once per SLOT across the whole reveal
+			// window rather than once per epoch, and a committed block is
+			// exactly a slot boundary, so this hook is the natural trigger.
+			//
+			// In a goroutine: a push opens a network stream, and the commit
+			// path must never block on a peer. Every no-op case (not seated,
+			// no identity, already landed, window closed, we ARE the proposer)
+			// is checked inside PushOwnRevealForSlot, so this stays cheap for
+			// the P-m nodes that are not on the committee.
+			if proposer, decErr := peer.Decode(msg.Sender); decErr == nil {
+				pushSlot := DefaultSlotStore.Current()
+				go func() {
+					if err := PushOwnRevealForSlot(pushSlot, proposer); err != nil {
+						broadcastLogger().Warn(context.Background(), "entropy: RevealPush to the current proposer failed (will retry next slot)",
+							ion.String("error", err.Error()),
+							ion.Uint64("slot", pushSlot))
+					}
+				}()
+			}
+
 			// Index the block's txs into the SQLite address index. Non-sequencer
 			// nodes receive blocks via pubsub; indexing them here keeps
 			// eth_getTransactionsByAddress current between catchups instead of
@@ -611,7 +660,12 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber)
+	// Routed through VerifyCertificateForRound so the tally can run against the
+	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
+	// byte-identical to the previous VerifyCertificate call. The round context
+	// comes from the block, never the clock - see RoundContextForBlock.
+	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber,
+		RoundContextForBlock(msg.Block))
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

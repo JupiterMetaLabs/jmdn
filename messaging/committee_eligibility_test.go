@@ -124,7 +124,7 @@ func blockMsg(hash common.Hash, data map[string]string) config.BlockMessage {
 // dedup independent of the key binding.
 func useEligible(t *testing.T, peerIDs ...string) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]string, error) {
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 		set := make(map[string]string, len(peerIDs))
 		for _, p := range peerIDs {
 			set[p] = ""
@@ -139,7 +139,7 @@ func useEligible(t *testing.T, peerIDs ...string) {
 // enforced: a vote's pubkey must match the bound key.
 func useEligibleBound(t *testing.T, members ...blsMember) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]string, error) {
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 		m := make(map[string]string, len(members))
 		for _, mem := range members {
 			m[mem.peerID] = mem.pubHex
@@ -153,7 +153,7 @@ func useEligibleBound(t *testing.T, members ...blsMember) {
 // default on cleanup.
 func useEligibleErr(t *testing.T, err error) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]string, error) { return nil, err })
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) { return nil, err })
 	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
 }
 

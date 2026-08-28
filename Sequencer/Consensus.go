@@ -182,7 +182,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// CLOSED — if the eligible set is unavailable while pinned, abort the round
 	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
 	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
-		eligible, eligErr := messaging.EligibleCommitteePeerIDs()
+		// WarmupPeerIDs, not EligibleCommitteePeerIDs: under JMDN_COMMITTEE_V2 the
+		// seated committee rotates across the WHOLE uncapped pool every height, so
+		// the sequencer must be connected to all of it, not to the capped prefix it
+		// used to seat. With the flag off this returns the capped set exactly as
+		// before.
+		eligible, eligErr := messaging.WarmupPeerIDs()
 		if eligErr != nil {
 			return fmt.Errorf("CONSENSUSERROR.WARMUP: pinned committee eligibility unavailable (fail-closed): %w", eligErr)
 		}
@@ -1320,7 +1325,8 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 	// Use ProcessVotesFromCRDT which iterates GetAllCRDTs() correctly.
 	// GetVotesFromCRDT(..."vote") always returns found=false and is removed.
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	voteResult, _, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash)
+	blockHeight := consensus.ZKBlockData.GetZKBlock().BlockNumber
+	voteResult, _, _, _, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash, blockHeight)
 	if voteErr != nil || voteResult == 0 {
 		span.SetAttributes(
 			attribute.Int("votes_count", 0),
@@ -1500,6 +1506,21 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			ion.Float64("duration", verifyDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
 		verifySpan.End()
+
+		// B1 (Architecture §4.2a, §10 decision 10) — stash the certificate that
+
+		// Only on a reached consensus: a failed round produces no certificate,
+		// and recording a partial one would let a rejected block's signatures
+		// feed the fallback fold. The certificate has to be carried by the next
+		// block rather than this one because the buddies sign THIS block's hash
+		// — see messaging/entropy_aggsig.go for the full reasoning.
+		//
+		// Read-only with respect to the consensus decision: it copies already-
+		// verified responses and cannot change consensusReached. No-op unless
+		// JMDN_AVC_AGG_CERT=1.
+		if consensusReached && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+			messaging.RecordCommitCertificate(consensus.ZKBlockData.GetZKBlock().BlockNumber, blsResults)
+		}
 
 		// (Reputation, OBSERVE-ONLY) Classify each committee member's behavior
 		// this round and log the score deltas. This is a future-SELECTION
@@ -2155,12 +2176,17 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
-	// Block hash + height this round's votes must be bound to.
+	// Block hash + height this round's votes must be bound to, plus the round
+	// context the committee is seated from. All three come from the same block,
+	// so the sequencer and every verifier derive the same committee.
 	blockHashHex := ""
 	var blockHeight uint64
+	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
-		blockHashHex = consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-		blockHeight = consensus.ZKBlockData.GetZKBlock().BlockNumber
+		blk := consensus.ZKBlockData.GetZKBlock()
+		blockHashHex = blk.BlockHash.Hex()
+		blockHeight = blk.BlockNumber
+		roundCtx = messaging.RoundContextForBlock(blk)
 	}
 
 	for _, r := range blsResults {
@@ -2183,6 +2209,14 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 				ion.String("peer_id", r.PeerID),
 				ion.Int64("vote", int64(vote)),
 				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			// Reputation (OBSERVE-ONLY): objective protocol fault — a vote
+			// response whose BLS signature does not verify against either the
+			// block-bound (v3) or legacy message. Mirrors the ObserveRound gate
+			// at ProcessVoteCollection; never affects this function's return
+			// value or the quorum count above. Kill switch: JMDN_REPUTATION_OBSERVE=0.
+			if reputation.Enabled {
+				reputation.Default.Observe(r.PeerID, reputation.BadSignature)
+			}
 			continue
 		}
 
@@ -2220,6 +2254,12 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 				Label("block_hash", blockHashHex).
 				Description(fmt.Sprintf("Vote from unauthorized committee key: peer %s (block %s)", r.PeerID, blockHashHex)).
 				Send()
+			// Reputation (OBSERVE-ONLY): objective protocol fault — unauthorized
+			// key, same "Invalid signature / unauthorized key" class as the BLS
+			// verify failure above. Never affects the quorum decision.
+			if reputation.Enabled {
+				reputation.Default.Observe(r.PeerID, reputation.BadSignature)
+			}
 			continue
 		}
 
@@ -2274,7 +2314,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// authenticated committee size (never the old strict majority of the fixed
 	// MaxMainPeers, and never a majority of whoever responded). The loop above
 	// is retained only for per-vote alerting/observability.
-	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex, blockHeight)
+	certRes, certErr := messaging.VerifyCertificateForRound(blsResults, blockHashHex, blockHeight, roundCtx)
 	if certErr != nil {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(

@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	voteaggregation "gossipnode/AVC/VoteModule"
@@ -15,9 +19,36 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/seednode"
 
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go) —
+// same env var, same default. Duplicated rather than imported: Vote ->
+// MessagePassing -> Structs already exists (Vote/Trigger.go imports
+// MessagePassing; MessagePassing/ListenerHandler.go imports Structs), so
+// Structs -> Vote would be an import cycle. The two must never disagree:
+// Stage 4's entire revert story (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §10 —
+// "readers -> TallyBlock | high | flag off") depends on the read side and
+// the write side flipping together. This duplication pattern (an env-flag
+// helper copied per package rather than shared) already exists in Security,
+// messaging, Vote, and internal/reputation — see Vote/vote_crdt_v2.go's own
+// comment on envOn.
+var voteCRDTV2Enabled = envOnStructs("JMDN_VOTE_CRDT_V2", false)
+
+func envOnStructs(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
 
 type UtilsBuddyNode struct {
 	BuddyNode *PubSubMessages.BuddyNode
@@ -113,21 +144,248 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 	return nil
 }
 
-// ProcessVotesFromCRDT extracts votes from CRDT, filters them by block hash,
-// processes them through votemodule, and returns the aggregated result and per-peer rejection reasons.
+// ProcessVotesFromCRDT extracts votes for one block and returns the
+// aggregated decision (1 accept / -1 reject) and per-peer rejection reasons.
 // targetBlockHash is required - votes without matching block_hash are skipped.
-// The second return value maps peerID → rejection_reason for peers that voted -1.
-func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, map[string]string, error) {
-	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+// The second return value maps peerID -> rejection_reason for peers that voted -1.
+//
+// Stage 4 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §6): gated by the same
+// JMDN_VOTE_CRDT_V2 flag as the write side (Vote.VoteCRDTDualWrite) so this
+// stage stays revertible by a single flag flip, per the LLD's §10 build-order
+// table ("4 | readers -> TallyBlock | high | flag off"):
+//   - flag OFF (default today, since Stage 2's dual-write also defaults
+//     off): legacy peer-keyed read, UNCHANGED from before Stage 4 — reads
+//     listenerNode.CRDTLayer, decides via the seed-node-weighted
+//     voteaggregation.VoteAggregation. This remains the only path that runs
+//     in production until the fleet flips JMDN_VOTE_CRDT_V2 on.
+//   - flag ON: new block-keyed read via avcvotes.TallyBlock against
+//     listenerNode.VoteCRDTLayer, decided by the unweighted
+//     voteaggregation.MajorityDecision (Gap 2 — reputation weight must never
+//     multiply an already-cast vote) and preserving RejectionReason per peer
+//     from the typed VoteRecord instead of an untyped map (Gap 1).
+//
+// height is now a required parameter (it was not before Stage 4) because
+// TallyBlock needs it and every call site has it available; threaded
+// unconditionally on both the legacy and v2 paths so no call site carries
+// two different signatures depending on the flag.
+func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
+	if listenerNode == nil {
+		logger().Error(logger_ctx, "Listener node not initialized", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("listener node or CRDT layer not initialized")
+		return 0, nil, nil, nil, errors.New("listener node not initialized")
 	}
 
 	if targetBlockHash == "" {
 		logger().Error(logger_ctx, "TargetBlockHash is required for vote processing to avoid mixing votes from different blocks", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
+		return 0, nil, nil, nil, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
+	}
+
+	if voteCRDTV2Enabled {
+		return processVotesFromCRDT_v2(logger_ctx, listenerNode, targetBlockHash, height)
+	}
+	// Legacy path has no per-vote BLS signature to aggregate (types.Vote/
+	// PubSubMessages.Vote carries no signature field), so it never produces a
+	// certificate — nil, not an empty one, since "no certificate available"
+	// and "certificate with zero signers" are different states.
+	result, rejectionReasons, err := processVotesFromCRDT_legacy(logger_ctx, listenerNode, targetBlockHash)
+	return result, rejectionReasons, nil, nil, err
+}
+
+// processVotesFromCRDT_v2 is the Stage 4 read path: block-keyed CRDT via
+// avcvotes.TallyBlock, unweighted majority via MajorityDecision (Gap 2),
+// RejectionReason preserved per peer (Gap 1). Only reachable when
+// voteCRDTV2Enabled is true — see ProcessVotesFromCRDT's doc comment.
+func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
+	if listenerNode.VoteCRDTLayer == nil {
+		logger().Error(logger_ctx, "Vote CRDT layer not initialized (v2 path)", nil,
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, nil, nil, nil, errors.New("vote CRDT layer not initialized")
+	}
+
+	authorized, err := authorizedCommittee()
+	if err != nil {
+		logger().Error(logger_ctx, "Failed to resolve authorized committee (v2 path)", err,
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, nil, nil, nil, err
+	}
+
+	tally, err := avcvotes.TallyBlock(listenerNode.VoteCRDTLayer, height, targetBlockHash, authorized)
+	if err != nil {
+		logger().Error(logger_ctx, "TallyBlock failed (v2 path)", err,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, nil, nil, nil, err
+	}
+
+	// Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): TallyBlock authenticates
+	// (the voter's claimed pubkey matches the committee record) but does not
+	// cryptographically verify the BLS signature itself — that division of
+	// labor is documented on TallyBlock. Drop every (peer, value) pair whose
+	// signature does not actually verify before anything downstream counts
+	// it or reports it as an equivocation, so a forged element can never be
+	// counted and can never manufacture a false equivocation charge against
+	// a real peer.
+	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash)
+	if droppedForgeries > 0 {
+		logger().Error(logger_ctx, "Dropped votes with invalid BLS signatures (v2 path)", nil,
+			ion.Int("dropped", droppedForgeries),
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
+	tally = verified
+
+	// Equivocation reporting (reputation side-effect) is an A4 concern,
+	// explicitly deferred by the user ("later we will think of the A4
+	// reputation weighting"). reporter == nil is a valid, documented no-op
+	// (avc/crdt/votes/equivocation.go) — verdicts are still computed and
+	// faulted peers are still excluded from SingleVotePeers() below; only
+	// the reputation write is skipped for now.
+	avcvotes.ApplyEquivocationPolicy(tally, targetBlockHash, height, nil)
+
+	single := tally.SingleVotePeers()
+
+	// Gap 1: recover RejectionReason per -1 voter from the typed VoteRecord
+	// backing that peer's single counted vote. Equivocating peers (2+
+	// distinct values) are excluded from `single` already, so they never
+	// reach here — an equivocator's "reason" would be ambiguous anyway
+	// (which of its conflicting votes would it belong to).
+	rejectionReasons := make(map[string]string, len(single))
+	for peerID, voteVal := range single {
+		if voteVal != -1 {
+			continue
+		}
+		for _, rec := range tally.Signatures[peerID] {
+			if rec.Vote == -1 && rec.RejectionReason != "" {
+				rejectionReasons[peerID] = rec.RejectionReason
+				break
+			}
+		}
+	}
+
+	if len(single) == 0 {
+		logger().Error(logger_ctx, "No authorized single-vote peers found in vote CRDT (v2 path)", nil,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, rejectionReasons, nil, nil, errors.New("no votes found in CRDT")
+	}
+
+	// Phase 1.5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §12.5): aggregate the
+	// YES voters' already-verified signatures into a certificate, carried as
+	// additional evidence. Best-effort and non-fatal — a failure here must
+	// never fail the vote decision itself, since the sequencer does not act
+	// on this yet (deliberately deferred; see the doc's exit list).
+	cert, certErr := buildVoteCertificate(tally, single)
+	if certErr != nil {
+		logger().Error(logger_ctx, "Failed to build vote certificate (v2 path, non-fatal)", certErr,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
+
+	// §5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md): the bitmap-capable,
+	// full-validator-scale certificate (§4/§6, avcvotes.BuildVoteCertificate),
+	// alongside Phase 1.5's simpler signer-list one above — not a replacement
+	// for it. Reuses `authorized`, the same eligible set already resolved for
+	// TallyBlock above, as SnapshotOrder's input: today that's the 7-buddy
+	// committee, so this exercises the real §0->§4 pipeline end-to-end now,
+	// safely, without needing pinning — nothing downstream reads or depends
+	// on this value yet. Best-effort and non-fatal, same discipline as the
+	// certificate above: a failure here must never fail the vote decision.
+	var validatorCert *avcvotes.VoteCertificate
+	_, index := avcvotes.SnapshotOrder(authorized)
+	if built, validatorCertErr := avcvotes.BuildVoteCertificate(single, tally.Signatures, index); validatorCertErr != nil {
+		logger().Error(logger_ctx, "Failed to build validator-scale vote certificate (v2 path, non-fatal)", validatorCertErr,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	} else {
+		validatorCert = &built
+	}
+
+	// Gap 2: plain majority over authorized, non-equivocating votes — no
+	// weight parameter. Reputation/stake weight must never multiply an
+	// already-cast validator vote; see MajorityDecision's doc
+	// (AVC/VoteModule/vote_validation.go) for why.
+	accepted, err := voteaggregation.MajorityDecision(single)
+	if err != nil {
+		logger().Error(logger_ctx, "MajorityDecision failed (v2 path)", err,
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, rejectionReasons, cert, validatorCert, err
+	}
+
+	logger().Debug(logger_ctx, "Vote decision (v2 path)",
+		ion.Bool("accepted", accepted),
+		ion.Int("single_vote_peers", len(single)),
+		ion.String("function", "Structs.processVotesFromCRDT_v2"))
+
+	if accepted {
+		return 1, rejectionReasons, cert, validatorCert, nil
+	}
+	return -1, rejectionReasons, cert, validatorCert, nil
+}
+
+// verifyTallySignatures is Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): it
+// re-verifies the BLS signature backing every (peer, value) pair TallyBlock
+// authenticated, and returns a tally containing only the pairs that
+// actually verify, plus how many were dropped.
+//
+// Every pair is checked, not just single-vote peers: an equivocating peer's
+// two conflicting values must BOTH verify before either counts as real
+// evidence — otherwise a single forged element under a real committee
+// member's peer ID could manufacture a false equivocation charge against
+// them once ApplyEquivocationPolicy runs. "Only verify votes you are
+// counting" (the LLD's own CPU-DoS caution) still holds: this only ever
+// verifies what TallyBlock already authenticated against the committee
+// snapshot, bounded by the same maxElementsPerPeerPerBlock ingest cap
+// AddVote enforces — never every element ever written.
+//
+// AuthorizedVotesByPeer[peerID][i] and Signatures[peerID][i] are written in
+// lockstep by TallyBlock (same append, same loop iteration), so indexing
+// both by i is safe by construction, not by convention.
+func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash string) (verified avcvotes.BlockTally, dropped int) {
+	verified = avcvotes.BlockTally{
+		AuthorizedVotesByPeer: make(map[string][]int8, len(tally.AuthorizedVotesByPeer)),
+		Signatures:            make(map[string][]avcvotes.VoteRecord, len(tally.Signatures)),
+		SkippedUnauthorized:   tally.SkippedUnauthorized,
+		MalformedVotes:        tally.MalformedVotes,
+		MalformedSignatures:   tally.MalformedSignatures,
+	}
+
+	for peerID, values := range tally.AuthorizedVotesByPeer {
+		recs := tally.Signatures[peerID]
+		for i, v := range values {
+			if i >= len(recs) {
+				// TallyBlock never produces this — Signatures[peerID] is
+				// appended in the same iteration as AuthorizedVotesByPeer[peerID]
+				// — but a missing record can't be verified either way, so
+				// drop it rather than assume it is valid.
+				dropped++
+				continue
+			}
+			rec := recs[i]
+			resp := BLS_Signer.BLSresponse{PeerID: peerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
+			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, v); err != nil {
+				dropped++
+				continue
+			}
+			verified.AuthorizedVotesByPeer[peerID] = append(verified.AuthorizedVotesByPeer[peerID], v)
+			verified.Signatures[peerID] = append(verified.Signatures[peerID], rec)
+		}
+	}
+
+	return verified, dropped
+}
+
+// processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical
+// in behavior to ProcessVotesFromCRDT before this stage. Kept verbatim (not
+// deleted) so JMDN_VOTE_CRDT_V2=off — the default — is a true no-op change,
+// per the LLD's revertibility requirement. Do not add Stage 4 concepts
+// (RejectionReason typing, MajorityDecision, TallyBlock) here; that would
+// defeat the point of keeping a flag-off path.
+func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, map[string]string, error) {
+	if listenerNode.CRDTLayer == nil {
+		logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+			ion.String("function", "Structs.ProcessVotesFromCRDT"))
+		return 0, nil, errors.New("listener node or CRDT layer not initialized")
 	}
 
 	logger().Info(logger_ctx, "Processing votes from CRDT for voting",

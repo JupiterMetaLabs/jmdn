@@ -3,6 +3,8 @@ package Sequencer
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
@@ -110,7 +112,12 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
 	// verifier enforces peer_id membership only — the key binding is available
 	// only via the authenticated snapshot below.
-	legacyBuddySource := func() (map[string]string, error) {
+	// (epoch, pinned) are ignored here: the legacy source is a per-node live view
+	// with no epoch concept at all. That is exactly why v2 refuses to run on it
+	// (ErrLegacySourceUnderV2) — seed-ranking a set the nodes already disagree
+	// about would still diverge. A pinned request cannot be honoured by this
+	// source, so require_pinned_committee must not be set alongside it.
+	legacyBuddySource := func(_ uint64, _ bool) (map[string]string, error) {
 		if main := c.PeerList.MainPeers; len(main) > 0 {
 			set := make(map[string]string, len(main))
 			for _, pid := range main {
@@ -157,7 +164,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
 		} else {
 			initErr := err
-			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {
+			messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
 			})
 		}
@@ -277,6 +284,52 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 	// Clear the zkblock data
 	consensus.ZKBlockData = nil
 
+	// F1: the peers ASKED to vote must be the peers the verifier will COUNT.
+	//
+	// Without this, `buddies` is whatever the per-node VRF shuffle returned while
+	// VerifyCertificateForRound tallies against messaging.SelectCommittee - two
+	// sources, and at pool > k they disagree. Every seated member could sign and
+	// the certificate would still fall short, because the signers were never the
+	// seated ones. That is the observed halt.
+	//
+	// Under v2 the seated set decides. A seated member with no known multiaddr is
+	// dropped from the wire list but still counts toward n, which is the correct
+	// BFT reading: quorum is 2f+1 of the committee, not of whoever was reachable.
+	if messaging.CommitteeV2Enabled {
+		seated, selErr := messaging.SeatedPeerIDs(messaging.RoundContextForBlock(zkblock))
+		if selErr != nil {
+			// Fail closed. Falling back to the shuffle here would reintroduce the
+			// exact two-source split this replaces.
+			return fmt.Errorf("committee selection failed (fail closed): %w", selErr)
+		}
+		kept := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(buddies))
+		reachable := make(map[string]struct{}, len(buddies))
+		for _, b := range buddies {
+			pid := b.PeerID.String()
+			if _, ok := seated[pid]; !ok {
+				continue
+			}
+			kept = append(kept, b)
+			reachable[pid] = struct{}{}
+		}
+		if len(kept) < len(seated) {
+			missing := make([]string, 0, len(seated)-len(reachable))
+			for pid := range seated {
+				if _, ok := reachable[pid]; !ok {
+					missing = append(missing, pid)
+				}
+			}
+			sort.Strings(missing)
+			logger().Warn(context.Background(),
+				"committee v2: seated members have no known multiaddr and cannot be asked to vote",
+				ion.Int("seated", len(seated)),
+				ion.Int("dialable", len(kept)),
+				ion.String("missing", strings.Join(missing, ",")),
+				ion.String("function", "Consensus.SetZKBlockData"))
+		}
+		buddies = kept
+	}
+
 	var err error
 	consensus.ZKBlockData, err = helper.AddBuddyNodesToPeerList(zkblock, buddies)
 	if err != nil {
@@ -381,6 +434,20 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// Broadcast the "rejected" status so nodes discard the block; it is never
 		// applied locally. The alert from VerifyConsensusWithBLS already notifies
 		// about the failed vote, so a broadcast error here is not propagated.
+
+		// M0/§7.1c timeout-certificate wiring — the integration point named
+		// in timeout_certificates.go's own doc comment. blockVoters is every
+		// peer that returned ANY vote this round (Agree or Reject) — used so
+		// the mutual-exclusion rule (§7.1b: a validator cannot sign both a
+		// block vote and a timeout vote for the same height/period) has real
+		// data, not an assumed-empty set. No-op end-to-end unless
+		// JMDN_TIMEOUT_CERT_WIRING=1.
+		blockVoters := make(map[string]bool, len(blsResults))
+		for _, r := range blsResults {
+			blockVoters[r.PeerID] = true
+		}
+		messaging.MaybeStartTimeoutFlow(consensus.Host, block.BlockNumber, blockVoters)
+
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
 			logger().Warn(ctx, "Failed to broadcast rejected-block notice to peers",
 				ion.String("error", err.Error()),

@@ -232,7 +232,7 @@ func CheckSnapshotEpochFresh(snapEpoch uint64, nowUnix, epochSeconds int64) erro
 // SequencerAuthChallenge is the canonical string the sequencer signs and the
 // seed reconstructs: version|method|sequencer_peer_id|unix_ts. MUST match seed.
 func SequencerAuthChallenge(method, sequencerPeerID string, unixTs int64) []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%d", SeqAuthVersion, method, sequencerPeerID, unixTs))
+	return fmt.Appendf(nil, "%s|%s|%s|%d", SeqAuthVersion, method, sequencerPeerID, unixTs)
 }
 
 // SignSequencerRequest signs a selection request with the sequencer's libp2p

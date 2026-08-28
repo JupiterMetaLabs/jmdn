@@ -78,7 +78,32 @@ const (
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
 	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/2.0.0"  // v2 protocol: vote path (eligibility, 2f+1, chain-id domain, sync-gate)
 	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/2.0.0" // v2 protocol: vote path
-	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/2.0.0"  // v2 protocol: signed PREPARE/COMMIT
+
+	// RevealPushProtocol carries Architecture §4.4's RevealPush: an entropy-
+	// committee member pushing its own RANDAO reveal directly to the node
+	// proposing the current slot. Added 2026-08-20 with M4 Decision A.
+	//
+	// Its own protocol ID rather than another case on SubmitMessageProtocol's
+	// envelope, deliberately: a reveal is not a vote, it is verified by a
+	// completely different mechanism (ed25519 against the peer ID, not BLS
+	// against the committee snapshot), and giving it its own ID means a node
+	// that does not speak it fails to connect rather than silently mis-routing
+	// into the vote path. Same 1:1 direct-stream shape as the vote path, so it
+	// is still "T1" in the architecture doc's transport inventory.
+	RevealPushProtocol   protocol.ID = "/p2p/randao/reveal/1.0.0"
+	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/2.0.0" // v2 protocol: signed PREPARE/COMMIT
+
+	// TimeoutCertRejoinProtocol carries the rejoin/catch-up request-response
+	// RPC for M0/§7.1c's timeout certificates: a node that just synced (or
+	// restarted) asks a peer "what's your latest accepted TimeoutCertificate
+	// for height H", instead of waiting to observe one over gossip live.
+	// Added 2026-08-24 — closes the scope note in messaging/timeout_gossip.go
+	// ("a real network fetch-on-rejoin RPC ... is NOT built here"). One
+	// request, one response, both JSON+newline over a direct stream — same
+	// shape as RevealPushProtocol above, its own protocol ID for the same
+	// reason: a node that doesn't speak it fails the connection rather than
+	// silently mis-routing into another handler.
+	TimeoutCertRejoinProtocol protocol.ID = "/p2p/timeout-cert/rejoin/1.0.0"
 )
 
 const (

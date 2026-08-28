@@ -54,6 +54,17 @@ func getBLSKeypair() ([]byte, []byte, error) {
 	return blsPriv, blsPub, blsErr
 }
 
+// LocalBLSKeypair returns this node's own persistent committee BLS keypair —
+// the exact same cached material SignMessage/SignMessageForBlock already
+// sign with, exposed for callers (e.g. messaging's timeout-vote wiring, M0
+// §7.1c) that need to sign a DIFFERENT canonical message than the two vote
+// domains this file hardcodes. This never mints a new key: it is the same
+// getBLSKeypair() singleton, so a caller here and a block-vote caller always
+// agree on this node's identity.
+func LocalBLSKeypair() (priv, pub []byte, err error) {
+	return getBLSKeypair()
+}
+
 // Service functions for the BLSresponse struct
 // Signs canonical message "vote:<v>" for BOTH 1 and -1
 func SignMessage(vote int8) (BLSresponse, bool, error) {
