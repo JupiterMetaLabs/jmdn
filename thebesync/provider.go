@@ -8,6 +8,7 @@ package thebesync
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"gossipnode/DB_OPs"
 )
@@ -45,6 +46,16 @@ func (Provider) RawBlock(n uint64) ([]byte, bool, error) {
 			return nil, false, nil
 		}
 		return nil, false, err
+	}
+	// Fail-closed: a block with transactions MUST carry the ART identities
+	// (EnrichBlockAccountNonces stamps every touched account). Serving one without
+	// them ships a block the receiver cannot apply — it fails on the first
+	// new-account with "no block-carried ART identity". Refuse loudly here instead
+	// so the operator backfills (JMDN_BACKFILL_ACCOUNT_NONCES=1) rather than
+	// chasing a mid-sync apply failure. Genesis / empty blocks legitimately carry
+	// none, so the guard is scoped to blocks that actually touch accounts.
+	if len(blk.Transactions) > 0 && len(blk.AccountNonces) == 0 {
+		return nil, false, fmt.Errorf("thebesync provider: block %d has %d transaction(s) but no AccountNonces — refusing to serve an unstampable block (run JMDN_BACKFILL_ACCOUNT_NONCES=1 on this node)", n, len(blk.Transactions))
 	}
 	raw, err := json.Marshal(blk)
 	if err != nil {

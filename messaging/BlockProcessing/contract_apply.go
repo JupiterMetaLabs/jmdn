@@ -193,6 +193,20 @@ func applyContractTx(
 	}
 	adoptCarriedNonce(span_ctx, stage, &sender, accountNonces)
 
+	// 7.5 Commit contract state AFTER the fold + all deterministic checks (fold
+	//     conservation/solvency, block-carried ART identity, stale nonce) have
+	//     passed, but BEFORE the account atomic apply (NEW-2: commit-after-fold).
+	//     The executor deferred this commit; running it here means a rejected block
+	//     never leaves orphaned contract writes (the old order committed inside
+	//     ExecuteTx, so any later failure orphaned a rejected block's contract
+	//     state). A commit I/O failure is non-deterministic → fail the block; no
+	//     account state has been committed yet, so nothing is left inconsistent.
+	if res.Success && res.CommitState != nil {
+		if _, cErr := res.CommitState(); cErr != nil {
+			return fail("contract tx %s: commit contract state: %w", tx.Hash.Hex(), cErr)
+		}
+	}
+
 	// 8. Commit: accounts + tx_processed marker via the atomic primitive.
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
 		return fail("contract tx %s atomic commit failed: %w", tx.Hash.Hex(), err)

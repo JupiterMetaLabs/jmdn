@@ -181,16 +181,13 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 		return res, nil
 	}
 
-	// Success: commit contract state (deterministic root) and report absolute
-	// balance changes for the caller to fold + apply.
-	root, commitErr := cdb.CommitToDB(false)
-	if commitErr != nil {
-		// Commit I/O failure is non-deterministic — fail the block (function error),
-		// not a revert, so nodes don't diverge on a per-node write failure.
-		return &execbridge.ExecResult{Handled: true, Success: false},
-			fmt.Errorf("evmexec: commit contract state for tx %s: %w", tx.Hash.Hex(), commitErr)
-	}
-
+	// Success: report the absolute balance changes for the caller to fold + apply,
+	// and DEFER the contract-state commit (NEW-2: commit-after-fold). Committing here
+	// — before the caller's fold + atomic account apply — orphans contract state if any
+	// later step fails (non-conservation, missing block-carried ART identity,
+	// atomic-commit I/O): the rejected block's contract writes stay durably applied.
+	// GetBalanceChanges reads the in-memory dirty objects, so it is valid BEFORE the
+	// commit; CommitToDB is invoked by the caller only after ApplyTxAtomic succeeds.
 	changes := make(map[common.Address]*big.Int)
 	for addr, bal := range cdb.GetBalanceChanges() {
 		if bal != nil {
@@ -199,8 +196,8 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 	}
 
 	res.Success = true
-	res.StateRoot = root
 	res.BalanceChanges = changes
+	res.CommitState = func() (common.Hash, error) { return cdb.CommitToDB(false) }
 	if isCreate {
 		res.ContractAddress = exec.ContractAddr
 	}

@@ -65,6 +65,15 @@ type ExecResult struct {
 	StateRoot       common.Hash                 // deterministic post-exec contract-state root (Phase 4)
 	Logs            []*gethtypes.Log            // EVM logs, persisted with the receipt by the apply path
 	Err             error
+
+	// CommitState durably commits the contract-state changes produced by this
+	// execution and returns the deterministic post-commit root. It is set only on a
+	// successful, non-reverted execution (nil otherwise). NEW-2 (commit-after-fold):
+	// the caller MUST invoke it only AFTER the account fold + atomic apply commit, so
+	// a downstream failure (non-conservation, missing ART identity, atomic-commit I/O)
+	// leaves NO orphaned contract state from a rejected block. Idempotency is the
+	// caller's responsibility — invoke exactly once, on the committed path.
+	CommitState func() (common.Hash, error)
 }
 
 // ContractExecutor executes one contract transaction against durable state,

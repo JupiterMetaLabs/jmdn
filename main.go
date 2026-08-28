@@ -1212,6 +1212,24 @@ func main() {
 		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
+		// One-shot ThebeSync backfill: retro-stamp ZKBlock.AccountNonces onto blocks
+		// written before that advisory field was persisted, so catch-up can create
+		// new accounts (contract deploys, first-time receivers) from historical
+		// blocks. Reads each touched account's canonical immutable identity from the
+		// accounts store — RUN ON THE SEQUENCER (the catch-up source). Idempotent;
+		// SQL-projection only. Unset the env after it reports complete.
+		if os.Getenv("JMDN_BACKFILL_ACCOUNT_NONCES") == "1" {
+			bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			upd, skip, berr := DB_OPs.BackfillAccountNonces(bctx, db.SQL.GetDB())
+			bcancel()
+			if berr != nil {
+				log.Error().Err(berr).Int("updated", upd).Int("skipped", skip).Msg("[backfill] account-nonce backfill FAILED — some blocks still unstampable")
+			} else {
+				log.Info().Int("updated", upd).Int("skipped", skip).Msg("[backfill] account-nonce backfill complete")
+				fmt.Fprintf(os.Stderr, "backfill: account_nonces stamped on %d block(s), %d skipped\n", upd, skip)
+			}
+		}
+
 		// Genesis allocation (bootstrap / 2-node determinism gate). If
 		// JMDN_GENESIS_ALLOC names a JSON {"0xADDR":"balanceWei"} file, seed those
 		// accounts now — before any block is produced or applied — so the fleet's
