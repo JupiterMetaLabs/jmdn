@@ -265,7 +265,7 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 	})
 
 	listenerNode := &PubSubMessages.BuddyNode{VoteCRDTLayer: &voteEngine}
-	result, _, err := ProcessVotesFromCRDT(context.Background(), listenerNode, stage5BlockHash, stage5Height)
+	result, _, _, _, err := ProcessVotesFromCRDT(context.Background(), listenerNode, stage5BlockHash, stage5Height)
 	if err != nil {
 		t.Fatalf("ProcessVotesFromCRDT: %v", err)
 	}

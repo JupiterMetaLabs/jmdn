@@ -168,41 +168,46 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 // TallyBlock needs it and every call site has it available; threaded
 // unconditionally on both the legacy and v2 paths so no call site carries
 // two different signatures depending on the flag.
-func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, error) {
+func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
 	if listenerNode == nil {
 		logger().Error(logger_ctx, "Listener node not initialized", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("listener node not initialized")
+		return 0, nil, nil, nil, errors.New("listener node not initialized")
 	}
 
 	if targetBlockHash == "" {
 		logger().Error(logger_ctx, "TargetBlockHash is required for vote processing to avoid mixing votes from different blocks", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
+		return 0, nil, nil, nil, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
 	}
 
 	if voteCRDTV2Enabled {
 		return processVotesFromCRDT_v2(logger_ctx, listenerNode, targetBlockHash, height)
 	}
-	return processVotesFromCRDT_legacy(logger_ctx, listenerNode, targetBlockHash)
+	// Legacy path has no per-vote BLS signature to aggregate (types.Vote/
+	// PubSubMessages.Vote carries no signature field), so it never produces a
+	// certificate — nil, not an empty one, since "no certificate available"
+	// and "certificate with zero signers" are different states.
+	result, rejectionReasons, err := processVotesFromCRDT_legacy(logger_ctx, listenerNode, targetBlockHash)
+	return result, rejectionReasons, nil, nil, err
 }
 
 // processVotesFromCRDT_v2 is the Stage 4 read path: block-keyed CRDT via
 // avcvotes.TallyBlock, unweighted majority via MajorityDecision (Gap 2),
 // RejectionReason preserved per peer (Gap 1). Only reachable when
 // voteCRDTV2Enabled is true — see ProcessVotesFromCRDT's doc comment.
-func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, error) {
+func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
 	if listenerNode.VoteCRDTLayer == nil {
 		logger().Error(logger_ctx, "Vote CRDT layer not initialized (v2 path)", nil,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, nil, errors.New("vote CRDT layer not initialized")
+		return 0, nil, nil, nil, errors.New("vote CRDT layer not initialized")
 	}
 
 	authorized, err := authorizedCommittee()
 	if err != nil {
 		logger().Error(logger_ctx, "Failed to resolve authorized committee (v2 path)", err,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, nil, err
+		return 0, nil, nil, nil, err
 	}
 
 	tally, err := avcvotes.TallyBlock(listenerNode.VoteCRDTLayer, height, targetBlockHash, authorized)
@@ -210,7 +215,7 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		logger().Error(logger_ctx, "TallyBlock failed (v2 path)", err,
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, nil, err
+		return 0, nil, nil, nil, err
 	}
 
 	// Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): TallyBlock authenticates
@@ -262,7 +267,38 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		logger().Error(logger_ctx, "No authorized single-vote peers found in vote CRDT (v2 path)", nil,
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, rejectionReasons, errors.New("no votes found in CRDT")
+		return 0, rejectionReasons, nil, nil, errors.New("no votes found in CRDT")
+	}
+
+	// Phase 1.5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §12.5): aggregate the
+	// YES voters' already-verified signatures into a certificate, carried as
+	// additional evidence. Best-effort and non-fatal — a failure here must
+	// never fail the vote decision itself, since the sequencer does not act
+	// on this yet (deliberately deferred; see the doc's exit list).
+	cert, certErr := buildVoteCertificate(tally, single)
+	if certErr != nil {
+		logger().Error(logger_ctx, "Failed to build vote certificate (v2 path, non-fatal)", certErr,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
+
+	// §5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md): the bitmap-capable,
+	// full-validator-scale certificate (§4/§6, avcvotes.BuildVoteCertificate),
+	// alongside Phase 1.5's simpler signer-list one above — not a replacement
+	// for it. Reuses `authorized`, the same eligible set already resolved for
+	// TallyBlock above, as SnapshotOrder's input: today that's the 7-buddy
+	// committee, so this exercises the real §0->§4 pipeline end-to-end now,
+	// safely, without needing pinning — nothing downstream reads or depends
+	// on this value yet. Best-effort and non-fatal, same discipline as the
+	// certificate above: a failure here must never fail the vote decision.
+	var validatorCert *avcvotes.VoteCertificate
+	_, index := avcvotes.SnapshotOrder(authorized)
+	if built, validatorCertErr := avcvotes.BuildVoteCertificate(single, tally.Signatures, index); validatorCertErr != nil {
+		logger().Error(logger_ctx, "Failed to build validator-scale vote certificate (v2 path, non-fatal)", validatorCertErr,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	} else {
+		validatorCert = &built
 	}
 
 	// Gap 2: plain majority over authorized, non-equivocating votes — no
@@ -273,7 +309,7 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	if err != nil {
 		logger().Error(logger_ctx, "MajorityDecision failed (v2 path)", err,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, rejectionReasons, err
+		return 0, rejectionReasons, cert, validatorCert, err
 	}
 
 	logger().Debug(logger_ctx, "Vote decision (v2 path)",
@@ -282,9 +318,9 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		ion.String("function", "Structs.processVotesFromCRDT_v2"))
 
 	if accepted {
-		return 1, rejectionReasons, nil
+		return 1, rejectionReasons, cert, validatorCert, nil
 	}
-	return -1, rejectionReasons, nil
+	return -1, rejectionReasons, cert, validatorCert, nil
 }
 
 // verifyTallySignatures is Stage 5 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §7): it

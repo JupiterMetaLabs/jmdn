@@ -23,6 +23,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -1647,10 +1648,12 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// before the vote has been replicated into the buddy's CRDT via pubsub.
 	var result int8
 	var rejectionReasons map[string]string
+	var voteCertificate *Structs.VoteCertificate
+	var validatorCertificate *avcvotes.VoteCertificate
 	var err error
 	const maxCRDTAttempts = 3
 	for attempt := 1; attempt <= maxCRDTAttempts; attempt++ {
-		result, rejectionReasons, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash, targetBlockNumber)
+		result, rejectionReasons, voteCertificate, validatorCertificate, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash, targetBlockNumber)
 		if err == nil {
 			break
 		}
@@ -1727,6 +1730,22 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		"result":            result,
 		"bls":               blsResp,
 		"rejection_reasons": rejectionReasons,
+	}
+	// Phase 1.5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §12.5): carried as
+	// additional evidence only — omitted entirely (not sent as null) when the
+	// v2 path didn't produce one, e.g. flag off or zero YES voters. The
+	// sequencer does not read this key yet; parseVoteResultResponse
+	// unmarshals into map[string]interface{} and only looks up keys it
+	// knows about, so adding it here is safe with zero sequencer-side change.
+	if voteCertificate != nil {
+		resultData["certificate"] = voteCertificate
+	}
+	// §5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md): the bitmap-capable,
+	// full-validator-scale certificate (§4/§6), under its own key so it never
+	// collides with Phase 1.5's simpler "certificate" above — same additive,
+	// omit-when-nil discipline. No sequencer-side code reads this key yet.
+	if validatorCertificate != nil {
+		resultData["validator_certificate"] = validatorCertificate
 	}
 
 	resultJSON, err := json.Marshal(resultData)
