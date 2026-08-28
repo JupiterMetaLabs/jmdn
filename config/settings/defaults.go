@@ -182,10 +182,17 @@ func DefaultConfig() NodeConfig {
 			// lookup and silently fall back to SaltSource - the wrong-entropy
 			// bug, not a loud failure. The fix is to split committee.SeedInput
 			// into EntropyEpoch (slot-based) and the selection period
-			// (block-based); until that lands, 1 is only safe while the beacon
-			// is NOT installed (i.e. JMDN_AVC_VDF_MODULUS_HEX /
+			// (block-based); until that lands, a non-zero value is only safe
+			// while the beacon is NOT installed (i.e. JMDN_AVC_VDF_MODULUS_HEX /
 			// JMDN_AVC_VDF_DIFFICULTY_T unset - see Sequencer.InstallAVCBeaconFromEnv).
-			CommitteeEpochBlocks: 1,
+			// The avc-a3 merge brings that beacon in-tree, so keeping 1 would be
+			// the silent wrong-entropy fallback described above. The default is
+			// therefore 0 ("one epoch": EpochForHeight returns 0 for every
+			// height), which the Stage-1 SeedSource ignores - the safe,
+			// test-guarded default (TestEpochIsDerivedFromTheBlockNotTheClock).
+			// Activating a real block-based epoch length is a deliberate,
+			// network-wide coordinated change, not a default.
+			CommitteeEpochBlocks: 0,
 			// W1 pool pinning: OFF. Needs a source that can serve a past epoch,
 			// and a non-zero committee_epoch_blocks. See config.go.
 			RequirePinnedCommittee: false,
