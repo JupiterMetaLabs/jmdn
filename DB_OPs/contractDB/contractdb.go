@@ -63,6 +63,16 @@ type ContractDB struct {
 	accountSrc AccountReader
 	dbErr      error
 
+	// lazyDBErr is the sticky read error from the LAZY storage/code load paths
+	// (getState/getCommittedState -> loadStorage, and getCode). Those paths run
+	// OUTSIDE getStateObject's write lock, and via CommitToDB -> isEmpty ->
+	// getCodeHash -> getCode they can also run while c.lock is already held, so a
+	// dedicated mutex is used instead of the non-reentrant c.lock. Folded into
+	// DBError() alongside dbErr so a genuine storage/code read failure aborts the
+	// tx/block fail-closed (EVM-A16 parity with the balance/nonce read path).
+	lazyDBErr   error
+	lazyDBErrMu sync.Mutex
+
 	// In-memory account cache
 	stateObjects map[common.Address]*stateObject
 
@@ -427,13 +437,26 @@ func (c *ContractDB) GetSelfDestruction(_ common.Address) bool             { ret
 
 // HasCode returns true if the given address has contract bytecode stored in the
 // shared KVStore.  This is a cheap read-only check that avoids the overhead of
-// spinning up a full ContractDB / StateDB.  Returns false on any error.
+// spinning up a full ContractDB / StateDB.  Returns false when the store is
+// uninitialised or the address holds no code; a GENUINE backend read error
+// fails closed (returns true) so the tx routes to the EVM apply path and
+// aborts there via the sticky dbErr — see the err != nil branch below.
 func HasCode(addr common.Address) bool {
 	if sharedKVStore == nil {
 		return false
 	}
 	val, err := sharedKVStore.Get(makeCodeKey(addr))
-	return err == nil && len(val) > 0
+	if err != nil {
+		// Fail closed (EVM-A16). The KVStore contract is not-found = (nil, nil), so
+		// a non-nil err is ALWAYS a genuine backend read failure, never absence.
+		// Returning false here would let a transient local read degrade a contract
+		// CALL onto the plain value-transfer path (via IsContractTx) on only the
+		// erroring node -> silent chain split. Report presence=true instead so the
+		// tx is routed to the EVM apply path, where ContractDB.getCode re-hits the
+		// same read error, sets the sticky lazyDBErr, and DBError() aborts the block.
+		return true
+	}
+	return len(val) > 0
 }
 
 // GetCodeBytes returns the raw bytecode for a contract from the shared KVStore.

@@ -231,6 +231,47 @@ CREATE INDEX IF NOT EXISTS idx_l1_finality_block_numbers
 
 CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
     ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
+
+-- ================================================================
+-- Append-only enforcement (PostgreSQL RULEs)
+-- Hard-block UPDATE and DELETE on every append-only table so the SQL
+-- projection cannot be mutated out from under the canonical KV log.
+-- These previously lived only in migrations/000001_init_schema.up.sql,
+-- which has no migration runner and never executed — so they are declared
+-- here, in the DDL GetMigration() actually returns at startup.
+-- CREATE OR REPLACE RULE is idempotent, matching the IF NOT EXISTS style.
+-- PostgreSQL-only syntax; this projection schema is PostgreSQL-only.
+-- 'accounts' is intentionally excluded — it is the one mutable table.
+-- ================================================================
+CREATE OR REPLACE RULE rule_blocks_no_update AS
+    ON UPDATE TO blocks DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_blocks_no_delete AS
+    ON DELETE TO blocks DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_snapshots_no_update AS
+    ON UPDATE TO snapshots DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_snapshots_no_delete AS
+    ON DELETE TO snapshots DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_transactions_no_update AS
+    ON UPDATE TO transactions DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_transactions_no_delete AS
+    ON DELETE TO transactions DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_zk_proofs_no_update AS
+    ON UPDATE TO zk_proofs DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_zk_proofs_no_delete AS
+    ON DELETE TO zk_proofs DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_l1_finality_no_update AS
+    ON UPDATE TO l1_finality DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
+    ON DELETE TO l1_finality DO INSTEAD NOTHING;
 `
 
 // migrationSQL003 is the Phase 8 DDL for the contracts registry table.

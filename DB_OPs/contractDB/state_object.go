@@ -111,7 +111,15 @@ func (s *stateObject) getCode() []byte {
 			ion.Bool("found", err == nil && len(val) > 0),
 		)
 	}
-	if err == nil && len(val) > 0 {
+	if err != nil {
+		// repo.GetCode maps absence/tombstone to (nil, nil); a non-nil err is a
+		// GENUINE backend read failure. Fail closed (EVM-A16): record the sticky
+		// error so the executor's DBError() check aborts the block. Returning nil
+		// (empty code) on a transient local read error would fork state fleet-wide.
+		s.db.recordLazyDBError(err)
+		return nil
+	}
+	if len(val) > 0 {
 		s.code = val
 		s.data.CodeHash = crypto.Keccak256(val)
 		return s.code
@@ -184,6 +192,11 @@ func (s *stateObject) getCommittedState(key common.Hash) common.Hash {
 func (s *stateObject) loadStorage(key common.Hash) common.Hash {
 	val, err := s.db.repo.GetStorage(context.Background(), s.address, key)
 	if err != nil {
+		// repo.GetStorage maps key-absence/tombstone to (zero, nil); a non-nil err is
+		// a GENUINE backend read failure. Fail closed (EVM-A16): record the sticky
+		// error so the executor's DBError() check aborts the block. Returning a zero
+		// slot on a transient local read error would fork state fleet-wide.
+		s.db.recordLazyDBError(err)
 		return common.Hash{}
 	}
 	return val

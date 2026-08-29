@@ -249,6 +249,17 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	if req.Did == "" || req.PublicKey == "" {
 		return nil, status.Error(codes.InvalidArgument, "DID and public key are required")
 	}
+	// Validate the public key is a well-formed 20-byte hex address BEFORE
+	// common.HexToAddress, which otherwise silently pads/truncates malformed
+	// input and would let junk be registered (SEC audit: DID spoofing/squatting).
+	// NOTE (follow-up, requires a wire change): this does NOT yet prove the
+	// caller controls the key. Full anti-squatting needs a signature over the
+	// DID by the claimed key — add a `signature` field to RegisterDIDRequest
+	// (DID/proto/DID.proto) and verify it here with crypto.SigToPub/ecrecover
+	// before storeAccount. Tracked as the DID ownership-proof hardening item.
+	if !common.IsHexAddress(req.PublicKey) {
+		return nil, status.Error(codes.InvalidArgument, "public key must be a valid 20-byte hex address")
+	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Check if account already exists

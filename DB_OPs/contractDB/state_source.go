@@ -44,14 +44,42 @@ func NewContractDBWithAccountSource(src AccountReader, repo StateRepository) *Co
 // never be committed.
 func (c *ContractDB) DBError() error {
 	c.lock.RLock()
-	defer c.lock.RUnlock()
-	return c.dbErr
+	e := c.dbErr
+	c.lock.RUnlock()
+	if e != nil {
+		return e
+	}
+	// Fold in the lazy storage/code read error (guarded by its own mutex — see
+	// recordLazyDBError for why it cannot share c.lock).
+	c.lazyDBErrMu.Lock()
+	defer c.lazyDBErrMu.Unlock()
+	return c.lazyDBErr
 }
 
 // setDBError records the first sticky read error. Caller MUST hold c.lock (write).
 func (c *ContractDB) setDBError(err error) {
 	if c.dbErr == nil {
 		c.dbErr = err
+	}
+}
+
+// recordLazyDBError records the first sticky read error from the LAZY storage/
+// code load paths (getState/getCommittedState -> loadStorage, and getCode). A
+// nil err is ignored. It uses a dedicated mutex — NOT c.lock — because those
+// paths may run while c.lock is already held (CommitToDB -> isEmpty ->
+// getCodeHash -> getCode) and c.lock is a non-reentrant RWMutex; taking it here
+// would deadlock. The error is folded into DBError() so the executor's
+// post-execution check aborts the tx/block fail-closed, exactly like the
+// balance/nonce read path (EVM-A16). Only a GENUINE backend failure reaches
+// here: the repo/KVStore map key-absence to a zero value with nil error.
+func (c *ContractDB) recordLazyDBError(err error) {
+	if err == nil {
+		return
+	}
+	c.lazyDBErrMu.Lock()
+	defer c.lazyDBErrMu.Unlock()
+	if c.lazyDBErr == nil {
+		c.lazyDBErr = err
 	}
 }
 

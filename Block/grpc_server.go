@@ -16,6 +16,8 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
+	"gossipnode/config/settings"
+	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"
@@ -160,11 +162,25 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	// Create a new gRPC server with increased max message size for blocks
-	grpcServer := grpc.NewServer(
+	// Create a secure gRPC server via the gatekeeper helper (TLS + rate limiting
+	// + auth policy for the block_ingest_grpc service), mirroring CLI/DID. The
+	// increased max message sizes for blocks are preserved as extra options and a
+	// panic-recovery interceptor is chained so a handler panic can never crash
+	// the process.
+	l := logger()
+	secCfg := &settings.Get().Security
+	grpcServer, serverTLS, err := gatekeeper.NewSecureGRPCServer(
+		settings.ServiceBlockIngestGRPC, secCfg, l, false,
 		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB max message size for blocks
 		grpc.MaxSendMsgSize(50*1024*1024), // 50MB max send size
+		grpc.ChainUnaryInterceptor(gatekeeper.RecoveryUnaryInterceptor(l)),
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create secure gRPC server: %w", err)
+	}
+	if serverTLS == nil && l != nil {
+		l.Warn(context.Background(), "TLS is disabled for Block gRPC service", ion.String("service", settings.ServiceBlockIngestGRPC))
+	}
 
 	// Create and register the BlockServer
 	server := NewBlockServer(h, chainID)
@@ -175,8 +191,13 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Register reflection service for debugging
-	reflection.Register(grpcServer)
+	// Register reflection service for debugging — off on mainnet (production).
+	// jmdn has no explicit "production" flag; Network.Environment == "mainnet"
+	// is the safe default (see config/settings). Reflection exposes the full
+	// service/method surface, so restrict it to non-mainnet environments.
+	if settings.Get().Network.Environment != "mainnet" {
+		reflection.Register(grpcServer)
+	}
 
 	// Start the server in a goroutine
 	LocalGRO.Go(GRO.BlockGRPCServerThread, func(ctx context.Context) error {
@@ -187,7 +208,10 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 			if l := logger(); l != nil {
 				l.Error(ctx, "Failed to serve Block gRPC", err)
 			}
-			os.Exit(1)
+			// Return the error to the orchestrator for graceful handling instead
+			// of os.Exit(1), which would abort the whole process (skipping other
+			// shutdown hooks) from inside a serve goroutine.
+			return fmt.Errorf("failed to serve Block gRPC: %w", err)
 		}
 		return nil
 	})

@@ -109,3 +109,82 @@ jobs:
 
           # MODE B: uncomment the line below and comment out MODE A to enforce diff-only.
           # golangci-lint run --new-from-rev=HEAD~1
+
+  # ── Security scanning ───────────────────────────────────────────────────
+  # Additive, separate job so a security finding does not block the existing
+  # quality-gate merge path. Runs on the SAME events as quality-gate (push +
+  # PR to main / release/**; see the top-level `on:` block).
+  #
+  #   - govulncheck : known-vuln (CVE/GHSA) scan of the module + std lib.
+  #                   FAILS the job on a vuln reachable from our code — this is
+  #                   the one hard gate here (cheap to fix, high signal).
+  #   - gosec       : static SAST ruleset. NON-BLOCKING for now
+  #                   (continue-on-error) so it surfaces findings without
+  #                   breaking the build; flip continue-on-error to false once
+  #                   the initial backlog is triaged.
+  #   - gitleaks    : secret scan. Third-party action PINNED TO A COMMIT SHA
+  #                   (not a moving tag) so a compromised upstream tag cannot
+  #                   silently run new code in CI.
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    # go-ethereum needs cgo; keep it on so package loading (govulncheck/gosec)
+    # matches the real build (see Makefile: CGO_ENABLED=1).
+    env:
+      CGO_ENABLED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # gitleaks scans git history; fetch it all so old commits are covered.
+          fetch-depth: 0
+
+      # Reads the `go` directive from go.mod — same pattern as quality-gate.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ── Known-vulnerability scan (hard gate) ────────────────────────────
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+      # ── Static analysis (non-blocking for now) ──────────────────────────
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        # continue-on-error: surface findings without breaking the build yet.
+        # Remove this line (or set false) to make gosec a hard gate later.
+        continue-on-error: true
+        run: |
+          # -severity medium / -confidence medium: sensible default ruleset —
+          #   drops low-severity/low-confidence noise on first rollout.
+          # -exclude-generated: skip *.pb.go and other generated files.
+          # -exclude=G115: integer-overflow-on-conversion is extremely noisy on
+          #   a codebase full of uint64<->int block-height/index conversions;
+          #   drop this exclude once those sites are audited.
+          gosec \
+            -severity medium \
+            -confidence medium \
+            -exclude-generated \
+            -exclude=G115 \
+            ./...
+
+      # ── Secret scan (third-party action, pinned to a commit SHA) ─────────
+      # gitleaks/gitleaks-action@v2.3.9 pinned to its commit SHA.
+      # NOTE: gitleaks-action requires GITLEAKS_LICENSE for ORGANIZATION-owned
+      # repos (it is free only for personal public repos). Add the license as a
+      # repo/org secret named GITLEAKS_LICENSE if this repo is org-owned, or
+      # swap this step for the gitleaks binary (`gitleaks detect --source .`)
+      # if you do not want the licensed action.
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

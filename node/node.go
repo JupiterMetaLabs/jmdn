@@ -104,7 +104,9 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 	config.PeerID = peerID.String()
 	config.PrivKeyB64 = privKeyB64
 
-	file, err := os.Create(peerFile)
+	// peer.json holds the node's marshaled private key — restrict to owner-only
+	// (0600) instead of the world-readable 0644 that os.Create would apply.
+	file, err := os.OpenFile(peerFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create peer.json: %v", err)
 	}

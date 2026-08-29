@@ -171,8 +171,14 @@ func write(c *gin.Context, resp Response) {
 
 func withCORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Headers", "content-type")
+		// Previously reflected "*" for any origin. Restrict to loopback origins
+		// (echoing the specific Origin so it composes with credentialed requests).
+		// TODO: source an explicit allowlist from config once a field exists.
+		if origin := c.Request.Header.Get("Origin"); isLoopbackOrigin(origin) {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Headers", "content-type")
+		}
 		if c.Request.Method == http.MethodOptions {
 			c.Status(204)
 			c.Abort()

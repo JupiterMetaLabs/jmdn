@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"gossipnode/metrics"
@@ -18,7 +19,11 @@ import (
 // HandleMessageStream processes incoming messages (TCP)
 func HandleMessageStream(s network.Stream) {
 	defer s.Close()
-	reader := bufio.NewReader(s)
+	// Bound the read: cap the size (remote-OOM guard) and set a deadline so a
+	// slow/idle peer cannot hold the stream open forever. Mirrors the bounded
+	// direct block stream in blockPropagation.go (shared package constants).
+	_ = s.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
+	reader := bufio.NewReader(io.LimitReader(s, maxBlockStreamBytes))
 	msg, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Println("Error reading message:", err)

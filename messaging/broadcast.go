@@ -117,8 +117,11 @@ func HandleBroadcastStream(stream network.Stream) {
 	// Record metrics
 	metrics.MessagesReceivedCounter.WithLabelValues("broadcast", stream.Conn().RemotePeer().String()).Inc()
 
-	// Read the incoming message
-	reader := bufio.NewReader(stream)
+	// Bound the read: cap the size (remote-OOM guard) and set a deadline so a
+	// slow/idle peer cannot hold the stream open forever. Mirrors the bounded
+	// direct block stream in blockPropagation.go (shared package constants).
+	_ = stream.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
+	reader := bufio.NewReader(io.LimitReader(stream, maxBlockStreamBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil {
 		if err != io.EOF {

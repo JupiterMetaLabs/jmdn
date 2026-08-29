@@ -48,7 +48,12 @@ func _GetBlockByNumber(ctx context.Context, req *proto.GetBlockByNumberReq) (*pr
 func _GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
-	if reqHash[0:2] == "0x" {
+	// Guard against an empty/short hash: slicing reqHash[0:2] panics when
+	// req.Hash is empty (reqHash == ""). Reject before any indexing.
+	if len(reqHash) == 0 {
+		return nil, fmt.Errorf("block hash is required")
+	}
+	if len(reqHash) >= 2 && reqHash[0:2] == "0x" {
 		reqHash = reqHash[2:]
 	}
 
@@ -69,7 +74,12 @@ func _GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.
 func _GetTransactionByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Transaction, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
-	if reqHash[0:2] == "0x" {
+	// Guard against an empty/short hash: slicing reqHash[0:2] panics when
+	// req.Hash is empty (reqHash == ""). Reject before any indexing.
+	if len(reqHash) == 0 {
+		return nil, fmt.Errorf("transaction hash is required")
+	}
+	if len(reqHash) >= 2 && reqHash[0:2] == "0x" {
 		reqHash = reqHash[2:]
 	}
 

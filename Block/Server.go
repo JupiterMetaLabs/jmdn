@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -33,6 +34,28 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// isAllowedHTTPOrigin reports whether a browser Origin may be reflected in the
+// CORS Access-Control-Allow-Origin header. Defaults to loopback only; an empty
+// Origin (non-browser client) is treated as not-a-CORS-request and returns false
+// so no CORS header is emitted.
+//
+// TODO: replace with a config-driven allowlist when that field exists.
+func isAllowedHTTPOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
 
 // addrHex safely converts a *common.Address to its hex string.
 // Returns the fallback string when the pointer is nil (e.g. contract creation has To == nil).
@@ -384,10 +407,17 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {
-		// CORS headers
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+		// CORS headers. Previously this reflected "*" alongside an Authorization
+		// header on state-mutating POSTs, letting any web origin drive the API.
+		// Restrict to loopback origins by default (echoing the specific Origin so
+		// it composes with credentialed requests, which browsers forbid under "*").
+		// TODO: source an explicit allowlist from config once a field exists.
+		if origin := c.Request.Header.Get("Origin"); isAllowedHTTPOrigin(origin) {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)

@@ -10,12 +10,47 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"
 )
+
+// allowedWSOrigin restricts websocket upgrades to loopback origins to close the
+// previous always-true CheckOrigin (which allowed cross-site WebSocket hijacking
+// from any web page). Non-browser clients (curl, native ws libraries) send no
+// Origin header and are still allowed.
+//
+// TODO: source an explicit allowlist from config (e.g. a future
+// security.allowed_origins list) so operators can permit their own dashboards;
+// until that field exists, default to loopback only.
+func allowedWSOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser client, no Origin to check
+	}
+	return isLoopbackOrigin(origin)
+}
+
+// isLoopbackOrigin reports whether a browser Origin URL points at loopback.
+// Shared by the WS upgrade check and the HTTP CORS middleware in this package.
+func isLoopbackOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
 
 var FacadeLocalGRO interfaces.LocalGoroutineManagerInterface
 
@@ -28,7 +63,7 @@ type WSServer struct {
 func NewWSServer(h *Handlers, be Service.Service) *WSServer {
 	return &WSServer{
 		h: h, be: be,
-		upg: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
+		upg: websocket.Upgrader{CheckOrigin: allowedWSOrigin},
 	}
 }
 

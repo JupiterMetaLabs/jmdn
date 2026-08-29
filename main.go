@@ -942,6 +942,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
+	// any fail-open consensus hardening flag has been disabled. "Production" here
+	// = strict_posture set OR mainnet environment. The flags default ON; this
+	// only fires when an operator explicitly turned one off (e.g. via a
+	// JMDN_* env var) on a production node. Fail-closed by design.
+	productionPosture := cfg.Security.StrictPosture ||
+		strings.EqualFold(strings.TrimSpace(cfg.Network.Environment), "mainnet")
+	if err := messaging.ValidateProductionConsensusPosture(productionPosture); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
 	log.Info().
 		Bool("enabled", cfg.Thebe.Enabled).
 		Str("kv_path", cfg.Thebe.KVPath).
@@ -1210,7 +1222,17 @@ func main() {
 				contractRepo,
 				func(addr common.Address) bool {
 					code, err := contractRepo.GetCode(context.Background(), addr)
-					return err == nil && len(code) > 0
+					if err != nil {
+						// EVM-A16 fail-closed: a GENUINE code-read error must NOT degrade a
+						// contract CALL onto the plain value-transfer path (silent chain
+						// split). The repo maps absence to (nil, nil), so err != nil is a
+						// real backend failure. Report presence=true to route the tx to the
+						// EVM apply path, where the SAME contractRepo is read again by
+						// ContractDB.getCode: it re-hits this error, sets the sticky lazy
+						// dbErr, and the executor's DBError() check aborts the block.
+						return true
+					}
+					return len(code) > 0
 				},
 			)
 			// P4: fold contract state into the P2.5 fingerprint so the

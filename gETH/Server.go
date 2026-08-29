@@ -9,8 +9,10 @@ import (
 	"syscall"
 
 	"gossipnode/config/GRO"
+	"gossipnode/config/settings"
 	"gossipnode/gETH/common"
 	"gossipnode/gETH/proto"
+	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"
@@ -45,10 +47,23 @@ func StartGRPC(port int, chainID int) error {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	// Create a new gRPC server with default options
-	grpcServer := grpc.NewServer(
-		grpc.MaxRecvMsgSize(10 * 1024 * 1024), // 10MB max message size
+	// Create a secure gRPC server via the gatekeeper helper (TLS + rate limiting
+	// + auth policy for the eth_grpc service), mirroring CLI/DID. The previous
+	// max-recv-size option is preserved as an extra option, and a panic-recovery
+	// interceptor is chained so a handler panic can never crash the process.
+	l := logger()
+	secCfg := &settings.Get().Security
+	grpcServer, serverTLS, err := gatekeeper.NewSecureGRPCServer(
+		settings.ServiceEthGRPC, secCfg, l, false,
+		grpc.MaxRecvMsgSize(10*1024*1024), // 10MB max message size
+		grpc.ChainUnaryInterceptor(gatekeeper.RecoveryUnaryInterceptor(l)),
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create secure gRPC server: %w", err)
+	}
+	if serverTLS == nil && l != nil {
+		l.Warn(context.Background(), "TLS is disabled for eth gRPC service", ion.String("service", settings.ServiceEthGRPC))
+	}
 
 	// Register the service implementation
 	server := &Server{
@@ -61,8 +76,13 @@ func StartGRPC(port int, chainID int) error {
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Register reflection service for debugging
-	reflection.Register(grpcServer)
+	// Register reflection service for debugging — off on mainnet (production).
+	// jmdn has no explicit "production" flag; Network.Environment == "mainnet"
+	// is the safe-default (see config/settings). Reflection exposes the full
+	// service/method surface, so restrict it to non-mainnet environments.
+	if settings.Get().Network.Environment != "mainnet" {
+		reflection.Register(grpcServer)
+	}
 
 	// Start the server in a goroutine
 	LocalGRO.Go(GRO.GETHgRPCThread, func(ctx context.Context) error {
