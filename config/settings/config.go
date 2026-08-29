@@ -26,6 +26,45 @@ type NodeConfig struct {
 	Consensus    ConsensusSettings  `mapstructure:"consensus"`
 	Contracts    ContractsSettings  `mapstructure:"contracts"`
 	TxStatus     TxStatusSettings   `mapstructure:"tx_status"`
+	Checkpoint   CheckpointSettings `mapstructure:"checkpoint"`
+}
+
+// CheckpointSettings controls committee-signed chain-head checkpoints — the
+// external cryptographic anchor for the ThebeDB canonical log (Option A in
+// docs/CHAIN-HEAD-ANCHOR-DESIGN.md). It is DEFAULT-OFF and additive: with
+// Enabled=false NOTHING changes at runtime — no boot integrity gate runs and the
+// sequencer signs no checkpoints, so an existing node is never affected.
+//
+// YAML:
+//
+//	checkpoint:
+//	  enabled: false
+//	  boot_fail_closed: true
+//	  cadence_blocks: 0
+//
+// Env: JMDN_CHECKPOINT_ENABLED, JMDN_CHECKPOINT_BOOT_FAIL_CLOSED,
+// JMDN_CHECKPOINT_CADENCE_BLOCKS.
+type CheckpointSettings struct {
+	// Enabled is the master switch. Default false — opt-in only. When false the
+	// boot gate is skipped entirely and no checkpoint is ever signed or stored.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// BootFailClosed only matters when Enabled=true. When true (default), a boot
+	// verification ERROR (a stored checkpoint whose signature or recomputed head
+	// fails) is fatal — the node refuses to start rather than serve a tampered
+	// log. When false (debug/rollout), the same error is logged and the node
+	// continues. A fresh chain with NO checkpoint yet is never an error under
+	// either setting (expected before the first signing).
+	BootFailClosed bool `mapstructure:"boot_fail_closed" yaml:"boot_fail_closed"`
+
+	// CadenceBlocks controls how often the sequencer signs a checkpoint. 0 (the
+	// default) means "per selection epoch" (sign at each committee-epoch
+	// boundary via messaging.EpochForHeight). A non-zero N means "every N
+	// committed blocks". NOTE: with consensus.committee_epoch_blocks=0 (the
+	// shipped default) every height maps to epoch 0, so per-epoch cadence fires
+	// only at genesis — an operator enabling checkpoints should set a non-zero
+	// cadence_blocks (or a real committee_epoch_blocks).
+	CadenceBlocks uint64 `mapstructure:"cadence_blocks" yaml:"cadence_blocks"`
 }
 
 // TxStatusSettings controls transaction-status resolution for transactions that

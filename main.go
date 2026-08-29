@@ -23,6 +23,7 @@ import (
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
+	checkpointpkg "github.com/JupiterMetaLabs/ThebeDB/pkg/checkpoint"
 	thebeconfig "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
@@ -1151,6 +1152,12 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
+	// Captured ThebeDB canonical KV handle, used AFTER the committee-eligibility
+	// source is wired to run the chain-head checkpoint boot gate + signing hook
+	// (config checkpoint.*). nil unless ThebeDB is enabled; the checkpoint block
+	// below no-ops when nil, so this changes nothing when the feature is off.
+	var checkpointKV kv.Store
+
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
 		fmt.Fprintf(os.Stderr, "thebedb: init — kv_path=%s dsn=%s\n", cfg.Thebe.KVPath, maskDSN(cfg.Thebe.SQLDSN))
@@ -1179,6 +1186,11 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
 		defer db.Close()
+
+		// Capture the canonical KV handle for the chain-head checkpoint boot gate
+		// + signing hook wired later (after the committee-eligibility source is
+		// available). db.KV is the same kv.Store the checkpoint funcs operate on.
+		checkpointKV = db.KV
 
 		// Wire CDC if enabled.
 		// IMPORTANT: pass cfg.Thebe.SQLDSN (direct Postgres DSN), never PgBouncer —
@@ -1792,6 +1804,46 @@ func main() {
 			))
 			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}
+	}
+
+	// ── Committee-signed chain-head checkpoints (Option A anchor) ─────────────
+	// DEFAULT-OFF: with checkpoint.enabled=false this whole block is a no-op —
+	// no boot gate runs and no signing is wired, so an existing node is
+	// unaffected. Placed here (not right after the KV handle) deliberately: the
+	// boot verifier resolves committee keys via messaging.AuthorizedCommittee,
+	// which needs the committee-eligibility source wired above.
+	//
+	// Boot gate: verify the recomputed canonical head against the latest
+	// committee-signed checkpoint (full walk from seq 0 — the "existing data
+	// anchored for free" property). fail-closed policy is config-gated.
+	//   - error         → log.Fatal when boot_fail_closed, else log.Error+continue
+	//   - (false, nil)  → no checkpoint yet (expected before first signing): info
+	//   - (true, nil)   → verified: info
+	if cfg.Checkpoint.Enabled && checkpointKV != nil {
+		// Sequencer discriminator: enable_catchup==false marks the authoritative
+		// producer (same discriminator the sync monitor + committee-source wiring
+		// use). Only the sequencer signs.
+		isSequencer := !cfg.FastSync.EnableCatchup
+
+		verifier := messaging.CheckpointSigVerifier()
+		if verified, verr := checkpointpkg.BootVerify(context.Background(), checkpointKV, verifier); verr != nil {
+			if cfg.Checkpoint.BootFailClosed {
+				log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its committee-signed checkpoint")
+			}
+			log.Error().Err(verr).Msg("[checkpoint] boot verification failed (boot_fail_closed=false) — continuing; the canonical log does NOT match its signed checkpoint")
+		} else if !verified {
+			log.Info().Msg("[checkpoint] no committee-signed checkpoint stored yet (expected before the first signing) — boot gate skipped")
+		} else {
+			log.Info().Msg("[checkpoint] boot verification passed — canonical head matches its committee-signed checkpoint")
+		}
+
+		// Wire the per-committed-block signing hook (sequencer-only; no-op on
+		// non-sequencers and when the cadence does not fire).
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String())
+		log.Info().
+			Bool("sequencer", isSequencer).
+			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
+			Msg("[checkpoint] chain-head checkpoint feature enabled")
 	}
 
 	// Initialize Yggdrasil messaging if enabled

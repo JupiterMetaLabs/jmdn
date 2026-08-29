@@ -89,6 +89,13 @@ func Load() (*NodeConfig, error) {
 		"tx_status.breaker_failure_threshold": "JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD",
 		"tx_status.breaker_cooldown":          "JMDN_TX_STATUS_BREAKER_COOLDOWN",
 		"tx_status.pending_tx_by_hash":        "JMDN_TX_STATUS_PENDING_TX_BY_HASH",
+		// Chain-head checkpoint feature (default-off). Bound explicitly for the
+		// same reason as tx_status/security: AutomaticEnv does not reach nested
+		// keys through Unmarshal, so JMDN_CHECKPOINT_ENABLED=true would silently
+		// do nothing otherwise.
+		"checkpoint.enabled":          "JMDN_CHECKPOINT_ENABLED",
+		"checkpoint.boot_fail_closed": "JMDN_CHECKPOINT_BOOT_FAIL_CLOSED",
+		"checkpoint.cadence_blocks":   "JMDN_CHECKPOINT_CADENCE_BLOCKS",
 	} {
 		if err := v.BindEnv(key, env); err != nil {
 			return nil, fmt.Errorf("binding %s: %w", env, err)
@@ -310,6 +317,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tx_status.breaker_failure_threshold", d.TxStatus.BreakerFailureThreshold)
 	v.SetDefault("tx_status.breaker_cooldown", d.TxStatus.BreakerCooldown)
 	v.SetDefault("tx_status.pending_tx_by_hash", d.TxStatus.PendingTxByHash)
+
+	// Chain-head checkpoint (committee-signed anchor) — default-off.
+	v.SetDefault("checkpoint.enabled", d.Checkpoint.Enabled)
+	v.SetDefault("checkpoint.boot_fail_closed", d.Checkpoint.BootFailClosed)
+	v.SetDefault("checkpoint.cadence_blocks", d.Checkpoint.CadenceBlocks)
 }
 
 // mergeStructs merges src into dest generically.

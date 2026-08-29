@@ -833,6 +833,11 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 
 	maybeFinaliseCompletedEpochs(block)
 
+	// Committee-signed chain-head checkpoint (Option A anchor). No-op unless
+	// checkpoint.enabled AND this is the sequencer AND the cadence fires; a
+	// best-effort side observer that never affects the commit above.
+	maybeSignChainHeadCheckpoint(block)
+
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.
 	txindex.IndexBlockAsync(block)
