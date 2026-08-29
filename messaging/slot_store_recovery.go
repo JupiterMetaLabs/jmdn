@@ -44,6 +44,25 @@ import (
 // through the vote or propose path).
 var EnforceSlotRecoveryGate = os.Getenv("JMDN_ENFORCE_SLOT_RECOVERY_GATE") != "0"
 
+// PreSlotMigration is a ONE-TIME operator escape hatch for a chain whose
+// committed history predates the Slot/Period persistence (a tip at height > 0
+// with no persisted slot/period). Default-OFF: normal operation must keep the
+// fail-closed refusal below, which correctly catches a broken read-back or a
+// block written by a buggy version. Set JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1
+// ONLY on the single restart that migrates such a chain onto the slot
+// machinery.
+//
+// When set, a slotless tip at height H is seeded as slot = H. That is exact,
+// not a guess, for any pre-slot chain: AdvanceOnCommit folds (period+1) per
+// commit, the pre-slot era had no slot-tracked timeout certificates (period
+// was always effectively 0), and the slot clock starts at 0 at genesis, so the
+// fully-folded slot at height H is exactly H. Every node migrating the SAME
+// chain derives the SAME value (§7.1b fleet agreement holds), and while
+// H < N it lands in epoch 0 regardless — consistent with committee_epoch_blocks=0.
+// After the first post-migration commit stamps a real slot, subsequent
+// restarts recover normally and this flag is no longer needed.
+var PreSlotMigration = os.Getenv("JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION") == "1"
+
 // slotStoreReady gates consensus participation on this node. Fail-closed by
 // construction: zero value is false, so any code path that forgets to call
 // the recovery function below leaves the node correctly blocked rather than
@@ -122,7 +141,19 @@ func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 	}
 
 	if tip.BlockNumber > 0 && tip.Slot == 0 && tip.Period == 0 {
-		return fmt.Errorf("slot recovery: committed tip at height %d carries no persisted slot/period — cannot safely recover this node's epoch clock; refusing to start consensus until this is investigated", tip.BlockNumber)
+		if !PreSlotMigration {
+			return fmt.Errorf("slot recovery: committed tip at height %d carries no persisted slot/period — cannot safely recover this node's epoch clock; refusing to start consensus until this is investigated (if this chain legitimately predates slot/period persistence, run once with JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1)", tip.BlockNumber)
+		}
+		// One-time pre-slot migration: seed slot = height (see PreSlotMigration
+		// doc for why this is exact, not a guess). Seed via BlockNumber so the
+		// zero Slot field is not adopted silently.
+		if !DefaultSlotStore.SeedFromCommittedTip(tip.BlockNumber, tip.BlockNumber) {
+			return fmt.Errorf("slot recovery: pre-slot migration SeedFromCommittedTip refused — SlotStore already live (startup-ordering bug, not a data problem)")
+		}
+		log.Warn().Uint64("tip_height", tip.BlockNumber).Uint64("seeded_slot", tip.BlockNumber).
+			Msg("slot recovery: PRE-SLOT MIGRATION — tip carries no persisted slot/period; seeding slot = height (one-time, JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1). Unset this flag after the next block commits.")
+		MarkSlotStoreReady()
+		return nil
 	}
 
 	if !DefaultSlotStore.SeedFromCommittedTip(tip.Slot, tip.BlockNumber) {
