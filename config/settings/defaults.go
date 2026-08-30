@@ -200,6 +200,10 @@ func DefaultConfig() NodeConfig {
 			CommitteeStrictBoundary: false,
 			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
 			P2P:                     1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
+			// Buddy staking rewards: OPTIONAL address (empty = no reward claim),
+			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
+			RewardAddress:      "",
+			RewardSplitEnabled: false,
 		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below

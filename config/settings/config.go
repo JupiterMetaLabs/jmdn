@@ -246,6 +246,23 @@ type ConsensusSettings struct {
 	//	consensus:
 	//	  p2p: 0
 	P2P int `mapstructure:"p2p" yaml:"p2p"`
+
+	// RewardAddress is this node operator's wallet (20-byte hex, 0x-prefixed).
+	// OPTIONAL: empty = the node participates in consensus but claims no gas-fee
+	// reward (its share redistributes to buddies that DO have an address).
+	// When set and registered at the seed, the binding is IMMUTABLE — a node
+	// cannot later switch to a different address (like peer_id / alias). One
+	// address may back many nodes. See docs/STAKING-REWARDS-DESIGN.md.
+	// Validated with common.IsHexAddress at boot (see ValidateRewardAddress).
+	RewardAddress string `mapstructure:"reward_address" yaml:"reward_address"`
+
+	// RewardSplitEnabled is the master switch for buddy staking rewards: when on,
+	// the sequencer populates ZKBlock.FeeRecipients from the block's cert signers
+	// (weighted by each bound reward address's parent-state balance) and EVERY
+	// node recomputes+validates that split on receive. Consensus-critical and
+	// must be identical network-wide — coordinate the flip. Default OFF = today's
+	// behaviour (empty FeeRecipients → single coinbase credit).
+	RewardSplitEnabled bool `mapstructure:"reward_split_enabled" yaml:"reward_split_enabled"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee

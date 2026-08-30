@@ -942,6 +942,13 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	// Buddy staking rewards: the reward address is optional, but a NON-empty one
+	// must be well-formed (a malformed address would be silently padded by
+	// common.HexToAddress and could mis-credit rewards). Fail closed at boot.
+	if err := cfg.ValidateRewardAddress(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 
 	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
 	// any fail-open consensus hardening flag has been disabled. "Production" here

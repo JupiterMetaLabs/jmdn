@@ -96,6 +96,9 @@ func Load() (*NodeConfig, error) {
 		"checkpoint.enabled":          "JMDN_CHECKPOINT_ENABLED",
 		"checkpoint.boot_fail_closed": "JMDN_CHECKPOINT_BOOT_FAIL_CLOSED",
 		"checkpoint.cadence_blocks":   "JMDN_CHECKPOINT_CADENCE_BLOCKS",
+		// Buddy staking rewards (default-off). Same nested-key reason.
+		"consensus.reward_address":       "JMDN_CONSENSUS_REWARD_ADDRESS",
+		"consensus.reward_split_enabled": "JMDN_CONSENSUS_REWARD_SPLIT_ENABLED",
 	} {
 		if err := v.BindEnv(key, env); err != nil {
 			return nil, fmt.Errorf("binding %s: %w", env, err)
@@ -291,6 +294,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.committee_strict_boundary", d.Consensus.CommitteeStrictBoundary)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)
+	v.SetDefault("consensus.reward_address", d.Consensus.RewardAddress)
+	v.SetDefault("consensus.reward_split_enabled", d.Consensus.RewardSplitEnabled)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)
