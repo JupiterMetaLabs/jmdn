@@ -469,3 +469,30 @@ done, two gaps found — neither previously tracked in this file.
 - ~~Who signs the frozen snapshot when no seed authority key is configured?~~ Resolved by the design change above: the on-chain hash makes the seed node's signature unnecessary — the chain is the authority. Still open only for the case of a node that trusts neither the chain (hasn't synced) nor a seed node.
 - `consensus.committee_epoch_blocks` defaults to `0`, which degenerates the *BFT*-committee epoch concept (separate from the entropy epoch, which already works via `EpochForSlot`). Not blocking this TODO, but flagged so it isn't confused with the entropy-epoch fix above.
 - ~~Item 8's startup call site (where a real node reads its tip block at boot) was not located this session — needs a follow-up look at `main.go`/node startup sequence.~~ Resolved in the second pass, 2026-08-24: located and wired at `main.go:1299-1305`, right before `node.NewNode()`. See item 8 above for full detail.
+
+## Proposed — regional committee selection (idea captured 2026-08-26, NOT implemented)
+
+**❌ NOT STARTED — design only, captured from a conversation, not yet scoped or reviewed.**
+
+- Change committee selection so it runs **after "aexpj" is done completely** —
+  `TODO: confirm what "aexpj" refers to` (stage/process name unclear from the
+  conversation this was captured in; get this confirmed before picking the item up
+  — do not guess and start implementing against the wrong stage).
+- Once that stage completes, change the selection rule itself: instead of taking a
+  single global **top-K** (current behaviour — see `CommitteeFor(seed, snapshot, k)`
+  / `SelectCommitteeWithSize`, `committee_v2.go`), take the **top-N candidates from
+  every region**, combined via a SQL query, instead of one global cut.
+- Open, unresolved by this note (needs follow-up before implementation):
+  - Where "region" comes from — no per-validator region/geo field currently exists
+    in the eligible-set data (`Snapshot`/`committeeSnapshotFor`) as far as this
+    session verified; needs a source before a SQL query can group by it.
+  - What "N per region" is, and how it interacts with the existing overall
+    committee size (`MaxValidators`/quorum math elsewhere in this doc).
+  - Which datastore this SQL query would run against — nothing in the currently
+    verified committee-selection path (`avc/committee`, `jmdn/messaging/committee_v2.go`)
+    is SQL-backed today; this would be new infrastructure, not a query against an
+    existing table.
+- Not evaluated yet for interaction with Item 10 above (timeout-recovery quorum
+  drawing from the same committee that failed) or with the snapshot-freeze/on-chain-
+  anchor design earlier in this file — do that check before implementing, since both
+  touch "how the eligible/selected set is computed."

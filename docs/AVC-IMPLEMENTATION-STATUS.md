@@ -32,7 +32,8 @@ IMPLEMENTATION
 ├── M2b (consensus-field hash gate)    ✅ implemented, gated OFF (JMDN_M2B_HASH)
 ├── M3 (epoch calculation)             ✅ implemented, tested — see M4 tracker
 ├── M4 (entropy/RANDAO/VDF)            ⚠️ see M4-IMPLEMENTATION-STATUS.md
-│                                          (reveal+fallback logic ✅; VDF governance,
+│                                          (reveal+fallback logic ✅; VDF governance
+│                                          + block-attach ✅ closed this session;
 │                                          historical snapshot, slot-restart guard ❌)
 ├── M8 (committee multiaddr routing)   ✅ implemented (directMSG.go, message.go,
 │                                          broadcast.go carry live resolution paths)
