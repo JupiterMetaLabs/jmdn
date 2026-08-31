@@ -1839,6 +1839,28 @@ func main() {
 			messaging.SetRewardAddressSource(rewardFn)
 			log.Info().Msg("[Committee] eligibility + reward-address sources wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}
+	} else if !cfg.FastSync.EnableCatchup {
+		// SEQUENCER (enable_catchup=false, so the branch above is skipped). Wire
+		// the same two sources HERE, at startup, from the pinned snapshot.
+		//
+		// This was previously left to Sequencer.NewConsensus on the theory that
+		// the sequencer "wires its own pinned source in the block-production
+		// path". That path wires it too late: Block.processZKBlock calls
+		// attachAVCConsensusFields — which needs the reward source whenever
+		// consensus.reward_split_enabled is on — BEFORE it constructs the
+		// Consensus. The first block therefore failed with "reward-address source
+		// not configured (fail closed)" and returned 503 before NewConsensus ran,
+		// so the source was never wired for the life of the process and every
+		// later block failed identically. Block/grpc_server.go has the same
+		// inversion. NewConsensus still calls WireCommitteeSources, so this is
+		// belt-and-braces rather than a relocation.
+		if Sequencer.WireCommitteeSources(n.Host) {
+			log.Info().Msg("[Committee] eligibility + reward-address sources wired on sequencer at startup (pinned committee snapshot)")
+		} else {
+			log.Warn().
+				Bool("reward_split_enabled", cfg.Consensus.RewardSplitEnabled).
+				Msg("[Committee] sequencer has no pinned consensus.seed_authority_bls_pub (or no network.seednode) — reward-address source stays UNSET; with reward_split_enabled on, every block fails closed at attachAVCConsensusFields")
+		}
 	}
 
 	// ── Committee-signed chain-head checkpoints (Option A anchor) ─────────────
