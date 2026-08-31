@@ -19,6 +19,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/messaging"
 )
 
@@ -93,6 +94,29 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// hash, so its own certificate cannot be an input to that hash.
 	if block.BlockNumber > 0 {
 		block.PrevAggCert = messaging.CertificateForBlockAssembly(block.Slot, block.BlockNumber-1)
+	}
+
+	// R4 (buddy staking rewards, docs/STAKING-REWARDS-DESIGN.md §4) — populate
+	// FeeRecipients from the PREVIOUS block's certifiers (block.PrevAggCert, set
+	// just above), each weighted by its bound reward address's balance at the
+	// parent (N-1) committed state. Gated OFF by default: with
+	// consensus.reward_split_enabled false this is a no-op and the block keeps
+	// empty FeeRecipients (single-coinbase credit, byte-identical to today). The
+	// recipients are a PURE FUNCTION of already-agreed inputs (parent certifiers,
+	// the authenticated reward-address map, parent-state balances, the fleet-uniform
+	// StakeWeight constants), and every node recomputes+validates them on receive
+	// (R5), so the sequencer has no freedom over the split. FAIL CLOSED: any error
+	// (unset reward source, balance read, invalid bound address) aborts the block
+	// build rather than proposing a wrong/half split.
+	// Guard settings.Get() with IsLoaded() (it panics before Load()) so this stays
+	// robust to init order and so unit tests that exercise attachAVCConsensusFields
+	// without loading config still see reward-split OFF (default) — byte-identical.
+	if settings.IsLoaded() && settings.Get().Consensus.RewardSplitEnabled {
+		recipients, err := messaging.ExpectedFeeRecipients(block.PrevAggCert)
+		if err != nil {
+			return fmt.Errorf("attachAVCConsensusFields: deriving fee recipients for block %d: %w", block.BlockNumber, err)
+		}
+		block.FeeRecipients = recipients
 	}
 
 	epoch := messaging.EpochForSlot(block.Slot)

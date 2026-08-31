@@ -92,6 +92,25 @@ Constants (`config/`, consensus-critical, network-uniform): `BaselineWeight`, `W
 - Registration validation: address format; identity signature already covers it.
 - Bump the committee-snapshot version if the canonical bytes change (coordinate with jmdn's mirror + a fresh interop vector).
 
+## Enablement preconditions (enforced / to verify before flipping the switch)
+- **M2b hash binding is REQUIRED with reward-split (enforced at boot).** R5
+  recomputes `FeeRecipients` from the block's `PrevAggCert`; that is only
+  tamper-evident when `PrevAggCert` is bound into the block hash, which happens
+  only under M2b (`JMDN_M2B_HASH=1`, `Security.M2bHashEnabled`). With M2b off a
+  relay could rewrite `(PrevAggCert, FeeRecipients)` consistently and the split
+  would be accepted (a relay running a registered buddy could inflate its share).
+  main.go therefore **refuses to start** with `reward_split_enabled` on and M2b
+  off. Enable both together, network-wide.
+- **Reward coverage follows `PrevAggCert`.** `PrevAggCert` is populated only on
+  fold-window blocks (and only when the aggregate-cert path is active), so with
+  the current wiring rewards accrue on those blocks; off-window blocks derive an
+  empty split (single coinbase credit). Confirm this cadence is intended, or
+  broaden the signer source, before rollout.
+- **Catch-up threading:** the historical interlock cited catch-up not crediting
+  `FeeRecipients`. That was FastsyncV2 (retired); ThebeSync catch-up routes
+  through the same `ProcessBlockTransactions` → `SplitFee`. Confirm on a 2-node
+  catch-up test before enabling.
+
 ## Risks / open items
 - **Canonical-bytes change is a coordinated wire change** (jmdn mirror + seed must match byte-for-byte, and the committee snapshot signature covers the new field). Version-bump + interop vector required.
 - **Whale dominance / fairness:** balance-proportional weight favors rich addresses; `WeightCap` + `BaselineWeight` bound it. Revisit if undesired.

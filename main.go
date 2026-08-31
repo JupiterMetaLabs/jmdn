@@ -953,6 +953,17 @@ func main() {
 	// import config/settings) so it is stamped onto — and signed into — the peer
 	// record when this node registers with the seed. Empty = no reward claim.
 	seednode.SetRewardAddress(cfg.Consensus.RewardAddress)
+	// Reward-split safety coupling (fail-closed): the receive-path validator
+	// recomputes FeeRecipients from the block's PrevAggCert. That is only
+	// tamper-evident when PrevAggCert is bound into the block hash, which happens
+	// ONLY under M2b hash binding. With M2b off, a relay could rewrite
+	// (PrevAggCert, FeeRecipients) consistently and the split would be accepted —
+	// letting a relay running a registered buddy inflate its own share. So refuse
+	// to start with reward-split on but M2b off. See docs/STAKING-REWARDS-DESIGN.md.
+	if cfg.Consensus.RewardSplitEnabled && !Security.M2bHashEnabled {
+		fmt.Println("Refusing to start: consensus.reward_split_enabled requires M2b block-hash binding (set JMDN_M2B_HASH=1) so PrevAggCert/FeeRecipients are tamper-evident; enable them together, network-wide.")
+		os.Exit(1)
+	}
 
 	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
 	// any fail-open consensus hardening flag has been disabled. "Production" here
@@ -1805,15 +1816,23 @@ func main() {
 			log.Error().Err(err).
 				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
 		} else {
-			messaging.SetCommitteeEligibilitySource(elCli.CommitteeEligibilityAuto(
+			// Eligibility + reward-address sources from the SAME committeeSource
+			// (SAME cached, verified snapshot), so buddy staking-reward fee
+			// distribution (R4/R5) derives from the identical authenticated snapshot
+			// as vote eligibility. The reward source is a no-op unless
+			// consensus.reward_split_enabled is on; when it is, R5's recompute needs
+			// this map, and leaving it unset would (correctly) fail closed.
+			elFn, rewardFn := elCli.CommitteeSourcesAuto(
 				cfg.Consensus.SeedAuthorityBLSPub,
 				cfg.Consensus.CommitteeEpochSeconds,
 				seednode.SeedAuthPinPath(),
 				cfg.Network.SeedNode,
 				60*time.Second,
 				cfg.Consensus.CommitteeStrictBoundary,
-			))
-			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
+			)
+			messaging.SetCommitteeEligibilitySource(elFn)
+			messaging.SetRewardAddressSource(rewardFn)
+			log.Info().Msg("[Committee] eligibility + reward-address sources wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}
 	}
 

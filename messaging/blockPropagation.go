@@ -525,14 +525,16 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
 	}
 
-	// FeeRecipients is NOT bound into the canonical block hash and
-	// the catch-up (FastsyncV2) apply path does not credit it (passes nil), so a
-	// block carrying FeeRecipients would apply differently on live-vs-catch-up
-	// nodes — a silent, non-healing balance divergence (the merkle fingerprint
-	// omits it too). Until it is hash-bound AND threaded through catch-up, refuse
-	// to admit such a block so an accidental enable fails LOUD (rejected) rather
-	// than silently diverging balances.
-	if len(b.FeeRecipients) > 0 {
+	// FeeRecipients handling (buddy staking rewards, docs/STAKING-REWARDS-DESIGN.md).
+	//   - reward-split DISABLED (default): the historical interlock. FeeRecipients
+	//     is not bound into the legacy block hash and the catch-up apply path does
+	//     not credit it, so a block carrying it would diverge balances silently.
+	//     Reject LOUD so an accidental enable fails closed rather than diverging.
+	//   - reward-split ENABLED: the field is EXPECTED; it is recomputed from the
+	//     block's (certificate-verified) PrevAggCert and validated below, AFTER
+	//     verifyBlockCertificate (see the checkFeeRecipients call), so this early
+	//     interlock is skipped for a legitimately populated block.
+	if !rewardSplitEnabled() && len(b.FeeRecipients) > 0 {
 		return reject("feerecipients_unsupported",
 			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded; refusing to admit", b.BlockHash.Hex())
 	}
@@ -624,6 +626,21 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	// bls_results is a rejection, not a pass.
 	if rej := verifyBlockCertificate(msg); rej != nil {
 		return rej
+	}
+
+	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
+	// is enabled, FeeRecipients must equal the value every node independently
+	// recomputes from the block's parent certifiers (PrevAggCert), the
+	// authenticated reward-address map, and parent-state balances — a pure function
+	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
+	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
+	// block (and its PrevAggCert, which the M2b hash covers) rides a
+	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
+	// is OFF this is skipped and the historical interlock above still applies.
+	if rewardSplitEnabled() {
+		if rej := checkFeeRecipients(b); rej != nil {
+			return rej
+		}
 	}
 
 	// (Equivocation) Recorded LAST — only after the block is fully validated —

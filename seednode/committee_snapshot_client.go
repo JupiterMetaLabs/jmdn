@@ -105,6 +105,36 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds in
 	}
 }
 
+// RewardAddresses is the pinned-authority sibling of CommitteeEligibility for the
+// buddy staking-reward fee split: it returns a fail-closed source of the current
+// epoch's authenticated peer_id -> reward-address map (RewardAddrByPeer), from
+// the SAME seed snapshot, verified against the SAME pinned authority key, with
+// the SAME freshness check. Wire it into messaging.SetRewardAddressSource on the
+// sequencer (Sequencer/consensus_statemachine.go) alongside CommitteeEligibility,
+// so R4 build and R5 validate derive the split from the same authenticated
+// source. Fail-closed: an unset pin, a fetch error, a signature/pin-mismatch, or
+// a stale snapshot all return an error.
+func (c *Client) RewardAddresses(pinnedAuthorityHex string, epochSeconds int64) func() (map[string]string, error) {
+	return func() (map[string]string, error) {
+		if pinnedAuthorityHex == "" {
+			return nil, fmt.Errorf("reward-address source disabled: no pinned seed authority key (fail closed)")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		snap, err := c.FetchCommitteeSnapshot(ctx, 0) // 0 = current epoch
+		if err != nil {
+			return nil, err
+		}
+		if err := committee.VerifyCommitteeSnapshot(snap, pinnedAuthorityHex); err != nil {
+			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+		}
+		if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
+			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+		}
+		return snap.RewardAddrByPeer(), nil
+	}
+}
+
 // ---- Auto (pin-or-TOFU) committee source with caching ------------------------
 //
 // CommitteeEligibility above requires an operator to PIN the authority key. On
@@ -190,6 +220,22 @@ type committeeSource struct {
 // certificate check has a committee source instead of failing closed.
 // strictBoundary=false preserves today's behaviour exactly.
 func (c *Client) CommitteeEligibilityAuto(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration, strictBoundary bool) func(uint64, bool) (map[string]string, error) {
+	eligibility, _ := c.CommitteeSourcesAuto(configPin, epochSeconds, pinFile, seedURL, ttl, strictBoundary)
+	return eligibility
+}
+
+// CommitteeSourcesAuto is CommitteeEligibilityAuto plus a sibling reward-address
+// accessor bound to the SAME committeeSource (the SAME pin-or-TOFU authority and
+// the SAME cached, verified snapshot). Wire the first closure into
+// messaging.SetCommitteeEligibilitySource and the second into
+// messaging.SetRewardAddressSource, so buddy staking-reward fee distribution
+// (R4 build + R5 validate) is derived from the identical authenticated snapshot
+// as vote eligibility and never drifts from it. strictBoundary=false preserves
+// today's behaviour exactly.
+func (c *Client) CommitteeSourcesAuto(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration, strictBoundary bool) (
+	eligibility func(uint64, bool) (map[string]string, error),
+	rewardAddresses func() (map[string]string, error),
+) {
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
@@ -202,7 +248,7 @@ func (c *Client) CommitteeEligibilityAuto(configPin string, epochSeconds int64, 
 		ttl:            ttl,
 		strictBoundary: strictBoundary,
 	}
-	return s.eligible
+	return s.eligible, s.rewardAddresses
 }
 
 // resolveAuthority resolves the authority pubkey once (config pin, else persisted
@@ -356,4 +402,80 @@ func (s *committeeSource) serveLastGoodOr(err error) (map[string]string, error) 
 		return s.cachedSnap.BLSPubByPeer(), nil
 	}
 	return nil, err
+}
+
+// ---- Reward-address accessor (buddy staking rewards) -------------------------
+//
+// currentSnapshot / serveLastGoodSnapshotOr mirror eligible / serveLastGoodOr
+// but return the whole verified snapshot, so the reward-address accessor derives
+// the peer -> reward-address map from the SAME authenticated, TTL-cached snapshot
+// that vote eligibility uses (they share s.cachedSnap under s.mu). eligible is
+// left untouched deliberately — the vote-eligibility hot path is not modified.
+
+// currentSnapshot returns the authenticated, epoch-fresh CURRENT snapshot, using
+// the TTL cache, with the same fail-closed + serve-last-good bridge as eligible.
+// Caller holds s.mu.
+func (s *committeeSource) currentSnapshot(ctx context.Context) (*committee.CommitteeSnapshot, error) {
+	// Fast path: a recently-verified snapshot within the TTL (the SAME cache
+	// eligible warms/reads).
+	if s.cachedSnap != nil && time.Since(s.cachedAt) < s.ttl {
+		return s.cachedSnap, nil
+	}
+	authority, err := s.resolveAuthority(ctx)
+	if err != nil {
+		return s.serveLastGoodSnapshotOr(err)
+	}
+	snap, err := s.fetch(ctx, 0) // 0 = current epoch
+	if err != nil {
+		return s.serveLastGoodSnapshotOr(err)
+	}
+	if err := committee.VerifyCommitteeSnapshot(snap, authority); err != nil {
+		return s.serveLastGoodSnapshotOr(fmt.Errorf("committee snapshot rejected: %w", err))
+	}
+	if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), s.epochSeconds); err != nil {
+		return s.serveLastGoodSnapshotOr(fmt.Errorf("committee snapshot rejected: %w", err))
+	}
+	s.cachedSnap = snap
+	s.cachedAt = time.Now()
+	return snap, nil
+}
+
+// serveLastGoodSnapshotOr is serveLastGoodOr returning the whole snapshot (see
+// that method for the boundary-split reasoning and strictBoundary). Caller holds
+// s.mu.
+func (s *committeeSource) serveLastGoodSnapshotOr(err error) (*committee.CommitteeSnapshot, error) {
+	if s.cachedSnap != nil &&
+		committee.CheckSnapshotEpochFresh(s.cachedSnap.Epoch, time.Now().Unix(), s.epochSeconds) == nil {
+		if s.strictBoundary {
+			if cur := committee.EpochForTime(time.Now().Unix(), s.epochSeconds); cur != s.cachedSnap.Epoch {
+				log.Error().Err(err).
+					Uint64("cached_epoch", s.cachedSnap.Epoch).Uint64("current_epoch", cur).
+					Msg("committee source: refusing to bridge an epoch boundary with a cached snapshot (strict; fail closed)")
+				return nil, fmt.Errorf(
+					"committee source: cached snapshot is epoch %d but current epoch is %d (strict boundary; fail closed): %w",
+					s.cachedSnap.Epoch, cur, err)
+			}
+		}
+		log.Warn().Err(err).
+			Msg("committee source: serving last-good epoch-fresh snapshot for reward addresses (seed unreachable/invalid)")
+		return s.cachedSnap, nil
+	}
+	return nil, err
+}
+
+// rewardAddresses returns the authenticated peer_id -> reward-address map from
+// the SAME verified/cached CURRENT snapshot eligible uses, so the fee split (R4
+// build + R5 validate) is derived from one authenticated source. FAIL CLOSED:
+// a fetch/verify/freshness failure returns an error unless a still-epoch-fresh
+// cached snapshot can bridge a transient seed outage.
+func (s *committeeSource) rewardAddresses() (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	snap, err := s.currentSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return snap.RewardAddrByPeer(), nil
 }

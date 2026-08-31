@@ -162,14 +162,25 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
 		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
 			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
+			// Reward-address source from the SAME pinned, authenticated snapshot, so
+			// R4 (this sequencer populating block.FeeRecipients) and R5 (every node
+			// validating it) derive the fee split from one authenticated source.
+			messaging.SetRewardAddressSource(sc.RewardAddresses(pinned, cfg.Consensus.CommitteeEpochSeconds))
 		} else {
 			initErr := err
 			messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
 				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
 			})
+			messaging.SetRewardAddressSource(func() (map[string]string, error) {
+				return nil, fmt.Errorf("reward-address source: seed client init failed (fail closed): %w", initErr)
+			})
 		}
 	} else {
 		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
+		// No pinned seed snapshot => no authenticated reward-address map. Leave the
+		// reward source UNSET so that if reward_split_enabled is turned on without an
+		// authenticated committee source, R4/R5 fail closed (rewardAddressesForBlock
+		// errors) rather than silently splitting to nobody.
 	}
 
 	return c
