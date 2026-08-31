@@ -140,6 +140,22 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 			rec.ExtraData["account_nonces"] = string(raw)
 		}
 	}
+	// FeeRecipients: persist the FROZEN buddy-reward split (address+weight) so a
+	// block served on the sync path (ThebeSync) or re-read after a restart carries
+	// the IDENTICAL split the sequencer computed. Without this, a stored/served
+	// block comes back with empty FeeRecipients and a syncing node applies NO fee
+	// credits — diverging balances from nodes that applied the split live. The
+	// weight is frozen here and NEVER recomputed from live balances, so sync is
+	// deterministic regardless of when it runs. JSON string in ExtraData; same
+	// round-trip as account_nonces. See docs/STAKING-REWARDS-DESIGN.md.
+	if len(b.FeeRecipients) > 0 {
+		if rec.ExtraData == nil {
+			rec.ExtraData = map[string]any{}
+		}
+		if raw, err := json.Marshal(b.FeeRecipients); err == nil {
+			rec.ExtraData["fee_recipients"] = string(raw)
+		}
+	}
 	// Slot/Period: persisted so a restarted node can recover its slot counter
 	// from the tip block instead of resetting to 0 - see
 	// messaging.SlotStore.SeedFromCommittedTip and

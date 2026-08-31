@@ -52,6 +52,24 @@ When building block N (sequencer only, gated by a new `consensus.reward_split_en
 ### 5. Validation on receive (consensus-safe — non-forgeable)
 Every node, on the block-validation path (alongside the existing body/cert checks in `messaging/blockPropagation.go`), **recomputes the expected `FeeRecipients`** from `(block's CertSigners, authenticated reward-address map, parent-state balances, the §3 constants)` and rejects the block if it does not match the sequencer's `FeeRecipients` (fail-closed). This closes the redirect attack: a cheating sequencer that points fees at itself is rejected fleet-wide, because recipients are a pure function of already-agreed inputs, not the sequencer's free choice.
 
+### 6b. Sync consistency — persist the FROZEN split (CONSENSUS-CRITICAL, R6)
+The weight is balance-derived, but a syncing node must NEVER recompute it from
+current (tip) balances — a reward address's balance changes over time (including
+from the rewards themselves), so recomputing against the tip diverges. The split
+is therefore FROZEN into the block: `FeeRecipients` carries `(address, weight)`,
+and every apply path (live gossip AND ThebeSync catch-up) applies it verbatim via
+`SplitFee` — no recomputation during sync.
+
+For that to hold, the carried `FeeRecipients` MUST survive storage:
+`DB_OPs/backend/block.go` `toBlockRecord` persists it to `extra_data.fee_recipients`
+(JSON), and `DB_OPs/thebe_conversions.go` `blockRecordToZKBlock` rehydrates it —
+exactly like `account_nonces`/`committee_certificate`. Without this, a
+stored/served block returns empty `FeeRecipients` and a node syncing from it (or
+restarting) applies NO fee credits → balances diverge from live-applied nodes.
+(Done in R6.) Sync-path tamper protection is the P2.5 `StateFingerprint`: a
+tampered `FeeRecipients` yields a different post-apply fingerprint → HALT (when
+contracts/fingerprint are enabled).
+
 ### 6. Distribution + persistence + reporting (existing)
 - Distribution: unchanged — `SplitFee` on apply (`Processing.go:927`) and recon (`account_recon.go:117`) consume `block.FeeRecipients`. Crediting a zero-balance address works (merge_account creates/updates), satisfying "0 JMDN still gets reward."
 - Persistence: ensure `FeeRecipients` is persisted with the block (it's a `ZKBlock` field → `toBlockRecord`; confirm it lands in a column/ExtraData that `GetBlocksByRewardAddress` reads). The reporting query already exists.

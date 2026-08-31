@@ -75,6 +75,18 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// FeeRecipients: hydrate the persisted frozen buddy-reward split so a
+	// synced/read block carries the IDENTICAL (address, weight) set the sequencer
+	// stamped, and the apply path credits the same buddies with the same shares as
+	// the live-gossip path. Absent on blocks stored before reward-split or with no
+	// split. Consensus-critical for sync consistency — see STAKING-REWARDS-DESIGN.md.
+	var feeRecipients []config.FeeRecipient
+	if fr, ok := r.ExtraData["fee_recipients"]; ok {
+		if s, ok2 := fr.(string); ok2 && s != "" {
+			_ = json.Unmarshal([]byte(s), &feeRecipients)
+		}
+	}
+
 	blk := &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
@@ -91,6 +103,7 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		CommitteeCertificate: committeeCert,
 		StateFingerprint:     stateFingerprint,
 		AccountNonces:        accountNonces,
+		FeeRecipients:        feeRecipients,
 		Transactions:         []config.Transaction{},
 	}
 	if v, ok := r.ExtraData["slot"]; ok {
