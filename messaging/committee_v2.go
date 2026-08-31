@@ -121,6 +121,30 @@ type RoundContext struct {
 // Round context from a block
 // ---------------------------------------------------------------------------
 
+// ErrPeriodNotSynced is returned by RoundContextForBlock when this node's
+// locally-derived Period (DefaultPeriodStore.PeriodFor) disagrees with the
+// Period the block itself claims (config.ZKBlock.Period, stamped by whoever
+// proposed it).
+//
+// This is not a cosmetic mismatch: Period feeds DeriveSeed's SeedInput, so
+// two nodes that silently used different Period values for the same height
+// would compute two different committees for the same round - the exact
+// failure PeriodStore's own struct-level comment warns about ("if any two
+// nodes ever disagreed on a height's period, they would compute two
+// different committees for the same round"). Fail closed instead: refuse to
+// build a RoundContext rather than guess which side is right.
+//
+// This is a LOCAL READINESS signal, not evidence the block is wrong - the
+// far more common case is this node simply hasn't yet processed/verified the
+// TimeoutCertificate that advanced Period for this height (gossip lag, a
+// node that just rejoined, a certificate still in flight). The fix on the
+// caller's side is to catch up - e.g. via the existing multi-peer
+// RequestLatestTimeoutCertificateFromPeers rejoin RPC (timeout_rejoin.go),
+// which independently re-verifies whatever it fetches before trusting it -
+// and retry, not to fall back to either side's claimed value unverified.
+var ErrPeriodNotSynced = errors.New(
+	"committee: local Period disagrees with the block's stamped Period (fail closed; this node may not have processed the certifying TimeoutCertificate yet)")
+
 // RoundContextForBlock is the ONE place a RoundContext is built from a block.
 //
 // Every certificate call site goes through it, for the same reason
@@ -130,9 +154,24 @@ type RoundContext struct {
 // The proposer's own vote path and every verifier reach identical values here,
 // because every field is read from the block itself. Nothing is read from the
 // clock. See EpochForHeight for why that matters.
-func RoundContextForBlock(b *config.ZKBlock) RoundContext {
+//
+// Returns ErrPeriodNotSynced (fail closed, see its own doc comment) instead
+// of a RoundContext when the block's own stamped b.Period disagrees with
+// this node's locally-verified DefaultPeriodStore value. b.Period == 0 is
+// treated as "caller doesn't track timeouts yet" (unchanged, pre-existing
+// convention - see RoundContext.Period's own doc comment) and is never
+// compared. The VALUE actually used, on a match, is still the local
+// DefaultPeriodStore read, never the block's bare claim - b.Period is
+// consulted only as a consistency check, never as the trusted source, so a
+// block cannot steer its own committee seed by lying about its Period.
+func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 	if b == nil {
-		return RoundContext{}
+		return RoundContext{}, nil
+	}
+	localPeriod := DefaultPeriodStore.PeriodFor(b.BlockNumber)
+	if b.Period != 0 && b.Period != localPeriod {
+		return RoundContext{}, fmt.Errorf("%w: height %d, local period %d, block claims period %d",
+			ErrPeriodNotSynced, b.BlockNumber, localPeriod, b.Period)
 	}
 	return RoundContext{
 		SelectionPeriod: SelectionPeriod(EpochForHeight(b.BlockNumber)),
@@ -144,8 +183,10 @@ func RoundContextForBlock(b *config.ZKBlock) RoundContext {
 		// TimeoutCertificate lands for this height, never from a local guess.
 		// A height with no certificate yet reads back 0, matching the
 		// pre-M0 behavior for the common case where a round never times out.
-		Period: DefaultPeriodStore.PeriodFor(b.BlockNumber),
-	}
+		// Cross-checked against the block's own stamped Period above -
+		// this is the verified local value, not the block's bare claim.
+		Period: localPeriod,
+	}, nil
 }
 
 // EpochForHeight maps a block height to the selection epoch.
@@ -326,17 +367,32 @@ func requirePinnedCommittee() bool {
 }
 
 // committeeSnapshotFor builds the pure-package snapshot from the authenticated
-// eligible set, WITHOUT the alphabetical cap.
+// eligible set, WITHOUT the alphabetical cap, PINNED BY SelectionPeriod (the
+// block-height clock, EpochForHeight) when require_pinned_committee is on.
 //
 // Dropping the cap here is F2. The cap's purpose was to make every node compute
 // the same n and therefore the same threshold; seed-ranked selection preserves
 // that property exactly, and adds rotation the cap could never have.
+//
+// Callers MUST pass a SelectionPeriod value here, never a raw EntropyEpoch —
+// the two are different clocks with different divisors (committee_epoch_blocks
+// vs the fixed 50-slot entropy window) and are not interchangeable once
+// pinning is live. See SelectEntropyCommittee's doc comment for the call site
+// this bit — it deliberately does NOT go through this function.
 func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 	eligible, err := pinnedEligibleForEpoch(epoch)
 	if err != nil {
 		return committee.Snapshot{}, err
 	}
+	return snapshotFromEligible(epoch, eligible), nil
+}
 
+// snapshotFromEligible builds the pure-package Snapshot from an
+// already-resolved eligible set — the part of committeeSnapshotFor that has
+// nothing to do with HOW the set was resolved (pinned-by-epoch, or live).
+// Shared by committeeSnapshotFor (SelectionPeriod-pinned, block committees)
+// and SelectEntropyCommittee (always-live, entropy committee).
+func snapshotFromEligible(epoch uint64, eligible map[string]string) committee.Snapshot {
 	ids := make([]string, 0, len(eligible))
 	for pid := range eligible {
 		ids = append(ids, pid)
@@ -354,7 +410,7 @@ func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 			Weight: UniformSelectionWeight,
 		})
 	}
-	return committee.Snapshot{Epoch: epoch, Members: members}, nil
+	return committee.Snapshot{Epoch: epoch, Members: members}
 }
 
 // blsKeyBytes decodes a bls_pub to raw bytes for the binding comparison, making

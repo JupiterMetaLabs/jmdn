@@ -2184,9 +2184,23 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 		blk := consensus.ZKBlockData.GetZKBlock()
+		rc, rcErr := messaging.RoundContextForBlock(blk)
+		if rcErr != nil {
+			// Fail closed - most likely this node hasn't processed the
+			// TimeoutCertificate that advanced Period for this height yet
+			// (messaging.ErrPeriodNotSynced). Proceeding with a stale local
+			// Period would silently compute the wrong committee seed for
+			// this round, which is the exact bug this check exists to catch.
+			logger().Error(trace_ctx, "refusing consensus (fail closed): round context unavailable", rcErr,
+				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			consensus.setRejectSummary(
+				"round context unavailable (this node may not have caught up to the certified period for this height yet)",
+				rcErr.Error())
+			return false
+		}
 		blockHashHex = blk.BlockHash.Hex()
 		blockHeight = blk.BlockNumber
-		roundCtx = messaging.RoundContextForBlock(blk)
+		roundCtx = rc
 	}
 
 	for _, r := range blsResults {

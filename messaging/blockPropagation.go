@@ -664,8 +664,15 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
 	// byte-identical to the previous VerifyCertificate call. The round context
 	// comes from the block, never the clock - see RoundContextForBlock.
-	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber,
-		RoundContextForBlock(msg.Block))
+	rc, rcErr := RoundContextForBlock(msg.Block)
+	if rcErr != nil {
+		// Fail closed - most likely this node hasn't processed the
+		// TimeoutCertificate that advanced Period for this height yet. See
+		// ErrPeriodNotSynced's doc comment.
+		return reject("period_not_synced",
+			"round context unavailable (fail closed): %v", rcErr)
+	}
+	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber, rc)
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

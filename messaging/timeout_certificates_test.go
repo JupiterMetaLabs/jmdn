@@ -7,6 +7,7 @@ package messaging
 //  3. the double-vote case is excluded from both tallies
 
 import (
+	"errors"
 	"testing"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
@@ -247,7 +248,10 @@ func TestRoundContextForBlockReadsPeriodStore(t *testing.T) {
 	}
 
 	block := &config.ZKBlock{BlockNumber: testHeight}
-	ctx := RoundContextForBlock(block)
+	ctx, err := RoundContextForBlock(block)
+	if err != nil {
+		t.Fatalf("RoundContextForBlock: unexpected error %v (block.Period is zero-value, should not trigger ErrPeriodNotSynced)", err)
+	}
 	if ctx.Period != 1 {
 		t.Fatalf("RoundContextForBlock.Period = %d, want 1 (still reading the hardcoded 0?)", ctx.Period)
 	}
@@ -255,7 +259,24 @@ func TestRoundContextForBlockReadsPeriodStore(t *testing.T) {
 	// A height with no certificate must still read back 0 - the common case
 	// where a round never times out must be unaffected.
 	other := &config.ZKBlock{BlockNumber: testHeight + 1}
-	if ctx := RoundContextForBlock(other); ctx.Period != 0 {
-		t.Fatalf("a height with no certificate should read Period=0, got %d", ctx.Period)
+	ctx2, err := RoundContextForBlock(other)
+	if err != nil {
+		t.Fatalf("RoundContextForBlock: unexpected error %v", err)
+	}
+	if ctx2.Period != 0 {
+		t.Fatalf("a height with no certificate should read Period=0, got %d", ctx2.Period)
+	}
+
+	// NEW: a block that STAMPS a period disagreeing with this node's local
+	// (verified) view must fail closed, not silently pick one side.
+	mismatched := &config.ZKBlock{BlockNumber: testHeight, Period: 999}
+	if _, err := RoundContextForBlock(mismatched); !errors.Is(err, ErrPeriodNotSynced) {
+		t.Fatalf("RoundContextForBlock with mismatched stamped Period: got err=%v, want ErrPeriodNotSynced", err)
+	}
+
+	// A block that stamps the SAME period as the local view must succeed.
+	matched := &config.ZKBlock{BlockNumber: testHeight, Period: 1}
+	if ctx3, err := RoundContextForBlock(matched); err != nil || ctx3.Period != 1 {
+		t.Fatalf("RoundContextForBlock with matching stamped Period: ctx=%+v err=%v, want Period=1 err=nil", ctx3, err)
 	}
 }
