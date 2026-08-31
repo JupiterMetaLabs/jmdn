@@ -265,8 +265,18 @@ CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
 -- was persisted. Every other blocks column, and every column of the other
 -- four tables, is immutable once written.
 --
+-- Every guard is ENABLE ALWAYS. At default enablement a trigger does not fire
+-- when session_replication_role = 'replica', and neither does a rule -- both
+-- mechanisms are bypassed identically by that session setting, which the DSN
+-- role (POSTGRES_USER is the cluster superuser) can set without any DDL.
+-- ENABLE ALWAYS closes it. Consequence: these guards also fire during logical
+-- replication apply and pg_restore, which run in replica mode. Those paths
+-- INSERT rather than UPDATE, so no conflict is expected -- but a restore is
+-- the thing to test if one is ever performed against a populated projection.
+--
 -- DROP RULE IF EXISTS / CREATE OR REPLACE FUNCTION / DROP TRIGGER IF EXISTS
--- + CREATE TRIGGER are all idempotent, matching the IF NOT EXISTS style.
+-- + CREATE TRIGGER + ALTER TABLE ENABLE ALWAYS are all idempotent, matching
+-- the IF NOT EXISTS style.
 -- PostgreSQL-only syntax; this projection schema is PostgreSQL-only.
 -- ================================================================
 
@@ -307,22 +317,66 @@ $jmdn_guard$;
 DROP TRIGGER IF EXISTS trg_blocks_no_update ON blocks;
 CREATE TRIGGER trg_blocks_no_update BEFORE UPDATE ON blocks
     FOR EACH ROW EXECUTE FUNCTION jmdn_guard_blocks_update();
+ALTER TABLE blocks ENABLE ALWAYS TRIGGER trg_blocks_no_update;
 
 DROP TRIGGER IF EXISTS trg_snapshots_no_update ON snapshots;
 CREATE TRIGGER trg_snapshots_no_update BEFORE UPDATE ON snapshots
     FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE snapshots ENABLE ALWAYS TRIGGER trg_snapshots_no_update;
 
 DROP TRIGGER IF EXISTS trg_transactions_no_update ON transactions;
 CREATE TRIGGER trg_transactions_no_update BEFORE UPDATE ON transactions
     FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE transactions ENABLE ALWAYS TRIGGER trg_transactions_no_update;
 
 DROP TRIGGER IF EXISTS trg_zk_proofs_no_update ON zk_proofs;
 CREATE TRIGGER trg_zk_proofs_no_update BEFORE UPDATE ON zk_proofs
     FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE zk_proofs ENABLE ALWAYS TRIGGER trg_zk_proofs_no_update;
 
 DROP TRIGGER IF EXISTS trg_l1_finality_no_update ON l1_finality;
 CREATE TRIGGER trg_l1_finality_no_update BEFORE UPDATE ON l1_finality
     FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE l1_finality ENABLE ALWAYS TRIGGER trg_l1_finality_no_update;
+
+-- TRUNCATE is invisible to rules and to row-level triggers: "TRUNCATE blocks
+-- CASCADE" walked straight through the _no_delete rules and wiped blocks,
+-- snapshots, transactions, zk_proofs and contract_receipts. Only a
+-- statement-level BEFORE TRUNCATE trigger can intercept it, which is a guard
+-- the previous rule-based design could not express at all.
+CREATE OR REPLACE FUNCTION jmdn_guard_append_only_truncate() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    RAISE EXCEPTION 'jmdn projection: %.% is append-only, TRUNCATE rejected',
+        TG_TABLE_SCHEMA, TG_TABLE_NAME
+        USING ERRCODE = 'restrict_violation';
+END
+$jmdn_guard$;
+
+DROP TRIGGER IF EXISTS trg_blocks_no_truncate ON blocks;
+CREATE TRIGGER trg_blocks_no_truncate BEFORE TRUNCATE ON blocks
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE blocks ENABLE ALWAYS TRIGGER trg_blocks_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_snapshots_no_truncate ON snapshots;
+CREATE TRIGGER trg_snapshots_no_truncate BEFORE TRUNCATE ON snapshots
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE snapshots ENABLE ALWAYS TRIGGER trg_snapshots_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_transactions_no_truncate ON transactions;
+CREATE TRIGGER trg_transactions_no_truncate BEFORE TRUNCATE ON transactions
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE transactions ENABLE ALWAYS TRIGGER trg_transactions_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_zk_proofs_no_truncate ON zk_proofs;
+CREATE TRIGGER trg_zk_proofs_no_truncate BEFORE TRUNCATE ON zk_proofs
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE zk_proofs ENABLE ALWAYS TRIGGER trg_zk_proofs_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_l1_finality_no_truncate ON l1_finality;
+CREATE TRIGGER trg_l1_finality_no_truncate BEFORE TRUNCATE ON l1_finality
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE l1_finality ENABLE ALWAYS TRIGGER trg_l1_finality_no_truncate;
 
 -- DELETE stays on rules: a DELETE rule does not disable the ON CONFLICT
 -- rewrite, and DO INSTEAD NOTHING is the cheapest possible block.
