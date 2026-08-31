@@ -30,6 +30,7 @@ message SignedPeerRecord {
   float weights = 13;                    // Peer weight value (auto-generated, only in responses)
   string bls_pub = 14;                   // BLS public key (lowercase hex) for consensus committee membership
   string bls_pop = 15;                   // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted
+  string reward_address = 16;            // Operator wallet receiving this peer's share of block fees (R1). Lowercase "0x" + 40 hex, or "" if unset. Covered by the identity signature; IMMUTABLE once bound. Must match seedNodes field number.
 }
 
 // Peer record update message
@@ -382,6 +383,7 @@ message BlockStateResponse {
 message CommitteeSnapshotEntry {
   string peer_id = 1;
   string bls_pub = 2;                     // lowercase hex
+  string reward_address = 3;              // Operator wallet paid this validator's share of block fees (R1). Lowercase "0x" + 40 hex, or "" if unset. Part of the signed canonical bytes under jmdt/committee/v2. Must match seedNodes field number.
 }
 message CommitteeSnapshot {
   uint64 epoch = 1;

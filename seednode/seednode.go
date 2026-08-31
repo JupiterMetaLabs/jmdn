@@ -632,6 +632,7 @@ func (c *Client) refreshExistingPeerBLS(h host.Host, existing *peerpb.SignedPeer
 	}
 
 	// Attach BEFORE signing so the identity signature covers bls_pub.
+	AttachRewardAddress(updated)
 	if err := AttachCommitteeBLS(updated); err != nil {
 		return fmt.Errorf("refresh bls: attach committee key: %w", err)
 	}
@@ -733,6 +734,7 @@ func (c *Client) registerNewPeerWithAlias(h host.Host, alias string) error {
 	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
 	// so the identity signature covers bls_pub. No-op unless
 	// JMDN_EMIT_COMMITTEE_BLS=1.
+	AttachRewardAddress(peerRecord)
 	if err = AttachCommitteeBLS(peerRecord); err != nil {
 		return fmt.Errorf("failed to attach committee bls key: %w", err)
 	}
@@ -858,6 +860,7 @@ func (c *Client) updateExistingPeerWithAlias(h host.Host, alias string, existing
 	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
 	// so the identity signature covers bls_pub. No-op unless
 	// JMDN_EMIT_COMMITTEE_BLS=1.
+	AttachRewardAddress(updatedPeerRecord)
 	if err = AttachCommitteeBLS(updatedPeerRecord); err != nil {
 		return fmt.Errorf("failed to attach committee bls key: %w", err)
 	}
@@ -980,6 +983,7 @@ func (c *Client) RegisterPeer(h host.Host) error {
 	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
 	// so the identity signature covers bls_pub. No-op unless
 	// JMDN_EMIT_COMMITTEE_BLS=1.
+	AttachRewardAddress(peerRecord)
 	if err = AttachCommitteeBLS(peerRecord); err != nil {
 		return fmt.Errorf("failed to attach committee bls key: %w", err)
 	}

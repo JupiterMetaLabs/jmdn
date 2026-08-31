@@ -38,6 +38,17 @@ func peerRecordCanonicalMessage(peerRecord *peerpb.SignedPeerRecord) string {
 	if peerRecord.BlsPub != "" {
 		messageParts = append(messageParts, strings.ToLower(strings.TrimSpace(peerRecord.BlsPub)))
 	}
+	// reward_address (R1): appended AFTER bls_pub and ONLY when present, lowercased
+	// + trimmed, so peers that carry neither, or only bls_pub, keep signing the
+	// exact bytes they signed before. MUST match seedNodes vrsSigner.go
+	// ValidatePeerRecordSignature in lockstep. The two optional trailing fields
+	// are unambiguous because their alphabets are disjoint: a bls_pub is bare hex
+	// (PoP-verified), a reward_address always begins "0x" (not valid hex input),
+	// so no single string is acceptable as both — see the note in the seed's
+	// reward_address.go / TestRewardAddress_DisjointFromBLSPub.
+	if peerRecord.RewardAddress != "" {
+		messageParts = append(messageParts, strings.ToLower(strings.TrimSpace(peerRecord.RewardAddress)))
+	}
 	return strings.Join(messageParts, "|")
 }
 
@@ -96,6 +107,30 @@ var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") != "0"
 // off. MUST be called BEFORE SignPeerRecord so the identity signature covers
 // bls_pub. The bls_pub is the SAME key used to sign consensus votes (loaded from
 // config/bls.json), so committee membership and vote authentication agree.
+// rewardAddress is this node's configured operator wallet, set once at startup
+// from config.Consensus.RewardAddress via SetRewardAddress (the seednode package
+// does not import config/settings, so main.go pushes the value in). Empty = the
+// node claims no reward; AttachRewardAddress is then a no-op and registration
+// stays byte-identical to a node without the field.
+var rewardAddress string
+
+// SetRewardAddress records this node's reward wallet (lowercased+trimmed). Call
+// once at startup, before registering with the seed. Idempotent.
+func SetRewardAddress(addr string) {
+	rewardAddress = strings.ToLower(strings.TrimSpace(addr))
+}
+
+// AttachRewardAddress stamps the configured reward address onto a peer record
+// BEFORE signing, so the identity signature covers it (mirrors AttachCommitteeBLS
+// for bls_pub). No-op when unset. The seed enforces immutability: once bound, a
+// later registration carrying a DIFFERENT address is rejected.
+func AttachRewardAddress(peerRecord *peerpb.SignedPeerRecord) {
+	if rewardAddress == "" {
+		return
+	}
+	peerRecord.RewardAddress = rewardAddress
+}
+
 func AttachCommitteeBLS(peerRecord *peerpb.SignedPeerRecord) error {
 	if !EmitCommitteeBLS {
 		fmt.Printf("🔑 committee bls: emission DISABLED (JMDN_EMIT_COMMITTEE_BLS off) — registering WITHOUT bls_pub\n")

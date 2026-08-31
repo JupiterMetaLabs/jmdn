@@ -949,6 +949,10 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	// Push the validated reward address into the seednode package (which does not
+	// import config/settings) so it is stamped onto — and signed into — the peer
+	// record when this node registers with the seed. Empty = no reward claim.
+	seednode.SetRewardAddress(cfg.Consensus.RewardAddress)
 
 	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
 	// any fail-open consensus hardening flag has been disabled. "Production" here

@@ -37,7 +37,11 @@ const (
 	// PoPChallengeVersion — seedNodes/pkg/peer/bls_pop.go.
 	PoPChallengeVersion = "jmdt/bls-pop/v1"
 	// CommitteeSnapshotVersion — seedNodes/pkg/peer/committee_snapshot.go.
-	CommitteeSnapshotVersion = "jmdt/committee/v1"
+	// v2 (staking rewards, R1): committee entries gained reward_address. The
+	// canonical bytes changed, so v1 and v2 signatures are NOT interchangeable —
+	// a v2 seed and a v1 jmdn reject each other outright (the intended failure
+	// mode). MUST match seedNodes pkg/peer/committee_snapshot.go byte-for-byte.
+	CommitteeSnapshotVersion = "jmdt/committee/v2"
 	// SeqAuthVersion — seedNodes/pkg/peer/sequencer_auth.go.
 	SeqAuthVersion = "jmdt/seed-auth/v1"
 
@@ -106,6 +110,13 @@ func VerifyBLSProofOfPossession(peerID, blsPubHex, blsPopHex string) error {
 type CommitteeEntry struct {
 	PeerID string `json:"peer_id"`
 	BLSPub string `json:"bls_pub"` // lowercase hex
+	// RewardAddress is the peer's bound operator wallet (lowercase "0x" + 40 hex),
+	// or "" when the peer has bound none. Empty is a legitimate value carried
+	// verbatim into the canonical bytes (three colon-separated fields ALWAYS —
+	// an unset address is a trailing colon, never dropped, never placeholdered).
+	// jmdn applies its own fallback for a signer with no address (omit from the
+	// fee split). Must match seedNodes CommitteeEntry.RewardAddress.
+	RewardAddress string `json:"reward_address"`
 }
 
 // CommitteeSnapshot mirrors the seed's authenticated, epoch-pinned eligible set.
@@ -122,7 +133,11 @@ type CommitteeSnapshot struct {
 func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 	out := make([]CommitteeEntry, len(entries))
 	for i, e := range entries {
-		out[i] = CommitteeEntry{PeerID: e.PeerID, BLSPub: strings.ToLower(strings.TrimSpace(e.BLSPub))}
+		out[i] = CommitteeEntry{
+			PeerID:        e.PeerID,
+			BLSPub:        strings.ToLower(strings.TrimSpace(e.BLSPub)),
+			RewardAddress: strings.ToLower(strings.TrimSpace(e.RewardAddress)),
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
 	return out
@@ -134,7 +149,9 @@ func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 func CanonicalCommitteeBytes(epoch uint64, seed string, entries []CommitteeEntry) []byte {
 	parts := make([]string, 0, len(entries))
 	for _, e := range sortedEntries(entries) {
-		parts = append(parts, e.PeerID+":"+e.BLSPub)
+		// Three colon-separated fields ALWAYS; an unset reward_address is a
+		// trailing colon, never dropped. Must match seedNodes byte-for-byte.
+		parts = append(parts, e.PeerID+":"+e.BLSPub+":"+e.RewardAddress)
 	}
 	return []byte(CommitteeSnapshotVersion + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + strings.Join(parts, ","))
 }
@@ -186,6 +203,25 @@ func (snap *CommitteeSnapshot) BLSPubByPeer() map[string]string {
 	m := make(map[string]string, len(snap.Entries))
 	for _, e := range snap.Entries {
 		m[e.PeerID] = strings.ToLower(strings.TrimSpace(e.BLSPub))
+	}
+	return m
+}
+
+// RewardAddrByPeer maps peer_id -> lowercase reward-address hex from the
+// snapshot — the AUTHENTICATED buddy->wallet binding the fee split is derived
+// from. A peer with no bound address is OMITTED from the map (its "" is not a
+// destination); the fee-split builder treats an absent entry as "no reward,
+// redistribute to address-having buddies". Call only on a snapshot that
+// VerifyCommitteeSnapshot accepted. Must stay consistent with the canonical
+// bytes' normalization (lowercase+trim).
+func (snap *CommitteeSnapshot) RewardAddrByPeer() map[string]string {
+	m := make(map[string]string, len(snap.Entries))
+	for _, e := range snap.Entries {
+		addr := strings.ToLower(strings.TrimSpace(e.RewardAddress))
+		if addr == "" {
+			continue
+		}
+		m[e.PeerID] = addr
 	}
 	return m
 }

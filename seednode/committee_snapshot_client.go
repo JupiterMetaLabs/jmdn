@@ -31,7 +31,7 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 	s := resp.Snapshot
 	entries := make([]committee.CommitteeEntry, 0, len(s.Entries))
 	for _, e := range s.Entries {
-		entries = append(entries, committee.CommitteeEntry{PeerID: e.PeerId, BLSPub: e.BlsPub})
+		entries = append(entries, committee.CommitteeEntry{PeerID: e.PeerId, BLSPub: e.BlsPub, RewardAddress: e.RewardAddress})
 	}
 	return &committee.CommitteeSnapshot{
 		Epoch:           s.Epoch,
