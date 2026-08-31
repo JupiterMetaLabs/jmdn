@@ -183,7 +183,14 @@ func VerifyAndRecordPrevCert(block *config.ZKBlock) {
 	prevSlot := block.Slot - (block.Period + 1)
 	prevHeight := block.BlockNumber - 1
 
-	aggSig, err := verifyCertAndAggregate(block.PrevAggCert, prevHeight, block.PrevHash.Hex(), EpochForSlot(prevSlot))
+	// EpochForHeight(prevHeight), not EpochForSlot(prevSlot): this resolves
+	// WHO WAS ON THE BLOCK-VOTING COMMITTEE at prevHeight (committeeSnapshotFor
+	// is SelectionPeriod-keyed, the block-height clock) — a different question
+	// from "what entropy epoch was prevSlot in." The two clocks have different
+	// divisors; passing the slot-based value here was resolving the wrong
+	// committee pool once pinning is live (inert today, same as everywhere
+	// else this mismatch was found — see entropy_committee.go's fix).
+	aggSig, err := verifyCertAndAggregate(block.PrevAggCert, prevHeight, block.PrevHash.Hex(), EpochForHeight(prevHeight))
 	if err != nil {
 		log.Error().Err(err).Uint64("height", block.BlockNumber).Uint64("prev_slot", prevSlot).
 			Int("signers", len(block.PrevAggCert)).

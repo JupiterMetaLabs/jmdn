@@ -89,7 +89,15 @@ func maybeFreezeUpcomingSnapshot(currentSlot uint64) {
 		return
 	}
 
-	snap, err := committeeSnapshotFor(upcoming)
+	// Deliberately NOT committeeSnapshotFor(upcoming): that function is
+	// SelectionPeriod-keyed (the block-height clock), but `upcoming` here is
+	// an EntropyEpoch-style value (EpochForSlot-derived) — a different clock
+	// with a different divisor. There is no SelectionPeriod derivable from a
+	// slot number alone at this call site, so — same reasoning and fix as
+	// SelectEntropyCommittee — the pool anchored here is always the LIVE
+	// eligible set, never pinned. Inert difference today (pinning is
+	// globally off), correct once it is not.
+	eligible, err := eligibleMembersUncapped()
 	if err != nil {
 		// No eligible source available yet, or it errored - stay unfrozen and
 		// retry on the next call (e.g. the next committed block). Matches the
@@ -100,6 +108,7 @@ func maybeFreezeUpcomingSnapshot(currentSlot uint64) {
 			Msg("committee snapshot anchor: could not freeze upcoming epoch's snapshot yet, will retry")
 		return
 	}
+	snap := snapshotFromEligible(upcoming, eligible)
 
 	frozenSnapshotHashMu.Lock()
 	defer frozenSnapshotHashMu.Unlock()
