@@ -233,42 +233,110 @@ CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
     ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
 
 -- ================================================================
--- Append-only enforcement (PostgreSQL RULEs)
+-- Append-only enforcement (DELETE = RULE, UPDATE = TRIGGER)
 -- Hard-block UPDATE and DELETE on every append-only table so the SQL
 -- projection cannot be mutated out from under the canonical KV log.
 -- These previously lived only in migrations/000001_init_schema.up.sql,
--- which has no migration runner and never executed — so they are declared
+-- which has no migration runner and never executed -- so they are declared
 -- here, in the DDL GetMigration() actually returns at startup.
--- CREATE OR REPLACE RULE is idempotent, matching the IF NOT EXISTS style.
+--
+-- WHY UPDATE USES A TRIGGER AND NOT A RULE -- load-bearing, not stylistic:
+-- PostgreSQL refuses INSERT ... ON CONFLICT against any table carrying an
+-- INSERT or UPDATE rule:
+--     INSERT with ON CONFLICT clause cannot be used with table
+--     that has INSERT or UPDATE rules
+-- Every projection insert in this package is an ON CONFLICT upsert
+-- (apply_block, apply_snapshot, apply_transaction, apply_zk_proof,
+-- apply_l1_finality), so an "ON UPDATE ... DO INSTEAD NOTHING" rule makes
+-- the node unbootable: the genesis block-0 seed fails and main.go fatals
+-- with "[genesis] block-0 seed failed -- refusing to boot". A DELETE rule
+-- does not affect the ON CONFLICT rewrite, so DELETE keeps using rules.
+--
+-- The DROP RULE statements are required, not defensive: GetMigration() has
+-- no version tracking and is executed verbatim on every startup, so any
+-- database created by a build that shipped the ON UPDATE rules still
+-- carries them. Deleting the statements from this DDL would leave existing
+-- volumes broken forever; the DROP makes recovery automatic on next boot.
+--
+-- 'accounts' is intentionally excluded -- it is the one mutable table.
+-- 'blocks' permits an extra_data-only amendment: BackfillAccountNonces
+-- (DB_OPs/backfill_account_nonces.go) retro-stamps
+-- extra_data.account_nonces onto blocks written before that advisory field
+-- was persisted. Every other blocks column, and every column of the other
+-- four tables, is immutable once written.
+--
+-- DROP RULE IF EXISTS / CREATE OR REPLACE FUNCTION / DROP TRIGGER IF EXISTS
+-- + CREATE TRIGGER are all idempotent, matching the IF NOT EXISTS style.
 -- PostgreSQL-only syntax; this projection schema is PostgreSQL-only.
--- 'accounts' is intentionally excluded — it is the one mutable table.
 -- ================================================================
-CREATE OR REPLACE RULE rule_blocks_no_update AS
-    ON UPDATE TO blocks DO INSTEAD NOTHING;
 
+-- Remove the ON UPDATE rules shipped by earlier builds. Without these the
+-- projection cannot upsert and the node cannot boot (see above).
+DROP RULE IF EXISTS rule_blocks_no_update ON blocks;
+DROP RULE IF EXISTS rule_snapshots_no_update ON snapshots;
+DROP RULE IF EXISTS rule_transactions_no_update ON transactions;
+DROP RULE IF EXISTS rule_zk_proofs_no_update ON zk_proofs;
+DROP RULE IF EXISTS rule_l1_finality_no_update ON l1_finality;
+
+-- Generic guard: any UPDATE is a bug. Fails loudly rather than silently
+-- swallowing the write the way DO INSTEAD NOTHING did.
+CREATE OR REPLACE FUNCTION jmdn_guard_append_only_update() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    RAISE EXCEPTION 'jmdn projection: %.% is append-only, UPDATE rejected',
+        TG_TABLE_SCHEMA, TG_TABLE_NAME
+        USING ERRCODE = 'restrict_violation';
+END
+$jmdn_guard$;
+
+-- blocks guard: extra_data may be amended (account-nonce backfill); every
+-- other column is immutable. Column-list agnostic by construction, so
+-- adding a blocks column does not silently widen what may be rewritten.
+CREATE OR REPLACE FUNCTION jmdn_guard_blocks_update() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    IF (to_jsonb(NEW) - 'extra_data') IS DISTINCT FROM (to_jsonb(OLD) - 'extra_data') THEN
+        RAISE EXCEPTION 'jmdn projection: blocks is append-only, only extra_data may be amended (block_number=%)',
+            OLD.block_number
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$jmdn_guard$;
+
+DROP TRIGGER IF EXISTS trg_blocks_no_update ON blocks;
+CREATE TRIGGER trg_blocks_no_update BEFORE UPDATE ON blocks
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_blocks_update();
+
+DROP TRIGGER IF EXISTS trg_snapshots_no_update ON snapshots;
+CREATE TRIGGER trg_snapshots_no_update BEFORE UPDATE ON snapshots
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+
+DROP TRIGGER IF EXISTS trg_transactions_no_update ON transactions;
+CREATE TRIGGER trg_transactions_no_update BEFORE UPDATE ON transactions
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+
+DROP TRIGGER IF EXISTS trg_zk_proofs_no_update ON zk_proofs;
+CREATE TRIGGER trg_zk_proofs_no_update BEFORE UPDATE ON zk_proofs
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+
+DROP TRIGGER IF EXISTS trg_l1_finality_no_update ON l1_finality;
+CREATE TRIGGER trg_l1_finality_no_update BEFORE UPDATE ON l1_finality
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+
+-- DELETE stays on rules: a DELETE rule does not disable the ON CONFLICT
+-- rewrite, and DO INSTEAD NOTHING is the cheapest possible block.
 CREATE OR REPLACE RULE rule_blocks_no_delete AS
     ON DELETE TO blocks DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_snapshots_no_update AS
-    ON UPDATE TO snapshots DO INSTEAD NOTHING;
 
 CREATE OR REPLACE RULE rule_snapshots_no_delete AS
     ON DELETE TO snapshots DO INSTEAD NOTHING;
 
-CREATE OR REPLACE RULE rule_transactions_no_update AS
-    ON UPDATE TO transactions DO INSTEAD NOTHING;
-
 CREATE OR REPLACE RULE rule_transactions_no_delete AS
     ON DELETE TO transactions DO INSTEAD NOTHING;
 
-CREATE OR REPLACE RULE rule_zk_proofs_no_update AS
-    ON UPDATE TO zk_proofs DO INSTEAD NOTHING;
-
 CREATE OR REPLACE RULE rule_zk_proofs_no_delete AS
     ON DELETE TO zk_proofs DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_l1_finality_no_update AS
-    ON UPDATE TO l1_finality DO INSTEAD NOTHING;
 
 CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
     ON DELETE TO l1_finality DO INSTEAD NOTHING;

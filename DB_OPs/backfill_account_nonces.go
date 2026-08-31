@@ -120,11 +120,26 @@ func BackfillAccountNonces(ctx context.Context, sqlDB *sql.DB) (updated, skipped
 		}
 		// Stored as a JSON STRING value under extra_data.account_nonces, matching
 		// the write path (backend/block.go) and read path (thebe_conversions.go).
-		if _, uerr := sqlDB.ExecContext(ctx,
+		res, uerr := sqlDB.ExecContext(ctx,
 			`UPDATE blocks SET extra_data = jsonb_set(coalesce(extra_data, '{}'::jsonb), '{account_nonces}', to_jsonb($1::text), true) WHERE block_number = $2`,
 			string(raw), n,
-		); uerr != nil {
+		)
+		if uerr != nil {
 			return updated, skipped, fmt.Errorf("BackfillAccountNonces: update block %d: %w", n, uerr)
+		}
+		// A zero-row UPDATE is never benign here: block n was just read from
+		// this same table, so the WHERE clause matched at read time. Zero rows
+		// means the write was silently swallowed -- which is exactly what the
+		// `ON UPDATE TO blocks DO INSTEAD NOTHING` rule did, turning this
+		// backfill into a no-op that still reported "complete, updated=N".
+		// Fail loudly instead of counting a write that never landed.
+		aff, aerr := res.RowsAffected()
+		if aerr != nil {
+			return updated, skipped, fmt.Errorf("BackfillAccountNonces: rows affected for block %d: %w", n, aerr)
+		}
+		if aff == 0 {
+			return updated, skipped, fmt.Errorf(
+				"BackfillAccountNonces: update block %d affected 0 rows -- write swallowed; check for an ON UPDATE rule on blocks (SELECT rulename FROM pg_rules WHERE tablename = 'blocks')", n)
 		}
 		updated++
 	}
