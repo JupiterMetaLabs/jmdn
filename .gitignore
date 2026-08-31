@@ -90,3 +90,4 @@ docs/FASTSYNC_V3_MIGRATION_PLAN.md
 Scripts/sign_tx.go
 local-thebesync-gate/
 /_to_delete
+/docs/superpowers/*
