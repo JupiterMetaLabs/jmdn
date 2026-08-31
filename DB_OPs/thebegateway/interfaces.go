@@ -81,6 +81,7 @@ type ThebeReader interface {
 	GetLatestTransactionsByAddress(ctx context.Context, address string, limit int) ([]*TransactionRecord, error)
 	GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*L1FinalityRecord, error)
 	GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*BlockRecord, error)
+	GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*BlockRecord, error)
 	GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*TransactionRecord, error)
 	GetZKProof(ctx context.Context, blockNumber uint64) (*ZKProofRecord, error)
 	GetSnapshot(ctx context.Context, blockNumber uint64) (*SnapshotRecord, error)

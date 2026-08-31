@@ -273,6 +273,11 @@ func (h *compositeHandle) GetBlocksByRewardAddress(ctx context.Context, address 
 	return h.blocks.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
 }
 
+// GetBlocksByFeeRecipient delegates to the BlockStore (buddy staking-reward report).
+func (h *compositeHandle) GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
+	return h.blocks.GetBlocksByFeeRecipient(ctx, address, fromBlock, toBlock)
+}
+
 // PutSyncKV / GetSyncKV delegate to the BlockStore.
 func (h *compositeHandle) PutSyncKV(key string, value []byte) error {
 	return h.blocks.PutSyncKV(key, value)

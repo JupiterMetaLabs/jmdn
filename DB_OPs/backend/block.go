@@ -278,6 +278,17 @@ func (b *thebeBackend) GetBlocksByRewardAddress(ctx context.Context, address str
 	return recs, nil
 }
 
+// GetBlocksByFeeRecipient returns blocks whose buddy staking-reward split credits
+// the address (extra_data.fee_recipients). Buddy-earnings report; distinct from
+// GetBlocksByRewardAddress (coinbase/zkvm).
+func (b *thebeBackend) GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
+	recs, err := b.r.GetBlocksByFeeRecipient(ctx, address, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetBlocksByFeeRecipient(%s, %d, %d): %w", address, fromBlock, toBlock, err)
+	}
+	return recs, nil
+}
+
 // PutSyncKV / GetSyncKV expose the gateway's durable sync-state KV
 // (tx markers, applied anchor, latest_block marker — F-train modules).
 func (b *thebeBackend) PutSyncKV(key string, value []byte) error {

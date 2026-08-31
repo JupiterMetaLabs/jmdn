@@ -121,6 +121,20 @@ const (
           AND block_number >= $2 AND block_number <= $3
         ORDER BY block_number ASC`
 
+	// sqlGetBlocksByFeeRecipient finds blocks whose persisted buddy fee-split
+	// (extra_data.fee_recipients, a JSON string of [{addr,weight}...]) credits the
+	// given address. $1 is the 40-hex address body (no 0x, lowercased) matched
+	// case-insensitively, since common.Address serializes checksummed. This is an
+	// UNINDEXED substring scan — fine for operator reporting; for hot paths add a
+	// GIN index over a nested-jsonb form of fee_recipients.
+	sqlGetBlocksByFeeRecipient = `
+        SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
+               logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
+        FROM blocks
+        WHERE extra_data->>'fee_recipients' ILIKE '%' || $1 || '%'
+          AND block_number >= $2 AND block_number <= $3
+        ORDER BY block_number ASC`
+
 	sqlGetZKProof = `
         SELECT block_number, proof_hash, stark_proof, commitment
         FROM zk_proofs WHERE block_number = $1`
@@ -497,6 +511,55 @@ func (r *thebeReader) GetBlocksByRewardAddress(ctx context.Context, address stri
 		return nil, fmt.Errorf("GetBlocksByRewardAddress: rows: %w", err)
 	}
 	return results, nil
+}
+
+// GetBlocksByFeeRecipient returns blocks in [fromBlock, toBlock] whose buddy
+// staking-reward split (extra_data.fee_recipients) credits address — i.e. the
+// blocks on which the operator's wallet earned a buddy reward. Distinct from
+// GetBlocksByRewardAddress (which is coinbase/zkvm). The address is normalized to
+// its 40-hex body and matched case-insensitively (common.Address is checksummed
+// in the stored JSON). Best-effort/unindexed substring scan — see the SQL note.
+func (r *thebeReader) GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*BlockRecord, error) {
+	needle := feeRecipientNeedle(address)
+	if needle == "" {
+		return nil, fmt.Errorf("GetBlocksByFeeRecipient: %q is not a valid hex address", address)
+	}
+	rows, err := r.db.QueryContext(ctx, sqlGetBlocksByFeeRecipient, needle, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("GetBlocksByFeeRecipient: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*BlockRecord
+	for rows.Next() {
+		var rec BlockRecord
+		if err := r.scanBlockRow(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetBlocksByFeeRecipient: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetBlocksByFeeRecipient: rows: %w", err)
+	}
+	return results, nil
+}
+
+// feeRecipientNeedle reduces an address to its 40-char lowercase hex body (no
+// 0x), or "" if it is not exactly 40 hex digits. Stripping to a pure hex body
+// makes the ILIKE needle case-insensitive and free of LIKE wildcards.
+func feeRecipientNeedle(address string) string {
+	s := strings.ToLower(strings.TrimSpace(address))
+	s = strings.TrimPrefix(s, "0x")
+	if len(s) != 40 {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return ""
+		}
+	}
+	return s
 }
 
 // scanZKProof scans a single zk_proofs row into rec.

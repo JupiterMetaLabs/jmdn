@@ -139,6 +139,11 @@ func (s *cachedBlockStore) GetBlocksByRewardAddress(ctx context.Context, address
 	return s.inner.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
 }
 
+// GetBlocksByFeeRecipient delegates directly — reporting range reads are not cached.
+func (s *cachedBlockStore) GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
+	return s.inner.GetBlocksByFeeRecipient(ctx, address, fromBlock, toBlock)
+}
+
 // PutSyncKV / GetSyncKV delegate directly — sync-state keys are not cached.
 func (s *cachedBlockStore) PutSyncKV(key string, value []byte) error {
 	return s.inner.PutSyncKV(key, value)

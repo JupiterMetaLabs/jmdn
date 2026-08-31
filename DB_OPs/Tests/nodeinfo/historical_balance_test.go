@@ -90,6 +90,10 @@ func (h *histHandle) GetBlocksByRewardAddress(_ context.Context, address string,
 	return nil, nil
 }
 
+func (h *histHandle) GetBlocksByFeeRecipient(_ context.Context, _ string, _, _ uint64) ([]*thebegateway.BlockRecord, error) {
+	return nil, nil
+}
+
 func (h *histHandle) GetTransactionsByBlock(_ context.Context, bn uint64) ([]*thebegateway.TransactionRecord, error) {
 	if bn == 9 {
 		return []*thebegateway.TransactionRecord{h.txInBlock9()}, nil
