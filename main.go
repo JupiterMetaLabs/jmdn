@@ -1505,7 +1505,12 @@ func main() {
 	// ProcessVotesFromCRDT in AVC/BuddyNodes/MessagePassing/Structs/Utils.go)
 	// and MessagePassing -> Structs already exists, so Structs ->
 	// MessagePassing would be an import cycle.
-	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommittee)
+	// Flag-switched (JMDN_COMMITTEE_V2): off -> messaging.AuthorizedCommittee,
+	// byte-identical to the previous wiring; on -> the uncapped pool that
+	// SelectCommittee seats from, so the buddy's tally and the sequencer's
+	// certification stop resolving membership from two independent sources.
+	// Rollback is turning the flag off; see messaging/authorized_committee_tally.go.
+	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommitteeForTally)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")

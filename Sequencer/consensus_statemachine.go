@@ -307,7 +307,15 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 	// dropped from the wire list but still counts toward n, which is the correct
 	// BFT reading: quorum is 2f+1 of the committee, not of whoever was reachable.
 	if messaging.CommitteeV2Enabled {
-		seated, selErr := messaging.SeatedPeerIDs(messaging.RoundContextForBlock(zkblock))
+		rc, rcErr := messaging.RoundContextForBlock(zkblock)
+		if rcErr != nil {
+			// Fail closed. Most likely this node hasn't yet processed the
+			// TimeoutCertificate that advanced Period for this height - see
+			// messaging.ErrPeriodNotSynced's own doc comment for the fix
+			// (catch up via the rejoin RPC), not a fallback here.
+			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
+		}
+		seated, selErr := messaging.SeatedPeerIDs(rc)
 		if selErr != nil {
 			// Fail closed. Falling back to the shuffle here would reintroduce the
 			// exact two-source split this replaces.

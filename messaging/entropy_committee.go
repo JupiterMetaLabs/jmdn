@@ -133,10 +133,25 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 		return nil, fmt.Errorf("messaging: ENTROPY-%d unavailable (needed to seed epoch %d's entropy committee): %w", epoch, epoch, err)
 	}
 
-	snap, err := committeeSnapshotFor(uint64(epoch))
+	// Deliberately NOT committeeSnapshotFor(uint64(epoch)): that function
+	// pins by SelectionPeriod (EpochForHeight, the block-counted clock), a
+	// different clock from EntropyEpoch (EpochForSlot, a fixed 50-slot
+	// window) with a different divisor. Passing this epoch's raw uint64
+	// into a SelectionPeriod-keyed pinned lookup would, once
+	// require_pinned_committee is ever turned on, resolve the eligible set
+	// pinned for "SelectionPeriod == this EntropyEpoch's number" — a
+	// coincidental collision, not the correct frozen pool for this moment.
+	// There is no valid SelectionPeriod derivable from an EntropyEpoch
+	// number alone (no slot-to-height mapping flows through this call
+	// path), so until one exists, the entropy committee's pool is always
+	// the LIVE eligible set, never pinned. Inert difference from
+	// committeeSnapshotFor today (pinning is globally off, so both
+	// resolve identically), but structurally correct once pinning is not.
+	eligible, err := eligibleMembersUncapped()
 	if err != nil {
-		return nil, fmt.Errorf("messaging: committee snapshot for epoch %d: %w", epoch, err)
+		return nil, fmt.Errorf("messaging: eligible pool for entropy committee epoch %d: %w", epoch, err)
 	}
+	snap := snapshotFromEligible(uint64(epoch), eligible)
 
 	seed := EntropyCommitteeSeed(BLS_Signer.DomainChainID(), uint64(epoch), entropy)
 
