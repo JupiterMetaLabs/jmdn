@@ -139,7 +139,7 @@ func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 			RewardAddress: strings.ToLower(strings.TrimSpace(e.RewardAddress)),
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
 	return out
 }
 

@@ -2,26 +2,32 @@ package committee
 
 import "testing"
 
-// Cross-repo interop vector. The signature below was produced by the seedNodes
-// committee authority's dela/bls PRIVATE key (test keypair from the seed team)
-// over CanonicalCommitteeBytes(1, "", [QmPeerA:aa, QmPeerB:bb]). Only the PUBLIC
-// key + signature are stored here (the private key is the seed's secret and is
-// never committed). This asserts jmdn's independent consumer accepts a snapshot
-// the seed actually signed — proving the canonical-bytes format and dela/bls
+// Cross-repo interop vector (v2). Regenerated with
+// `seedNodes: go run ./cmd/committee-verify -vector`, which signs the v2
+// canonical bytes — version|epoch|seed|<peer_id:bls_pub:reward_address>,...
+// sorted by peer_id, empty reward_address kept as a trailing colon — with a
+// dela/bls key and emits the public key + signature + served snapshot. jmdn
+// stores only the PUBLIC key + signature and independently reconstructs the
+// canonical bytes from the snapshot, proving the format and dela/bls
 // verification are byte-for-byte compatible across the two repos.
 //
-// Additionally verified out-of-band during generation: jmdn's dela/bls derives
-// the identical public key from the seed's private key (key-derivation parity).
+// The key below is the committee-verify THROWAWAY test key (never a real seed
+// authority). To refresh after a canonical-format change: rerun the command and
+// replace these two consts + seedVectorSnapshot() with the new emission.
 const (
-	seedAuthorityPubHex = "28008cfde91dc8021bfdf6da30253fba9dbbe69237cc0cf15c5ee4615b08730a6915ab77202754084a26bc00a3fba5213d7fb7669dd055e1c88b000e9e53db0e556b52c07ba0a902e17b17b974329f15681113e446b1c2d2f6c3e317cd92d6d93ac1377bbddd46455aaf09a414d5145edbc990b095abcfd6b6b14be430e6a58a"
-	seedSnapshotSigHex  = "1c5b60f619e8046fad07bc933cfd2bb5585017c0f6c68b9e2bb86951386f4c8d29df110449cf3b471781bfa670102b4e853b4ce3d2517054dd3b164197f01f29"
+	seedAuthorityPubHex = "37f54f8ae63f337316ba33c7c2611f8f4a9c6884cdfe3a2a5a59b5bb3d16114043d59759aa6305a48cd7332a94a82abac400f8675e48094508aab27f3be8b3a55e181d9015647a0b2312ae3ba096c9ccd10e161b519b213f67c102a220f43adb14ee644c7a40e97183cbe62f8c3983a8b50c4f82a6e8d251a84e277dd9b6f4e3"
+	seedSnapshotSigHex  = "3ccbfe892ef2987d466aec78c20608a89ec0dd72be83a5dea8503d2e9fdaecc43ca4f30e5e35d662ae7d4d0267019c863ae1a23ec541340f9ad79797394d3191"
 )
 
 func seedVectorSnapshot() *CommitteeSnapshot {
 	return &CommitteeSnapshot{
-		Epoch:           1,
-		Seed:            "",
-		Entries:         []CommitteeEntry{{PeerID: "QmPeerA", BLSPub: "aa"}, {PeerID: "QmPeerB", BLSPub: "bb"}},
+		Epoch: 490000,
+		Seed:  "",
+		Entries: []CommitteeEntry{
+			{PeerID: "12D3KooWAlice", BLSPub: "aaaaaaaa", RewardAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			{PeerID: "12D3KooWBob", BLSPub: "bbbbbbbb", RewardAddress: ""},
+			{PeerID: "12D3KooWCharlie", BLSPub: "cccccccc", RewardAddress: "0xcccccccccccccccccccccccccccccccccccccccc"},
+		},
 		AuthorityPubHex: seedAuthorityPubHex,
 		Signature:       seedSnapshotSigHex,
 	}

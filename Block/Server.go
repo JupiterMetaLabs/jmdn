@@ -653,8 +653,8 @@ func processZKBlock(c *gin.Context) {
 	// slot/epoch clock has not been recovered from its committed history.
 	if err := attachAVCConsensusFields(&block); err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "slot_recovery_not_ready"))
-		logger().Error(spanCtx, "Refusing to propose — slot/epoch clock not recovered",
+		span.SetAttributes(attribute.String("status", "consensus_fields_attach_failed"))
+		logger().Error(spanCtx, "Refusing to propose — consensus-field attach failed (reason in error: slot recovery, reward source, VDF proof, or committee snapshot)",
 			err,
 			ion.Int64("block_number", int64(block.BlockNumber)),
 			ion.String("log_file", FILENAME),

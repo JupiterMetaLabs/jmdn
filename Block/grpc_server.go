@@ -98,7 +98,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	// slot/epoch clock has not been recovered from its committed history.
 	if err := attachAVCConsensusFields(block); err != nil {
 		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: refusing to propose — slot/epoch clock not recovered", err)
+			s.logger.Error(ctx, "gRPC: refusing to propose — consensus-field attach failed (reason in error)", err)
 		}
 		return nil, status.Errorf(codes.Unavailable, "%v", err)
 	}

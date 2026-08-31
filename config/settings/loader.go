@@ -99,6 +99,14 @@ func Load() (*NodeConfig, error) {
 		// Buddy staking rewards (default-off). Same nested-key reason.
 		"consensus.reward_address":       "JMDN_CONSENSUS_REWARD_ADDRESS",
 		"consensus.reward_split_enabled": "JMDN_CONSENSUS_REWARD_SPLIT_ENABLED",
+		// Authenticated committee snapshot source. Required by the SEQUENCER to
+		// wire the reward-address source (Sequencer/consensus_statemachine.go gates
+		// both eligibility and reward wiring on seed_authority_bls_pub != "" &&
+		// seednode != ""). Without these, reward_split_enabled fails every block
+		// closed ("reward-address source not configured"). Same nested-key reason
+		// as above — AutomaticEnv does not reach nested keys through Unmarshal.
+		"consensus.seed_authority_bls_pub": "JMDN_CONSENSUS_SEED_AUTHORITY_BLS_PUB",
+		"network.seednode":                 "JMDN_NETWORK_SEEDNODE",
 	} {
 		if err := v.BindEnv(key, env); err != nil {
 			return nil, fmt.Errorf("binding %s: %w", env, err)

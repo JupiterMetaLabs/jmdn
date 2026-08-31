@@ -59,13 +59,15 @@ func TestCanonicalCommitteeBytes_GoldenAndSorting(t *testing.T) {
 		{PeerID: "QmA", BLSPub: "AaBb"},
 	}
 	got := string(CanonicalCommitteeBytes(7, "beacon", entries))
-	want := "jmdt/committee/v1|7|beacon|QmA:aabb,QmB:ccdd"
+	// v2: three colon-separated fields ALWAYS; an unset reward_address is a
+	// trailing colon (never dropped). Must match seedNodes byte-for-byte.
+	want := "jmdt/committee/v2|7|beacon|QmA:aabb:,QmB:ccdd:"
 	if got != want {
 		t.Fatalf("canonical=%q want %q", got, want)
 	}
 	// Empty seed still yields the two-pipe framing.
 	got2 := string(CanonicalCommitteeBytes(0, "", []CommitteeEntry{{PeerID: "QmA", BLSPub: "aa"}}))
-	if got2 != "jmdt/committee/v1|0||QmA:aa" {
+	if got2 != "jmdt/committee/v2|0||QmA:aa:" {
 		t.Fatalf("canonical(empty seed)=%q", got2)
 	}
 }
