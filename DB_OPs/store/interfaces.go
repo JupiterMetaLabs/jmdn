@@ -48,6 +48,7 @@ type BlockStore interface {
 	GetSyncKV(key string) ([]byte, error)
 	GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error)
 	GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error)
+	GetBlocksByFeeRecipient(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error)
 }
 
 // AccountStore covers account lifecycle and nonce management.
