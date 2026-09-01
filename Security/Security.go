@@ -195,20 +195,31 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	)
 	txValidationSpan.End()
 
-	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// 2. Block-hash binding. Must be M2b-aware: when M2bHashEnabled is on (which
+	// RewardSplit requires), the sequencer sets BlockHash =
+	// RecomputeBlockHashWithConsensusFields, so the legacy transactions-only
+	// Keccak below would mismatch and reject EVERY block. Compute `want` exactly
+	// as the sequencer and the receive path (messaging.checkBodyBinding) do:
+	//   - M2b on : RecomputeBlockHashWithConsensusFields (6 fields + tx contents)
+	//   - M2b off: legacy Keccak256(concat tx.Hash) — byte-identical to before.
 	_, hashCheckSpan := tracer.Start(traceCtx, "Security.CheckZKBlockValidation.validateBlockHash")
-	// First compute the hash of all transaction's hashes
-	transactionHashes := make([][]byte, len(zkBlock.Transactions))
-	for i, tx := range zkBlock.Transactions {
-		transactionHashes[i] = tx.Hash.Bytes()
+	var wantBlockHash common.Hash
+	if M2bHashEnabled {
+		wantBlockHash = RecomputeBlockHashWithConsensusFields(zkBlock)
+	} else {
+		transactionHashes := make([][]byte, len(zkBlock.Transactions))
+		for i, tx := range zkBlock.Transactions {
+			transactionHashes[i] = tx.Hash.Bytes()
+		}
+		wantBlockHash = crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
 	}
-	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
 	hashCheckSpan.SetAttributes(
-		attribute.String("computed_hash", transactionHashesHash.Hex()),
+		attribute.String("computed_hash", wantBlockHash.Hex()),
 		attribute.String("provided_hash", zkBlock.BlockHash.Hex()),
+		attribute.Bool("m2b", M2bHashEnabled),
 	)
 
-	if transactionHashesHash != zkBlock.BlockHash {
+	if wantBlockHash != zkBlock.BlockHash {
 		err := errors.New("zkBlock hash validation failed")
 		hashCheckSpan.RecordError(err)
 		hashCheckSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -216,8 +227,9 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		logger().Error(traceCtx, "ZKBlock hash validation failed", err,
-			ion.String("computed_hash", transactionHashesHash.Hex()),
+			ion.String("computed_hash", wantBlockHash.Hex()),
 			ion.String("provided_hash", zkBlock.BlockHash.Hex()),
+			ion.Bool("m2b", M2bHashEnabled),
 			ion.String("function", "Security.CheckZKBlockValidation"))
 		return false, err
 	}

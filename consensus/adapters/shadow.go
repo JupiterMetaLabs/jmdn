@@ -163,5 +163,17 @@ func runFullValidatorAgainstDB(ctx context.Context, cfg *settings.NodeConfig, zk
 	if err != nil {
 		return false, fmt.Errorf("adapters.runFullValidatorAgainstDB: validate block: %w", err)
 	}
+	if !verdict.Accept {
+		// Surface WHY the avc validator rejected. In enforce mode this verdict
+		// BECOMES the vote decision, but its reason is otherwise dropped — the
+		// vote then logs only the generic "validation returned false". %+v avoids
+		// hard-coding avc Verdict field names (defined in ../avc).
+		if l := logger(); l != nil {
+			l.Warn(ctx, "AVC_VALIDATOR_REJECT: full validator rejected block (reason below)",
+				ion.String("verdict", fmt.Sprintf("%+v", verdict)),
+				ion.Int("block_number", int(zkBlock.BlockNumber)),
+				ion.String("block_hash", zkBlock.BlockHash.Hex()))
+		}
+	}
 	return verdict.Accept, nil
 }
