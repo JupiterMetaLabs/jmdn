@@ -182,6 +182,34 @@ type ZKBlock struct {
 	// Deliberately does NOT carry the snapshot body itself (large, grows with
 	// the pool) — only the hash. The body is served off-chain; see the TODO.
 	CommitteeSnapshotHash []byte `json:"committee_snapshot_hash,omitempty"`
+
+	// ConsensusHash is the M2b consensus-fields digest
+	// (Security.RecomputeBlockHashWithConsensusFields): a hash over the six AVC
+	// consensus fields (Slot/Period/RandaoReveals/VdfProof/SeedEpoch/
+	// VotingSnapshotEpoch) plus PrevAggCert, CommitteeSnapshotHash, FeeRecipients,
+	// and the transaction contents. It is a SEPARATE field and NEVER replaces
+	// BlockHash — BlockHash stays the orchestrator's transactions-only identity.
+	//
+	// Unlike AccountNonces/StateFingerprint (purely advisory), ConsensusHash is
+	// consensus-COVERED: when set, the committee's v4 vote signs over it (see
+	// BLS_Signer.CanonicalVoteMessageV4), so Period/FeeRecipients/PrevAggCert
+	// cannot be rewritten post-commit without invalidating the certificate. Empty
+	// (zero hash) on blocks built without the consensus binding; v4 falls back to
+	// v3 (BlockHash-only) then, so mixed fleets during rollout still converge.
+	// Set by Block/consensus_fields.go's attachAVCConsensusFields; recomputed and
+	// checked on receive by messaging.checkConsensusBinding.
+	ConsensusHash common.Hash `json:"consensus_hash,omitempty"`
+}
+
+// ConsensusHashHex returns the ConsensusHash as a 0x-hex string, or "" when it
+// is the zero hash (block built without the consensus binding). Vote sign/verify
+// call sites use this so a zero ConsensusHash selects the v3 vote domain (block
+// hash only) instead of binding an all-zero consensus hash.
+func (b *ZKBlock) ConsensusHashHex() string {
+	if b == nil || b.ConsensusHash == (common.Hash{}) {
+		return ""
+	}
+	return b.ConsensusHash.Hex()
 }
 
 // CertSigner is one buddy's contribution to a block's commit certificate: who

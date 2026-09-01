@@ -76,8 +76,8 @@ const (
 	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
 	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0" // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
-	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/2.0.0"  // v2 protocol: vote path (eligibility, 2f+1, chain-id domain, sync-gate)
-	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/2.0.0" // v2 protocol: vote path
+	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/3.0.0"  // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
+	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/3.0.0" // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
 
 	// RevealPushProtocol carries Architecture §4.4's RevealPush: an entropy-
 	// committee member pushing its own RANDAO reveal directly to the node
@@ -91,7 +91,7 @@ const (
 	// into the vote path. Same 1:1 direct-stream shape as the vote path, so it
 	// is still "T1" in the architecture doc's transport inventory.
 	RevealPushProtocol   protocol.ID = "/p2p/randao/reveal/1.0.0"
-	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/2.0.0" // v2 protocol: signed PREPARE/COMMIT
+	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/3.0.0" // v3 protocol: signed PREPARE/COMMIT + ConsensusHash/v4-vote rollout isolation
 
 	// TimeoutCertRejoinProtocol carries the rejoin/catch-up request-response
 	// RPC for M0/§7.1c's timeout certificates: a node that just synced (or
@@ -108,8 +108,8 @@ const (
 
 const (
 	Delimiter               = 0x1E
-	PubSub_ConsensusChannel = "pubsub-consensus/2.0.0"     // v2 protocol: chain-id-bound votes + vote sync-gate
-	PubSub_BFTConsensus     = "pubsub-bft-consensus/2.0.0" // v2 protocol: signed BFT messages
+	PubSub_ConsensusChannel = "pubsub-consensus/3.0.0"     // v3 protocol: chain-id-bound votes + vote sync-gate + ConsensusHash/v4-vote rollout isolation
+	PubSub_BFTConsensus     = "pubsub-bft-consensus/3.0.0" // v3 protocol: signed BFT messages + ConsensusHash/v4-vote rollout isolation
 	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).

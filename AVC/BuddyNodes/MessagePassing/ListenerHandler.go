@@ -1572,14 +1572,17 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// Parse optional request payload (block hash scoping + block height)
 	var targetBlockHash string
 	var targetBlockNumber uint64
+	var targetConsensusHash string
 	var voteResultReq struct {
-		BlockHash   string `json:"block_hash"`
-		BlockNumber uint64 `json:"block_number"` // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
+		BlockHash     string `json:"block_hash"`
+		BlockNumber   uint64 `json:"block_number"`   // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
+		ConsensusHash string `json:"consensus_hash"` // bind the vote to the consensus-fields digest too (v4). Empty => v3.
 	}
 	// functions which retuning the response should return the same format
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
 		targetBlockHash = voteResultReq.BlockHash
 		targetBlockNumber = voteResultReq.BlockNumber
+		targetConsensusHash = voteResultReq.ConsensusHash
 		if targetBlockHash != "" {
 			logger().Info(context.Background(), "🎯 Target block hash from request: %s")
 		}
@@ -1694,7 +1697,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
-		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockNumber, targetBlockHash)
+		// v4 when the request carried a ConsensusHash (binds the consensus fields),
+		// else v3. Verify sites try v4 then fall back to v3, so a buddy that got no
+		// ConsensusHash (older sequencer) still produces a verifying v3 signature.
+		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockNumber, targetBlockHash, targetConsensusHash)
 	} else {
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}

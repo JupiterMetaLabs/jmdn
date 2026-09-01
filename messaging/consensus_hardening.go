@@ -455,7 +455,7 @@ func authenticatedCommittee() (map[string]string, error) {
 	return committee, nil
 }
 
-func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64) (CertificateResult, error) {
+func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
 	var res CertificateResult
 
 	// Denominator n: the FLEET-AGREED committee (capped, WITHOUT the local
@@ -485,7 +485,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, 
 		}
 	}
 
-	res.YesVotes = countEligibleYes(responses, blockHashHex, height, votingMembers, EnforceCommitteeRegistry)
+	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, votingMembers, EnforceCommitteeRegistry)
 	res.CommitteeSize = n
 	res.Threshold = ByzantineQuorum(n)
 	res.Reached = res.YesVotes >= res.Threshold
@@ -498,7 +498,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, 
 // De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
 // by presenting the same key under several peer_ids, or several keys for one
 // peer_id.
-func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
+func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
 	yes := 0
@@ -510,7 +510,7 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, h
 
 		// Prefer block-bound verification. Fall back to legacy only when
 		// legacy is still permitted.
-		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, vote) == nil
+		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, consensusHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
 			verified = BLS_Verifier.Verify(r, vote) == nil
 		}
@@ -627,17 +627,15 @@ func RecomputeTxnsRoot(txs []config.Transaction) string {
 // certificate verification so a certified hash cannot authorize a different
 // transaction set.
 //
-// Reads Security.M2bHashEnabled - the SAME flag Security.CheckBlockHash reads
-// - so the two hash-validation call sites can never disagree about which
-// formula is live. See that flag's doc for why this must stay off until the
-// block generator also switches formulas.
+// Transactions-only, matching the orchestrator-submitted BlockHash. Consensus
+// fields are NOT folded into BlockHash (see Block/consensus_fields.go); they
+// travel as their own advisory fields, so this body binding stays a pure tx
+// check and cannot be broken by consensus-field changes.
 func checkBodyBinding(b *config.ZKBlock) *blockRejection {
-	var wantHash common.Hash
-	if Security.M2bHashEnabled {
-		wantHash = Security.RecomputeBlockHashWithConsensusFields(b)
-	} else {
-		wantHash = RecomputeBlockHashFromTxs(b.Transactions)
-	}
+	// Transactions-only: BlockHash is the orchestrator identity and is never the
+	// consensus-fields hash (see Block/consensus_fields.go). Consensus fields are
+	// bound separately, not via BlockHash.
+	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
 	if b.BlockHash != wantHash {
 		return reject("body_mismatch",
 			"block %s: recomputed hash %s does not match transactions (body substituted?)",
@@ -653,6 +651,30 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 				"block %s: TxnsRoot %s does not match transactions (want %s)",
 				b.BlockHash.Hex(), b.TxnsRoot, want)
 		}
+	}
+	return nil
+}
+
+// checkConsensusBinding verifies the SEPARATE consensus-fields digest. Unlike
+// checkBodyBinding (which binds BlockHash to transactions only), this binds the
+// six AVC consensus fields + PrevAggCert + CommitteeSnapshotHash + FeeRecipients
+// via block.ConsensusHash. It runs BEFORE certificate verification so the cert's
+// v4 signatures (which sign over ConsensusHash) are checked against a
+// confirmed-honest value, closing the post-commit rewrite of Period/FeeRecipients.
+//
+// Leniency for rollout: a block with a zero ConsensusHash predates the field
+// (v3/older builds). Those are not bindable on this axis and the v4 vote path
+// falls back to v3 (BlockHash-only), so a zero value is skipped, not rejected —
+// exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
+func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
+	if (b.ConsensusHash == common.Hash{}) {
+		return nil
+	}
+	want := Security.RecomputeBlockHashWithConsensusFields(b)
+	if b.ConsensusHash != want {
+		return reject("consensus_hash_mismatch",
+			"block %s: ConsensusHash %s does not match recomputed consensus fields %s (consensus field tampered?)",
+			b.BlockHash.Hex(), b.ConsensusHash.Hex(), want.Hex())
 	}
 	return nil
 }

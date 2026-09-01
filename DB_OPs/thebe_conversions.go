@@ -87,6 +87,16 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// ConsensusHash: hydrate the consensus-fields digest the sequencer stamped and
+	// the v4 certificate signed, so a synced/read block carries the identical
+	// value checkConsensusBinding recomputes. Absent (zero) on pre-v4 blocks.
+	var consensusHash common.Hash
+	if ch, ok := r.ExtraData["consensus_hash"]; ok {
+		if s, ok2 := ch.(string); ok2 && s != "" {
+			consensusHash = common.HexToHash(s)
+		}
+	}
+
 	blk := &config.ZKBlock{
 		BlockNumber:  r.BlockNumber,
 		BlockHash:    common.HexToHash(r.BlockHash),
@@ -104,6 +114,7 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		StateFingerprint:     stateFingerprint,
 		AccountNonces:        accountNonces,
 		FeeRecipients:        feeRecipients,
+		ConsensusHash:        consensusHash,
 		Transactions:         []config.Transaction{},
 	}
 	if v, ok := r.ExtraData["slot"]; ok {

@@ -226,7 +226,11 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	// it or reports it as an equivocation, so a forged element can never be
 	// counted and can never manufacture a false equivocation charge against
 	// a real peer.
-	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash)
+	// consensusHash "" => v3 verification (block hash only). The v2 CRDT path
+	// operates on the block-hash string without the block, so it cannot source
+	// ConsensusHash yet; VerifyForBlock falls back to v3. Pass the real
+	// ConsensusHash here (threaded from the block/vote request) to activate v4.
+	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash, "")
 	if droppedForgeries > 0 {
 		logger().Error(logger_ctx, "Dropped votes with invalid BLS signatures (v2 path)", nil,
 			ion.Int("dropped", droppedForgeries),
@@ -341,7 +345,7 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 // AuthorizedVotesByPeer[peerID][i] and Signatures[peerID][i] are written in
 // lockstep by TallyBlock (same append, same loop iteration), so indexing
 // both by i is safe by construction, not by convention.
-func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash string) (verified avcvotes.BlockTally, dropped int) {
+func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash, consensusHash string) (verified avcvotes.BlockTally, dropped int) {
 	verified = avcvotes.BlockTally{
 		AuthorizedVotesByPeer: make(map[string][]int8, len(tally.AuthorizedVotesByPeer)),
 		Signatures:            make(map[string][]avcvotes.VoteRecord, len(tally.Signatures)),
@@ -363,7 +367,7 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 			}
 			rec := recs[i]
 			resp := BLS_Signer.BLSresponse{PeerID: peerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
-			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, v); err != nil {
+			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, consensusHash, v); err != nil {
 				dropped++
 				continue
 			}

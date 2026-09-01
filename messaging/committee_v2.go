@@ -535,8 +535,9 @@ func DialTargetsForRound(seated []committee.Member, selfPeerID string) []committ
 // harmless, but silently stripping a "0x" prefix would ACCEPT votes the current
 // code rejects. Behaviour must be identical, so the original is verified.
 type blsVerifier struct {
-	bindings string
-	orig     map[string]BLS_Signer.BLSresponse
+	bindings      string
+	consensusHash string // v4 binding; empty => v3 (block hash only)
+	orig          map[string]BLS_Signer.BLSresponse
 }
 
 func voteKey(peerID string, sig []byte) string {
@@ -552,7 +553,7 @@ func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []by
 	if v.Approve {
 		vote = 1
 	}
-	if BLS_Verifier.VerifyForBlock(resp, chainID, height, b.bindings, vote) == nil {
+	if BLS_Verifier.VerifyForBlock(resp, chainID, height, b.bindings, b.consensusHash, vote) == nil {
 		return true
 	}
 	if !RejectLegacyVotes {
@@ -576,6 +577,7 @@ func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []by
 func VerifyCertificateForRound(
 	responses []BLS_Signer.BLSresponse,
 	blockHashHex string,
+	consensusHashHex string,
 	height uint64,
 	rc RoundContext,
 ) (CertificateResult, error) {
@@ -583,14 +585,14 @@ func VerifyCertificateForRound(
 		// Byte-identical to today: the legacy verifier over the alphabetically
 		// capped eligible set. rc is ignored on this path by design - the legacy
 		// selection has no notion of a round.
-		return VerifyCertificate(responses, blockHashHex, height)
+		return VerifyCertificate(responses, blockHashHex, consensusHashHex, height)
 	}
 
 	seated, err := SelectCommittee(rc)
 	if err != nil {
 		return CertificateResult{}, err
 	}
-	return TallyAgainst(responses, seated, blockHashHex, height)
+	return TallyAgainst(responses, seated, blockHashHex, consensusHashHex, height)
 }
 
 // TallyAgainst counts a certificate against an explicitly supplied committee.
@@ -603,6 +605,7 @@ func TallyAgainst(
 	responses []BLS_Signer.BLSresponse,
 	seated []committee.Member,
 	blockHashHex string,
+	consensusHashHex string,
 	height uint64,
 ) (CertificateResult, error) {
 	var out CertificateResult
@@ -639,7 +642,7 @@ func TallyAgainst(
 		BlockHash: blockHash,
 		Committee: seated,
 		Votes:     votes,
-		Verifier:  blsVerifier{bindings: blockHashHex, orig: orig},
+		Verifier:  blsVerifier{bindings: blockHashHex, consensusHash: consensusHashHex, orig: orig},
 		// Members carrying a bound key are always checked. This flag only
 		// decides whether an EMPTY bound key is tolerated, and the legacy
 		// source supplies empty keys - so requiring the binding is safe exactly

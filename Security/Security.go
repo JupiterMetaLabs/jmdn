@@ -195,31 +195,23 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	)
 	txValidationSpan.End()
 
-	// 2. Block-hash binding. Must be M2b-aware: when M2bHashEnabled is on (which
-	// RewardSplit requires), the sequencer sets BlockHash =
-	// RecomputeBlockHashWithConsensusFields, so the legacy transactions-only
-	// Keccak below would mismatch and reject EVERY block. Compute `want` exactly
-	// as the sequencer and the receive path (messaging.checkBodyBinding) do:
-	//   - M2b on : RecomputeBlockHashWithConsensusFields (6 fields + tx contents)
-	//   - M2b off: legacy Keccak256(concat tx.Hash) — byte-identical to before.
+	// 2. Block-hash binding — transactions-only, matching the orchestrator's
+	// submitted BlockHash (Keccak256 over the concatenation of each tx hash).
+	// BlockHash is NEVER the consensus-fields hash: consensus fields travel as
+	// their own advisory block fields (see Block/consensus_fields.go), so this
+	// stays a pure tx binding and cannot be broken by M2b/consensus changes.
 	_, hashCheckSpan := tracer.Start(traceCtx, "Security.CheckZKBlockValidation.validateBlockHash")
-	var wantBlockHash common.Hash
-	if M2bHashEnabled {
-		wantBlockHash = RecomputeBlockHashWithConsensusFields(zkBlock)
-	} else {
-		transactionHashes := make([][]byte, len(zkBlock.Transactions))
-		for i, tx := range zkBlock.Transactions {
-			transactionHashes[i] = tx.Hash.Bytes()
-		}
-		wantBlockHash = crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
+	transactionHashes := make([][]byte, len(zkBlock.Transactions))
+	for i, tx := range zkBlock.Transactions {
+		transactionHashes[i] = tx.Hash.Bytes()
 	}
+	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
 	hashCheckSpan.SetAttributes(
-		attribute.String("computed_hash", wantBlockHash.Hex()),
+		attribute.String("computed_hash", transactionHashesHash.Hex()),
 		attribute.String("provided_hash", zkBlock.BlockHash.Hex()),
-		attribute.Bool("m2b", M2bHashEnabled),
 	)
 
-	if wantBlockHash != zkBlock.BlockHash {
+	if transactionHashesHash != zkBlock.BlockHash {
 		err := errors.New("zkBlock hash validation failed")
 		hashCheckSpan.RecordError(err)
 		hashCheckSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -227,9 +219,8 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		logger().Error(traceCtx, "ZKBlock hash validation failed", err,
-			ion.String("computed_hash", wantBlockHash.Hex()),
+			ion.String("computed_hash", transactionHashesHash.Hex()),
 			ion.String("provided_hash", zkBlock.BlockHash.Hex()),
-			ion.Bool("m2b", M2bHashEnabled),
 			ion.String("function", "Security.CheckZKBlockValidation"))
 		return false, err
 	}
@@ -952,12 +943,12 @@ func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")
 	}
-	var want common.Hash
-	if M2bHashEnabled {
-		want = RecomputeBlockHashWithConsensusFields(block)
-	} else {
-		want = RecomputeBlockHashFromContents(block.Transactions)
-	}
+	// Transactions-only. BlockHash is the orchestrator identity and is never the
+	// consensus-fields hash — consensus fields are bound in their own advisory
+	// fields, not by mutating BlockHash (see Block/consensus_fields.go). M2b's
+	// six-field binding, if activated, must live in a SEPARATE ConsensusHash the
+	// vote domain signs, not here.
+	want := RecomputeBlockHashFromContents(block.Transactions)
 	if block.BlockHash != want {
 		return false, fmt.Errorf("block hash mismatch: recomputed %s, block claims %s",
 			want.Hex(), block.BlockHash.Hex())

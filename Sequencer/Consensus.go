@@ -1805,6 +1805,12 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 		// that receives it signs v3; an older one that ignores it signs v2 (still
 		// accepted during rollout).
 		"block_number": consensus.ZKBlockData.GetZKBlock().BlockNumber,
+		// The consensus-fields digest the buddy must ALSO bind its vote to (v4
+		// domain). Present => the buddy signs v4 (block hash + consensus hash), so
+		// its certificate signature attests to Slot/Period/PrevAggCert/FeeRecipients
+		// too. Empty (pre-consensus-binding block) => the buddy signs v3. Verifiers
+		// try v4 then fall back to v3, so an older buddy that ignores it is fine.
+		"consensus_hash": consensus.ZKBlockData.GetZKBlock().ConsensusHashHex(),
 	}
 	requestPayloadBytes, err := json.Marshal(requestPayload)
 	if err != nil {
@@ -2180,6 +2186,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// context the committee is seated from. All three come from the same block,
 	// so the sequencer and every verifier derive the same committee.
 	blockHashHex := ""
+	consensusHashHex := ""
 	var blockHeight uint64
 	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
@@ -2199,6 +2206,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			return false
 		}
 		blockHashHex = blk.BlockHash.Hex()
+		consensusHashHex = blk.ConsensusHashHex()
 		blockHeight = blk.BlockNumber
 		roundCtx = rc
 	}
@@ -2211,7 +2219,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 
 		// Prefer block-bound verification. A legacy (unbound) "vote:<v>"
 		// signature is detected separately so we can alert on it.
-		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHeight, blockHashHex, vote) == nil
+		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHeight, blockHashHex, consensusHashHex, vote) == nil
 		legacyOK := false
 		if !blockBoundOK {
 			legacyOK = BLS_Verifier.Verify(r, vote) == nil
@@ -2328,7 +2336,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// authenticated committee size (never the old strict majority of the fixed
 	// MaxMainPeers, and never a majority of whoever responded). The loop above
 	// is retained only for per-vote alerting/observability.
-	certRes, certErr := messaging.VerifyCertificateForRound(blsResults, blockHashHex, blockHeight, roundCtx)
+	certRes, certErr := messaging.VerifyCertificateForRound(blsResults, blockHashHex, consensusHashHex, blockHeight, roundCtx)
 	if certErr != nil {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(

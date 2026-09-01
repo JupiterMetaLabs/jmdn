@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -25,7 +26,7 @@ func messageForVote(vote int8) ([]byte, error) {
 // accepted: the whole fleet emits v3, and accepting older formats reopens the
 // cross-chain / cross-height replay window. There is
 // exactly one accepted format now, so there is no downgrade path to disable.
-func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings string, vote int8) error {
+func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings, consensusHash string, vote int8) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
@@ -35,6 +36,17 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
 
+	// v4 first when a consensus hash is present (block hash + consensus hash),
+	// then fall back to v3 (block hash only) so a mixed fleet still verifies
+	// stragglers still emitting v3 during the coordinated rollout.
+	if strings.TrimSpace(consensusHash) != "" {
+		if msgV4, err4 := BLS_Signer.CanonicalVoteMessageV4(chainID, height, bindings, consensusHash, vote); err4 == nil {
+			if blssign.BLSVerify(pubBytes, msgV4, sigBytes) == nil {
+				return nil
+			}
+		}
+	}
+
 	msgV3, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, vote)
 	if err != nil {
 		return fmt.Errorf("build v3 vote message: %w", err)
@@ -42,7 +54,7 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 	if blssign.BLSVerify(pubBytes, msgV3, sigBytes) == nil {
 		return nil
 	}
-	return fmt.Errorf("bls verify (v3 block-bound) failed for peer %s", resp.PeerID)
+	return fmt.Errorf("bls verify (v4/v3 block-bound) failed for peer %s", resp.PeerID)
 }
 
 // Verify checks a single BLS response against the provided vote value.

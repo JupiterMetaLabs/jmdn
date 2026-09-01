@@ -737,7 +737,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 				ion.String("block_hash", block.BlockHash.Hex()))
 			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
 		}
-		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.BlockNumber, rc)
+		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
 		if err != nil {
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): committee eligibility source invalid", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
