@@ -57,6 +57,7 @@ import (
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	"gossipnode/DB_OPs"
 	"gossipnode/config"
 
 	"github.com/rs/zerolog/log"
@@ -218,7 +219,23 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 		eligible[m.PeerID] = m.BLSPub
 	}
 
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, 1)
+	// The parent's certifier signatures are over the parent's canonical vote
+	// message. When the parent block carried a ConsensusHash (its committee voted
+	// v4), that message is v4 (chainID, prevHeight, prevHash, prevConsensusHash,
+	// vote=+1); otherwise v3. The whole certificate is one version — every buddy
+	// signed the same request's consensus_hash — so building ONE message keeps the
+	// BLS aggregate over a single message, which aggregate verification requires.
+	// Resolve the version from the parent block itself (its ConsensusHash).
+	prevConsensusHashHex := ""
+	if pblk, perr := DB_OPs.GetZKBlockByNumber(nil, prevHeight); perr == nil && pblk != nil {
+		prevConsensusHashHex = pblk.ConsensusHashHex()
+	}
+	var msg []byte
+	if prevConsensusHashHex != "" {
+		msg, err = BLS_Signer.CanonicalVoteMessageV4(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, prevConsensusHashHex, 1)
+	} else {
+		msg, err = BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, 1)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("entropy: building parent vote message: %w", err)
 	}

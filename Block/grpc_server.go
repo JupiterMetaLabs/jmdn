@@ -13,6 +13,7 @@ import (
 
 	BlockCommon "gossipnode/Block/common"
 	pb "gossipnode/Block/proto"
+	"gossipnode/DB_OPs"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -101,6 +102,21 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 			s.logger.Error(ctx, "gRPC: refusing to propose — consensus-field attach failed (reason in error)", err)
 		}
 		return nil, status.Errorf(codes.Unavailable, "%v", err)
+	}
+
+	// Stamp canonical ART identity nonces for every sender/receiver AND buddy
+	// reward-split recipient (block.FeeRecipients, populated by attach above), so a
+	// never-funded reward address — and any first-time receiver — is created from a
+	// block-carried identity at apply rather than a per-node mint (which would break
+	// the Fastsync AccountSync diff fleet-wide). Same call and fail-closed contract
+	// as the HTTP proposer path (Server.go); advisory field, does not touch BlockHash
+	// or ConsensusHash. Must run after attach and before consensus.Start.
+	if err := DB_OPs.EnrichBlockAccountNonces(block); err != nil {
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: refusing to propose — account-nonce enrichment failed", err,
+				ion.Uint64("block_number", block.BlockNumber))
+		}
+		return nil, status.Errorf(codes.Internal, "failed to enrich block with account nonces: %v", err)
 	}
 
 	// Create consensus instance and start consensus process

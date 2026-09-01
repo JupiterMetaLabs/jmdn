@@ -216,6 +216,17 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 			touch(&ca)
 		}
 	}
+	// Reward-split recipients (buddy staking rewards) are CREDITED at apply just
+	// like a transaction receiver, so a never-funded reward address needs a
+	// block-carried canonical ART identity too — otherwise it has nothing to be
+	// created from and the coinbase credit fails ("account must exist before
+	// transfer"). Stamped in the SAME ordinal pass so every node assigns identical
+	// nonces. Requires block.FeeRecipients to be populated before this runs
+	// (attachAVCConsensusFields, reordered ahead of the enrichment in Server.go).
+	for i := range block.FeeRecipients {
+		addr := block.FeeRecipients[i].Addr
+		touch(&addr)
+	}
 
 	nonces := make(map[common.Address]uint64, len(ordered))
 	missing := make([]common.Address, 0)

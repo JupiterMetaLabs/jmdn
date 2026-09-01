@@ -21,12 +21,14 @@ package messaging
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
 	"strings"
 	"sync"
 
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -230,12 +232,65 @@ func ExpectedFeeRecipients(signers []config.CertSigner) ([]config.FeeRecipient, 
 	return DeriveFeeRecipients(signers, rewardMap, parentStateBalanceOf)
 }
 
+// PrevBlockCertSigners returns the YES-voters of block prevNumber's committee
+// certificate as a CertSigner list — the buddies who certified the PREVIOUS
+// block, which the reward split pays. Sourced from that block's PERSISTED
+// CommitteeCertificate (P-cert), which exists on every certified block — NOT
+// block.PrevAggCert, which is populated only inside the entropy fold window and
+// only when JMDN_AVC_AGG_CERT is on. Because every node reads the same persisted,
+// hash-covered certificate for prevNumber, R4 (build) and R5 (validate) derive
+// identical recipients, so the sequencer still has no freedom over the split.
+//
+// A genesis parent (prevNumber == 0), a not-yet-persisted parent, or a cert-less
+// (legacy-prefix) parent yields an EMPTY signer set — no split for that block,
+// not an error. A real DB read error or a malformed certificate fails closed.
+func PrevBlockCertSigners(prevNumber uint64) ([]config.CertSigner, error) {
+	if prevNumber == 0 {
+		return nil, nil
+	}
+	blk, err := DB_OPs.GetZKBlockByNumber(nil, prevNumber)
+	if err != nil {
+		if DB_OPs.IsNotFound(err) {
+			return nil, nil // parent not persisted yet => no certifiers to reward
+		}
+		return nil, fmt.Errorf("PrevBlockCertSigners(%d): %w", prevNumber, err)
+	}
+	cert := strings.TrimSpace(blk.CommitteeCertificate)
+	if cert == "" {
+		return nil, nil // legacy/cert-less parent => nobody to reward
+	}
+	var responses []BLS_Signer.BLSresponse
+	if uerr := json.Unmarshal([]byte(cert), &responses); uerr != nil {
+		return nil, fmt.Errorf("PrevBlockCertSigners(%d): malformed certificate: %w", prevNumber, uerr)
+	}
+	seen := make(map[string]bool, len(responses))
+	out := make([]config.CertSigner, 0, len(responses))
+	for _, r := range responses {
+		if !r.Agree { // reward only the YES certifiers
+			continue
+		}
+		pid := strings.TrimSpace(r.PeerID)
+		if pid == "" || seen[pid] {
+			continue // dedupe by peer_id: one stake weight per certifier
+		}
+		seen[pid] = true
+		out = append(out, config.CertSigner{PeerID: pid, PubKey: r.PubKey, Signature: r.Signature})
+	}
+	return out, nil
+}
+
 // checkFeeRecipients recomputes a received block's expected FeeRecipients from
-// its (certificate-verified) PrevAggCert and rejects any mismatch. Called from
-// validateRemoteBlock AFTER verifyBlockCertificate, only when reward-split is
-// enabled. FAIL CLOSED: a derive error is a rejection, not a pass.
+// the PREVIOUS block's persisted committee certificate (PrevBlockCertSigners)
+// and rejects any mismatch. Called from validateRemoteBlock AFTER
+// verifyBlockCertificate, only when reward-split is enabled. FAIL CLOSED: a
+// derive error is a rejection, not a pass.
 func checkFeeRecipients(b *config.ZKBlock) *blockRejection {
-	expected, err := ExpectedFeeRecipients(b.PrevAggCert)
+	signers, serr := PrevBlockCertSigners(b.BlockNumber - 1)
+	if serr != nil {
+		return reject("feerecipients_prevcert",
+			"block %s: cannot read previous block's certifiers (fail closed): %v", b.BlockHash.Hex(), serr)
+	}
+	expected, err := ExpectedFeeRecipients(signers)
 	if err != nil {
 		return reject("feerecipients_underivable",
 			"block %s: cannot derive expected fee recipients (fail closed): %v", b.BlockHash.Hex(), err)

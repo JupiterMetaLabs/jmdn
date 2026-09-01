@@ -341,8 +341,9 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	logger().Debug(opCtx, "Address conversion", ion.String("original", addr), ion.String("converted", convertedAddr.Hex()))
 	AccountDetails, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
-		logger().Error(opCtx, "GetAccount error", err)
-		// If account not found, create a new account with zero balance
+		// A missing account is NOT an error (normal Ethereum semantics — a
+		// never-funded address, e.g. a not-yet-credited reward address, has
+		// balance 0). Only genuine read errors are logged at ERROR below.
 		if DB_OPs.IsNotFound(err) {
 			// IsNotFound also matches the SQL-backed "no rows in result set" shape a
 			// never-seen address now returns (the old "not found"/"does not exist"
@@ -361,7 +362,8 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 			return big.NewInt(0), nil
 		}
 
-		// For other errors, log and return
+		// Genuine error (not a missing account): log at ERROR and return.
+		logger().Error(opCtx, "GetAccount error", err)
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
 			logger().Error(opCtx, "Failed to log Balance error", logErr)
 		}
