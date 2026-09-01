@@ -1816,7 +1816,15 @@ func main() {
 	// seed-served key (persisted to config/seedAuth.json; override with
 	// JMDN_SEED_AUTH_FILE). The verified snapshot is cached, so the seed is queried
 	// about once per refresh window, not per block.
-	if cfg.FastSync.EnableCatchup && cfg.Network.SeedNode != "" {
+	// Wire the authenticated committee sources at STARTUP whenever we have a
+	// seednode AND either a pinned authority OR catchup. The pin branch guarantees
+	// the reward-address + eligibility sources are set before the first
+	// attachAVCConsensusFields on the sequencer too (otherwise reward_split_enabled
+	// fails every block closed until the lazy NewConsensus wiring runs). Idempotent
+	// with Sequencer/consensus_statemachine.go's NewConsensus wiring — same pinned,
+	// authenticated snapshot. The `|| EnableCatchup` arm preserves the prior
+	// empty-pin TOFU read path for catchup nodes (CommitteeSourcesAuto pin-or-TOFU).
+	if cfg.Network.SeedNode != "" && (cfg.Consensus.SeedAuthorityBLSPub != "" || cfg.FastSync.EnableCatchup) {
 		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
 			log.Error().Err(err).
 				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
@@ -1837,7 +1845,7 @@ func main() {
 			)
 			messaging.SetCommitteeEligibilitySource(elFn)
 			messaging.SetRewardAddressSource(rewardFn)
-			log.Info().Msg("[Committee] eligibility + reward-address sources wired on non-sequencer node (pin-or-TOFU committee snapshot)")
+			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
 		}
 	}
 
