@@ -36,7 +36,7 @@ func buildMixedTally(t *testing.T, n int) (avcvotes.BlockTally, int) {
 		if i%3 == 0 {
 			// Forged: syntactically valid signature, but for a different
 			// message than the one being tallied.
-			other, _, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, "0xnot-this-block")
+			other, _, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, "0xnot-this-block", "")
 			if err != nil {
 				t.Fatalf("building forged fixture %d: %v", i, err)
 			}
@@ -64,7 +64,7 @@ func TestVerifyTallySignatures_MultipleInvalidSignaturesAllDropped(t *testing.T)
 	const n = 30 // i%3==0 -> 10 forged, 20 genuine
 	tally, wantValid := buildMixedTally(t, n)
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	wantDropped := n - wantValid
 	if dropped != wantDropped {
 		t.Fatalf("expected %d dropped forgeries, got %d", wantDropped, dropped)
@@ -98,7 +98,7 @@ func TestVerifyTallySignatures_MixedYesNoVotesSurviveIntact(t *testing.T) {
 		tally.Signatures[p.String()] = []avcvotes.VoteRecord{rec}
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if dropped != 0 {
 		t.Fatalf("all votes were genuinely signed, expected 0 dropped, got %d", dropped)
 	}
@@ -128,7 +128,7 @@ func TestVerifyTallySignatures_LargeLoad1000Votes(t *testing.T) {
 	const n = 1000
 	tally, wantValid := buildMixedTally(t, n)
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	wantDropped := n - wantValid
 	if dropped != wantDropped {
 		t.Fatalf("expected %d dropped forgeries out of %d, got %d", wantDropped, n, dropped)
@@ -158,7 +158,7 @@ func TestVerifyTallySignatures_DeterministicAcrossWorkerCounts(t *testing.T) {
 	var baselineDropped int
 	for i, w := range workerCounts {
 		verifyTallySignaturesWorkers = w
-		verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+		verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 		if i == 0 {
 			baseline = verified
 			baselineDropped = dropped
@@ -180,7 +180,7 @@ func TestVerifyTallySignatures_DeterministicAcrossWorkerCounts(t *testing.T) {
 // more goroutines-worth of work than there are tasks, including the
 // zero-task case (must not hang or panic on an empty jobs channel).
 func TestVerifyTallySigTasksConcurrently_EmptyInput(t *testing.T) {
-	results := verifyTallySigTasksConcurrently(nil, stage5ChainID, stage5Height, stage5BlockHash)
+	results := verifyTallySigTasksConcurrently(nil, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results for 0 tasks, got %d", len(results))
 	}

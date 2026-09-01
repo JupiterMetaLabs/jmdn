@@ -8,6 +8,8 @@ import (
 
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // StoreBlock converts a config.ZKBlock to a thebegateway.BlockRecord and writes it.
@@ -155,6 +157,17 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 		if raw, err := json.Marshal(b.FeeRecipients); err == nil {
 			rec.ExtraData["fee_recipients"] = string(raw)
 		}
+	}
+	// ConsensusHash: persist the consensus-fields digest so a synced/restarted
+	// node carries the SAME value the sequencer stamped and the committee's v4
+	// certificate signed — checkConsensusBinding recomputes and matches it on the
+	// receive/apply path. Absent on pre-v4 blocks. Hex string in ExtraData, same
+	// round-trip as fee_recipients.
+	if (b.ConsensusHash != common.Hash{}) {
+		if rec.ExtraData == nil {
+			rec.ExtraData = map[string]any{}
+		}
+		rec.ExtraData["consensus_hash"] = b.ConsensusHash.Hex()
 	}
 	// Slot/Period: persisted so a restarted node can recover its slot counter
 	// from the tip block instead of resetting to 0 - see

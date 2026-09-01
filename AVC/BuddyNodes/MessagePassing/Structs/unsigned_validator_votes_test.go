@@ -53,7 +53,7 @@ func TestVerifyTallySignatures_UnsignedValidatorVoteSurvivesWhenFlagOn(t *testin
 		Signatures:            map[string][]avcvotes.VoteRecord{validator.String(): {rec}},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if dropped != 0 {
 		t.Fatalf("an unsigned validator vote must not be dropped with the seam on, dropped=%d", dropped)
 	}
@@ -76,7 +76,7 @@ func TestVerifyTallySignatures_UnsignedValidatorVoteDroppedWhenFlagOff(t *testin
 		Signatures:            map[string][]avcvotes.VoteRecord{validator.String(): {rec}},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if dropped != 1 {
 		t.Fatalf("with the seam off an unsigned record must be dropped, dropped=%d", dropped)
 	}
@@ -100,7 +100,7 @@ func TestVerifyTallySignatures_SeamDoesNotWeakenForgeryDetection(t *testing.T) {
 	buddyRec := stage5SignedRecord(t, buddy, 1, stage5Height, stage5BlockHash)
 
 	// Forged: real key material, but the signature covers a different message.
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block")
+	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", "")
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestVerifyTallySignatures_SeamDoesNotWeakenForgeryDetection(t *testing.T) {
 		},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if dropped != 1 {
 		t.Fatalf("expected exactly the forged vote dropped, got dropped=%d", dropped)
 	}
@@ -161,7 +161,7 @@ func TestVerifyTallySignatures_HalfSignedRecordStillVerifiedAndDropped(t *testin
 		Signatures:            map[string][]avcvotes.VoteRecord{sneaky.String(): {rec}},
 	}
 
-	_, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+	_, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 	if dropped != 1 {
 		t.Fatalf("a half-signed record must not bypass verification, dropped=%d", dropped)
 	}

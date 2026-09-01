@@ -125,6 +125,37 @@ func CanonicalVoteMessageV3(chainID, height uint64, bindings string, vote int8) 
 	return []byte(msg), nil
 }
 
+// VoteDomainVersionV4 extends v3 by binding the block's ConsensusHash (the
+// consensus-fields digest) alongside the block hash:
+// "zkvote:v4:chain=<id>:h=<height>:<blockhash>:ch=<consensushash>:<vote>".
+// A v4 vote therefore attests to Slot/Period/PrevAggCert/FeeRecipients/
+// CommitteeSnapshotHash too, giving those tamper-evidence WITHOUT folding them
+// into BlockHash. Emitted only when a ConsensusHash is present; otherwise v3 is
+// used. Verifiers try v4 then fall back to v3 for a staged rollout.
+const VoteDomainVersionV4 = "v4"
+
+// CanonicalVoteMessageV4 builds the EXACT bytes signed and verified for a v4
+// height+consensus-bound vote. consensusHash must be non-empty (callers select
+// v3 when there is no ConsensusHash). Signer and verifier both derive their
+// bytes here so they cannot drift.
+func CanonicalVoteMessageV4(chainID, height uint64, bindings, consensusHash string, vote int8) ([]byte, error) {
+	if vote != -1 && vote != 1 {
+		return nil, fmt.Errorf("invalid vote: %d", vote)
+	}
+	bindings = normalizeBindings(bindings)
+	if bindings == "" {
+		return nil, fmt.Errorf("empty block bindings")
+	}
+	ch := normalizeBindings(consensusHash)
+	if ch == "" {
+		return nil, fmt.Errorf("empty consensus hash")
+	}
+	msg := BlockBoundVotePrefix + VoteDomainVersionV4 + ":chain=" +
+		strconv.FormatUint(chainID, 10) + ":h=" + strconv.FormatUint(height, 10) +
+		":" + bindings + ":ch=" + ch + ":" + strconv.Itoa(int(vote))
+	return []byte(msg), nil
+}
+
 // DefaultDomainChainID is the fallback chain id used ONLY when settings have not
 // been Load()ed yet (early init, or unit tests that never call Load()). It
 // mirrors the compiled network default so signer and verifier agree even on the
@@ -148,8 +179,17 @@ func DomainChainID() uint64 {
 // block on a single chain/fork at a single height, unlike the unbound constant
 // "vote:1" used by SignMessage. v2 (chain, no height) is no longer emitted — the
 // fleet is fully migrated to v3.
-func SignMessageForBlock(vote int8, chainID, height uint64, bindings string) (BLSresponse, bool, error) {
-	msg, err := CanonicalVoteMessageV3(chainID, height, bindings, vote)
+func SignMessageForBlock(vote int8, chainID, height uint64, bindings, consensusHash string) (BLSresponse, bool, error) {
+	// Emit v4 (block hash + consensus hash) when a ConsensusHash is present,
+	// otherwise v3 (block hash only). The receiver's VerifyForBlock tries v4 then
+	// falls back to v3, so a mixed fleet during rollout still converges.
+	var msg []byte
+	var err error
+	if strings.TrimSpace(consensusHash) != "" {
+		msg, err = CanonicalVoteMessageV4(chainID, height, bindings, consensusHash, vote)
+	} else {
+		msg, err = CanonicalVoteMessageV3(chainID, height, bindings, vote)
+	}
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}

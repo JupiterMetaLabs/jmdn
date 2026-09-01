@@ -244,6 +244,13 @@ func (vt *VoteTrigger) SubmitVote() error {
 			BLS_Signer.DomainChainID(),
 			zkBlock.BlockNumber,
 			blockHash,
+			// v3 for now ("" => v3). The CRDT verify path (verifyTallySignatures)
+			// receives only the block-hash string, not the block, so it cannot yet
+			// source ConsensusHash to verify a v4 signature — signing v4 here would
+			// make it drop these votes. ACTIVATE v4 by carrying ConsensusHash into
+			// the CRDT vote flow / vote-result request, then pass
+			// zkBlock.ConsensusHashHex() here and thread it to verifyTallySignatures.
+			"",
 		)
 		signingOK := blsErr == nil && signed
 

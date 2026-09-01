@@ -152,8 +152,23 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		block.SeedEpoch = epoch
 	}
 
-	if Security.M2bHashEnabled {
-		block.BlockHash = Security.RecomputeBlockHashWithConsensusFields(block)
-	}
+	// BlockHash is the orchestrator-submitted, transactions-only identity and is
+	// NEVER overwritten here. Consensus fields (Slot/Period/PrevAggCert/
+	// FeeRecipients/CommitteeSnapshotHash/VdfProof) travel as their own advisory
+	// fields on the block, like AccountNonces — they do not mutate BlockHash.
+	// Rebinding BlockHash to the consensus-fields hash broke every tx-only
+	// validator (Security.CheckZKBlockValidation, messaging.checkBodyBinding, the
+	// AVC structural validator) and the vote, which all recompute the tx-only
+	// hash. If the six consensus fields must be signature-covered (M2b's goal),
+	// that binding belongs in a SEPARATE ConsensusHash field the vote domain signs
+	// — not in BlockHash. RecomputeBlockHashWithConsensusFields is retained for
+	// that use.
+	//
+	// ConsensusHash: the SEPARATE consensus-fields digest, set AFTER all six
+	// fields + PrevAggCert + CommitteeSnapshotHash + FeeRecipients are populated
+	// above. This is the value the committee's v4 vote signs over, giving those
+	// fields tamper-evidence without mutating BlockHash. Deterministic: every node
+	// recomputes it from the received block (messaging.checkConsensusBinding).
+	block.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(block)
 	return nil
 }

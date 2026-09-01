@@ -88,7 +88,7 @@ func TestBLSSignThenAddVote_SignatureVerifiesIndependently(t *testing.T) {
 		vote      = int8(1)
 	)
 
-	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, height, blockHash)
+	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, height, blockHash, "")
 	if err != nil {
 		t.Fatalf("SignMessageForBlock: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestBLSSignThenAddVote_SignatureVerifiesIndependently(t *testing.T) {
 	if err := BLS_Verifier.VerifyForBlock(BLS_Signer.BLSresponse{
 		Signature: blsResp.Signature,
 		PubKey:    blsResp.PubKey,
-	}, chainID, height, blockHash, vote); err != nil {
+	}, chainID, height, blockHash, "", vote); err != nil {
 		t.Fatalf("independent BLS verification failed: %v", err)
 	}
 }

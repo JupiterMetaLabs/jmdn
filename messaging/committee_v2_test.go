@@ -268,11 +268,11 @@ func TestF3_FlagOffIsInert(t *testing.T) {
 		t.Fatal("JMDN_COMMITTEE_V2 must default to FALSE - the committee travels on the wire, " +
 			"so a partial rollout with it on would split the fleet")
 	}
-	got, err := VerifyCertificateForRound(nil, "0xabc", 1000, round(1000, 0))
+	got, err := VerifyCertificateForRound(nil, "0xabc", "", 1000, round(1000, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := VerifyCertificate(nil, "0xabc", 1000)
+	want, err := VerifyCertificate(nil, "0xabc", "", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestV2RefusesLegacySource(t *testing.T) {
 	t.Log("v2 fails closed on the legacy source rather than seed-ranking a divergent set")
 
 	// And the certificate path fails closed the same way.
-	if _, err := VerifyCertificateForRound(nil, "0xab", 1000, round(1000, 0)); !errors.Is(err, ErrLegacySourceUnderV2) {
+	if _, err := VerifyCertificateForRound(nil, "0xab", "", 1000, round(1000, 0)); !errors.Is(err, ErrLegacySourceUnderV2) {
 		t.Fatalf("certificate path err = %v, want ErrLegacySourceUnderV2", err)
 	}
 }

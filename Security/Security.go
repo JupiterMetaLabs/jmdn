@@ -195,9 +195,12 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	)
 	txValidationSpan.End()
 
-	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// 2. Block-hash binding — transactions-only, matching the orchestrator's
+	// submitted BlockHash (Keccak256 over the concatenation of each tx hash).
+	// BlockHash is NEVER the consensus-fields hash: consensus fields travel as
+	// their own advisory block fields (see Block/consensus_fields.go), so this
+	// stays a pure tx binding and cannot be broken by M2b/consensus changes.
 	_, hashCheckSpan := tracer.Start(traceCtx, "Security.CheckZKBlockValidation.validateBlockHash")
-	// First compute the hash of all transaction's hashes
 	transactionHashes := make([][]byte, len(zkBlock.Transactions))
 	for i, tx := range zkBlock.Transactions {
 		transactionHashes[i] = tx.Hash.Bytes()
@@ -940,12 +943,12 @@ func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")
 	}
-	var want common.Hash
-	if M2bHashEnabled {
-		want = RecomputeBlockHashWithConsensusFields(block)
-	} else {
-		want = RecomputeBlockHashFromContents(block.Transactions)
-	}
+	// Transactions-only. BlockHash is the orchestrator identity and is never the
+	// consensus-fields hash — consensus fields are bound in their own advisory
+	// fields, not by mutating BlockHash (see Block/consensus_fields.go). M2b's
+	// six-field binding, if activated, must live in a SEPARATE ConsensusHash the
+	// vote domain signs, not here.
+	want := RecomputeBlockHashFromContents(block.Transactions)
 	if block.BlockHash != want {
 		return false, fmt.Errorf("block hash mismatch: recomputed %s, block claims %s",
 			want.Hex(), block.BlockHash.Hex())

@@ -44,48 +44,36 @@ func TestCheckBlockHash_FlagOff_LegacyBehaviorUnchanged(t *testing.T) {
 	}
 }
 
-// TestCheckBlockHash_FlagOn_ClosesTheTamperGap is the actual point of this
-// work: with the flag on, a block whose Period was silently rewritten after
-// its BlockHash was computed must now be rejected - the exact attack M0
-// alone (period is derived correctly, but nothing stops a relay from
-// overwriting the field in transit) leaves open.
-func TestCheckBlockHash_FlagOn_ClosesTheTamperGap(t *testing.T) {
-	M2bHashEnabled = true
-	defer func() { M2bHashEnabled = false }()
-
-	txs := []config.Transaction{legacyTx(0, 1)}
-	block := &config.ZKBlock{Transactions: txs, Slot: 10, Period: 1, SeedEpoch: 5, VotingSnapshotEpoch: 5}
-	block.BlockHash = RecomputeBlockHashWithConsensusFields(block)
-
-	if ok, err := CheckBlockHash(block); err != nil || !ok {
-		t.Fatalf("flag on: correctly-hashed M2b block should pass, got ok=%v err=%v", ok, err)
-	}
-
-	// A relay silently rewrites Period after the hash was computed - the
-	// exact scenario the user's warning describes.
-	block.Period = 99
-	if ok, _ := CheckBlockHash(block); ok {
-		t.Fatal("flag on: a block with a rewritten Period must be rejected - this is the whole point of M2b")
-	}
-}
-
-// TestCheckBlockHash_FlagOn_RejectsPreM2bGeneratorOutput is the fail-safe
-// property for an uncoordinated flip: if the validator flips to M2b but the
-// generator has NOT (still producing legacy-formula hashes), blocks must be
-// rejected outright, never silently accepted under the wrong formula. This
-// is what makes it safe for an operator to flip the flag defensively even
-// before confirming the generator side - it fails closed, not open.
-func TestCheckBlockHash_FlagOn_RejectsPreM2bGeneratorOutput(t *testing.T) {
+// TestCheckBlockHash_IgnoresM2bFlag pins the post-directive invariant: BlockHash
+// is the orchestrator's transactions-only identity and CheckBlockHash validates
+// it that way REGARDLESS of M2bHashEnabled. M2b no longer folds the consensus
+// fields into BlockHash (that broke every tx-only validator and the vote — see
+// Block/consensus_fields.go). The tamper-evidence M2b used to provide now lives
+// in a SEPARATE ConsensusHash that the v4 committee vote signs
+// (config.ZKBlock.ConsensusHash, verified by messaging.checkConsensusBinding),
+// so BlockHash does not move when a consensus field changes and CheckBlockHash
+// must NOT reject on a Period rewrite.
+func TestCheckBlockHash_IgnoresM2bFlag(t *testing.T) {
 	M2bHashEnabled = true
 	defer func() { M2bHashEnabled = false }()
 
 	txs := []config.Transaction{legacyTx(0, 1)}
 	block := &config.ZKBlock{
-		BlockHash:    RecomputeBlockHashFromContents(txs), // legacy-formula hash, as a not-yet-upgraded generator would produce
-		Transactions: txs,
-		Period:       1,
+		BlockHash:           RecomputeBlockHashFromContents(txs), // tx-only identity
+		Transactions:        txs,
+		Slot:                10,
+		Period:              1,
+		SeedEpoch:           5,
+		VotingSnapshotEpoch: 5,
 	}
-	if ok, _ := CheckBlockHash(block); ok {
-		t.Fatal("flag on: a legacy-formula block hash must be rejected, not accepted under the new formula")
+	if ok, err := CheckBlockHash(block); err != nil || !ok {
+		t.Fatalf("flag on: tx-only BlockHash must still pass (M2b no longer rebinds BlockHash), got ok=%v err=%v", ok, err)
+	}
+
+	// A consensus-field rewrite does NOT change the tx-only BlockHash, so
+	// CheckBlockHash is unaffected — that binding is now ConsensusHash's job.
+	block.Period = 99
+	if ok, err := CheckBlockHash(block); err != nil || !ok {
+		t.Fatalf("flag on: a Period rewrite must NOT affect the tx-only BlockHash check (ConsensusHash covers it now), got ok=%v err=%v", ok, err)
 	}
 }

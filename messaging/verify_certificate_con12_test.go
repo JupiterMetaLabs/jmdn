@@ -50,7 +50,7 @@ func TestCON12_BlocklistDoesNotShrinkQuorumDenominator(t *testing.T) {
 
 	// Denominator must be the FULL fleet committee (7), threshold ceil(2*7/3)=5 —
 	// NOT the shrunk post-blocklist size 5 (which would give threshold 4).
-	res, err := VerifyCertificate(votesFrom(0, 1, 2, 3, 4), hash.Hex(), 0)
+	res, err := VerifyCertificate(votesFrom(0, 1, 2, 3, 4), hash.Hex(), "", 0)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCON12_BlocklistDoesNotShrinkQuorumDenominator(t *testing.T) {
 
 	// The bug this closes: with a shrunk n=5, threshold would be 4 and these FOUR
 	// non-blocked votes would wrongly finalize. They must NOT, since n stays 7.
-	res4, err := VerifyCertificate(votesFrom(0, 1, 2, 3), hash.Hex(), 0)
+	res4, err := VerifyCertificate(votesFrom(0, 1, 2, 3), hash.Hex(), "", 0)
 	if err != nil {
 		t.Fatalf("verify(4): %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCON12_BlocklistDoesNotShrinkQuorumDenominator(t *testing.T) {
 
 	// A blocklisted member is a NON-VOTER: 4 non-blocked + 1 blocked (p5) counts as
 	// 4, not 5, so it must not reach quorum.
-	resBlocked, err := VerifyCertificate(votesFrom(0, 1, 2, 3, 5), hash.Hex(), 0)
+	resBlocked, err := VerifyCertificate(votesFrom(0, 1, 2, 3, 5), hash.Hex(), "", 0)
 	if err != nil {
 		t.Fatalf("verify(blocked): %v", err)
 	}

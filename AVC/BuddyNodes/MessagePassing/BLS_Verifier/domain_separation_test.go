@@ -28,14 +28,14 @@ const (
 // TestVoteDomain_CrossChainReplayRejected: a v3 vote signed on chain A must NOT
 // verify on chain B (fork / testnet↔mainnet domain separation).
 func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
-	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
+	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash, "")
 	if err != nil || !ok {
 		t.Fatalf("sign v3 on chainA: ok=%v err=%v", ok, err)
 	}
-	if err := VerifyForBlock(respA, chainA, 100, blkHash, 1); err != nil {
+	if err := VerifyForBlock(respA, chainA, 100, blkHash, "", 1); err != nil {
 		t.Fatalf("v3 vote should verify on its own chain A: %v", err)
 	}
-	if err := VerifyForBlock(respA, chainB, 100, blkHash, 1); err == nil {
+	if err := VerifyForBlock(respA, chainB, 100, blkHash, "", 1); err == nil {
 		t.Fatalf("SECURITY: chainA vote verified on chainB — cross-chain replay not closed")
 	}
 }
@@ -43,17 +43,17 @@ func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
 // TestVoteDomain_V3HeightBinding: a v3 vote for one height must NOT verify at
 // another height, and a different chain is still rejected.
 func TestVoteDomain_V3HeightBinding(t *testing.T) {
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
+	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash, "")
 	if err != nil || !ok {
 		t.Fatalf("sign v3: ok=%v err=%v", ok, err)
 	}
-	if err := VerifyForBlock(resp, chainA, 100, blkHash, 1); err != nil {
+	if err := VerifyForBlock(resp, chainA, 100, blkHash, "", 1); err != nil {
 		t.Fatalf("v3 vote should verify at its own height: %v", err)
 	}
-	if err := VerifyForBlock(resp, chainA, 200, blkHash, 1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 200, blkHash, "", 1); err == nil {
 		t.Fatalf("v3 vote for height 100 verified at height 200 — height not bound")
 	}
-	if err := VerifyForBlock(resp, chainB, 100, blkHash, 1); err == nil {
+	if err := VerifyForBlock(resp, chainB, 100, blkHash, "", 1); err == nil {
 		t.Fatalf("SECURITY: v3 vote verified on a different chain")
 	}
 }
@@ -61,15 +61,15 @@ func TestVoteDomain_V3HeightBinding(t *testing.T) {
 // TestVoteDomain_V3FieldBinding: the v3 domain binds the block hash and the vote
 // value.
 func TestVoteDomain_V3FieldBinding(t *testing.T) {
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
+	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash, "")
 	if err != nil || !ok {
 		t.Fatalf("sign v3: ok=%v err=%v", ok, err)
 	}
 	otherHash := "0x2222222222222222222222222222222222222222222222222222222222222222"
-	if err := VerifyForBlock(resp, chainA, 100, otherHash, 1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 100, otherHash, "", 1); err == nil {
 		t.Fatalf("SECURITY: vote for %s verified against %s (block hash not bound)", blkHash, otherHash)
 	}
-	if err := VerifyForBlock(resp, chainA, 100, blkHash, -1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 100, blkHash, "", -1); err == nil {
 		t.Fatalf("SECURITY: +1 signature verified as -1 (vote value not bound)")
 	}
 }
@@ -96,12 +96,12 @@ func TestVoteDomain_DowngradeRejected(t *testing.T) {
 
 	// v1: "zkvote:<blockhash>:<vote>" (block-only, no chain, no height).
 	v1 := build(BLS_Signer.BlockBoundVotePrefix + blkHash + ":1")
-	if err := VerifyForBlock(v1, chainA, 100, blkHash, 1); err == nil {
+	if err := VerifyForBlock(v1, chainA, 100, blkHash, "", 1); err == nil {
 		t.Fatalf("a v1 signature was accepted under v3-only")
 	}
 	// v2: "zkvote:v2:chain=8000800:<blockhash>:<vote>" (chain, no height).
 	v2 := build(BLS_Signer.BlockBoundVotePrefix + "v2:chain=8000800:" + blkHash + ":1")
-	if err := VerifyForBlock(v2, chainA, 100, blkHash, 1); err == nil {
+	if err := VerifyForBlock(v2, chainA, 100, blkHash, "", 1); err == nil {
 		t.Fatalf("a v2 signature was accepted under v3-only")
 	}
 }

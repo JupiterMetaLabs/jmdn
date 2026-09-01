@@ -46,7 +46,7 @@ func benchTally(b *testing.B, n int) avcvotes.BlockTally {
 		if i%2 == 1 {
 			vote = -1
 		}
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, stage5BlockHash)
+		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, stage5BlockHash, "")
 		if err != nil || !signed {
 			b.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
 		}
@@ -78,7 +78,7 @@ func runVerifyBenchmark(b *testing.B, n, workers int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash)
+		verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
 		if dropped != 0 {
 			b.Fatalf("unexpected drop in benchmark fixture: dropped=%d", dropped)
 		}

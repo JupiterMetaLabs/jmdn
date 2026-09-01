@@ -65,7 +65,7 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 		if uerr := json.Unmarshal([]byte(cert), &responses); uerr != nil {
 			return false, fmt.Errorf("thebesync apply: block %d malformed certificate: %w", block.BlockNumber, uerr)
 		}
-		res, verr := messaging.VerifyCertificate(responses, block.BlockHash.Hex(), block.BlockNumber)
+		res, verr := messaging.VerifyCertificate(responses, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
 		if verr != nil {
 			return false, fmt.Errorf("thebesync apply: block %d certificate verify failed (fail closed): %w", block.BlockNumber, verr)
 		}
