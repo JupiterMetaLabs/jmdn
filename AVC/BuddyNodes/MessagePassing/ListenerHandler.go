@@ -28,6 +28,7 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -1584,7 +1585,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			logger().Info(context.Background(), "🎯 Target block hash from request: %s")
 		}
 	} else {
-		logger().Info(context.Background(), "DEBUG: Vote result request payload not JSON or missing block_hash: %v")
+		log.Warn().
+			Str("remote_peer_id", remotePeer.String()).
+			Err(err).
+			Msg("vote result request: payload not valid JSON or missing block_hash; rejecting")
 		// If no valid JSON payload, reject to avoid mixing blocks
 		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
 		response := AVCStruct.NewMessageBuilder(nil).
@@ -1630,15 +1634,35 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			logger().Info(context.Background(), "⚠️ Could not populate buddy nodes from cache")
 		}
 	}
-	logger().Info(context.Background(), "✅ Buddy nodes populated: %v")
+	log.Info().
+		Str("remote_peer_id", remotePeer.String()).
+		Int("buddy_count", len(listenerNode.BuddyNodes.Buddies_Nodes)).
+		Msg("vote result request: buddy nodes populated")
 
-	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
-	logger().Info(context.Background(), "🔄 Triggering CRDT sync before processing votes...")
+	// 🔄 CRDT SYNC: Sync CRDT data before processing votes.
+	// remote_peer_id + target_block_hash are logged on every line in this
+	// step so a single request's start/outcome can be grepped together out
+	// of a busy console — see also the "committee:"-prefixed lines added for
+	// the same reason in messaging/committee_v2.go.
+	crdtSyncStart := time.Now().UTC()
+	log.Info().
+		Str("remote_peer_id", remotePeer.String()).
+		Str("target_block_hash", targetBlockHash).
+		Msg("vote result request: triggering CRDT sync before processing votes")
 	if err := TriggerCRDTSyncForBuddyNode(logger_ctx, listenerNode); err != nil {
-		logger().Info(context.Background(), "⚠️ CRDT sync failed, continuing with existing data: %v")
+		log.Warn().
+			Str("remote_peer_id", remotePeer.String()).
+			Str("target_block_hash", targetBlockHash).
+			Dur("elapsed", time.Since(crdtSyncStart)).
+			Err(err).
+			Msg("vote result request: CRDT sync failed; continuing with existing (possibly stale) CRDT data")
 		// Don't fail the vote processing, just log the warning
 	} else {
-		logger().Info(context.Background(), "✅ CRDT sync completed successfully")
+		log.Info().
+			Str("remote_peer_id", remotePeer.String()).
+			Str("target_block_hash", targetBlockHash).
+			Dur("elapsed", time.Since(crdtSyncStart)).
+			Msg("vote result request: CRDT sync completed successfully")
 		// Print CRDT content after sync
 		CRDTSync.PrintCurrentCRDTContent()
 	}
