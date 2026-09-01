@@ -61,10 +61,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/JupiterMetaLabs/avc/committee"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+
+	"github.com/rs/zerolog/log"
 )
 
 // EntropyCommitteeDomain domain-separates the entropy-committee seed from
@@ -159,5 +162,27 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 	if err != nil {
 		return nil, fmt.Errorf("messaging: entropy committee draw for epoch %d: %w", epoch, err)
 	}
+
+	// Cross-node determinism check, same shape as SelectCommitteeWithSize's
+	// (messaging/committee_v2.go): same epoch must log the same
+	// entropy_sha256, seed, and ordered member list on every node. NOTE:
+	// as of this writing SetBeaconSource has zero callers anywhere in the
+	// codebase, so activeBeacon() above is always nil and this function
+	// returns ErrNoBeaconInstalled before reaching this line on every live
+	// node — this log line does not fire in production yet. It is wired
+	// now so the same verification is available the moment a beacon is
+	// installed (Stage 2 / §F), without a second round of instrumentation.
+	memberIDs := make([]string, len(members))
+	for i, m := range members {
+		memberIDs[i] = m.PeerID
+	}
+	log.Info().
+		Uint64("epoch", uint64(epoch)).
+		Str("entropy_sha256", fmt.Sprintf("%x", sha256.Sum256(entropy))).
+		Str("seed", seed.String()).
+		Int("committee_size", len(members)).
+		Str("committee_members", strings.Join(memberIDs, ",")).
+		Msg("committee: entropy committee selected")
+
 	return members, nil
 }

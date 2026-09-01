@@ -39,6 +39,7 @@
 package messaging
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -51,6 +52,8 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CommitteeV2Enabled gates every behaviour change in this file.
@@ -173,7 +176,7 @@ func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 		return RoundContext{}, fmt.Errorf("%w: height %d, local period %d, block claims period %d",
 			ErrPeriodNotSynced, b.BlockNumber, localPeriod, b.Period)
 	}
-	return RoundContext{
+	rc := RoundContext{
 		SelectionPeriod: SelectionPeriod(EpochForHeight(b.BlockNumber)),
 		EntropyEpoch:    committee.EntropyEpoch(EpochForSlot(b.Slot)),
 		PrevHash:        b.PrevHash.Bytes(),
@@ -186,7 +189,28 @@ func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 		// Cross-checked against the block's own stamped Period above -
 		// this is the verified local value, not the block's bare claim.
 		Period: localPeriod,
-	}, nil
+	}
+
+	// Cross-node determinism check (operator-facing, not debug-only): every
+	// node that reaches this line for the same Height must log an identical
+	// slot/period/entropy_epoch/selection_period tuple. A mismatch here,
+	// compared across two nodes' logs at the same height, localizes the
+	// divergence to BEFORE committee selection even runs (block sync, the
+	// slot clock, or the Period store) rather than inside it. Same
+	// zerolog global logger consensus_hardening.go already uses in this
+	// package (github.com/rs/zerolog/log) - prints to console with no
+	// extra config, unlike the ion/logging named-logger path elsewhere in
+	// this codebase, which defaults to level "warn" and would have
+	// silently dropped an Info line.
+	log.Info().
+		Uint64("height", b.BlockNumber).
+		Uint64("slot", b.Slot).
+		Uint64("period", localPeriod).
+		Uint64("entropy_epoch", uint64(rc.EntropyEpoch)).
+		Uint64("selection_period", uint64(rc.SelectionPeriod)).
+		Msg("committee: round context built")
+
+	return rc, nil
 }
 
 // EpochForHeight maps a block height to the selection epoch.
@@ -292,7 +316,44 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 		// the draw is a determinism fix rather than a sampling one.
 		k = len(snap.Members)
 	}
-	return committee.CommitteeFor(seed, snap, k)
+
+	members, err := committee.CommitteeFor(seed, snap, k)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cross-node determinism check (operator-facing, not debug-only): same
+	// Height/Period/EntropyEpoch must produce the same entropy_sha256, the
+	// same seed, and the same ordered member list on every node. Members are
+	// logged in CommitteeFor's OWN return order (selection rank, not
+	// re-sorted here), so a log diff also catches a ranking disagreement,
+	// not just a membership one. entropy_sha256 is a hash of the raw
+	// entropy bytes, not the bytes themselves — sufficient to confirm
+	// equality across nodes without printing raw salt/beacon material.
+	// This second EpochEntropy call is redundant with the one inside
+	// DeriveSeed above but is read-only and side-effect-free (SaltSource
+	// returns a static config value; BeaconSource takes an RLock over an
+	// in-memory map) — safe to call again purely for observability, and its
+	// error is intentionally swallowed here: it must never change this
+	// function's return value or error behavior, only what gets logged.
+	memberIDs := make([]string, len(members))
+	for i, m := range members {
+		memberIDs[i] = m.PeerID
+	}
+	evt := log.Info().
+		Uint64("height", rc.Height).
+		Uint64("period", rc.Period).
+		Uint64("entropy_epoch", uint64(rc.EntropyEpoch)).
+		Uint64("selection_period", uint64(rc.SelectionPeriod)).
+		Str("seed", seed.String()).
+		Int("committee_size", len(members)).
+		Str("committee_members", strings.Join(memberIDs, ","))
+	if entropy, entropyErr := SeedSourceFor(rc.EntropyEpoch).EpochEntropy(rc.EntropyEpoch); entropyErr == nil {
+		evt = evt.Str("entropy_sha256", fmt.Sprintf("%x", sha256.Sum256(entropy)))
+	}
+	evt.Msg("committee: buddy committee selected")
+
+	return members, nil
 }
 
 // ErrCommitteeNotPinned is returned when consensus.require_pinned_committee is
