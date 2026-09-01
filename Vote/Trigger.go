@@ -245,7 +245,13 @@ func (vt *VoteTrigger) SubmitVote() error {
 			zkBlock.BlockNumber,
 			blockHash,
 		)
-		if blsErr != nil || !signed {
+		signingOK := blsErr == nil && signed
+
+		// A node that cannot sign is a NORMAL (non-Buddy) validator in the
+		// approved design: it submits an unsigned vote rather than no vote at
+		// all. With the flag off this stays a skip, exactly as before —
+		// signing failure meant no v2 write, and it still does.
+		if !signingOK && !avcvotes.AllowUnsignedValidatorVotes {
 			logger().Warn(spanCtx, "v2 vote CRDT: per-vote BLS signing failed, skipping v2 write (old path unaffected)",
 				ion.String("block_hash", blockHash),
 				ion.Err(blsErr),
@@ -256,9 +262,19 @@ func (vt *VoteTrigger) SubmitVote() error {
 				Vote:            vt.Vote.Vote,
 				BlockHash:       blockHash,
 				Height:          zkBlock.BlockNumber,
-				BLSSignature:    blsResp.Signature,
-				BLSPubKeyHex:    blsResp.PubKey,
 				RejectionReason: vt.Vote.RejectionReason,
+			}
+			if signingOK {
+				// Buddy (or any node holding BLS key material): signed exactly
+				// as before. BLSSignature/BLSPubKeyHex are left empty ONLY on
+				// the unsigned path below — never silently dropped here.
+				rec.BLSSignature = blsResp.Signature
+				rec.BLSPubKeyHex = blsResp.PubKey
+			} else {
+				logger().Info(spanCtx, "v2 vote CRDT: writing UNSIGNED normal-validator vote (no BLS key material)",
+					ion.String("block_hash", blockHash),
+					ion.String("peer_id", listenerNode.PeerID.String()),
+					ion.String("function", "Vote.SubmitVote"))
 			}
 			if err := avcvotes.AddVote(listenerNode.VoteCRDTLayer, listenerNode.PeerID, rec); err != nil {
 				if !errors.Is(err, avcvotes.ErrHeightCompacted) {

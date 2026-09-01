@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -350,6 +352,15 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 		MalformedSignatures:   tally.MalformedSignatures,
 	}
 
+	// Flatten every (peerID, value, record) pair into an independent task
+	// list first. Each pair's outcome depends ONLY on its own inputs to
+	// BLS_Verifier.VerifyForBlock (chainID/height/blockHash/vote/pubkey/sig
+	// are all copied into the task, nothing is shared with any other pair),
+	// so verifying them concurrently changes nothing about WHAT is checked
+	// — only the order/timing of when each check runs. The i>=len(recs)
+	// mismatch case is not a crypto op, so it is still counted inline here,
+	// exactly as before.
+	tasks := make([]tallySigTask, 0, len(tally.Signatures))
 	for peerID, values := range tally.AuthorizedVotesByPeer {
 		recs := tally.Signatures[peerID]
 		for i, v := range values {
@@ -361,18 +372,124 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 				dropped++
 				continue
 			}
-			rec := recs[i]
-			resp := BLS_Signer.BLSresponse{PeerID: peerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
-			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, v); err != nil {
-				dropped++
-				continue
-			}
-			verified.AuthorizedVotesByPeer[peerID] = append(verified.AuthorizedVotesByPeer[peerID], v)
-			verified.Signatures[peerID] = append(verified.Signatures[peerID], rec)
+			tasks = append(tasks, tallySigTask{
+				peerID: peerID,
+				vote:   v,
+				rec:    recs[i],
+				// Evaluated here, once, on the single-threaded task-building
+				// pass — not inside a worker — so the flag is read at a
+				// deterministic point and every worker sees a fixed decision.
+				unsigned: avcvotes.AllowUnsignedValidatorVotes && avcvotes.IsUnsignedValidatorVote(recs[i]),
+			})
 		}
 	}
 
+	verifiedOK := verifyTallySigTasksConcurrently(tasks, chainID, height, blockHash)
+
+	// Reduction is single-threaded and runs strictly after every worker has
+	// returned (verifyTallySigTasksConcurrently blocks on its WaitGroup) —
+	// tally.AuthorizedVotesByPeer / tally.Signatures are never written to
+	// from more than one goroutine, and are built here in a fixed order
+	// (task list order, not goroutine completion order), so the resulting
+	// maps' CONTENT is identical every run for identical input regardless
+	// of how the scheduler interleaves the workers.
+	for i, task := range tasks {
+		if !verifiedOK[i] {
+			dropped++
+			continue
+		}
+		verified.AuthorizedVotesByPeer[task.peerID] = append(verified.AuthorizedVotesByPeer[task.peerID], task.vote)
+		verified.Signatures[task.peerID] = append(verified.Signatures[task.peerID], task.rec)
+	}
+
 	return verified, dropped
+}
+
+// tallySigTask is one independently-verifiable (peer, vote, record) pair —
+// the unit of work verifyTallySigTasksConcurrently distributes across its
+// bounded worker pool.
+type tallySigTask struct {
+	peerID string
+	vote   int8
+	rec    avcvotes.VoteRecord
+
+	// unsigned marks a task admitted through the unsigned normal-validator
+	// seam (avcvotes.AllowUnsignedValidatorVotes, default off): there is no
+	// signature to verify, so the worker must not call VerifyForBlock with an
+	// empty signature and count the inevitable failure as a dropped forgery.
+	// Always false with the flag off, which keeps the pre-seam behavior
+	// (unsigned records reach the verifier, fail, and are dropped) intact.
+	unsigned bool
+}
+
+// verifyTallySignaturesWorkers bounds the worker pool used by
+// verifyTallySigTasksConcurrently. BLS verification (BLS_Verifier.VerifyForBlock)
+// is pure CPU-bound work with no I/O to overlap, so GOMAXPROCS is the natural
+// default — more workers than cores cannot do more work per wall-clock
+// second, only add scheduling overhead. Var (not const) so tests and
+// benchmarks can override it to measure different worker counts, per the
+// requirement to actually measure rather than assume a speedup.
+var verifyTallySignaturesWorkers = runtime.GOMAXPROCS(0)
+
+// verifyTallySigTasksConcurrently verifies every task's BLS signature on a
+// bounded worker pool and returns, for each task index, whether it verified.
+// The number of workers spawned is min(verifyTallySignaturesWorkers,
+// len(tasks)) — never more goroutines than there is work, and zero
+// goroutines at all for an empty task list — satisfying "bounded" in both
+// directions, not just an upper cap.
+//
+// Race-safety by construction, not by locking: `tasks` is read-only for the
+// whole call (built once, before any goroutine starts) and `results` is
+// written by index, with each index owned by exactly ONE task/goroutine —
+// no two goroutines ever write the same slice element, so no mutex is
+// needed on `results` itself. The only synchronization is the WaitGroup
+// gating the caller's read of `results` until every writer has finished,
+// which is what makes those non-overlapping writes safe to read afterward
+// under the Go memory model. Intended to be verified with `go test -race`.
+func verifyTallySigTasksConcurrently(tasks []tallySigTask, chainID, height uint64, blockHash string) []bool {
+	results := make([]bool, len(tasks))
+	if len(tasks) == 0 {
+		return results
+	}
+
+	workers := verifyTallySignaturesWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+
+	jobs := make(chan int, len(tasks))
+	for i := range tasks {
+		jobs <- i
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				task := tasks[idx]
+				if task.unsigned {
+					// Nothing to verify by design (unsigned normal-validator
+					// vote). Admitted, not "verified" — the authorization
+					// decision for these already happened in TallyBlock's
+					// seam; re-deriving it here would duplicate that policy in
+					// a second place.
+					results[idx] = true
+					continue
+				}
+				resp := BLS_Signer.BLSresponse{PeerID: task.peerID, PubKey: task.rec.BLSPubKeyHex, Signature: task.rec.BLSSignature}
+				results[idx] = BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, task.vote) == nil
+			}
+		}()
+	}
+	wg.Wait()
+
+	return results
 }
 
 // processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical
