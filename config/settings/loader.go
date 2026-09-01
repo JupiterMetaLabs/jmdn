@@ -107,6 +107,12 @@ func Load() (*NodeConfig, error) {
 		// as above — AutomaticEnv does not reach nested keys through Unmarshal.
 		"consensus.seed_authority_bls_pub": "JMDN_CONSENSUS_SEED_AUTHORITY_BLS_PUB",
 		"network.seednode":                 "JMDN_NETWORK_SEEDNODE",
+		// The epoch-clock divisor MUST equal the seed's (unix/seconds). A mismatch
+		// makes jmdn compute a different "current epoch" than the seed signed the
+		// snapshot under, so the ±1 freshness check rejects every snapshot ("stale
+		// committee snapshot: epoch X not within ±1 of current epoch Y"). Nested
+		// key, so it needs an explicit BindEnv like the others.
+		"consensus.committee_epoch_seconds": "JMDN_CONSENSUS_COMMITTEE_EPOCH_SECONDS",
 	} {
 		if err := v.BindEnv(key, env); err != nil {
 			return nil, fmt.Errorf("binding %s: %w", env, err)
