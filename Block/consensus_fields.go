@@ -112,7 +112,16 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// robust to init order and so unit tests that exercise attachAVCConsensusFields
 	// without loading config still see reward-split OFF (default) — byte-identical.
 	if settings.IsLoaded() && settings.Get().Consensus.RewardSplitEnabled {
-		recipients, err := messaging.ExpectedFeeRecipients(block.PrevAggCert)
+		// Reward the PREVIOUS block's certifiers, sourced from that block's
+		// persisted committee certificate (present on every certified block) — NOT
+		// block.PrevAggCert, which only exists in the entropy fold window when
+		// JMDN_AVC_AGG_CERT is on. This makes the split fire on EVERY block. R5
+		// (messaging.checkFeeRecipients) recomputes from the identical source.
+		signers, serr := messaging.PrevBlockCertSigners(block.BlockNumber - 1)
+		if serr != nil {
+			return fmt.Errorf("attachAVCConsensusFields: reading prev-block certifiers for block %d: %w", block.BlockNumber, serr)
+		}
+		recipients, err := messaging.ExpectedFeeRecipients(signers)
 		if err != nil {
 			return fmt.Errorf("attachAVCConsensusFields: deriving fee recipients for block %d: %w", block.BlockNumber, err)
 		}

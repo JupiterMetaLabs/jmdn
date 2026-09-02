@@ -85,30 +85,38 @@ func TestAttachAVCConsensusFields_FlagOff_DoesNotTouchBlockHash(t *testing.T) {
 	}
 }
 
-func TestAttachAVCConsensusFields_FlagOn_RecomputesBlockHashToMatchIndependentCall(t *testing.T) {
+// TestAttachAVCConsensusFields_SetsConsensusHashAndLeavesBlockHash locks in the
+// post-M2b contract: attach NEVER mutates the orchestrator-submitted, tx-only
+// BlockHash. The six consensus fields are made tamper-evident through the
+// SEPARATE ConsensusHash field (the value the committee's v4 vote signs), which
+// attach sets to RecomputeBlockHashWithConsensusFields(block). Replaces the old
+// FlagOn test that asserted the removed BlockHash-rebinding behavior.
+func TestAttachAVCConsensusFields_SetsConsensusHashAndLeavesBlockHash(t *testing.T) {
 	resetSlotAndPeriodStores(t)
-	saved := Security.M2bHashEnabled
-	Security.M2bHashEnabled = true
-	t.Cleanup(func() { Security.M2bHashEnabled = saved })
 
+	original := common.HexToHash("0xdeadbeef")
 	block := &config.ZKBlock{
 		BlockNumber: 0,
-		BlockHash:   common.HexToHash("0xdeadbeef"), // whatever the caller supplied — must be overwritten
+		BlockHash:   original, // orchestrator's tx-only identity — must be untouched
 	}
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
 	}
 
-	// Independently recompute — not by re-checking the function's own output
-	// against itself, but by calling the same underlying function a second
-	// time on the now-mutated block and confirming it's stable (idempotent)
-	// and non-trivial (not still the pre-existing placeholder hash).
-	want := Security.RecomputeBlockHashWithConsensusFields(block)
-	if block.BlockHash != want {
-		t.Fatalf("flag on: block.BlockHash = %s, want %s (RecomputeBlockHashWithConsensusFields)", block.BlockHash.Hex(), want.Hex())
+	// BlockHash is the orchestrator-submitted tx-only identity: never overwritten.
+	if block.BlockHash != original {
+		t.Fatalf("BlockHash changed from %s to %s, must be untouched", original.Hex(), block.BlockHash.Hex())
 	}
-	if block.BlockHash == common.HexToHash("0xdeadbeef") {
-		t.Fatal("flag on: BlockHash was not overwritten from the placeholder value")
+
+	// ConsensusHash is set to the independent consensus-fields recompute, is
+	// stable (idempotent — the recompute does not fold ConsensusHash itself), and
+	// is actually populated (non-zero).
+	want := Security.RecomputeBlockHashWithConsensusFields(block)
+	if block.ConsensusHash != want {
+		t.Fatalf("ConsensusHash = %s, want %s (RecomputeBlockHashWithConsensusFields)", block.ConsensusHash.Hex(), want.Hex())
+	}
+	if (block.ConsensusHash == common.Hash{}) {
+		t.Fatal("ConsensusHash was not populated (still zero)")
 	}
 }
 

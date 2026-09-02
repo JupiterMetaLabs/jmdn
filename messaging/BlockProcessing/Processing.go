@@ -1100,6 +1100,74 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
+	// A buddy reward-split recipient may be a never-funded address (it earns
+	// rewards without ever having transacted), so — exactly like a first-time tx
+	// receiver above — create it IN-STAGE from its block-carried ART identity
+	// before the credit lands, or addToRecipient fails "account must exist before
+	// transfer". Determinism: the identity comes from block.AccountNonces (stamped
+	// for FeeRecipients in EnrichBlockAccountNonces), so every node builds the
+	// byte-identical account document. Guards, in order:
+	//   - already in this tx's stage (e.g. the recipient is also this tx's receiver,
+	//     already created AND credited) → skip, never re-put a zero balance over a
+	//     running one (silent-corruption guard);
+	//   - accountExists separates not-found from a transient DB error → fail-closed
+	//     on error rather than staging a zero doc over a real account;
+	//   - no carried identity (0 sentinel or absent) → fail-closed, mirroring the
+	//     receiver path — the block cannot deterministically create the account.
+	// No-op for the default single-coinbase credit: the coinbase/system address
+	// already exists, so this stays byte-identical to the pre-reward-split path.
+	for _, c := range coinbaseCredits {
+		addr := c.Addr
+		if _, staged := stage.docs[addr]; staged {
+			continue
+		}
+		exists, existErr := accountExists(&addr, accountsClient)
+		if existErr != nil {
+			txSpan.RecordError(existErr)
+			txSpan.SetAttributes(attribute.String("status", "reward_recipient_existence_check_failed"))
+			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+			return fmt.Errorf("cannot determine whether reward recipient %s exists (refusing to create): %w", addr.Hex(), existErr)
+		}
+		if exists {
+			continue
+		}
+		cn, hasCN := accountNonces[addr]
+		if !CreateMissingAccounts || !hasCN || cn == 0 {
+			txSpan.RecordError(errors.New("reward recipient does not exist"))
+			txSpan.SetAttributes(attribute.String("status", "reward_recipient_not_found"))
+			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+			logger().Error(txSpanCtx, "Reward recipient does not exist (no block-carried identity to create it from)",
+				errors.New("reward recipient does not exist"),
+				ion.String("tx_hash", tx.Hash.Hex()),
+				ion.String("reward_recipient", addr.Hex()),
+				ion.Bool("create_missing_accounts", CreateMissingAccounts),
+				ion.Bool("block_carried_nonce", hasCN && cn != 0),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.processTransaction"),
+			)
+			return fmt.Errorf("reward recipient %s does not exist and no block-carried identity is available to create it", addr.Hex())
+		}
+		ts := blockTimestamp * int64(time.Second)
+		stage.put(&DB_OPs.Account{
+			Nonce:       cn,
+			DIDAddress:  "did:jmdt:metamask:" + addr.Hex(),
+			Address:     addr,
+			Balance:     "0",
+			TxNonce:     0,
+			TxCountSent: 0,
+			AccountType: "user",
+			CreatedAt:   ts,
+			UpdatedAt:   ts,
+		})
+		logger().Info(txSpanCtx, "Created reward recipient account from block-carried identity",
+			ion.String("reward_recipient", addr.Hex()),
+			ion.Uint64("art_nonce", cn),
+			ion.String("tx_hash", tx.Hash.Hex()),
+			ion.String("topic", TOPIC),
+			ion.String("function", "BlockProcessing.processTransaction"),
+		)
+	}
+
 	// 3. Credit the coinbase-side gas fee (one recipient by default, or the
 	// weighted set when the block carries FeeRecipients), then the ZKVM.
 	for _, c := range coinbaseCredits {
