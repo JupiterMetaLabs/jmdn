@@ -127,6 +127,24 @@ func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
 		return group, nil
 	}
 
+	// Second path: a pin owned by THIS node distribution (Sequencer/vdf_network_pins.go).
+	// The library registry only carries generically-sourced moduli; network-specific
+	// ones — a testnet's throwaway — are pinned here with identical semantics. A
+	// name listed there is fully pinned: a matching modulus installs without the
+	// override, and a mismatching one is refused outright (the override below
+	// waives only the LIBRARY digest, never a network pin — a known name with the
+	// wrong N is exactly the wrong-but-plausible case pinning exists to catch).
+	if rec, known := lookupNetworkPin(groupName); known {
+		group, netErr := newNetworkPinnedRSAGroup(n, groupName)
+		if netErr != nil {
+			return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", netErr)
+		}
+		log.Warn().Str("group", groupName).Str("source", rec.Source).
+			Msg("entropy: VDF modulus matches a jmdn NETWORK pin (not the avc library registry). " +
+				rec.Note)
+		return group, nil
+	}
+
 	if strings.TrimSpace(os.Getenv(allowUnpinnedModulusEnv)) == "" {
 		return nil, fmt.Errorf("entropy: refusing to install the AVC beacon with an unpinned VDF modulus: %w\n\n"+
 			"If this is a local or testnet modulus, or a ceremony output not yet added to "+
