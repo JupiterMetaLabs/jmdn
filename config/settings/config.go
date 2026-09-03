@@ -152,6 +152,36 @@ type TxStatusSettings struct {
 //	    - "12D3KooW...badpeer2"
 //
 // Env (highest priority): JMDN_CONSENSUS_BLOCK_BUDDY (space-separated list).
+// EntropyBootstrapSettings closes the Stage-2 beacon's genesis gap.
+//
+// Epoch E's entropy-reveal committee is seeded from ENTROPY-E, which is
+// sealed from epoch E-1's reveals (messaging.SelectEntropyCommittee). The
+// first live epoch has no E-1, so without a published value nothing can
+// start: no committee, no reveals, no seal, and the epoch-boundary block
+// fails closed on the missing VDF proof. Epochs listed here get a
+// DETERMINISTIC bootstrap value published at install time
+// (Sequencer.BootstrapEntropy: SHA256 over a domain tag, the chain id, the
+// pinned seed-authority key, Seed, and the epoch), sealing for them is
+// skipped, and their boundary block carries no proof.
+//
+// CONSENSUS-CRITICAL and PINNED, not derived from when a node happened to
+// start: a node that restarts later must publish exactly the same set, or
+// its real seal for an epoch another node bootstrapped collides
+// (committee.BeaconSource.Publish refuses differing entropy) and the two
+// seat different committees. Bootstrap entropy is public and grindable by
+// construction - it only governs the listed epochs; real RANDAO+VDF
+// entropy takes over from the first epoch after them. Never list an epoch
+// that has already sealed real entropy on a live network.
+type EntropyBootstrapSettings struct {
+	// Epochs are entropy epochs (messaging.EpochForSlot: slot / 50) to seed.
+	// Empty => no bootstrap (the pre-existing fail-closed behaviour).
+	Epochs []uint64 `mapstructure:"epochs" yaml:"epochs"`
+	// Seed is optional extra material mixed into the bootstrap value. Must be
+	// identical on every node; it lets two devnets sharing a chain id and
+	// authority key still derive different bootstrap committees.
+	Seed string `mapstructure:"seed" yaml:"seed"`
+}
+
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 
@@ -263,6 +293,11 @@ type ConsensusSettings struct {
 	// must be identical network-wide — coordinate the flip. Default OFF = today's
 	// behaviour (empty FeeRecipients → single coinbase credit).
 	RewardSplitEnabled bool `mapstructure:"reward_split_enabled" yaml:"reward_split_enabled"`
+
+	// EntropyBootstrap pins the Stage-2 beacon's genesis entropy epochs; see
+	// EntropyBootstrapSettings. Only consulted when the beacon is installed
+	// (JMDN_AVC_VDF_* env), and requires SeedAuthorityBLSPub to be pinned.
+	EntropyBootstrap EntropyBootstrapSettings `mapstructure:"entropy_bootstrap" yaml:"entropy_bootstrap"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee

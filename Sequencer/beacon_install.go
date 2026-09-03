@@ -83,6 +83,7 @@ import (
 	"github.com/JupiterMetaLabs/avc/vdf"
 	"github.com/rs/zerolog/log"
 
+	"gossipnode/config/settings"
 	"gossipnode/messaging"
 )
 
@@ -124,6 +125,24 @@ func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
 	if pinnedErr == nil {
 		log.Info().Str("group", groupName).
 			Msg("entropy: VDF modulus matches its pinned provenance digest")
+		return group, nil
+	}
+
+	// Second path: a pin owned by THIS node distribution (Sequencer/vdf_network_pins.go).
+	// The library registry only carries generically-sourced moduli; network-specific
+	// ones — a testnet's throwaway — are pinned here with identical semantics. A
+	// name listed there is fully pinned: a matching modulus installs without the
+	// override, and a mismatching one is refused outright (the override below
+	// waives only the LIBRARY digest, never a network pin — a known name with the
+	// wrong N is exactly the wrong-but-plausible case pinning exists to catch).
+	if rec, known := lookupNetworkPin(groupName); known {
+		group, netErr := newNetworkPinnedRSAGroup(n, groupName)
+		if netErr != nil {
+			return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", netErr)
+		}
+		log.Warn().Str("group", groupName).Str("source", rec.Source).
+			Msg("entropy: VDF modulus matches a jmdn NETWORK pin (not the avc library registry). " +
+				rec.Note)
 		return group, nil
 	}
 
@@ -235,6 +254,19 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 	sink, err := committee.NewBeaconSource(retain)
 	if err != nil {
 		return false, err
+	}
+
+	// Genesis bootstrap (beacon_bootstrap.go): publish the config-pinned
+	// ENTROPY-E values BEFORE the sink becomes the active beacon, so the very
+	// first SelectEntropyCommittee / SeedSourceFor call already sees them.
+	if settings.IsLoaded() {
+		cfg := settings.Get()
+		eb := cfg.Consensus.EntropyBootstrap
+		if len(eb.Epochs) > 0 {
+			if err := publishBootstrapEntropy(sink, uint64(cfg.Network.ChainID), cfg.Consensus.SeedAuthorityBLSPub, eb.Seed, eb.Epochs); err != nil {
+				return false, err
+			}
+		}
 	}
 
 	pipeline, err := beacon.New(group, difficulty, sink)
