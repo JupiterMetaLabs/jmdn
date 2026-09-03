@@ -83,6 +83,7 @@ import (
 	"github.com/JupiterMetaLabs/avc/vdf"
 	"github.com/rs/zerolog/log"
 
+	"gossipnode/config/settings"
 	"gossipnode/messaging"
 )
 
@@ -253,6 +254,19 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 	sink, err := committee.NewBeaconSource(retain)
 	if err != nil {
 		return false, err
+	}
+
+	// Genesis bootstrap (beacon_bootstrap.go): publish the config-pinned
+	// ENTROPY-E values BEFORE the sink becomes the active beacon, so the very
+	// first SelectEntropyCommittee / SeedSourceFor call already sees them.
+	if settings.IsLoaded() {
+		cfg := settings.Get()
+		eb := cfg.Consensus.EntropyBootstrap
+		if len(eb.Epochs) > 0 {
+			if err := publishBootstrapEntropy(sink, uint64(cfg.Network.ChainID), cfg.Consensus.SeedAuthorityBLSPub, eb.Seed, eb.Epochs); err != nil {
+				return false, err
+			}
+		}
 	}
 
 	pipeline, err := beacon.New(group, difficulty, sink)
