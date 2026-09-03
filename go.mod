@@ -2,26 +2,11 @@ module gossipnode
 
 go 1.26.0
 
-// Local, dev-integration-only link to the standalone AVC consensus module.
-// The spec permits a local `replace` for developer integration testing (a
-// tagged version is required only for production). This maps the avc module
-// to the sibling working copy so the A3 adapter + parity test can build
-// against the real avc code without a published release. Both repos live
-// side by side (~/Block/avc and ~/Block/jmdn), so ../avc resolves in dev and
-// in the sandbox. Do NOT ship this replace to production — pin a tag instead.
-replace github.com/JupiterMetaLabs/avc => ../avc
-
-replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
-
-// Local dev against the ThebeSync (FastSync v4) branch. Remove/replace with a
-// pinned pseudo-version once feat/thebesync-v4 is pushed and tagged.
-replace github.com/JupiterMetaLabs/JMDN-FastSync => ../JMDN-FastSync
-
 require (
-	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260731093426-d27320b363ba
+	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.1
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
-	github.com/JupiterMetaLabs/ThebeDB v0.0.0-20260819130133-2d264d21d196
-	github.com/JupiterMetaLabs/avc v0.0.0
+	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.1
+	github.com/JupiterMetaLabs/avc v0.1.0-v3base.1
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.4.2
 	github.com/bits-and-blooms/bloom/v3 v3.7.1

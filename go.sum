@@ -1,7 +1,13 @@
 github.com/DataDog/zstd v1.4.5 h1:EndNeuB0l9syBZhut0wns3gV1hL8zX8LIu6ZiVHWLIQ=
 github.com/DataDog/zstd v1.4.5/go.mod h1:1jcaCB/ufaK+sKp1NBhlGmpz41jOoPQ35bpF36t7BBo=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.1 h1:WeHvoJNe/SBAfypR/kqMADMuuc8WGOOaM9Uw1sAsoSM=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.1/go.mod h1:qrh8q6TjjOlKk5p51jANzZ4XoAHlna6vUGoSjFNkxZY=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1:yPrYb6g6NnqGsiCVqMf0zndEYTuelL3B03Fee+utLWA=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
+github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.1 h1:9gKrPiq6zumwK6ZzJO/hs39yNL1m+yWEKbk9mv62cD8=
+github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.1/go.mod h1:EF2d0iSGu2yq+BMldBoow5pysJGXW6d1FW4yKyh/8Ic=
+github.com/JupiterMetaLabs/avc v0.1.0-v3base.1 h1:LHDWCjPF76lAfCoeliNHLQlqhCVF9SXzLO+BUZeqmC0=
+github.com/JupiterMetaLabs/avc v0.1.0-v3base.1/go.mod h1:wAsaKUq5O9lemB/sqOpIwjyiB1dZHSc8KYG0M2uzWyI=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5/go.mod h1:SNkJRVlUwZM7Lt5ZhojWaimBljLg/pV6IKgn8oyViOA=
 github.com/JupiterMetaLabs/ion v0.4.2 h1:hogqCgUAQuy6yvLUdXoFOtJlvczFVaRvHGB7NgnFFfc=
