@@ -6,7 +6,7 @@ require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.1
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
 	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.1
-	github.com/JupiterMetaLabs/avc v0.1.0-v3base.1
+	github.com/JupiterMetaLabs/avc v0.1.0-v3base.2
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.4.2
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
