@@ -87,6 +87,17 @@ func InstallEpochFinalisedHook() {
 func onEpochFinalised(closedEpoch uint64, seed randao.Seed) {
 	forEpoch := closedEpoch + 1
 
+	// A bootstrapped successor epoch already has its (config-pinned) entropy.
+	// Sealing would try to Publish a DIFFERENT value for the same epoch, which
+	// BeaconSource refuses -> SealResult.Err -> boundary-block 503. Skip; every
+	// node skips the same epochs because the set comes from config, not from
+	// when this node started. See beacon_bootstrap.go.
+	if IsBootstrapEpoch(forEpoch) {
+		log.Info().Uint64("closed_epoch", closedEpoch).Uint64("for_epoch", forEpoch).
+			Msg("entropy: epoch finalised but its successor is a bootstrap epoch (consensus.entropy_bootstrap) — sealing skipped, pinned bootstrap value stays authoritative")
+		return
+	}
+
 	pipeline := activeVDFPipeline()
 	if pipeline == nil {
 		log.Warn().Uint64("closed_epoch", closedEpoch).Uint64("for_epoch", forEpoch).
