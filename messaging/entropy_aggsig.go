@@ -278,9 +278,57 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 		sigs = append(sigs, sigBytes)
 	}
 
+	// QUORUM FLOOR (added 2026-09-03). Every check above is per-signer: each
+	// signature is valid, each signer is eligible, nobody is counted twice.
+	// None of them constrains HOW MANY signers the certificate carries, and
+	// before this block the only count check in the whole function was the
+	// len(cert) == 0 guard at the top — so a single-signer PrevAggCert passed
+	// verification and was folded into the epoch's fallback seed.
+	//
+	// That matters because the sequencer chooses which qualifying subset of
+	// the parent's YES votes to put in PrevAggCert. The block's OWN
+	// certificate (config.ZKBlock's committee certificate) is tallied against
+	// ByzantineQuorum elsewhere, but nothing tied this field to that one, so
+	// the entropy fold accepted a threshold the consensus path would have
+	// rejected. Architecture §4.2a reasons about a menu of QUALIFYING
+	// subsets; without this check the menu included non-qualifying ones.
+	//
+	// n is the authenticated committee denominator for the parent's epoch —
+	// the same shape VerifyCertificate uses (the capped eligible set, NOT
+	// eligibleMembers, so a local blocklist can never shrink n and diverge
+	// this node's threshold from the fleet's). Fail-closed: a certificate
+	// below threshold is not recorded, so the epoch's fallback seed fails
+	// closed rather than folding a value a minority chose.
+	if want := aggCertQuorum(len(snap.Members)); len(sigs) < want {
+		return nil, fmt.Errorf("entropy: certificate carries %d valid signers, below the Byzantine quorum %d for a pool of %d (epoch %d)",
+			len(sigs), want, len(snap.Members), epoch)
+	}
+
 	agg, err := blssign.BLSAggregate(sigs...)
 	if err != nil {
 		return nil, fmt.Errorf("entropy: aggregating %d signatures: %w", len(sigs), err)
 	}
 	return agg, nil
+}
+
+// aggCertQuorum returns how many valid signers a PrevAggCert must carry for a
+// given eligible-pool size. It is the single place that rule is written down.
+//
+// It is deliberately ByzantineQuorum — the SAME ceil(2n/3) the block's own
+// committee certificate is tallied against (consensus_hardening.go) — not a
+// second, weaker rule invented for the entropy path. Before 2026-09-03 the
+// entropy fold had no count rule at all, so it accepted certificates the
+// consensus path would have rejected; the two thresholds being equal is the
+// invariant this function exists to keep.
+//
+// n is capped by consensus.max_validators exactly as the certificate
+// denominator is, and is taken from the FLEET-AGREED pool (the snapshot),
+// never from a locally-filtered set — a local blocklist must not be able to
+// shrink n and drift this node's threshold away from its peers'.
+func aggCertQuorum(poolSize int) int {
+	n := poolSize
+	if lim := committeeSizeLimit(); lim > 0 && lim < n {
+		n = lim
+	}
+	return ByzantineQuorum(n)
 }

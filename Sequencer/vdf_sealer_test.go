@@ -126,17 +126,37 @@ func TestResultDeliversAfterCompletion(t *testing.T) {
 	}
 }
 
-// TestResultIsSingleShot documents that draining the channel once means a
-// second call reports not-ready, even though the goroutine is long done -
-// callers must keep the value from their first successful Result call.
-func TestResultIsSingleShot(t *testing.T) {
+// TestResultIsRepeatable documents the 2026-09-03 REVERSAL of the previous
+// single-shot contract (this test used to be TestResultIsSingleShot and
+// asserted the opposite).
+//
+// WHY THE CONTRACT CHANGED. Single-shot was a deliberate choice, but it was
+// only safe if callers kept the value from their first successful read, and
+// the sole caller — Block.attachAVCConsensusFields — does not. Any second
+// build of the same epoch-boundary block (round timeout and re-propose, a
+// rejected block, a retried attach) therefore read not-ready for an epoch
+// whose evaluation had already succeeded, failed closed with
+// ErrVDFProofNotReady, and could not recover: a restart loses vdfSealers
+// entirely, and the mix that would let the node re-seal is gone with it.
+//
+// The per-epoch value is naturally owned by the per-epoch sealer — sealerFor
+// already caches one instance per epoch — so latching it there rather than
+// pushing retention onto every caller is the smaller contract.
+//
+// What did NOT change: a sealer with no result still reports not-ready, so
+// the fail-closed guarantee at the boundary block is intact. See
+// TestVDFSealerNotReadyStaysNotReady in vdf_sealer_latch_test.go.
+func TestResultIsRepeatable(t *testing.T) {
 	p, _ := testPipeline(t)
 	s := NewVDFSealer(p)
 	s.Start(testEpoch, randao.Seed{0xAB, 0xCD})
 
 	deadline := time.After(5 * time.Second)
+	var first SealResult
 	for {
-		if _, ok := s.Result(); ok {
+		r, ok := s.Result()
+		if ok {
+			first = r
 			break
 		}
 		select {
@@ -146,8 +166,13 @@ func TestResultIsSingleShot(t *testing.T) {
 		}
 	}
 
-	if _, ok := s.Result(); ok {
-		t.Fatal("a second Result call reported ready again - the channel should be drained")
+	second, ok := s.Result()
+	if !ok {
+		t.Fatal("a second Result call reported not-ready — a re-proposed boundary block could never attach its proof")
+	}
+	if second.ForEpoch != first.ForEpoch || second.Proof.T != first.Proof.T ||
+		second.Proof.Group != first.Proof.Group {
+		t.Fatalf("second Result = %+v, want the latched %+v", second, first)
 	}
 }
 

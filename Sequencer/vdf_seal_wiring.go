@@ -139,6 +139,20 @@ func SealerResultFor(forEpoch uint64) (SealResult, bool) {
 // result for that epoch, and SealerResultFor already returns
 // (SealResult{}, false) for any epoch with no registered sealer. Overwrites
 // any sealer already registered for forEpoch.
+// ClearSealerForTest removes forEpoch's registered sealer. Test-only.
+//
+// Needed because vdfSealers is package-level state and SeedSealResultForTest
+// writes into it. Until Result was made idempotent (2026-09-03) the drain
+// itself acted as accidental cleanup: a seeded result was consumed by the
+// first read, so it could not leak into a later test that expected
+// "not ready". With the latch that accident is gone, and tests must clean up
+// explicitly — which they should always have done.
+func ClearSealerForTest(forEpoch uint64) {
+	vdfSealersMu.Lock()
+	delete(vdfSealers, forEpoch)
+	vdfSealersMu.Unlock()
+}
+
 func SeedSealResultForTest(forEpoch uint64, result SealResult) {
 	s := &VDFSealer{resultCh: make(chan SealResult, 1)}
 	s.resultCh <- result

@@ -300,7 +300,15 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 		return nil, err
 	}
 
-	seed, err := committee.DeriveSeed(SeedSourceFor(rc.EntropyEpoch), committee.SeedInput{
+	// Resolved once and reused by the determinism log below, so the log can
+	// never report entropy from a different source than the seed was built
+	// from.
+	seedSrc, err := SeedSourceFor(rc.EntropyEpoch)
+	if err != nil {
+		return nil, err
+	}
+
+	seed, err := committee.DeriveSeed(seedSrc, committee.SeedInput{
 		EntropyEpoch: rc.EntropyEpoch,
 		PrevHash:     rc.PrevHash,
 		Height:       rc.Height,
@@ -348,7 +356,7 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 		Str("seed", seed.String()).
 		Int("committee_size", len(members)).
 		Str("committee_members", strings.Join(memberIDs, ","))
-	if entropy, entropyErr := SeedSourceFor(rc.EntropyEpoch).EpochEntropy(rc.EntropyEpoch); entropyErr == nil {
+	if entropy, entropyErr := seedSrc.EpochEntropy(rc.EntropyEpoch); entropyErr == nil {
 		evt = evt.Str("entropy_sha256", fmt.Sprintf("%x", sha256.Sum256(entropy)))
 	}
 	evt.Msg("committee: buddy committee selected")
@@ -495,12 +503,56 @@ func blsKeyBytes(hexKey string) []byte {
 // THIS IS THE STAGE-2 SEAM. Stage 1 is a configured salt. Stage 2 returns the
 // RANDAO+VDF beacon (committee.BeaconSource) and nothing else in this file, or
 // anywhere downstream, changes.
-func SeedSourceFor(epoch committee.EntropyEpoch) committee.SeedSource {
-	if beacon := activeBeacon(); beacon != nil && beacon.Has(uint64(epoch)) {
-		return beacon
+//
+// FAIL-CLOSED SINCE 2026-09-03. The three states are now distinct, where
+// two of them used to collapse into the same silent salt:
+//
+//	no beacon installed          -> SaltSource, nil   (Stage 1, uniform fleet-wide: safe)
+//	beacon installed, has epoch  -> BeaconSource, nil (Stage 2)
+//	beacon installed, no epoch   -> nil, ErrBeaconEpochUnavailable
+//
+// The third case used to return the salt. That is the whole silent-divergence
+// seam: beacon.Has is a PER-NODE map lookup, so a node that missed the fold
+// (restarted, fast-synced, failed to record a slot) took the salt branch
+// while its peers took the beacon branch, drew a DIFFERENT committee, and
+// produced below-threshold certificates that named no cause. Uniform-wrong
+// is safe; per-node-different is a halt. Refusing to select is the same
+// liveness outcome with a named error instead of a mystery.
+//
+// This mirrors SelectEntropyCommittee's existing discipline
+// (ErrNoBeaconInstalled / ErrEntropyUnavailable, entropy_committee.go) and
+// committee.BeaconSource.EpochEntropy's own instruction: "Callers MUST fail
+// closed on it. Falling back to a default seed would let two nodes - one
+// with the entropy, one without - seat different committees, which is worse
+// than refusing the block."
+func SeedSourceFor(epoch committee.EntropyEpoch) (committee.SeedSource, error) {
+	beacon := activeBeacon()
+	if beacon == nil {
+		// Stage 1. Every node in the fleet is in this state together, because
+		// the beacon is installed from network-wide operator configuration
+		// (Sequencer.InstallAVCBeaconFromEnv), not from local observation.
+		return committee.SaltSource{Salt: stage1Salt()}, nil
 	}
-	return committee.SaltSource{Salt: stage1Salt()}
+	if beacon.Has(uint64(epoch)) {
+		return beacon, nil
+	}
+	log.Error().
+		Uint64("entropy_epoch", uint64(epoch)).
+		Msg("committee: beacon is installed but has no entropy for this epoch — refusing to select a committee. " +
+			"This node cannot agree with peers that DO have it, so selecting from the Stage-1 salt here would " +
+			"seat a different committee and produce certificates that fail below threshold with no named cause. " +
+			"Recover the epoch (accept a peer's VDF proof, or rehydrate persisted beacon state) before this node can vote")
+	return nil, fmt.Errorf("%w: epoch %d", ErrBeaconEpochUnavailable, epoch)
 }
+
+// ErrBeaconEpochUnavailable is returned by SeedSourceFor when a beacon IS
+// installed but has published nothing for the requested epoch.
+//
+// Deliberately distinct from ErrNoBeaconInstalled (entropy_committee.go),
+// which means "no beacon exists at all" and is the legitimate Stage-1 state.
+// This one means "the fleet is on Stage 2 and this node is missing a value
+// its peers have" — a local recovery problem, not a configuration one.
+var ErrBeaconEpochUnavailable = errors.New("messaging: beacon installed but no entropy published for this epoch (fail closed)")
 
 // stage1Salt binds the salt to the pinned authority key when one is configured,
 // so two networks with different authorities cannot share a committee schedule.

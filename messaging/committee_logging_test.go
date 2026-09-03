@@ -91,11 +91,15 @@ func TestChildLogCommitteeSelection(t *testing.T) {
 	// production log line does, purely to emit an unambiguous marker line
 	// the parent can diff byte-for-byte without parsing the logger's own
 	// (format-configurable) console encoding.
-	entropy, err := SeedSourceFor(rc.EntropyEpoch).EpochEntropy(rc.EntropyEpoch)
+	seedSrc, err := SeedSourceFor(rc.EntropyEpoch)
+	if err != nil {
+		t.Fatalf("child: SeedSourceFor: %v", err)
+	}
+	entropy, err := seedSrc.EpochEntropy(rc.EntropyEpoch)
 	if err != nil {
 		t.Fatalf("child: EpochEntropy: %v", err)
 	}
-	seed, err := committee.DeriveSeed(SeedSourceFor(rc.EntropyEpoch), committee.SeedInput{
+	seed, err := committee.DeriveSeed(seedSrc, committee.SeedInput{
 		EntropyEpoch: rc.EntropyEpoch,
 		PrevHash:     rc.PrevHash,
 		Height:       rc.Height,

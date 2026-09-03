@@ -17,6 +17,8 @@ package Sequencer
 // dependency on anything still open, so it can be built now and wired later.
 
 import (
+	"sync"
+
 	"github.com/JupiterMetaLabs/avc/beacon"
 	"github.com/JupiterMetaLabs/avc/randao"
 	"github.com/JupiterMetaLabs/avc/vdf"
@@ -35,6 +37,13 @@ type SealResult struct {
 type VDFSealer struct {
 	pipeline *beacon.Pipeline
 	resultCh chan SealResult
+
+	// mu/latched make Result idempotent. The channel is the goroutine's
+	// handoff and can only be received from ONCE; latched is what lets the
+	// value be read again afterwards. See Result's own comment for why that
+	// matters.
+	mu      sync.Mutex
+	latched *SealResult
 }
 
 // NewVDFSealer wraps the network's beacon pipeline for one epoch's sealing.
@@ -59,15 +68,33 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 }
 
 // Result returns immediately, ready or not - it never blocks waiting for the
-// goroutine. A node building the epoch-boundary block calls this once; if the
-// proof isn't ready yet, ok is false and the caller must fail closed (the
-// existing ErrEntropyUnavailable pattern), never guess or wait past its own
-// slot deadline. The channel is single-shot: once drained, a second Result
-// call also reports not-ready, even after the goroutine has long finished -
-// callers that need the value again should have kept it from the first call.
+// goroutine. A node building the epoch-boundary block calls this; if the proof
+// isn't ready yet, ok is false and the caller must fail closed (the existing
+// ErrEntropyUnavailable pattern), never guess or wait past its own slot
+// deadline.
+//
+// IDEMPOTENT SINCE 2026-09-03. It used to be single-shot: the receive from
+// resultCh CONSUMED the value, so a second call reported not-ready forever,
+// even though the evaluation had long since succeeded. Its own doc comment
+// told callers to "keep the value from the first call" - and the only caller,
+// Block.attachAVCConsensusFields, does not keep it. Any second build of the
+// same epoch-boundary block (a round timeout and re-propose, a rejected
+// block, a retried attach) therefore hit ErrVDFProofNotReady permanently and
+// could not recover without a restart, which loses the sealer map entirely.
+//
+// The fix is a latch, not a bigger buffer: the first successful receive stores
+// the result, and every later call replays it. Not-ready still reports
+// not-ready, so the fail-closed contract at the boundary block is unchanged.
 func (s *VDFSealer) Result() (SealResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.latched != nil {
+		return *s.latched, true
+	}
 	select {
 	case r := <-s.resultCh:
+		s.latched = &r
 		return r, true
 	default:
 		return SealResult{}, false
