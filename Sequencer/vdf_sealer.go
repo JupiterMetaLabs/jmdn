@@ -17,6 +17,8 @@ package Sequencer
 // dependency on anything still open, so it can be built now and wired later.
 
 import (
+	"gossipnode/messaging"
+
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/beacon"
@@ -63,6 +65,14 @@ func NewVDFSealer(pipeline *beacon.Pipeline) *VDFSealer {
 func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 	go func() {
 		proof, err := s.pipeline.Seal(forEpoch, mix)
+		if err == nil {
+			// Seal published the entropy into the sink as a side effect.
+			// Persist it now: the mix that produced it is already unrecoverable
+			// after this epoch ages out, so without a durable copy a restart
+			// loses this epoch permanently. Non-fatal by design — this runs on
+			// a background goroutine and must never take the node down.
+			_ = messaging.PersistEpochEntropy(forEpoch)
+		}
 		s.resultCh <- SealResult{ForEpoch: forEpoch, Proof: proof, Err: err}
 	}()
 }

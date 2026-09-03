@@ -112,6 +112,21 @@ func SetEpochFinalisedHook(f func(closedEpoch uint64, seed randao.Seed)) {
 }
 
 func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
+	// Retain the mix BEFORE dispatching to the sealing hook. This is the
+	// independent half of inbound VDF proof verification (entropy_mix_store.go):
+	// without it, a node that did not seal the epoch itself cannot check any
+	// peer's proof and beacon.Pipeline.Accept is unreachable. Recorded whether
+	// or not a sealing hook is installed — a node on Stage 1 today may have a
+	// beacon installed tomorrow, and the mixes it finalised meanwhile are
+	// exactly what let it adopt peer proofs immediately rather than after a
+	// full epoch.
+	if !defaultMixStore.remember(closedEpoch, seed) {
+		log.Error().Uint64("closed_epoch", closedEpoch).
+			Msg("entropy: epoch finalised a SECOND time with a DIFFERENT mix — refusing to replace the " +
+				"retained value. Proof verification for the next epoch will use the first mix; " +
+				"investigate the double finalisation")
+	}
+
 	epochFinalisedHookMu.Lock()
 	hook := epochFinalisedHook
 	epochFinalisedHookMu.Unlock()

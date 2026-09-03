@@ -242,9 +242,25 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		return false, err
 	}
 
+	// Restore entropy this node finalised before its last restart, BEFORE the
+	// sink is published to the rest of the process.
+	//
+	// A failure here is FATAL to installation rather than a warning: the only
+	// way it fails is a conflicting durable value, which means this node once
+	// accepted an entropy value that disagrees with what it holds now. Seating
+	// committees from that is worse than not starting Stage 2.
+	if restored, rerr := messaging.RehydrateBeaconFromDisk(sink); rerr != nil {
+		return false, fmt.Errorf("entropy: refusing to install the AVC beacon — restoring persisted "+
+			"epoch entropy failed after %d epoch(s): %w", restored, rerr)
+	}
+
 	messaging.SetBeaconSource(sink)
 	SetVDFPipeline(pipeline)
 	InstallEpochFinalisedHook()
+	// Receive side. Installed with the pipeline it depends on, so a node can
+	// never end up able to SEAL but not to ADOPT — the asymmetry that made
+	// every non-proposing node pay a full local evaluation.
+	InstallVDFProofAcceptor()
 
 	log.Warn().Str("group", groupName).Uint64("difficulty_t", difficulty).Uint64("retain_epochs", retain).
 		Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) INSTALLED — committee selection now depends on genuine RANDAO+VDF entropy once published; the genesis/bootstrap gap documented in messaging.SelectEntropyCommittee still applies until a first entropy value exists for the network's earliest epoch")

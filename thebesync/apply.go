@@ -91,5 +91,30 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	// ProcessBlockLocally's non-fatal treatment.
 	_, _, _ = DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber)
 
+	// 5. Entropy side effects — the sync-path twin of ProcessBlockLocally's
+	//    ApplyBlockEntropyEffects.
+	//
+	//    WHY THIS IS HERE AT ALL. Until this call, the sync path performed NONE
+	//    of them: messaging.VerifyAndRecordPrevCert had exactly two callers,
+	//    both live (broadcast.go, blockPropagation.go), and thebesync had no
+	//    reference to PrevAggCert anywhere. A node that caught up through sync
+	//    therefore held no aggregate for any slot it synced, so every epoch
+	//    that fell back during the catch-up failed closed on that node while
+	//    its peers resolved normally — silently, with no log marking it. That
+	//    is the divergence this closes: the live path and the sync path now
+	//    feed the SAME aggregate store.
+	//
+	//    Runs AFTER a successful apply+store, so a block that failed to apply
+	//    never contributes entropy. Non-fatal by construction: every step
+	//    inside logs and returns rather than erroring, because a certificate
+	//    this node cannot fold must not abort a sync of a block whose OWN
+	//    committee certificate already verified above.
+	//
+	//    RecordSyncedBlockEntropy, not ApplyBlockEntropyEffects: it omits epoch
+	//    finalisation deliberately. See its doc comment — finalising during a
+	//    bulk replay would launch one background VDF evaluation per crossed
+	//    epoch boundary, for epochs whose entropy is long past useful.
+	messaging.RecordSyncedBlockEntropy(block)
+
 	return hasCert, nil
 }
