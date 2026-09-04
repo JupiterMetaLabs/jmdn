@@ -36,6 +36,11 @@ var ErrNoPipelineForAccept = errors.New("Sequencer: no VDF pipeline installed; c
 // The closure reads activeVDFPipeline() fresh on every call rather than
 // capturing it, matching onEpochFinalised, so registration order is irrelevant.
 func InstallVDFProofAcceptor() {
+	// Cancellation seam, installed with the acceptor so a node can never end up
+	// able to ADOPT a peer proof but unable to stop its own now-redundant
+	// evaluation.
+	messaging.SetSealerCanceller(CancelSealer)
+
 	messaging.SetVDFProofAcceptor(func(forEpoch uint64, mix randao.Seed, proofBytes []byte) error {
 		pipeline := activeVDFPipeline()
 		if pipeline == nil {

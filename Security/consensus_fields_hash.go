@@ -25,11 +25,41 @@ import (
 // transactions-only one, so the two can never produce the same digest.
 const blockHashV2Domain = "jmdn/block-hash/v2"
 
+// blockHashV3Domain is the v3 preimage: v2 plus the block's POSITION in the
+// chain (BlockNumber and PrevHash).
+//
+// A NEW TAG IS MANDATORY, not cosmetic. Changing the preimage while keeping
+// the v2 tag would leave two incompatible formats claiming one version, and a
+// mixed fleet would fail with consensus_hash_mismatch and no way to tell which
+// side computed it wrong.
+const blockHashV3Domain = "jmdn/block-hash/v3"
+
+// ConsensusHashV3Enabled binds BlockNumber and PrevHash into ConsensusHash
+// (audit finding D-28).
+//
+// WHAT IT FIXES. v2 covered what a block CONTAINS but not WHERE IN THE CHAIN
+// it sits. Two blocks on different forks at the same height, with the same
+// transactions, slot and period, produced the same ConsensusHash — and since
+// BlockHash is transactions-only they collided too, making the committee's v4
+// vote message byte-identical for both. A certificate collected for one fork
+// verified against the other, and checkEquivocation (keyed on BlockHash) saw
+// one block instead of two.
+//
+// WHY A FLAG, DEFAULT OFF. ConsensusHash is consensus-covered: an upgraded
+// node and an un-upgraded one derive different digests for the identical block
+// and reject each other. Same rollout discipline as M2bHashEnabled and
+// CommitteeSnapshotAnchorEnabled — deploy the binary everywhere with this off,
+// then flip the whole fleet together. There is no gradual cutover; the flag
+// exists so the binary rollout and the consensus change are separate events.
+var ConsensusHashV3Enabled = envOn("JMDN_CONSENSUS_HASH_V3", false)
+
 // RecomputeBlockHashWithConsensusFields computes the M2b block hash: the six
 // AVC consensus fields plus the existing transaction-content binding.
 //
 //	H = Keccak256(
-//	      len:domain
+//	      len:domain                      // v2, or v3 when ConsensusHashV3Enabled
+//	   [ || u64:BlockNumber               // v3 only
+//	     || len:PrevHash ]                // v3 only
 //	   || u64:Slot
 //	   || u64:Period
 //	   || len:encodeReveals(RandaoReveals)
@@ -58,7 +88,26 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	}
 
 	var buf bytes.Buffer
-	committee.WriteField(&buf, []byte(blockHashV2Domain))
+	if ConsensusHashV3Enabled {
+		// v3 — bind the block's position in the chain FIRST, so the two
+		// preimages diverge in their opening bytes as well as their domain tag.
+		//
+		// PrevHash is the field that actually closes D-28: it is what
+		// distinguishes two forks. BlockNumber is bound alongside it because a
+		// binding that says "this block, on this parent" should say "at this
+		// height" explicitly rather than leave it implied.
+		//
+		// Both are populated before this runs — convertProtoToZKBlock fills
+		// them from the orchestrator's block, and attachAVCConsensusFields (the
+		// only caller that SETS ConsensusHash) runs afterwards. A zero PrevHash
+		// on a genesis-shaped block hashes normally; it is a value, not a
+		// missing field.
+		committee.WriteField(&buf, []byte(blockHashV3Domain))
+		committee.WriteU64(&buf, block.BlockNumber)
+		committee.WriteField(&buf, block.PrevHash.Bytes())
+	} else {
+		committee.WriteField(&buf, []byte(blockHashV2Domain))
+	}
 	committee.WriteU64(&buf, block.Slot)
 	committee.WriteU64(&buf, block.Period)
 	committee.WriteField(&buf, EncodeReveals(block.RandaoReveals))

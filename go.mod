@@ -2,6 +2,13 @@ module gossipnode
 
 go 1.26.0
 
+replace github.com/JupiterMetaLabs/avc => ../avc
+
+replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
+
+replace github.com/JupiterMetaLabs/JMDN-FastSync => ../JMDN-FastSync
+
+
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.1
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8

@@ -346,7 +346,7 @@ func handleTimeoutVoteBroadcast(h host.Host, msg BroadcastMessageStruct) {
 
 // handleTimeoutCertificateBroadcast processes an incoming TimeoutCertificate
 // gossiped by another node.
-func handleTimeoutCertificateBroadcast(h host.Host, msg BroadcastMessageStruct) {
+func handleTimeoutCertificateBroadcast(_ host.Host, msg BroadcastMessageStruct) {
 	if !TimeoutCertWiringEnabled {
 		return
 	}

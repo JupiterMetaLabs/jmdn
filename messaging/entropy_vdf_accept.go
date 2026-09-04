@@ -74,6 +74,30 @@ func activeVDFAcceptor() VDFProofAcceptor {
 	return vdfAcceptor
 }
 
+// SealerCanceller stops a local in-flight VDF evaluation for an epoch.
+// Implemented in package Sequencer (which owns vdfSealers) and registered here
+// for the same import-cycle reason as VDFProofAcceptor.
+type SealerCanceller func(forEpoch uint64)
+
+var (
+	sealerCancellerMu sync.Mutex
+	sealerCanceller   SealerCanceller
+)
+
+// SetSealerCanceller installs the canceller. Call once at startup, alongside
+// SetVDFProofAcceptor.
+func SetSealerCanceller(f SealerCanceller) {
+	sealerCancellerMu.Lock()
+	sealerCanceller = f
+	sealerCancellerMu.Unlock()
+}
+
+func activeSealerCanceller() SealerCanceller {
+	sealerCancellerMu.Lock()
+	defer sealerCancellerMu.Unlock()
+	return sealerCanceller
+}
+
 var (
 	// ErrProofNotOnBoundary — a proof arrived on a block that is not its
 	// epoch's boundary slot. Only the boundary block may carry one.
@@ -173,6 +197,25 @@ func VerifyAndAcceptVDFProof(block *config.ZKBlock) error {
 	// ages out). Non-fatal: a KV failure degrades restart recovery, it must not
 	// fail the block path.
 	_ = PersistEpochEntropy(declaredEpoch)
+
+	// Persist the PROOF too, so this node can serve this epoch to a peer that
+	// is still recovering — without it, adoption helps only us. Uses exactly
+	// the bytes that were just verified, so the stored encoding is the same one
+	// the block carried and the same one the pull path will return.
+	_ = PersistVDFProof(declaredEpoch, block.VdfProof)
+
+	// FIRST VALID PROOF WINS. This node now holds epoch entropy, so any local
+	// evaluation for the SAME epoch is redundant: on a T calibrated to minutes
+	// that is the largest avoidable cost in the entropy path. Cancelling is
+	// idempotent, so the duplicate proofs that arrive from other peers cost
+	// nothing extra.
+	//
+	// Ordering is deliberate — cancel only AFTER Accept has succeeded and the
+	// entropy is published. Cancelling first would risk abandoning local work
+	// on the strength of a proof that then failed to publish.
+	if cancel := activeSealerCanceller(); cancel != nil {
+		cancel(declaredEpoch)
+	}
 
 	log.Info().Uint64("height", block.BlockNumber).Uint64("for_epoch", declaredEpoch).
 		Msg("entropy: adopted a peer's VDF proof — epoch entropy published locally in milliseconds " +

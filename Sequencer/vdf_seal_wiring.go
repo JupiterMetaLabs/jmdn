@@ -115,6 +115,39 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 	return s
 }
 
+// CancelSealer stops forEpoch's in-flight VDF evaluation, if one is running.
+//
+// Called when this node adopts a peer's proof for forEpoch: the evaluation is
+// then redundant, and on a T calibrated to minutes the remaining sequential
+// work is the single largest avoidable CPU cost in the entropy path.
+//
+// Safe and idempotent when no sealer exists, when it has already finished, and
+// when called repeatedly (a duplicate proof for the same epoch arrives often —
+// once per peer that gossips the boundary block).
+//
+// The sealer entry is deliberately NOT removed from vdfSealers: a cancelled
+// epoch must keep reporting "not ready" through SealerResultFor rather than
+// silently restarting, and sealerFor's per-epoch keying is what prevents a
+// second evaluation being launched for an epoch already decided.
+func CancelSealer(forEpoch uint64) {
+	vdfSealersMu.Lock()
+	s, ok := vdfSealers[forEpoch]
+	vdfSealersMu.Unlock()
+	if !ok {
+		return
+	}
+	s.Cancel()
+}
+
+// SealerCancelledForTest reports whether forEpoch's sealer was cancelled.
+// Test-only.
+func SealerCancelledForTest(forEpoch uint64) bool {
+	vdfSealersMu.Lock()
+	s, ok := vdfSealers[forEpoch]
+	vdfSealersMu.Unlock()
+	return ok && s.Cancelled()
+}
+
 // SealerResultFor returns forEpoch's sealing result, if a sealer was started
 // for it and has finished. This is the read side of the
 // VDF-Implementation-Handoff.md §5/§6 pattern. WIRED: Block/consensus_fields.go

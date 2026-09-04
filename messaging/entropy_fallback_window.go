@@ -117,6 +117,13 @@ var (
 	// produces no seed, permanently — there is no later point at which
 	// retrying could still help, since doing so would mean using signers from
 	// slots the liveness bound has already ruled unsafe to wait for.
+	errVDFRecoveryDeadlineZero = errors.New(
+		"messaging: VDFProofRecoveryDeadlineSlots must be >= 1; a deadline of 0 never fires")
+
+	errVDFRecoveryDeadlineTooEarly = errors.New(
+		"messaging: VDFProofRecoveryDeadlineSlots exceeds N-RevealCutoffK; the deadline would fall " +
+			"before the epoch's mix is finalised, so no peer could hold a proof yet")
+
 	ErrFallbackDeadlineExceeded = errors.New("messaging: fallback collection deadline exceeded before enough signers were collected")
 )
 

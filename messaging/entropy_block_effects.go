@@ -31,6 +31,12 @@ func ApplyBlockEntropyEffects(block *config.ZKBlock) {
 	VerifyAndRecordPrevCert(block)
 	maybeFinaliseCompletedEpochs(block)
 	_ = VerifyAndAcceptVDFProof(block)
+
+	// 5. Recovery deadline. LIVE PATH ONLY — see maybeTriggerVDFProofRecovery
+	//    for why the sync path must not do this. Does no I/O: it reads
+	//    in-memory state and at most hands an epoch to a background
+	//    dispatcher, so block processing never waits on a peer.
+	maybeTriggerVDFProofRecovery(block)
 }
 
 // RecordSyncedBlockEntropy folds one block applied through SYNC (thebesync,
