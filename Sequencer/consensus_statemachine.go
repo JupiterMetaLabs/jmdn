@@ -146,36 +146,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
 	// tally. Fail-closed: if the seed client can't be built we refuse rather than
 	// fall back to an unauthenticated list.
-	cfg := settings.Get()
-
-	// Register this node's libp2p identity key to sign committee-selection
-	// (ListBuddy) requests. NewConsensus is only invoked on the sequencer (the
-	// Block server paths), so this node is the sequencer; the seed serves
-	// selection only to the sequencer PeerID it has configured and refuses all
-	// other callers.
-	if host != nil {
-		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
-			seednode.SetSequencerSignKey(sk)
-		}
-	}
-
-	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
-		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
-			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
-			// Reward-address source from the SAME pinned, authenticated snapshot, so
-			// R4 (this sequencer populating block.FeeRecipients) and R5 (every node
-			// validating it) derive the fee split from one authenticated source.
-			messaging.SetRewardAddressSource(sc.RewardAddresses(pinned, cfg.Consensus.CommitteeEpochSeconds))
-		} else {
-			initErr := err
-			messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
-				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
-			})
-			messaging.SetRewardAddressSource(func() (map[string]string, error) {
-				return nil, fmt.Errorf("reward-address source: seed client init failed (fail closed): %w", initErr)
-			})
-		}
-	} else {
+	if !WireCommitteeSources(host) {
 		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
 		// No pinned seed snapshot => no authenticated reward-address map. Leave the
 		// reward source UNSET so that if reward_split_enabled is turned on without an
@@ -184,6 +155,63 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	}
 
 	return c
+}
+
+// WireCommitteeSources registers the committee-eligibility and reward-address
+// sources from the pinned, seed-authenticated epoch snapshot. Both derive from
+// the SAME snapshot, so R4 (the sequencer populating block.FeeRecipients) and R5
+// (every node validating it) agree by construction.
+//
+// It returns false when no pinned authority + seednode pair is configured,
+// leaving BOTH sources untouched so the caller can install its own fallback
+// (NewConsensus installs the legacy buddy source for eligibility and
+// deliberately leaves the reward source unset, so reward_split_enabled fails
+// closed rather than splitting to nobody).
+//
+// CALL THIS AT STARTUP. It used to live inline in NewConsensus, which is only
+// reached from the block-production path — and reached there AFTER
+// attachAVCConsensusFields, which needs the reward source. On the sequencer
+// (fastsync.enable_catchup=false, so main.go's validator wiring is skipped) the
+// first block therefore failed with "reward-address source not configured (fail
+// closed)", returned 503 before NewConsensus ran, and the source was never wired
+// for the life of the process — every subsequent block failed identically.
+// main.go now calls this at startup for the sequencer; NewConsensus still calls
+// it so other entry points keep working, and re-wiring is harmless.
+func WireCommitteeSources(host host.Host) bool {
+	cfg := settings.Get()
+
+	// Register this node's libp2p identity key to sign committee-selection
+	// (ListBuddy) requests. The seed serves selection only to the sequencer
+	// PeerID it has configured and refuses all other callers. Done before the
+	// pinned check, and regardless of the outcome, exactly as when this lived
+	// inline in NewConsensus.
+	if host != nil {
+		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
+			seednode.SetSequencerSignKey(sk)
+		}
+	}
+
+	pinned := cfg.Consensus.SeedAuthorityBLSPub
+	if pinned == "" || cfg.Network.SeedNode == "" {
+		return false
+	}
+
+	sc, err := seednode.NewClient(cfg.Network.SeedNode)
+	if err != nil {
+		// Fail closed: refuse rather than fall back to an unauthenticated list.
+		initErr := err
+		messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
+			return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
+		})
+		messaging.SetRewardAddressSource(func() (map[string]string, error) {
+			return nil, fmt.Errorf("reward-address source: seed client init failed (fail closed): %w", initErr)
+		})
+		return true
+	}
+
+	messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
+	messaging.SetRewardAddressSource(sc.RewardAddresses(pinned, cfg.Consensus.CommitteeEpochSeconds))
+	return true
 }
 
 /*
