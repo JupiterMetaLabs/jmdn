@@ -25,7 +25,10 @@
 | `audit/2026-09-03-consensus` | `jmdn` | this document (`docs/audit/AVC-CONSENSUS-HANDOVER.md`) |
 | `audit/consensus-2026-09` | `avc` | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` |
 
-Neither branch is pushed and there is no PR — **review happens directly on these branches.** Nothing was committed to `v3base` in any repo.
+`v3base` is protected by an **org-level ruleset**, so both branches reach it by
+**pull request** — one PR per repo, targeting `v3base`, never `main`. Only
+`squash` and `rebase` merges are configured. Nothing was pushed directly to
+`v3base`.
 
 ### 0.1 Reviewer steps
 
@@ -42,12 +45,20 @@ Neither branch is pushed and there is no PR — **review happens directly on the
    ```bash
    cd avc && go test -tags defects -race -run TestAccumulatorFoldRace ./randao/
    ```
-   Expect **two** `WARNING: DATA RACE` reports. That is D-24, the highest-priority finding.
+   Expect **two or more** `WARNING: DATA RACE` reports and a non-zero exit — that
+   is D-24, the highest-priority finding, and the failure *is* the result. Every
+   block cites only `accumulator.go:209` (the `mix` XOR) and `:211` (the `folded`
+   map write, paired with the `:200` read). The count varies with scheduling:
+   2 blocks observed on linux/arm64 go1.26.0, **4 on darwin/arm64 go1.26.3** —
+   the extra two being write-vs-write on those same lines, which is the more
+   serious reading. A trailing `folded=64 expected=64 complete=true` is normal:
+   the fold completes *despite* the races, which is why this is silent in
+   production.
 3. Read §1 (verdict), then §2 (findings register). Full evidence per finding: §3 (SEV-1), §4 (SEV-2), §5 (SEV-3). Devnet items: §6. What is verified sound and what was withdrawn: §7. Remediation order: §8.
 4. **Record review outcomes in this file, on this branch** — edit the Status column in §2.2 (`Open` → `In-Progress (owner)` or `Accepted-Risk (owner, rationale)`) and commit. If you disagree with a finding, add a `> Reviewer note (name, date):` line under that finding's detail section — do not delete or rewrite audit text; the trail is the point.
 5. Assign an owner to each of the 3 SEV-1 rows. **D-24 and D-32 live in `avc`, not this repo** — they need an owner there.
-6. Do the housekeeping in Appendix A.2 — there are three leftover paths a sandbox could not delete.
-7. When every SEV-1 and SEV-2 row has an owner and there is no unresolved disagreement, **merge both branches** — the register is a living table and must sit where the fixes land.
+6. Housekeeping (Appendix A.2) — **already done**, nothing to do.
+7. **Merge both PRs into `v3base` once every SEV-1 and SEV-2 row has an owner** and there is no unresolved disagreement. Do not hold the merge for the *fixes* — only for ownership. The register is a living table and must sit on `v3base`, because the §0.2 fix rule requires the register row to be flipped in the *same commit* as the code change, and that is impossible while the register lives on a side branch.
 
 ### 0.2 Fix rules
 
@@ -600,71 +611,90 @@ GATE 5 — structural (RC remedies, after the instances)
 
 ### A.1 Footprint of this audit
 
-| Repo | Branch created | Files added | `v3base` / `main` touched? |
+| Repo | Branch | Commit | Files added | `v3base` / `main` touched? |
+|---|---|---|---|---|
+| `jmdn` | `audit/2026-09-03-consensus` | `f490147` + this doc-fix commit | `docs/audit/AVC-CONSENSUS-HANDOVER.md` (this file) | **No** — PR only |
+| `avc` | `audit/consensus-2026-09` | `e97ac50` | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` | **No** — PR only |
+| `ThebeDB` | none | none | none | **No** — untouched. (The `audit/2026-08-17-handover` branch there is pre-existing, from 2026-08-17.) |
+| `jmdt-devnet` | none | none | none | **No** — untouched. Findings in §6 are read-only observations. |
+
+Three files total. `jmdn/audit/2026-09-03-consensus` is rebased onto
+`origin/v3base` = `dda7c4a9` and is exactly two commits ahead of it.
+`avc/audit/consensus-2026-09` is one commit ahead of `1c13324`.
+
+### A.2 Housekeeping — DONE, no action
+
+The audit sandbox lacked unlink permission and left three inert paths behind.
+**All three were cleared on 2026-09-04** — recorded here only so nobody hunts
+for them:
+
+- `avc/audit/` — an earlier revision of the PoC suite, superseded by
+  `tests/audit/`. Deleted.
+- `avc/.git/index.lock` and `jmdn/.git/index.lock` — stale 0-byte locks that
+  blocked committing. Both removed.
+
+`avc/randao/zz_race_probe_test.go` is **not** a leftover — it is the D-24 PoC.
+It is build-tagged `defects`, so it does not affect normal runs. Rename it if
+you prefer a clearer name.
+
+### A.3 State of delivery — committed, awaiting PR
+
+Both branches are committed. `v3base` is org-protected, so each reaches it by
+pull request.
+
+| Repo | Branch | Commits ahead of its base | Base |
 |---|---|---|---|
-| `jmdn` | `audit/2026-09-03-consensus` | `docs/audit/AVC-CONSENSUS-HANDOVER.md` (this file) | **No** — clean |
-| `avc` | `audit/consensus-2026-09` | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` | **No** — clean, HEAD unchanged at `1c13324` |
-| `ThebeDB` | none | none | **No** — untouched. (The `audit/2026-08-17-handover` branch there is pre-existing, from 2026-08-17.) |
-| `jmdt-devnet` | none | none | **No** — untouched. Findings in §6 are read-only observations. |
+| `avc` | `audit/consensus-2026-09` | 1 — `e97ac50` | `v3base` @ `1c13324` |
+| `jmdn` | `audit/2026-09-03-consensus` | 2 — `f490147` + doc corrections | `origin/v3base` @ `dda7c4a9` |
 
-No commits were made in any repo — see A.3.
-
-### A.2 Housekeeping — three paths a sandbox could not delete
-
-The audit sandbox lacked unlink permission. Three leftovers need removing by hand; all are inert.
+**Remaining operator steps:**
 
 ```bash
-# 1. avc/audit/ — an earlier revision of the PoC suite, superseded by
-#    tests/audit/. Every file is //go:build ignore, so it is invisible to
-#    `go build`, `go vet`, `go test` and even `-tags defects`. Verified.
-rm -rf avc/audit/
+# 1. push both branches
+cd /Users/naman/JM/repos/WORKDIR2/avc  && git push -u origin audit/consensus-2026-09
+cd /Users/naman/JM/repos/WORKDIR2/jmdn && git push -u origin audit/2026-09-03-consensus
 
-# 2. avc/.git/index.lock — a stale 0-byte lock file from a failed git status.
-#    This is why nothing could be committed (see A.3).
-rm -f avc/.git/index.lock
+# 2. open one PR per repo, BASE = v3base (never main)
+#    gh, if installed:
+cd /Users/naman/JM/repos/WORKDIR2/avc
+gh pr create --base v3base --head audit/consensus-2026-09 \
+  --title "test(audit): PoC suite for D-24..D-34" \
+  --body "Companion to jmdn PR. Nine PoCs; each PASSES while its defect exists. Test-only: no production code, no go.mod change, no new avc tag required."
+
+cd /Users/naman/JM/repos/WORKDIR2/jmdn
+gh pr create --base v3base --head audit/2026-09-03-consensus \
+  --title "docs(audit): AVC consensus handover, findings D-24..D-34" \
+  --body "No-Go for mainnet; No-Go for enabling Stage 2 entropy before D-24 and D-27. Living findings register in section 2.2. Companion PoC suite in avc@audit/consensus-2026-09."
 ```
 
-`avc/randao/zz_race_probe_test.go` is **not** a leftover — it is the D-24 PoC. It is build-tagged `defects`, so it does not affect normal runs. Rename it if you prefer a clearer name.
-
-### A.3 What to commit
-
-Nothing is committed. A stale `avc/.git/index.lock` blocked it, and the same sandbox could not remove the lock.
+**Before merging, confirm `avc` has not drifted.** The auditor could not fetch
+it — `avc`, `ThebeDB` and `jmdt-devnet` use SSH remotes and the audit
+environment had no key; only `jmdn` (HTTPS) was verifiable.
 
 ```bash
-# avc — PoC suite + D-24 race probe
-rm -f avc/.git/index.lock          # unblocks git
-rm -rf avc/audit/                  # drop the superseded copy
-cd avc
-git checkout audit/consensus-2026-09
-git add tests/audit/ randao/zz_race_probe_test.go
-git commit -m "test(audit): PoC suite for D-24..D-34
-
-Nine PoCs following the ThebeDB handover convention: each test PASSES while
-its defect exists; invert the assertion when fixing to convert it into a
-regression test. Two controls (quorum, BeaconSource fail-closed) must pass
-forever. Two negative checks lock claims that were tested and withdrawn.
-
-D-24 needs unexported access and -race, so it lives in randao/.
-Findings: jmdn/docs/audit/AVC-CONSENSUS-HANDOVER.md"
-
-# jmdn — this document
-cd ../jmdn
-git checkout audit/2026-09-03-consensus
-git add docs/audit/AVC-CONSENSUS-HANDOVER.md
-git commit -m "docs(audit): AVC consensus handover, findings D-24..D-34
-
-No-Go for mainnet; No-Go for enabling Stage 2 entropy before D-24 and D-27.
-Living findings register in section 2.2. Companion PoC suite in
-avc@audit/consensus-2026-09."
+cd /Users/naman/JM/repos/WORKDIR2/avc
+git fetch origin v3base && git log --oneline v3base..origin/v3base
+# empty  -> e97ac50 sits on a current base, merge freely
+# output -> rebase onto origin/v3base, re-run the PoC suite, then merge
 ```
 
-Then push both and review on the branches (§0.1). Do not open PRs into `v3base` until every SEV-1 and SEV-2 row has an owner (§0.1 step 7).
+**No avc tag or jmdn `go.mod` change is needed for these two PRs.** The avc
+commit adds only `_test.go` files, Go never compiles a dependency's test files,
+and jmdn carries no `replace` directive — it builds avc from the module cache at
+`v0.1.0-v3base.2` (= `fd5eef8`). A new tag *will* be required when D-24 and D-32
+land, because those touch avc production code; note that on those rows when you
+assign them.
 
-### A.4 Superseded material
+### A.4 Superseded material — already deleted
 
-An earlier revision of this audit was published as an HTML page and as loose markdown in the local `WORKDIR2` scratch directory. Both are superseded by this document; the HTML now redirects here. The following local files can be deleted once this branch is merged: `CONSENSUS-AUDIT-2026-09-03.md`, `CONSENSUS-AUDIT-2026-09-03-SLACK.txt`, `AVC-CONSENSUS-HANDOVER.html`, `AVC-CONSENSUS-WIRING-REVIEW.html`, `avc-proof-tests.tar.gz`, `audits/proof-tests/`.
+Earlier revisions of this audit existed as an HTML page and as loose markdown in
+the local `WORKDIR2` scratch directory (not version-controlled). **All were
+deleted on 2026-09-04.** The published HTML page was replaced with a stub
+pointing at this document, so any saved link redirects rather than showing stale
+findings.
 
-The Slack summary (`CONSENSUS-AUDIT-2026-09-03-SLACK.txt`) is the exception — keep it if a channel post is still wanted; its content is §1 plus the register.
+`WORKDIR2/CONSENSUS-AUDIT-2026-09-03-SLACK.txt` was deliberately kept — it is
+the Slack-pasteable form of §1 plus the register. Delete it once posted.
 
 ---
 
