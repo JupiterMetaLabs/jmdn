@@ -18,24 +18,29 @@
 
 ## 0. Handover runbook — START HERE
 
-**Current state (2026-09-03):** two branches carry exactly three artifacts.
+**Current state (2026-09-04): MERGED TO `v3base` in both repos.** Everything is
+on the branch the team works from. The audit branches are deleted; nothing to
+check out.
 
-| Branch | Repo | Contains |
+| Repo | On `v3base` at | Artifact |
 |---|---|---|
-| `audit/2026-09-03-consensus` | `jmdn` | this document (`docs/audit/AVC-CONSENSUS-HANDOVER.md`) |
-| `audit/consensus-2026-09` | `avc` | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` |
+| `jmdn` | `9197f5a` (PR #123, squash) | this document — `docs/audit/AVC-CONSENSUS-HANDOVER.md` |
+| `avc` | `b83199b` | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` |
 
-`v3base` is protected by an **org-level ruleset**, so both branches reach it by
-**pull request** — one PR per repo, targeting `v3base`, never `main`. Only
-`squash` and `rebase` merges are configured. Nothing was pushed directly to
-`v3base`.
+`v3base` is protected by an org-level ruleset, so both landed by pull request.
+Every future change to this document — including flipping a register row in §2.2
+— needs a PR into `v3base` too.
+
+**Verified on `v3base` after merge:** `go build ./... && go vet ./...` clean in
+both repos · 9 PoCs pass · `go test ./randao/` clean (probe stays skipped) ·
+D-24 reproduces with 4 DATA RACE blocks on darwin/arm64 go1.26.3.
 
 ### 0.1 Reviewer steps
 
-1. Check out both branches:
+1. Get on `v3base` in both repos — that is where everything now lives:
    ```bash
-   git -C jmdn checkout audit/2026-09-03-consensus
-   git -C avc  checkout audit/consensus-2026-09
+   git -C jmdn checkout v3base && git -C jmdn pull --ff-only origin v3base
+   git -C avc  checkout v3base && git -C avc  pull --ff-only origin v3base
    ```
 2. Reproduce the evidence yourself (~15s):
    ```bash
@@ -58,7 +63,7 @@
 4. **Record review outcomes in this file, on this branch** — edit the Status column in §2.2 (`Open` → `In-Progress (owner)` or `Accepted-Risk (owner, rationale)`) and commit. If you disagree with a finding, add a `> Reviewer note (name, date):` line under that finding's detail section — do not delete or rewrite audit text; the trail is the point.
 5. Assign an owner to each of the 3 SEV-1 rows. **D-24 and D-32 live in `avc`, not this repo** — they need an owner there.
 6. Housekeeping (Appendix A.2) — **already done**, nothing to do.
-7. **Merge both PRs into `v3base` once every SEV-1 and SEV-2 row has an owner** and there is no unresolved disagreement. Do not hold the merge for the *fixes* — only for ownership. The register is a living table and must sit on `v3base`, because the §0.2 fix rule requires the register row to be flipped in the *same commit* as the code change, and that is impossible while the register lives on a side branch.
+7. **Assign an owner to every SEV-1 and SEV-2 row before any fix work starts** (6 rows: D-24, D-25, D-26, D-27, D-28, D-29). Merging is done — §2.2 is now the live tracking surface, so from here the register moves forward one PR at a time under the §0.2 fix rule. The first two to assign are D-24 and D-27: they gate the beacon, and until both read `Fixed` nobody may set the three `JMDN_AVC_VDF_*` variables (§0.3, §0.4).
 
 ### 0.2 Fix rules
 
@@ -637,53 +642,32 @@ for them:
 It is build-tagged `defects`, so it does not affect normal runs. Rename it if
 you prefer a clearer name.
 
-### A.3 State of delivery — committed, awaiting PR
+### A.3 State of delivery — MERGED
 
-Both branches are committed. `v3base` is org-protected, so each reaches it by
-pull request.
+Both artifacts are on `v3base`. No further delivery steps.
 
-| Repo | Branch | Commits ahead of its base | Base |
+| Repo | `v3base` | How it landed | Contents |
 |---|---|---|---|
-| `avc` | `audit/consensus-2026-09` | 1 — `e97ac50` | `v3base` @ `1c13324` |
-| `jmdn` | `audit/2026-09-03-consensus` | 2 — `f490147` + doc corrections | `origin/v3base` @ `dda7c4a9` |
+| `jmdn` | `9197f5a` | PR **#123**, squash | `docs/audit/AVC-CONSENSUS-HANDOVER.md` |
+| `avc` | `b83199b` | PR, fast-forward | `tests/audit/audit_poc_test.go` · `randao/zz_race_probe_test.go` |
 
-**Remaining operator steps:**
+The `audit/2026-09-03-consensus` and `audit/consensus-2026-09` branches were
+deleted after merge, local and remote.
 
-```bash
-# 1. push both branches
-cd /Users/naman/JM/repos/WORKDIR2/avc  && git push -u origin audit/consensus-2026-09
-cd /Users/naman/JM/repos/WORKDIR2/jmdn && git push -u origin audit/2026-09-03-consensus
+**Post-merge verification on `v3base` (2026-09-04, go1.26.3 darwin/arm64):**
+`go build ./... && go vet ./...` clean in both repos · 9 PoCs pass · `go test
+./randao/` clean · D-24 reproduces with 4 DATA RACE blocks, exit 1.
 
-# 2. open one PR per repo, BASE = v3base (never main)
-#    gh, if installed:
-cd /Users/naman/JM/repos/WORKDIR2/avc
-gh pr create --base v3base --head audit/consensus-2026-09 \
-  --title "test(audit): PoC suite for D-24..D-34" \
-  --body "Companion to jmdn PR. Nine PoCs; each PASSES while its defect exists. Test-only: no production code, no go.mod change, no new avc tag required."
+**No avc tag or jmdn `go.mod` bump was needed, and none is needed now.** The avc
+commit adds only `_test.go` files; Go never compiles a dependency's test files;
+and jmdn carries no `replace` directive, so it builds avc from the module cache
+at `v0.1.0-v3base.2` (= `fd5eef8`). Note that `avc/v3base` is now `b83199b`,
+one commit *ahead* of that tag — harmless, because the difference is test-only.
 
-cd /Users/naman/JM/repos/WORKDIR2/jmdn
-gh pr create --base v3base --head audit/2026-09-03-consensus \
-  --title "docs(audit): AVC consensus handover, findings D-24..D-34" \
-  --body "No-Go for mainnet; No-Go for enabling Stage 2 entropy before D-24 and D-27. Living findings register in section 2.2. Companion PoC suite in avc@audit/consensus-2026-09."
-```
-
-**Before merging, confirm `avc` has not drifted.** The auditor could not fetch
-it — `avc`, `ThebeDB` and `jmdt-devnet` use SSH remotes and the audit
-environment had no key; only `jmdn` (HTTPS) was verifiable.
-
-```bash
-cd /Users/naman/JM/repos/WORKDIR2/avc
-git fetch origin v3base && git log --oneline v3base..origin/v3base
-# empty  -> e97ac50 sits on a current base, merge freely
-# output -> rebase onto origin/v3base, re-run the PoC suite, then merge
-```
-
-**No avc tag or jmdn `go.mod` change is needed for these two PRs.** The avc
-commit adds only `_test.go` files, Go never compiles a dependency's test files,
-and jmdn carries no `replace` directive — it builds avc from the module cache at
-`v0.1.0-v3base.2` (= `fd5eef8`). A new tag *will* be required when D-24 and D-32
-land, because those touch avc production code; note that on those rows when you
-assign them.
+**A new tag WILL be required for D-24 and D-32.** Both touch avc production code
+(`randao/accumulator.go`, `crdt/crdt.go`). Each of those fixes needs, in order:
+avc PR → new `v0.1.0-v3base.N` tag → jmdn `go.mod` bump → jmdn PR. Record that
+on those two rows when you assign them.
 
 ### A.4 Superseded material — already deleted
 
