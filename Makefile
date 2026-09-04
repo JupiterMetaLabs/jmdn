@@ -15,7 +15,8 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy
+.PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy \
+        dev-setup dev-check verify-pins
 
 all: build
 
@@ -73,3 +74,31 @@ lint:
 # Useful when a lint backlog exists and you don't want to be blocked by old violations.
 lint-new:
 	golangci-lint run --new-from-rev=HEAD~1
+
+# ── Module access (private deps) ──────────────────────────────────────────────
+# avc and ThebeDB are PRIVATE repos. Go cannot fetch them through the public
+# proxy, so every developer needs GOPRIVATE plus an https->ssh rewrite. Run this
+# once per machine. Idempotent; `--undo` reverses it.
+dev-setup:
+	@./Scripts/dev-setup-modules.sh
+
+# Same checks, changes nothing. Use this when a build fails with
+# "could not read Username for 'https://github.com'".
+dev-check:
+	@./Scripts/dev-setup-modules.sh --check
+
+# Also generate .go.work.local so you can build against sibling checkouts of
+# avc / ThebeDB / JMDN-FastSync without editing go.mod. Prints the GOWORK export.
+dev-workspace:
+	@./Scripts/dev-setup-modules.sh --workspace
+
+# THE PRE-PUSH GATE. Proves the versions pinned in go.mod actually resolve,
+# independently of any workspace file or local replace. If you develop with
+# GOWORK exported, this is the only thing that catches a broken pin — and it is
+# what CI enforces.
+verify-pins:
+	GOWORK=off go mod verify
+	GOWORK=off go build ./...
+	@! grep -nE '^[[:space:]]*replace[[:space:]]+\S+[[:space:]]+=>[[:space:]]+\.{1,2}/' go.mod \
+	  || { echo "ERROR: local filesystem replace in go.mod — pin a published tag instead"; exit 1; }
+	@echo "verify-pins: OK"
