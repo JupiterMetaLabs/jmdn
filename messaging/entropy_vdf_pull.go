@@ -27,14 +27,38 @@ package messaging
 // A pulled proof re-enters the SAME function a block-carried proof does —
 // VerifyAndAcceptVDFProof — by being placed on a synthetic boundary block
 // carrying only the fields those checks read. There is deliberately no second
-// verifier: every check (boundary slot, slot/epoch binding, independent mix,
-// group and T, vdf.Verify) applies identically no matter how the proof arrived.
+// verifier.
+//
+// WHICH OF THOSE CHECKS ACTUALLY BITE HERE — this is not symmetric with the
+// block path, and the difference matters to anyone changing either side.
+// VerifyAndAcceptVDFProof runs five checks. Two of them validate a PROPOSER'S
+// DECLARATION, and on this path there is no proposer: the synthetic block's
+// Slot and SeedEpoch are both computed locally by the dispatcher, from the same
+// epoch, using the same functions the checks re-apply. Since
+// EpochBoundarySlot(e) = e*N and EpochForSlot(s) = s/N are exact inverses:
+//
+//	CHECK 1 (proof sits on its epoch's boundary slot)  e*N != e*N   -> never fires
+//	CHECK 2 (declared SeedEpoch matches the slot)      (e*N)/N != e -> never fires
+//
+// They are not redundant on the block path, where a proposer supplies Slot and
+// SeedEpoch independently and either can lie. Here they are tautologies.
+//
+// CONSEQUENCE, and the reason this is written down: on the pull path the epoch
+// binding of a pulled proof rests ENTIRELY on CHECK 3 and what follows it —
+// FinalisedMixFor(E-1) loads the mix THIS node finalised, and vdf.Verify
+// re-derives the challenge from that mix, so a proof sealed for any epoch other
+// than E cannot verify. That is sufficient. But it is a single mechanism, not
+// three: a future change that relaxes CHECK 3 (say, accepting a mix from
+// elsewhere when the local one has aged out) would remove the ONLY thing
+// binding a pulled proof to its epoch, while the comment above it still lists
+// two other checks that appear to cover the same property and do not.
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -57,6 +81,53 @@ const vdfProofRequestTimeout = 5 * time.Second
 // A request is a single small JSON object; anything larger is malformed or
 // hostile, and reading it would let a peer use the handler as a memory sink.
 const maxVDFProofRequestBytes = 1 << 10
+
+// maxRecoveryPeers caps how many peers ONE recovery round will ask.
+//
+// The caller passes h.Network().Peers() — every connected peer, unfiltered and
+// in map-iteration order. Asking all of them sequentially is bounded only by
+// 5s * len(peers), and an unresponsive peer costs the full timeout. On a
+// churny network that product runs to minutes, while recoveryInFlight holds the
+// per-epoch latch for the entire sweep and the deadline fires only
+// VDFProofRecoveryDeadlineSlots slots before the boundary. A sweep that outlives
+// its own runway defeats the mechanism: the proof lands after the block that
+// needed it, and no second attempt could start in the meantime.
+//
+// 12 is chosen against the failure it prevents, not against a topology guess:
+// a proof is held by every node that sealed or adopted the epoch, so if any
+// meaningful fraction of the connected set has it, a dozen random draws find
+// one with overwhelming probability. If none of twelve has it, a thirteenth is
+// far less useful than failing closed on time and letting local evaluation
+// finish — which is exactly what the no-recovery path already does safely.
+const maxRecoveryPeers = 12
+
+// maxRecoveryRoundBudget bounds ONE round end-to-end, independent of the
+// per-peer timeout and of how many peers are asked. Belt to maxRecoveryPeers'
+// braces: the cap bounds the COUNT, this bounds the TIME, and neither alone is
+// sufficient if the other is later tuned.
+const maxRecoveryRoundBudget = 30 * time.Second
+
+// pickRecoveryPeers shuffles and caps the candidate set.
+//
+// Shuffling is load-bearing, not cosmetic. h.Network().Peers() returns peers in
+// Go map order, which is randomised per iteration but NOT uniform across a
+// process's lifetime in any way this code should rely on; more importantly, an
+// uncapped caller previously walked whatever order it got. With a cap, taking a
+// deterministic prefix would let one unlucky set of dead peers starve recovery
+// every single epoch. A fresh shuffle makes each round an independent draw, so
+// repeated failure requires repeated bad luck rather than one bad neighbourhood.
+//
+// Copies before shuffling: the slice belongs to the caller (and libp2p), and
+// reordering it in place would be a visible side effect on shared state.
+func pickRecoveryPeers(peers []peer.ID, limit int) []peer.ID {
+	out := make([]peer.ID, len(peers))
+	copy(out, peers)
+	rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
 
 // VDFProofRequest is the wire request: "do you have the VDF proof for this
 // entropy epoch?". Nothing else is needed — the responder answers strictly
@@ -177,12 +248,23 @@ func requestVDFProofFromPeer(ctx context.Context, h host.Host, p peer.ID, epoch 
 	}
 	defer stream.Close()
 
-	_ = stream.SetWriteDeadline(time.Now().Add(vdfProofRequestTimeout))
+	// Stream deadlines come from ctx when it carries one, so the caller's budget
+	// actually bounds this call. ctx alone does NOT: NewStream honours it, but
+	// libp2p stream reads and writes are governed by their own deadlines, so a
+	// hardcoded value here would let one peer cost dial + write + read no matter
+	// what deadline the caller set. Falls back to the constant for a ctx with no
+	// deadline, which is what the tests pass.
+	deadline := time.Now().Add(vdfProofRequestTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
+	_ = stream.SetWriteDeadline(deadline)
 	if _, err := stream.Write(payload); err != nil {
 		return nil, false, fmt.Errorf("vdf proof pull: writing request to %s: %w", p, err)
 	}
 
-	_ = stream.SetReadDeadline(time.Now().Add(vdfProofRequestTimeout))
+	_ = stream.SetReadDeadline(deadline)
 	line, err := bufio.NewReader(&io_LimitedStream{
 		s: stream, remaining: DB_OPs.MaxVDFProofBytes * 2,
 	}).ReadString('\n')
@@ -256,12 +338,35 @@ func RecoverVDFProofFromPeers(h host.Host, peers []peer.ID, epoch uint64, bounda
 	}
 	defer endRecovery(epoch)
 
-	log.Info().Uint64("epoch", epoch).Int("peers", len(peers)).
-		Msg("entropy: recovery deadline reached without entropy for this epoch — asking peers for " +
-			"the VDF proof (local evaluation continues regardless)")
+	candidates := pickRecoveryPeers(peers, maxRecoveryPeers)
 
-	for _, p := range peers {
-		ctx, cancel := context.WithTimeout(context.Background(), vdfProofRequestTimeout)
+	// One budget for the whole round. Without it the round costs
+	// vdfProofRequestTimeout * len(candidates) in the worst case, which can
+	// outlive the runway the deadline left us.
+	roundDeadline := time.Now().Add(maxRecoveryRoundBudget)
+
+	log.Info().Uint64("epoch", epoch).
+		Int("connected_peers", len(peers)).Int("asking", len(candidates)).
+		Dur("round_budget", maxRecoveryRoundBudget).
+		Msg("entropy: recovery deadline reached without entropy for this epoch — asking a bounded " +
+			"random sample of peers for the VDF proof (local evaluation continues regardless)")
+
+	for _, p := range candidates {
+		if remaining := time.Until(roundDeadline); remaining <= 0 {
+			log.Warn().Uint64("epoch", epoch).Dur("budget", maxRecoveryRoundBudget).
+				Msg("entropy: recovery round budget exhausted before a usable proof was found — " +
+					"abandoning this round so the next block can start a fresh one; local " +
+					"evaluation is unaffected")
+			break
+		}
+
+		// Never let one peer consume more than what is left of the round.
+		perPeer := vdfProofRequestTimeout
+		if remaining := time.Until(roundDeadline); remaining < perPeer {
+			perPeer = remaining
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), perPeer)
 		encoded, found, err := requestVDFProofFromPeer(ctx, h, p, epoch)
 		cancel()
 
@@ -298,7 +403,9 @@ func RecoverVDFProofFromPeers(h host.Host, peers []peer.ID, epoch uint64, bounda
 	}
 
 	log.Warn().Uint64("epoch", epoch).
-		Msg("entropy: no peer produced a usable VDF proof for this epoch — local evaluation " +
-			"continues and this node fails closed for the epoch until it completes")
+		Int("asked", len(candidates)).Int("connected_peers", len(peers)).
+		Msg("entropy: no peer in this round's sample produced a usable VDF proof for this epoch — " +
+			"local evaluation continues and this node fails closed for the epoch until it " +
+			"completes. A later block re-fires the deadline and draws a fresh sample")
 	return false
 }
