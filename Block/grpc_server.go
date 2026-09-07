@@ -15,6 +15,7 @@ import (
 	pb "gossipnode/Block/proto"
 	"gossipnode/DB_OPs"
 	"gossipnode/Sequencer"
+	"gossipnode/explorer/lifecycle"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/config/settings"
@@ -124,6 +125,15 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		MainPeers:   []peer.ID{},
 		BackupPeers: []peer.ID{},
 	}
+	// Explorer lifecycle: PENDING — proposed via the gRPC path, entering consensus.
+	{
+		txHashes := make([]string, 0, len(block.Transactions))
+		for i := range block.Transactions {
+			txHashes = append(txHashes, block.Transactions[i].Hash.Hex())
+		}
+		lifecycle.MarkProposed(block.BlockNumber, txHashes)
+	}
+
 	consensus := Sequencer.NewConsensus(peerList, s.host)
 	// Debugging
 	if s.logger != nil {

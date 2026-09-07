@@ -173,6 +173,10 @@ func (s *ExplorerServer) setupRoutes() {
 		// Get transaction by hash
 		api.GET("/transactions/:hash", s.getTransaction)
 
+		// Tron-style lifecycle status: QUEUED -> PENDING -> EXECUTING -> SUCCESS/FAILED,
+		// with live consensus counts (chain-first, then the in-memory lifecycle registry).
+		api.GET("/transactions/:hash/status", s.getTransactionStatus)
+
 		// List all transactions in a block
 		api.GET("/transactions/block/:number", s.listTransactions_inBlock)
 
