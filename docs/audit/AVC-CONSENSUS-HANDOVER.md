@@ -160,7 +160,7 @@ NOT executed: jmdn's own build and test suite — the audit sandbox exhausted it
 
 | ID | SEV | Repo | Finding | PoC | Effort | Status |
 |---|---|---|---|---|---|---|
-| **D-24** | 1 | `avc` | `randao.Accumulator` has no synchronisation; jmdn calls `Fold` from two concurrent commit hooks | race probe | S | `Open` |
+| **D-24** | 1 | `avc` | `randao.Accumulator` has no synchronisation; jmdn calls `Fold` from two concurrent commit hooks | race probe | S | `Fixed (avc 498241b, randao/accumulator_race_test.go)` |
 | **D-25** | 1 | `jmdn` | `SeedSourceFor` silently falls back to the Stage-1 salt; two nodes seat different committees | PoC 1 | S | `Open` |
 | **D-26** | 1 | `jmdn` | Vote CRDT keyed on a self-declared sender; requester chooses the signing target; guard off and unwired | — | L | `Open` |
 | **D-27** | 2 | `jmdn` | Bootstrap epochs silently evicted when the pinned list exceeds `retain` | PoC 2, 3 | S | `Open` |
@@ -168,11 +168,40 @@ NOT executed: jmdn's own build and test suite — the audit sandbox exhausted it
 | **D-29** | 2 | `jmdn` | Trapdoored testnet VDF modulus with no mechanical mainnet guard | — | S | `Open` |
 | **D-30** | 3 | `jmdn` | Bloom dedup filter is lock-free and saturates to 83% FP in ~14h | — | M | `Open` |
 | **D-31** | 3 | `jmdn` | Epoch watermark TOCTOU duplicates finalisation; duplicate seal blocks a goroutine forever | — | M | `Open` |
-| **D-32** | 3 | `avc` | `extractNodeID` tie-break reads a Go map → nondeterministic merge | PoC 4, 5 | S | `Open` |
+| **D-32** | 3 | `avc` | `extractNodeID` tie-break reads a Go map → nondeterministic merge | PoC 4, 5 | S | `Fixed (avc 193ab86, TestPoC4_MergeTieBreakIsDeterministic + crdt/tiebreak_determinism_test.go)` |
 | **D-33** | — | `jmdn` | Entropy genesis bootstrap — **shipped**; persistence and an observe rung remain | — | M | `Fixed (b5e305a8) — remainder Open` |
 | **D-34** | 3 | `jmdn` | Unbounded maps on the block-receive path (`seenHeights` et al) | — | M | `Open` |
 
 **Devnet items** (§6) are tracked as a group rather than individually numbered: 3 × SEV-3, 6 × SEV-4, all in `jmdt-devnet`.
+
+> **D-24 / D-32 — §0.2 satisfied OUT OF ORDER, 2026-09-07.** Both are `avc`
+> defects, and §0.2 requires the code change, the PoC inversion and this
+> register row in one atomic commit. That did not happen, and the reason is
+> worth recording rather than tidying away: this register file did not yet exist
+> on the branch the fixes were reviewed from (it reached `v3base` via #123/#124
+> after `feat/consensus-audit` branched), so the reviewer concluded the
+> cross-reference in `avc/tests/audit/audit_poc_test.go` was dangling and
+> replaced it with a self-contained STATUS block. It was not dangling — this
+> file was simply nine commits ahead. Sequence as it actually happened:
+>
+> | | landed | carried by |
+> |---|---|---|
+> | D-24 code + `randao/accumulator_race_test.go` | avc `498241b` | `v0.1.0-v3base.3` |
+> | D-32 code + `crdt/tiebreak_determinism_test.go` | avc `193ab86` | `v0.1.0-v3base.3` |
+> | PoC 4 / PoC 5 inverted (§0.2 item 2) | avc `v3base.4` | `v0.1.0-v3base.4` |
+> | these two rows (§0.2 item 3) | this PR | — |
+>
+> Note `498241b` is labelled `wip:` but is the commit that actually fixes D-24;
+> its race-safety change and regression test landed together. Verified by
+> execution: `go test -race ./randao/` and the full avc suite are green at
+> `v0.1.0-v3base.4`, which is the version this repo now pins in `go.mod`.
+>
+> The inverted PoCs also caused a transient `v3base` breakage worth knowing
+> about: `avc/tests/audit` carries no build tag, so when PoC 4/5 arrived (avc
+> #4) and the D-32 fix arrived (avc #5), they met for the first time on `v3base`
+> and `go test ./...` went red there — neither PR's own CI had both. Fixed by
+> inverting them. **Lesson for the remaining rows: land the inversion in the
+> same PR as the fix, exactly as §0.2 says.**
 
 ---
 
