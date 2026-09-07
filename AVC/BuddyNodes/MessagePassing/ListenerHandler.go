@@ -20,6 +20,7 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
+	"gossipnode/explorer/lifecycle"
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
@@ -1082,6 +1083,11 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			ion.String("function", "MessagePassing.handleSubmitVote"))
 		return
 	}
+
+	// Explorer lifecycle: count this authenticated, valid vote toward the block's
+	// live "N nodes voted" tally. Distinct voters only (deduped by peer inside the
+	// registry); no-op unless this node proposed the block. Best-effort, guarded.
+	lifecycle.IncVoteArrival(blockHash, remotePeer.String(), voteValue > 0)
 
 	voteSpan.SetAttributes(
 		attribute.Float64("vote_value", voteValue),

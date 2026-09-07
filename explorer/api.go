@@ -85,6 +85,10 @@ func NewExplorerServer() (*ExplorerServer, error) {
 		tlsLoader:  tlsLoader,
 	}
 
+	// Wire the tx-lifecycle registry to the SSE fan-out so stage transitions push
+	// to /api/block/transactions/stream/:hash subscribers.
+	RegisterLifecycleObserver()
+
 	// Set up routes
 	server.setupRoutes()
 
@@ -176,6 +180,9 @@ func (s *ExplorerServer) setupRoutes() {
 		// Tron-style lifecycle status: QUEUED -> PENDING -> EXECUTING -> SUCCESS/FAILED,
 		// with live consensus counts (chain-first, then the in-memory lifecycle registry).
 		api.GET("/transactions/:hash/status", s.getTransactionStatus)
+
+		// SSE stream of lifecycle transitions for one tx (push, no polling).
+		api.GET("/transactions/stream/:hash", s.streamTxStatus)
 
 		// List all transactions in a block
 		api.GET("/transactions/block/:number", s.listTransactions_inBlock)

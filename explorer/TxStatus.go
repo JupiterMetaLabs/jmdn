@@ -14,7 +14,9 @@ package explorer
 // the geth-facade tx-status feature.
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -23,6 +25,28 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// txStatusEventType is the StreamEvent.EventType carried on the shared SSE
+// registry for lifecycle transitions.
+const txStatusEventType = "tx_status"
+
+// RegisterLifecycleObserver wires the lifecycle registry to the shared SSE
+// registry so every stage transition is fanned out as a "tx_status" event. The
+// per-hash stream handler filters these to one transaction. Called once at
+// server construction.
+func RegisterLifecycleObserver() {
+	lifecycle.SetObserver(func(e lifecycle.Entry) {
+		sendEventToClients(StreamEvent{EventType: txStatusEventType, Data: e})
+	})
+}
+
+func normHash(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if h != "" && !strings.HasPrefix(h, "0x") {
+		h = "0x" + h
+	}
+	return h
+}
 
 // txStatusResponse is the client-facing shape.
 type txStatusResponse struct {
@@ -91,4 +115,70 @@ func (s *ExplorerServer) getTransactionStatus(c *gin.Context) {
 		Found:  false,
 		Source: "none",
 	})
+}
+
+// streamTxStatus is an SSE endpoint that pushes lifecycle transitions for ONE
+// transaction hash. It subscribes to the shared stream registry (reused from the
+// block stream) and forwards only "tx_status" events whose hash matches, then
+// closes on a terminal stage. An initial snapshot is sent immediately so a
+// late-connecting client sees the current stage without waiting for the next
+// transition.
+func (s *ExplorerServer) streamTxStatus(c *gin.Context) {
+	rawHash := c.Param("hash")
+	want := normHash(rawHash)
+
+	messageChan := make(chan string, 64) // buffered so a brief slow read does not evict (audit API-02)
+	streamRegistry.Lock()
+	streamRegistry.clients[messageChan] = struct{}{}
+	streamRegistry.Unlock()
+	defer func() {
+		streamRegistry.Lock()
+		if _, ok := streamRegistry.clients[messageChan]; ok {
+			close(messageChan)
+			delete(streamRegistry.clients, messageChan)
+		}
+		streamRegistry.Unlock()
+	}()
+
+	notify := c.Writer.CloseNotify()
+
+	// Initial snapshot: chain-first (terminal SUCCESS), then live registry, else UNKNOWN.
+	{
+		e := lifecycle.Entry{Hash: want, Stage: statusUnknown}
+		if tx, err := DB_OPs.GetTransactionByHash(&s.defaultdb, rawHash); err == nil && tx != nil {
+			e = lifecycle.Entry{Hash: want, Stage: lifecycle.StageSuccess}
+		} else if cur, ok := lifecycle.Get(rawHash); ok {
+			e = cur
+		}
+		if data, err := json.Marshal(StreamEvent{EventType: txStatusEventType, Data: e}); err == nil {
+			c.SSEvent("message", string(data))
+			c.Writer.Flush()
+		}
+	}
+
+	for {
+		select {
+		case <-notify:
+			return
+		case msg, ok := <-messageChan:
+			if !ok {
+				return // evicted as too-slow
+			}
+			var ev struct {
+				Event string          `json:"event"`
+				Data  lifecycle.Entry `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(msg), &ev); err != nil {
+				continue
+			}
+			if ev.Event != txStatusEventType || normHash(ev.Data.Hash) != want {
+				continue // not a tx_status event for this hash
+			}
+			c.SSEvent("message", msg)
+			c.Writer.Flush()
+			if ev.Data.Stage == lifecycle.StageSuccess || ev.Data.Stage == lifecycle.StageFailed {
+				return // terminal — no more transitions coming
+			}
+		}
+	}
 }

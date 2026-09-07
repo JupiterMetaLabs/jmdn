@@ -131,7 +131,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		for i := range block.Transactions {
 			txHashes = append(txHashes, block.Transactions[i].Hash.Hex())
 		}
-		lifecycle.MarkProposed(block.BlockNumber, txHashes)
+		lifecycle.MarkProposed(block.BlockNumber, block.BlockHash.Hex(), txHashes)
 	}
 
 	consensus := Sequencer.NewConsensus(peerList, s.host)

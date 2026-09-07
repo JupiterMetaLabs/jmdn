@@ -697,7 +697,7 @@ func processZKBlock(c *gin.Context) {
 		for i := range block.Transactions {
 			txHashes = append(txHashes, block.Transactions[i].Hash.Hex())
 		}
-		lifecycle.MarkProposed(block.BlockNumber, txHashes)
+		lifecycle.MarkProposed(block.BlockNumber, block.BlockHash.Hex(), txHashes)
 	}
 
 	consensus := Sequencer.NewConsensus(peerList, globalHost)
