@@ -121,10 +121,27 @@ func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
 	// exactly what let it adopt peer proofs immediately rather than after a
 	// full epoch.
 	if !defaultMixStore.remember(closedEpoch, seed) {
+		// The retained mix wins — remember refuses to replace it — and it is
+		// what Pipeline.Accept will verify EVERY peer proof for the next epoch
+		// against. So it must also be what this node seals from. Handing the
+		// rejected value to the sealing hook would publish entropy derived
+		// from a mix nothing verifies against: this node would reject every
+		// honest proof for the next epoch, and the fleet would reject its own.
+		// Seal from the retained mix so sealing and verification agree.
+		retained, ok := defaultMixStore.get(closedEpoch)
+		if !ok {
+			// Only reachable if the epoch aged out of retention between the
+			// two calls. Nothing consistent left to seal from: fail closed.
+			log.Error().Uint64("closed_epoch", closedEpoch).
+				Msg("entropy: epoch finalised a SECOND time with a DIFFERENT mix and the retained " +
+					"value is already gone — refusing to seal. Investigate the double finalisation")
+			return
+		}
 		log.Error().Uint64("closed_epoch", closedEpoch).
 			Msg("entropy: epoch finalised a SECOND time with a DIFFERENT mix — refusing to replace the " +
-				"retained value. Proof verification for the next epoch will use the first mix; " +
-				"investigate the double finalisation")
+				"retained value, and sealing from the RETAINED mix rather than this one so that " +
+				"sealing and proof verification agree; investigate the double finalisation")
+		seed = retained
 	}
 
 	epochFinalisedHookMu.Lock()
@@ -291,16 +308,36 @@ var (
 // epoch would mean folding signers from slots the cutoff or the deadline has
 // already ruled out — precisely what both boundaries exist to prevent.
 func maybeFinaliseCompletedEpochs(block *config.ZKBlock) {
-	finaliseTrackMu.Lock()
-	toDecide := epochsWithClosedRevealWindow(block.Slot, lastDecidedEpoch, haveDecidedAny)
-	finaliseTrackMu.Unlock()
-
-	for _, e := range toDecide {
-		decideEpoch(e, block)
+	// Each epoch is CLAIMED under the lock before it is decided. The previous
+	// shape read the watermark, released the lock, decided, then advanced — so
+	// two concurrent commit hooks (broadcast.go's ProcessBlockLocally and
+	// blockPropagation.go's receive path, which are NOT serialised against
+	// each other: the block-apply lock is keyed per block hash, see
+	// BlockProcessing/Processing.go) could both read the same stale watermark
+	// and both finalise the same epoch. notifyEpochFinalised detects that as a
+	// mix conflict, but detection is not prevention.
+	//
+	// The lock cannot simply be held across decideEpoch: decideEpoch takes
+	// finaliseTrackMu itself for pendingFallback, and Go mutexes are not
+	// reentrant. Claiming before releasing is what closes the window.
+	//
+	// Termination: epochsWithClosedRevealWindow returns epochs ascending from
+	// lastDecidedEpoch+1, so advancing the watermark removes the claimed epoch
+	// from the next call's result. block.Slot is fixed, so the upper bound is
+	// fixed too.
+	for {
 		finaliseTrackMu.Lock()
+		toDecide := epochsWithClosedRevealWindow(block.Slot, lastDecidedEpoch, haveDecidedAny)
+		if len(toDecide) == 0 {
+			finaliseTrackMu.Unlock()
+			break
+		}
+		e := toDecide[0]
 		lastDecidedEpoch = e
 		haveDecidedAny = true
 		finaliseTrackMu.Unlock()
+
+		decideEpoch(e, block)
 	}
 
 	resolvePendingFallbacks(block)
