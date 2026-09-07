@@ -144,7 +144,10 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// VDF proof attachment (VDF-Implementation-Handoff.md §6) — only on the
 	// epoch-boundary block. Off-boundary blocks leave VdfProof/SeedEpoch at
 	// zero (see the header comment above); this is not an error.
-	if block.Slot == messaging.EpochBoundarySlot(epoch) {
+	// Bootstrap epochs (consensus.entropy_bootstrap, Sequencer/beacon_bootstrap.go)
+	// have config-pinned entropy and no sealer, hence no proof: their boundary
+	// block deliberately leaves VdfProof/SeedEpoch at zero on every node.
+	if block.Slot == messaging.EpochBoundarySlot(epoch) && !Sequencer.IsBootstrapEpoch(epoch) {
 		result, ok := Sequencer.SealerResultFor(epoch)
 		if !ok {
 			return fmt.Errorf("attachAVCConsensusFields: %w: epoch %d, block %d",
