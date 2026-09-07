@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -15,7 +16,6 @@ import (
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
-	"gossipnode/crdt"
 	"gossipnode/seednode"
 
 	avcdatalayer "github.com/JupiterMetaLabs/avc/buddynodes/datalayer"
@@ -840,5 +840,6 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 		}
 		merged++
 	}
+
 	return merged, nil
 }
