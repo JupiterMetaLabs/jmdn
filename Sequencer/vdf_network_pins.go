@@ -6,6 +6,8 @@ import (
 	"math/big"
 
 	"github.com/JupiterMetaLabs/avc/vdf"
+
+	"gossipnode/config/settings"
 )
 
 // Network-owned VDF modulus pins.
@@ -46,6 +48,100 @@ var networkVDFPins = map[string]vdf.ProvenanceRecord{
 	},
 }
 
+// networkPinPolicy declares what a network pin is allowed to be used for.
+//
+// EVERY entry in networkVDFPins must have one. A pin with no policy is refused
+// at install (enforceNetworkPinChainPolicy), so forgetting to declare one fails
+// CLOSED — the alternative, treating "undeclared" as "unrestricted", is how a
+// devnet modulus reaches mainnet.
+type networkPinPolicy struct {
+	// TrapdoorKnown records that the modulus's factorisation was known to
+	// whoever generated it.
+	//
+	// This is not a quality judgement, it is a capability statement: knowing
+	// p and q gives phi(N), and phi(N) turns the VDF's T sequential squarings
+	// into a single modular exponentiation. The delay simply does not exist
+	// for that party. They can compute an epoch's entropy before the reveal
+	// window closes, see which committee it seats, and withhold or re-grind
+	// their own reveal until the draw favours them — producing proofs that
+	// verify perfectly, because they ARE valid. Just not slow.
+	TrapdoorKnown bool
+
+	// AllowedChainIDs restricts the pin to specific networks.
+	//
+	// Required when TrapdoorKnown is set. Empty means unrestricted and is only
+	// legal for a pin nobody holds a trapdoor for.
+	AllowedChainIDs []uint64
+}
+
+// networkPinPolicies is the policy table. Keys must match networkVDFPins
+// exactly; TestEveryNetworkPinHasAPolicy enforces that.
+var networkPinPolicies = map[string]networkPinPolicy{
+	"rsa-2048-testnet-ephemeral": {
+		TrapdoorKnown:   true,
+		AllowedChainIDs: []uint64{8000800}, // jmdt devnet (jmdt-devnet/.env JMDN_CHAIN_ID)
+	},
+}
+
+// currentChainID reports the configured network chain id, and whether it is
+// KNOWN — the second return is the whole point.
+//
+// settings' compiled default Network.ChainID is 8000800, which is also the
+// devnet's chain id. Substituting that default when settings have not loaded
+// would make an unconfigured mainnet node look exactly like the devnet and
+// wave through the one modulus this guard exists to stop. So an unloaded
+// config reports "unknown" and the caller refuses.
+//
+// A var so tests can drive the policy without mutating global settings.
+var currentChainID = func() (uint64, bool) {
+	if !settings.IsLoaded() {
+		return 0, false
+	}
+	return uint64(settings.Get().Network.ChainID), true
+}
+
+// ErrNetworkPinChainNotAllowed reports a network pin used on a chain its policy
+// does not list.
+var ErrNetworkPinChainNotAllowed = errors.New("entropy: this VDF modulus is not permitted on this chain")
+
+// enforceNetworkPinChainPolicy is the D-29 guard: it refuses a trapdoored
+// modulus anywhere its policy does not explicitly allow.
+//
+// Before this existed, the only thing keeping rsa-2048-testnet-ephemeral off
+// mainnet was the sentence "Never ship this group name in a mainnet config" in
+// a comment. Comments do not survive a copied .env; a startup check does.
+func enforceNetworkPinChainPolicy(name string) error {
+	pol, declared := networkPinPolicies[name]
+	if !declared {
+		return fmt.Errorf("%w: network pin %q has no declared policy in "+
+			"Sequencer/vdf_network_pins.go, so its trust assumptions are unknown and it is "+
+			"refused. Declare TrapdoorKnown and AllowedChainIDs for it",
+			ErrNetworkPinChainNotAllowed, name)
+	}
+	if !pol.TrapdoorKnown && len(pol.AllowedChainIDs) == 0 {
+		return nil // no trapdoor holder, no chain restriction
+	}
+
+	chainID, known := currentChainID()
+	if !known {
+		return fmt.Errorf("%w: %q requires a known chain id and settings are not loaded. "+
+			"This node refuses rather than assuming a default — the compiled default chain id "+
+			"is the devnet's, so assuming it would silently permit this modulus on any network",
+			ErrNetworkPinChainNotAllowed, name)
+	}
+	for _, allowed := range pol.AllowedChainIDs {
+		if chainID == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %q is pinned for chain(s) %v but this node is on chain %d. "+
+		"TrapdoorKnown=%t — whoever generated this modulus knows its factorisation and can "+
+		"evaluate the VDF instantly, which lets them grind committee selection every epoch "+
+		"while producing proofs that verify. Use a sourced modulus (rsa-2048-frc) or a class "+
+		"group on this network",
+		ErrNetworkPinChainNotAllowed, name, pol.AllowedChainIDs, chainID, pol.TrapdoorKnown)
+}
+
 // ErrNetworkPinMismatch reports a modulus supplied under a network-pinned name
 // whose digest is not the pinned one.
 var ErrNetworkPinMismatch = errors.New("entropy: modulus does not match the digest pinned for this group name in jmdn's network pins")
@@ -60,6 +156,12 @@ func lookupNetworkPin(name string) (vdf.ProvenanceRecord, bool) {
 // distribution. Same three fail-closed checks as vdf.NewPinnedRSAGroup, in the
 // same order: mathematical validity, published shape, pinned digest.
 func newNetworkPinnedRSAGroup(n *big.Int, name string) (vdf.Group, error) {
+	// D-29 chain policy FIRST. A modulus barred on this network should be
+	// refused for that reason, not for a digest mismatch discovered later —
+	// the operator needs to be told the actual problem.
+	if err := enforceNetworkPinChainPolicy(name); err != nil {
+		return nil, err
+	}
 	rec, ok := lookupNetworkPin(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q has no jmdn network pin either", vdf.ErrUnknownProvenance, name)
