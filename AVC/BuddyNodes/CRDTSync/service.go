@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
+	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
-	"gossipnode/crdt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"

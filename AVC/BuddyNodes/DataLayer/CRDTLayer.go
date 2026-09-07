@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/crdt"
 	log "gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/ion"
