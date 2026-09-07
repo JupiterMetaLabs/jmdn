@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -601,8 +602,18 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 
 			voteValue, ok := voteValueRaw.(float64)
 			if !ok {
+				// fmt.Sprintf("%v"), not voteValueRaw.(string): this branch
+				// runs precisely BECAUSE the value is not the expected type,
+				// so asserting a second concrete type here is unsound. It
+				// panicked on JSON null, bool, object and array -- every shape
+				// that is neither float64 nor string. The element is
+				// peer-supplied via the CRDT, so one node gossiping a
+				// malformed vote crashed every legacy-path node that read it,
+				// and the legacy path is the CODE DEFAULT
+				// (JMDN_VOTE_CRDT_V2 unset).
 				logger().Error(logger_ctx, "Invalid vote value type", nil,
-					ion.String("vote_value_raw", voteValueRaw.(string)),
+					ion.String("vote_value_raw", fmt.Sprintf("%+q", fmt.Sprintf("%v", voteValueRaw))),
+					ion.String("vote_value_go_type", fmt.Sprintf("%T", voteValueRaw)),
 					ion.String("function", "Structs.ProcessVotesFromCRDT"))
 				continue
 			}
