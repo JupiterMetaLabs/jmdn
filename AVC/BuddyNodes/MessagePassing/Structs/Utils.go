@@ -239,6 +239,20 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 	}
+	// Surface how much of this decision rests on unauthenticated input. avc
+	// exports UnsignedValidatorVotes for exactly this and nothing else, and
+	// until now jmdn read it nowhere — so the seam's whole risk acceptance
+	// ("you can see it") was not actually met on this path. Warn, not Error:
+	// with AllowUnsignedValidatorVotes deliberately on this is expected, but
+	// unauthenticated weight must never be silent. Always 0 with the flag off
+	// (the default), so this line cannot fire in the default posture.
+	if verified.UnsignedValidatorVotes > 0 {
+		logger().Warn(logger_ctx, "Counted votes admitted through the UNSIGNED validator seam (no BLS key gate)",
+			ion.Int("unsigned_votes", verified.UnsignedValidatorVotes),
+			ion.Int("total_counted_peers", len(verified.AuthorizedVotesByPeer)),
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
 	tally = verified
 
 	// Equivocation reporting (reputation side-effect) is an A4 concern,
@@ -340,14 +354,35 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 // member's peer ID could manufacture a false equivocation charge against
 // them once ApplyEquivocationPolicy runs. "Only verify votes you are
 // counting" (the LLD's own CPU-DoS caution) still holds: this only ever
-// verifies what TallyBlock already authenticated against the committee
-// snapshot, bounded by the same maxElementsPerPeerPerBlock ingest cap
-// AddVote enforces — never every element ever written.
+// verifies pairs TallyBlock already ADMITTED, bounded by the same
+// maxElementsPerPeerPerBlock ingest cap AddVote enforces — never every
+// element ever written.
+//
+// "Admitted", not "authenticated against the committee snapshot": that
+// stronger claim is only true with avcvotes.AllowUnsignedValidatorVotes off,
+// which is the default. With the seam on, TallyBlock admits records carrying
+// neither signature nor key WITHOUT the key-match gate, and this function
+// deliberately does not re-derive that policy (see tallySigTask.unsigned) —
+// such a task is auto-passed rather than verified. So a pair present in the
+// returned tally is "admitted by TallyBlock and, if it had a signature, that
+// signature verified". UnsignedValidatorVotes below is what says how many
+// took the weaker path.
 //
 // AuthorizedVotesByPeer[peerID][i] and Signatures[peerID][i] are written in
 // lockstep by TallyBlock (same append, same loop iteration), so indexing
 // both by i is safe by construction, not by convention.
 func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash, consensusHash string) (verified avcvotes.BlockTally, dropped int) {
+	// UnsignedValidatorVotes is deliberately NOT copied from tally here: it is
+	// recomputed in the reduction loop below from the pairs that actually
+	// survived, so the counter always describes THIS tally rather than the one
+	// upstream. Do not "fix" this by adding it to the literal — a copy would
+	// overstate the moment any unsigned pair is dropped (the i >= len(recs)
+	// guard below can drop one), and an overstated count is worse than none:
+	// it reports unauthenticated weight that is not actually being counted.
+	//
+	// Every other counter IS copied, because those describe work TallyBlock
+	// did upstream (elements it skipped or found malformed) and this function
+	// neither repeats nor changes it.
 	verified = avcvotes.BlockTally{
 		AuthorizedVotesByPeer: make(map[string][]int8, len(tally.AuthorizedVotesByPeer)),
 		Signatures:            make(map[string][]avcvotes.VoteRecord, len(tally.Signatures)),
@@ -404,6 +439,15 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 		}
 		verified.AuthorizedVotesByPeer[task.peerID] = append(verified.AuthorizedVotesByPeer[task.peerID], task.vote)
 		verified.Signatures[task.peerID] = append(verified.Signatures[task.peerID], task.rec)
+		if task.unsigned {
+			// Counted here, alongside the append that admits the pair, so the
+			// counter and the map can never disagree about how much of this
+			// tally skipped the key-match gate. avc exports this field purely
+			// so that weight is visible to an operator instead of silent; a
+			// derived tally that drops it makes the seam invisible downstream
+			// and "== 0" stops meaning "all key-authorized".
+			verified.UnsignedValidatorVotes++
+		}
 	}
 
 	return verified, dropped
