@@ -57,8 +57,20 @@ const maxRecoveryScanBlocks = 512
 // RecoverAggSigStoreAtStartup replays committed blocks whose parent slots fall
 // inside the active fallback collection window, rebuilding defaultAggSigStore.
 //
-// currentSlot is this node's recovered slot — call AFTER
-// RecoverSlotStoreAtStartup, which is what makes that value trustworthy.
+// ORDERING, BOTH HALVES MANDATORY (D-37):
+//
+//  1. AFTER RecoverSlotStoreAtStartup — that is what makes currentSlot
+//     trustworthy.
+//  2. AFTER SetCommitteeEligibilitySource / Sequencer.WireCommitteeSources.
+//     The replay resolves the eligible pool per block, so with no source wired
+//     EVERY block fails verification and this returns 0 having recorded
+//     nothing. That is how this function shipped: called ~400 lines too early
+//     in main(), it was a guaranteed no-op that reported success, logging up to
+//     maxRecoveryScanBlocks "parent certificate failed verification" errors
+//     that read as tampering. The guard below now refuses instead, because a
+//     zero that means "not wired" must never again be indistinguishable from a
+//     zero that means "window just opened".
+//
 // tipHeight is the local committed tip.
 //
 // Returns the number of window slots recorded. A partial recovery is NOT an
@@ -75,9 +87,26 @@ func RecoverAggSigStoreAtStartup(currentSlot, tipHeight uint64, getBlock BlockBy
 	if getBlock == nil {
 		return 0, errors.New("fallback recovery: nil block loader")
 	}
+
 	if tipHeight == 0 {
-		// Genesis or unsynced — nothing committed to replay.
+		// Genesis or unsynced — nothing committed to replay. Checked BEFORE the
+		// eligibility probe below: with no blocks there is nothing the source
+		// could have been needed for, so demanding it here would make a clean
+		// genesis no-op depend on unrelated wiring.
 		return 0, nil
+	}
+
+	// D-37 guard. Probe the eligibility source ONCE, up front, and refuse if it
+	// is not wired — rather than rediscovering it on every one of up to
+	// maxRecoveryScanBlocks blocks and then reporting a clean zero. This is the
+	// check whose absence made the original defect invisible: it costs one
+	// resolution and it makes the ordering precondition self-enforcing instead
+	// of a comment nobody could act on.
+	if _, perr := eligibleMembersUncappedForEpoch(EpochForSlot(currentSlot), false); perr != nil {
+		return 0, fmt.Errorf("fallback recovery: committee eligibility source is not usable, so every "+
+			"replayed certificate would fail verification and this rebuild would silently recover "+
+			"nothing — call SetCommitteeEligibilitySource / Sequencer.WireCommitteeSources BEFORE "+
+			"RecoverAggSigStoreAtStartup: %w", perr)
 	}
 
 	epoch := EpochForSlot(currentSlot)

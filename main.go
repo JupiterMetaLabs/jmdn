@@ -1495,34 +1495,13 @@ func main() {
 		} else {
 			fmt.Println("✅ slot/epoch clock recovered from local committed history")
 
-			// Fallback aggregate store — rebuild from persisted certificates.
-			//
-			// MUST run AFTER slot recovery: it needs this node's recovered
-			// slot to compute which collection window is active. Also before
-			// node.NewNode() for the same reason slot recovery is, so no live
-			// commit hook can race a half-rebuilt store.
-			//
-			// defaultAggSigStore is in-memory only; without this a node that
-			// restarted mid-window came back with an EMPTY store and failed
-			// the fold closed for that epoch while its peers resolved it —
-			// two honest nodes, different entropy. The certificates were
-			// always durable (extra_data["prev_agg_cert"]); only the replay
-			// was missing.
-			//
-			// Non-fatal: a partial rebuild just means the fold fails closed,
-			// which is already the designed outcome for a short window.
-			if tip, terr := slotStoreRecoveryGetTip(); terr == nil && tip != nil {
-				recovered, rerr := messaging.RecoverAggSigStoreAtStartup(
-					tip.Slot, tip.BlockNumber,
-					func(height uint64) (*config.ZKBlock, error) {
-						return DB_OPs.GetZKBlockByNumber(nil, height)
-					})
-				if rerr != nil {
-					log.Error().Err(rerr).Msg("fallback recovery: rebuilding the aggregate store failed — a fallback epoch may fail closed on this node until enough in-window blocks commit")
-				} else if recovered > 0 {
-					fmt.Printf("✅ fallback aggregate store rebuilt (%d window slot(s)) from persisted certificates\n", recovered)
-				}
-			}
+			// NOTE (D-37): the fallback aggregate-store rebuild used to run HERE
+			// and was a guaranteed no-op. It needs the committee-eligibility
+			// source, which is not wired until after node.NewNode() below, so
+			// every block it replayed failed verification and it always
+			// returned 0 — while logging up to 512 "parent certificate failed
+			// verification" errors that look like tampering. It now runs after
+			// that wiring; search for RecoverAggSigStoreAtStartup.
 		}
 	} else {
 		// No ThebeDB means no ExtraData persistence (DB_OPs/backend/block.go's
@@ -1910,6 +1889,54 @@ func main() {
 			log.Warn().
 				Bool("reward_split_enabled", cfg.Consensus.RewardSplitEnabled).
 				Msg("[Committee] sequencer has no pinned consensus.seed_authority_bls_pub (or no network.seednode) — reward-address source stays UNSET; with reward_split_enabled on, every block fails closed at attachAVCConsensusFields")
+		}
+	}
+
+	// ── Fallback aggregate store — rebuild from persisted certificates ────────
+	//
+	// PLACED HERE, NOT WITH SLOT RECOVERY (D-37). It used to sit next to slot
+	// recovery, ~400 lines above, which reads naturally — both are "restore
+	// in-memory state from committed history" — and was a guaranteed no-op.
+	// The replay calls VerifyAndRecordPrevCert, which resolves the eligible
+	// pool via committeeSnapshotFor -> eligibleMembersUncappedForEpoch, and
+	// that returns "committee eligibility source not configured (fail closed)"
+	// until SetCommitteeEligibilitySource / WireCommitteeSources have run —
+	// both of which need n.Host and therefore cannot run before
+	// node.NewNode(). So every replayed block failed, `recovered` was always 0,
+	// and neither call-site branch printed anything, while up to
+	// maxRecoveryScanBlocks "parent certificate failed verification" errors
+	// were logged, which reads as tampering rather than a wiring bug.
+	//
+	// The old position's stated reason — "before node.NewNode() so no live
+	// commit hook can race a half-rebuilt store" — does not survive contact
+	// with what the race actually costs. defaultAggSigStore is mutex-guarded,
+	// so there is no data race; the worst case is a fold running against a
+	// partially-rebuilt window, which fails CLOSED, which is the designed
+	// outcome for a short window anyway. A small, safe, fail-closed race beats
+	// a rebuild that provably never recovers anything.
+	//
+	// Same placement argument as the checkpoint block below: this needs the
+	// committee-eligibility source wired above.
+	//
+	// Thebe gate: without ThebeDB there is no ExtraData persistence, so there
+	// are no durable certificates to replay.
+	if cfg.Thebe.Enabled {
+		if tip, terr := slotStoreRecoveryGetTip(); terr == nil && tip != nil {
+			recovered, rerr := messaging.RecoverAggSigStoreAtStartup(
+				tip.Slot, tip.BlockNumber,
+				func(height uint64) (*config.ZKBlock, error) {
+					return DB_OPs.GetZKBlockByNumber(nil, height)
+				})
+			switch {
+			case rerr != nil:
+				log.Error().Err(rerr).Msg("fallback recovery: rebuilding the aggregate store failed — a fallback epoch may fail closed on this node until enough in-window blocks commit")
+			case recovered > 0:
+				fmt.Printf("✅ fallback aggregate store rebuilt (%d window slot(s)) from persisted certificates\n", recovered)
+			default:
+				// Explicit: D-37 was invisible precisely because zero was
+				// indistinguishable from "not run". Never let that recur.
+				log.Info().Msg("fallback recovery: no in-window certificates were replayed (expected when the collection window has only just opened, or when JMDN_AVC_AGG_CERT is off)")
+			}
 		}
 	}
 
