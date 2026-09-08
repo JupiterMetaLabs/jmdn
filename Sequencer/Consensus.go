@@ -17,6 +17,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	MessagePassingStructs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
+	"gossipnode/explorer/lifecycle"
 	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/common"
@@ -1460,6 +1461,16 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 	)
 
 	logger().Info(trace_ctx, "Vote summary", ion.Int("yes_votes", yesVotes), ion.Int("no_votes", noVotes), ion.Int("total_votes", len(votes)))
+
+	// Explorer lifecycle: EXECUTING (voting) — surface the live vote tally for this
+	// block's txs. Best-effort, guarded; never affects consensus. "22 nodes voted"
+	// = VotesReceived; yes/no split shown alongside.
+	lifecycle.MarkExecuting(blockHeight, lifecycle.Progress{
+		SubStage:      "voting",
+		VotesReceived: len(votes),
+		YesVotes:      yesVotes,
+		NoVotes:       noVotes,
+	})
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(

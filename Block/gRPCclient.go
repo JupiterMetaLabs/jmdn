@@ -8,6 +8,7 @@ import (
 
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/config"
+	"gossipnode/explorer/lifecycle"
 	"gossipnode/logging"
 	"gossipnode/txstatus"
 
@@ -451,6 +452,9 @@ func recordSubmitAttempt(tx *config.Transaction, txHash string, forwardErr error
 		rec.ForwardErr = forwardErr.Error()
 	}
 	txstatus.RecordSubmit(rec)
+	// Explorer lifecycle: QUEUED — the sequencer has received this tx (pre-proposal).
+	// Best-effort, guarded; never affects the submit path.
+	lifecycle.MarkQueued(rec.Hash)
 }
 
 func ReturnMempoolObject() (*MempoolClient, error) {

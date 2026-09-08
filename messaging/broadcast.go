@@ -16,6 +16,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Vote"
+	"gossipnode/explorer/lifecycle"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
@@ -750,6 +751,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 				ion.Int("valid_yes", res.YesVotes),
 				ion.Int("needed", res.Threshold),
 				ion.Int("committee_size", res.CommitteeSize))
+			// Explorer lifecycle: FAILED — quorum not reached for this block's txs.
+			lifecycle.MarkFailed(block.BlockNumber, "consensus not reached (2f+1)")
 			return fmt.Errorf("consensus not reached for block %s: %d eligible +1 votes, need %d (2f+1 over committee size %d)",
 				block.BlockHash.Hex(), res.YesVotes, res.Threshold, res.CommitteeSize)
 		}
@@ -759,6 +762,15 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.Int("valid_yes", res.YesVotes),
 			ion.Int("needed", res.Threshold),
 			ion.Int("committee_size", res.CommitteeSize))
+
+		// Explorer lifecycle: EXECUTING (validating) — the certificate cleared 2f+1.
+		// "5/7 validated" = YesVotes/CommitteeSize; Threshold is the needed 2f+1.
+		lifecycle.MarkExecuting(block.BlockNumber, lifecycle.Progress{
+			SubStage:      "validating",
+			YesVotes:      res.YesVotes,
+			CommitteeSize: res.CommitteeSize,
+			Threshold:     res.Threshold,
+		})
 
 	} else {
 		// BLS results are required to ensure consensus was reached
@@ -777,6 +789,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, nil); err != nil {
 		broadcastLogger().Error(context.Background(), "Block transaction processing failed - not storing block", err,
 			ion.String("block_hash", block.BlockHash.Hex()))
+		// Explorer lifecycle: FAILED — applied consensus but tx processing failed.
+		lifecycle.MarkFailed(block.BlockNumber, "block transaction processing failed")
 		return fmt.Errorf("failed to process block transactions: %w", err)
 	}
 
@@ -802,6 +816,11 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.Uint64("block_number", block.BlockNumber))
 		return fmt.Errorf("failed to store block in database: %w", err)
 	}
+
+	// Explorer lifecycle: SUCCESS — block stored + applied. The status endpoint's
+	// chain-first check would report this anyway; the explicit mark makes the SSE
+	// transition immediate rather than waiting for the next poll.
+	lifecycle.MarkCommitted(block.BlockNumber)
 
 	// Full block stored + processed → advance the tip marker.
 	// Monotonic: a replayed/out-of-order block can never regress it.

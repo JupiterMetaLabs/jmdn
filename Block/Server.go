@@ -16,6 +16,7 @@ import (
 
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/explorer/lifecycle"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -689,6 +690,16 @@ func processZKBlock(c *gin.Context) {
 		MainPeers:   []peer.ID{},
 		BackupPeers: []peer.ID{},
 	}
+	// Explorer lifecycle: PENDING — this block (and its txs) has been proposed and
+	// is about to enter consensus. Best-effort, guarded; never affects consensus.
+	{
+		txHashes := make([]string, 0, len(block.Transactions))
+		for i := range block.Transactions {
+			txHashes = append(txHashes, block.Transactions[i].Hash.Hex())
+		}
+		lifecycle.MarkProposed(block.BlockNumber, block.BlockHash.Hex(), txHashes)
+	}
+
 	consensus := Sequencer.NewConsensus(peerList, globalHost)
 
 	consensusStartTime := time.Now().UTC()
