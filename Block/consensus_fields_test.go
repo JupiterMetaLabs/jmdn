@@ -201,6 +201,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing
 
 	want := vdf.Proof{Y: big.NewInt(7), Pi: big.NewInt(11), T: 1234, Group: "test-group"}
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Proof: want})
+	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
 	block := &config.ZKBlock{BlockNumber: 1}
 	if err := attachAVCConsensusFields(block); err != nil {
@@ -254,6 +255,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *
 
 	sealErr := errors.New("simulated VDF evaluation failure")
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Err: sealErr})
+	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
 	block := &config.ZKBlock{BlockNumber: 1}
 	err := attachAVCConsensusFields(block)

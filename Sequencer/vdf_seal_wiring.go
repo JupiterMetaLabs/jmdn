@@ -126,6 +126,39 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 	return s
 }
 
+// CancelSealer stops forEpoch's in-flight VDF evaluation, if one is running.
+//
+// Called when this node adopts a peer's proof for forEpoch: the evaluation is
+// then redundant, and on a T calibrated to minutes the remaining sequential
+// work is the single largest avoidable CPU cost in the entropy path.
+//
+// Safe and idempotent when no sealer exists, when it has already finished, and
+// when called repeatedly (a duplicate proof for the same epoch arrives often —
+// once per peer that gossips the boundary block).
+//
+// The sealer entry is deliberately NOT removed from vdfSealers: a cancelled
+// epoch must keep reporting "not ready" through SealerResultFor rather than
+// silently restarting, and sealerFor's per-epoch keying is what prevents a
+// second evaluation being launched for an epoch already decided.
+func CancelSealer(forEpoch uint64) {
+	vdfSealersMu.Lock()
+	s, ok := vdfSealers[forEpoch]
+	vdfSealersMu.Unlock()
+	if !ok {
+		return
+	}
+	s.Cancel()
+}
+
+// SealerCancelledForTest reports whether forEpoch's sealer was cancelled.
+// Test-only.
+func SealerCancelledForTest(forEpoch uint64) bool {
+	vdfSealersMu.Lock()
+	s, ok := vdfSealers[forEpoch]
+	vdfSealersMu.Unlock()
+	return ok && s.Cancelled()
+}
+
 // SealerResultFor returns forEpoch's sealing result, if a sealer was started
 // for it and has finished. This is the read side of the
 // VDF-Implementation-Handoff.md §5/§6 pattern. WIRED: Block/consensus_fields.go
@@ -150,6 +183,20 @@ func SealerResultFor(forEpoch uint64) (SealResult, bool) {
 // result for that epoch, and SealerResultFor already returns
 // (SealResult{}, false) for any epoch with no registered sealer. Overwrites
 // any sealer already registered for forEpoch.
+// ClearSealerForTest removes forEpoch's registered sealer. Test-only.
+//
+// Needed because vdfSealers is package-level state and SeedSealResultForTest
+// writes into it. Until Result was made idempotent (2026-09-03) the drain
+// itself acted as accidental cleanup: a seeded result was consumed by the
+// first read, so it could not leak into a later test that expected
+// "not ready". With the latch that accident is gone, and tests must clean up
+// explicitly — which they should always have done.
+func ClearSealerForTest(forEpoch uint64) {
+	vdfSealersMu.Lock()
+	delete(vdfSealers, forEpoch)
+	vdfSealersMu.Unlock()
+}
+
 func SeedSealResultForTest(forEpoch uint64, result SealResult) {
 	s := &VDFSealer{resultCh: make(chan SealResult, 1)}
 	s.resultCh <- result

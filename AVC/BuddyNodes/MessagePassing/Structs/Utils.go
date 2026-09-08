@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -237,6 +239,20 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 	}
+	// Surface how much of this decision rests on unauthenticated input. avc
+	// exports UnsignedValidatorVotes for exactly this and nothing else, and
+	// until now jmdn read it nowhere — so the seam's whole risk acceptance
+	// ("you can see it") was not actually met on this path. Warn, not Error:
+	// with AllowUnsignedValidatorVotes deliberately on this is expected, but
+	// unauthenticated weight must never be silent. Always 0 with the flag off
+	// (the default), so this line cannot fire in the default posture.
+	if verified.UnsignedValidatorVotes > 0 {
+		logger().Warn(logger_ctx, "Counted votes admitted through the UNSIGNED validator seam (no BLS key gate)",
+			ion.Int("unsigned_votes", verified.UnsignedValidatorVotes),
+			ion.Int("total_counted_peers", len(verified.AuthorizedVotesByPeer)),
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
 	tally = verified
 
 	// Equivocation reporting (reputation side-effect) is an A4 concern,
@@ -338,14 +354,35 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 // member's peer ID could manufacture a false equivocation charge against
 // them once ApplyEquivocationPolicy runs. "Only verify votes you are
 // counting" (the LLD's own CPU-DoS caution) still holds: this only ever
-// verifies what TallyBlock already authenticated against the committee
-// snapshot, bounded by the same maxElementsPerPeerPerBlock ingest cap
-// AddVote enforces — never every element ever written.
+// verifies pairs TallyBlock already ADMITTED, bounded by the same
+// maxElementsPerPeerPerBlock ingest cap AddVote enforces — never every
+// element ever written.
+//
+// "Admitted", not "authenticated against the committee snapshot": that
+// stronger claim is only true with avcvotes.AllowUnsignedValidatorVotes off,
+// which is the default. With the seam on, TallyBlock admits records carrying
+// neither signature nor key WITHOUT the key-match gate, and this function
+// deliberately does not re-derive that policy (see tallySigTask.unsigned) —
+// such a task is auto-passed rather than verified. So a pair present in the
+// returned tally is "admitted by TallyBlock and, if it had a signature, that
+// signature verified". UnsignedValidatorVotes below is what says how many
+// took the weaker path.
 //
 // AuthorizedVotesByPeer[peerID][i] and Signatures[peerID][i] are written in
 // lockstep by TallyBlock (same append, same loop iteration), so indexing
 // both by i is safe by construction, not by convention.
 func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, blockHash, consensusHash string) (verified avcvotes.BlockTally, dropped int) {
+	// UnsignedValidatorVotes is deliberately NOT copied from tally here: it is
+	// recomputed in the reduction loop below from the pairs that actually
+	// survived, so the counter always describes THIS tally rather than the one
+	// upstream. Do not "fix" this by adding it to the literal — a copy would
+	// overstate the moment any unsigned pair is dropped (the i >= len(recs)
+	// guard below can drop one), and an overstated count is worse than none:
+	// it reports unauthenticated weight that is not actually being counted.
+	//
+	// Every other counter IS copied, because those describe work TallyBlock
+	// did upstream (elements it skipped or found malformed) and this function
+	// neither repeats nor changes it.
 	verified = avcvotes.BlockTally{
 		AuthorizedVotesByPeer: make(map[string][]int8, len(tally.AuthorizedVotesByPeer)),
 		Signatures:            make(map[string][]avcvotes.VoteRecord, len(tally.Signatures)),
@@ -354,6 +391,15 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 		MalformedSignatures:   tally.MalformedSignatures,
 	}
 
+	// Flatten every (peerID, value, record) pair into an independent task
+	// list first. Each pair's outcome depends ONLY on its own inputs to
+	// BLS_Verifier.VerifyForBlock (chainID/height/blockHash/vote/pubkey/sig
+	// are all copied into the task, nothing is shared with any other pair),
+	// so verifying them concurrently changes nothing about WHAT is checked
+	// — only the order/timing of when each check runs. The i>=len(recs)
+	// mismatch case is not a crypto op, so it is still counted inline here,
+	// exactly as before.
+	tasks := make([]tallySigTask, 0, len(tally.Signatures))
 	for peerID, values := range tally.AuthorizedVotesByPeer {
 		recs := tally.Signatures[peerID]
 		for i, v := range values {
@@ -365,18 +411,133 @@ func verifyTallySignatures(tally avcvotes.BlockTally, chainID, height uint64, bl
 				dropped++
 				continue
 			}
-			rec := recs[i]
-			resp := BLS_Signer.BLSresponse{PeerID: peerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
-			if err := BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, consensusHash, v); err != nil {
-				dropped++
-				continue
-			}
-			verified.AuthorizedVotesByPeer[peerID] = append(verified.AuthorizedVotesByPeer[peerID], v)
-			verified.Signatures[peerID] = append(verified.Signatures[peerID], rec)
+			tasks = append(tasks, tallySigTask{
+				peerID: peerID,
+				vote:   v,
+				rec:    recs[i],
+				// Evaluated here, once, on the single-threaded task-building
+				// pass — not inside a worker — so the flag is read at a
+				// deterministic point and every worker sees a fixed decision.
+				unsigned: avcvotes.AllowUnsignedValidatorVotes && avcvotes.IsUnsignedValidatorVote(recs[i]),
+			})
+		}
+	}
+
+	verifiedOK := verifyTallySigTasksConcurrently(tasks, chainID, height, blockHash, consensusHash)
+
+	// Reduction is single-threaded and runs strictly after every worker has
+	// returned (verifyTallySigTasksConcurrently blocks on its WaitGroup) —
+	// tally.AuthorizedVotesByPeer / tally.Signatures are never written to
+	// from more than one goroutine, and are built here in a fixed order
+	// (task list order, not goroutine completion order), so the resulting
+	// maps' CONTENT is identical every run for identical input regardless
+	// of how the scheduler interleaves the workers.
+	for i, task := range tasks {
+		if !verifiedOK[i] {
+			dropped++
+			continue
+		}
+		verified.AuthorizedVotesByPeer[task.peerID] = append(verified.AuthorizedVotesByPeer[task.peerID], task.vote)
+		verified.Signatures[task.peerID] = append(verified.Signatures[task.peerID], task.rec)
+		if task.unsigned {
+			// Counted here, alongside the append that admits the pair, so the
+			// counter and the map can never disagree about how much of this
+			// tally skipped the key-match gate. avc exports this field purely
+			// so that weight is visible to an operator instead of silent; a
+			// derived tally that drops it makes the seam invisible downstream
+			// and "== 0" stops meaning "all key-authorized".
+			verified.UnsignedValidatorVotes++
 		}
 	}
 
 	return verified, dropped
+}
+
+// tallySigTask is one independently-verifiable (peer, vote, record) pair —
+// the unit of work verifyTallySigTasksConcurrently distributes across its
+// bounded worker pool.
+type tallySigTask struct {
+	peerID string
+	vote   int8
+	rec    avcvotes.VoteRecord
+
+	// unsigned marks a task admitted through the unsigned normal-validator
+	// seam (avcvotes.AllowUnsignedValidatorVotes, default off): there is no
+	// signature to verify, so the worker must not call VerifyForBlock with an
+	// empty signature and count the inevitable failure as a dropped forgery.
+	// Always false with the flag off, which keeps the pre-seam behavior
+	// (unsigned records reach the verifier, fail, and are dropped) intact.
+	unsigned bool
+}
+
+// verifyTallySignaturesWorkers bounds the worker pool used by
+// verifyTallySigTasksConcurrently. BLS verification (BLS_Verifier.VerifyForBlock)
+// is pure CPU-bound work with no I/O to overlap, so GOMAXPROCS is the natural
+// default — more workers than cores cannot do more work per wall-clock
+// second, only add scheduling overhead. Var (not const) so tests and
+// benchmarks can override it to measure different worker counts, per the
+// requirement to actually measure rather than assume a speedup.
+var verifyTallySignaturesWorkers = runtime.GOMAXPROCS(0)
+
+// verifyTallySigTasksConcurrently verifies every task's BLS signature on a
+// bounded worker pool and returns, for each task index, whether it verified.
+// The number of workers spawned is min(verifyTallySignaturesWorkers,
+// len(tasks)) — never more goroutines than there is work, and zero
+// goroutines at all for an empty task list — satisfying "bounded" in both
+// directions, not just an upper cap.
+//
+// Race-safety by construction, not by locking: `tasks` is read-only for the
+// whole call (built once, before any goroutine starts) and `results` is
+// written by index, with each index owned by exactly ONE task/goroutine —
+// no two goroutines ever write the same slice element, so no mutex is
+// needed on `results` itself. The only synchronization is the WaitGroup
+// gating the caller's read of `results` until every writer has finished,
+// which is what makes those non-overlapping writes safe to read afterward
+// under the Go memory model. Intended to be verified with `go test -race`.
+func verifyTallySigTasksConcurrently(tasks []tallySigTask, chainID, height uint64, blockHash, consensusHash string) []bool {
+	results := make([]bool, len(tasks))
+	if len(tasks) == 0 {
+		return results
+	}
+
+	workers := verifyTallySignaturesWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+
+	jobs := make(chan int, len(tasks))
+	for i := range tasks {
+		jobs <- i
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				task := tasks[idx]
+				if task.unsigned {
+					// Nothing to verify by design (unsigned normal-validator
+					// vote). Admitted, not "verified" — the authorization
+					// decision for these already happened in TallyBlock's
+					// seam; re-deriving it here would duplicate that policy in
+					// a second place.
+					results[idx] = true
+					continue
+				}
+				resp := BLS_Signer.BLSresponse{PeerID: task.peerID, PubKey: task.rec.BLSPubKeyHex, Signature: task.rec.BLSSignature}
+				results[idx] = BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, consensusHash, task.vote) == nil
+			}
+		}()
+	}
+	wg.Wait()
+
+	return results
 }
 
 // processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical

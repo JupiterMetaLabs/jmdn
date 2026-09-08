@@ -121,6 +121,19 @@ const allowUnpinnedModulusEnv = "JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS"
 // anything, ever. What pinning guarantees is narrower and achievable: that
 // the modulus in use is the exact number the team deliberately chose.
 func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
+	// D-35: VALUE-keyed chain policy, FIRST, on every path.
+	//
+	// This must precede all three construction paths below, and it must key on
+	// the modulus rather than the name. The name-keyed check inside
+	// newNetworkPinnedRSAGroup is only reached when lookupNetworkPin(groupName)
+	// hits, so before this line a restricted modulus supplied under any other
+	// name — rsa-2048-frc, which is a real registry entry with an EMPTY digest —
+	// missed the lookup, skipped the guard, and installed via the unpinned
+	// override on ANY chain. See enforceModulusChainPolicy for the full trace.
+	if err := enforceModulusChainPolicy(n); err != nil {
+		return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", err)
+	}
+
 	group, pinnedErr := vdf.NewPinnedRSAGroup(n, groupName)
 	if pinnedErr == nil {
 		log.Info().Str("group", groupName).
@@ -274,9 +287,25 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		return false, err
 	}
 
+	// Restore entropy this node finalised before its last restart, BEFORE the
+	// sink is published to the rest of the process.
+	//
+	// A failure here is FATAL to installation rather than a warning: the only
+	// way it fails is a conflicting durable value, which means this node once
+	// accepted an entropy value that disagrees with what it holds now. Seating
+	// committees from that is worse than not starting Stage 2.
+	if restored, rerr := messaging.RehydrateBeaconFromDisk(sink); rerr != nil {
+		return false, fmt.Errorf("entropy: refusing to install the AVC beacon — restoring persisted "+
+			"epoch entropy failed after %d epoch(s): %w", restored, rerr)
+	}
+
 	messaging.SetBeaconSource(sink)
 	SetVDFPipeline(pipeline)
 	InstallEpochFinalisedHook()
+	// Receive side. Installed with the pipeline it depends on, so a node can
+	// never end up able to SEAL but not to ADOPT — the asymmetry that made
+	// every non-proposing node pay a full local evaluation.
+	InstallVDFProofAcceptor()
 
 	log.Warn().Str("group", groupName).Uint64("difficulty_t", difficulty).Uint64("retain_epochs", retain).
 		Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) INSTALLED — committee selection now depends on genuine RANDAO+VDF entropy once published; the genesis/bootstrap gap documented in messaging.SelectEntropyCommittee still applies until a first entropy value exists for the network's earliest epoch")

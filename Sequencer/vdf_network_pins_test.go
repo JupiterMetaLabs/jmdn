@@ -17,6 +17,13 @@ func withNetworkPin(t *testing.T, rec vdf.ProvenanceRecord) {
 	}
 	networkVDFPins[rec.Name] = rec
 	t.Cleanup(func() { delete(networkVDFPins, rec.Name) })
+
+	// Every pin needs a policy, or the D-29 chain guard refuses it — which is
+	// the point of that guard, and these tests are about digest/shape handling
+	// rather than chain policy. A test fixture modulus has no trapdoor holder,
+	// so an unrestricted policy is the honest declaration for it.
+	networkPinPolicies[rec.Name] = networkPinPolicy{TrapdoorKnown: false}
+	t.Cleanup(func() { delete(networkPinPolicies, rec.Name) })
 }
 
 // A modulus pinned by jmdn (not by the avc library) installs with NO override:

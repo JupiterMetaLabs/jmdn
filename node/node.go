@@ -226,6 +226,55 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	// be the one asked. Added 2026-08-24; no-op while JMDN_TIMEOUT_CERT_REJOIN
 	// is unset (default OFF) — see messaging/timeout_rejoin.go.
 	h.SetStreamHandler(config.TimeoutCertRejoinProtocol, messaging.HandleTimeoutCertRejoinStream)
+	// Stage-F VDF proof pull — answer "do you have the VDF proof for entropy
+	// epoch E" for a peer that missed the epoch-boundary block, restarted, or
+	// joined late. Registered on EVERY node for the same reason as the two
+	// handlers above: any peer could be the one asked, and a node without the
+	// handler refuses the stream outright.
+	//
+	// Bounded work: one direct KV read of vdf_proof:<epoch>. It never scans the
+	// chain and never starts an evaluation. See messaging/entropy_vdf_pull.go.
+	h.SetStreamHandler(config.VDFProofRequestProtocol, messaging.HandleVDFProofRequestStream)
+
+	// The recovery DISPATCHER. messaging owns the deadline logic but cannot
+	// reach the libp2p host or the peer set, so it hands an epoch here.
+	//
+	// This closure is what keeps proof recovery off the block-processing path:
+	// it launches a goroutine and returns immediately. messaging's
+	// maybeTriggerVDFProofRecovery is called inline during block application,
+	// so anything slower than a map lookup must happen out here.
+	//
+	// Peers are this node's CURRENTLY CONNECTED set. A proof is verified
+	// against our own mix regardless of who supplied it, so peer selection is
+	// a latency question, not a trust one — asking whoever we already have a
+	// connection to avoids a dial for the common case.
+	messaging.SetVDFProofRecoveryDispatcher(func(forEpoch uint64, boundarySlot uint64) {
+		go func() {
+			// Recovery is ADDITIVE. It exists to help a node that fell behind,
+			// and that node's own VDF evaluation continues with or without it.
+			// A panic on a DETACHED goroutine takes the whole process down, so
+			// a bug on this path must never be able to kill a node whose local
+			// sealing was perfectly healthy — that would turn a liveness AID
+			// into a liveness HAZARD. Same guard shape as
+			// Sequencer/RejectionReport/report.go.
+			defer func() {
+				if rec := recover(); rec != nil {
+					if lg := logger(); lg != nil {
+						lg.Error(context.Background(),
+							"vdf recovery: panic during proof pull — recovery abandoned for this epoch, local evaluation unaffected",
+							fmt.Errorf("panic: %v", rec),
+							ion.Uint64("epoch", forEpoch))
+					}
+				}
+			}()
+
+			peers := h.Network().Peers()
+			if len(peers) == 0 {
+				return
+			}
+			messaging.RecoverVDFProofFromPeers(h, peers, forEpoch, boundarySlot)
+		}()
+	})
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	})

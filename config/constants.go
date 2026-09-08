@@ -104,6 +104,19 @@ const (
 	// reason: a node that doesn't speak it fails the connection rather than
 	// silently mis-routing into another handler.
 	TimeoutCertRejoinProtocol protocol.ID = "/p2p/timeout-cert/rejoin/1.0.0"
+
+	// VDFProofRequestProtocol carries the entropy-epoch VDF proof pull: "do you
+	// have the VDF proof for entropy epoch E?".
+	//
+	// Same request-response shape and same rationale as
+	// TimeoutCertRejoinProtocol above — a node that missed the epoch-boundary
+	// block, restarted, or joined late has no other way to obtain a proof,
+	// because the proof only ever travels inside that one block.
+	//
+	// The response carries the PROOF ONLY, never entropy and never a mix: the
+	// requester verifies against its OWN independently held mix, so a lying
+	// responder can waste a round trip and nothing else.
+	VDFProofRequestProtocol protocol.ID = "/p2p/randao/vdf-proof/1.0.0"
 )
 
 const (

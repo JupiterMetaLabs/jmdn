@@ -352,7 +352,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 // allChecksWithConn validates a transaction using provided database connections.
 // This internal function enables connection reuse for batch validation (e.g., ZKBlock).
 // Connection lifecycle is managed by the caller.
-func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, mainDBConn *config.PooledConnection, traceCtx context.Context) (bool, error) {
+func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, _ *config.PooledConnection, traceCtx context.Context) (bool, error) {
 	loggerCtx, cancel := context.WithCancel(traceCtx)
 	defer cancel()
 
@@ -930,15 +930,16 @@ var M2bHashEnabled = envOn("JMDN_M2B_HASH", false)
 // cannot claim a BlockHash that does not correspond to what it actually
 // carries.
 //
-// With M2bHashEnabled off (default), this covers transaction CONTENTS only
-// (Keccak256 over each transaction's content hash), independent of whether
-// the per-transaction tx.Hash fields were pre-verified - unchanged from
-// before M2b existed.
+// ALWAYS transaction CONTENTS only (Keccak256 over each transaction's content
+// hash), independent of whether the per-transaction tx.Hash fields were
+// pre-verified, and independent of M2bHashEnabled.
 //
-// With M2bHashEnabled on, this covers the six AVC consensus fields
-// (Slot/Period/RandaoReveals/VdfProof/SeedEpoch/VotingSnapshotEpoch) plus
-// transaction contents, via RecomputeBlockHashWithConsensusFields - see that
-// function's doc for the exact preimage.
+// This comment previously said M2bHashEnabled switched it to the six-field
+// hash. It does not, and has not since the M2b cutover was abandoned: binding
+// the consensus fields into BlockHash changed block identity and broke every
+// tx-only validator, so that binding moved to its own ConsensusHash field that
+// the v4 vote signs (Block/consensus_fields.go, Security/consensus_fields_hash.go).
+// See the inline comment in the body.
 func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")

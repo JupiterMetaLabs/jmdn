@@ -24,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/rs/zerolog/log"
 )
 
 // TriggerCRDTSyncForBuddyNode triggers CRDT synchronization for a buddy node
@@ -85,7 +86,10 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	// STEP 1: Connect to all buddy nodes before sync starts
 	logger().Info(context.Background(), "🔌 Connecting to buddy nodes for CRDT sync...")
 	if err := connectToBuddyNodesForSync(listenerNode); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to connect to some buddy nodes:", ion.String("args", fmt.Sprintf("⚠️ Failed to connect to some buddy nodes: %v (continuing anyway)", err)))
+		log.Warn().
+			Str("self", listenerNode.PeerID.String()).
+			Err(err).
+			Msg("CRDT sync: failed to connect to some buddy nodes before sync started; continuing anyway")
 	}
 
 	// Note: The CRDT sync channel is created by the sequencer during consensus start
@@ -245,7 +249,11 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	})
 
 	if err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to subscribe to CRDT sync topic:", ion.String("args", fmt.Sprintf("⚠️ Failed to subscribe to CRDT sync topic: %v", err)))
+		log.Error().
+			Str("self", listenerNode.PeerID.String()).
+			Str("topic", topicName).
+			Err(err).
+			Msg("CRDT sync: failed to subscribe to sync topic; sync aborted for this request")
 		return fmt.Errorf("failed to subscribe to sync topic: %w", err)
 	}
 
@@ -271,7 +279,10 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 		syncDataBytes, err := json.Marshal(syncMsg)
 		if err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to marshal sync message:", ion.String("args", fmt.Sprintf("⚠️ Failed to marshal sync message: %v", err)))
+			log.Error().
+				Str("self", listenerNode.PeerID.String()).
+				Err(err).
+				Msg("CRDT sync: failed to marshal local sync message; own state was NOT published this round")
 		} else {
 			if err := Publisher.Publish(logger_ctx, pubSubNode.PubSub, topicName,
 				AVCStruct.NewMessageBuilder(nil).
@@ -280,7 +291,11 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 					SetTimestamp(time.Now().UTC().Unix()).
 					SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
 				nil); err != nil {
-				logger().Info(context.Background(), "⚠️ Failed to publish CRDT sync:", ion.String("args", fmt.Sprintf("⚠️ Failed to publish CRDT sync: %v", err)))
+				log.Error().
+					Str("self", listenerNode.PeerID.String()).
+					Str("topic", topicName).
+					Err(err).
+					Msg("CRDT sync: failed to publish local CRDT state; own state was NOT published this round")
 			} else {
 				logger().Info(context.Background(), "✅ Published CRDT state to pubsub channel")
 			}
@@ -325,7 +340,11 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		case syncMsg := <-syncMessages:
 			// Merge received CRDT data into local CRDT
 			if err := mergeCRDTData(listenerNode, syncMsg); err != nil {
-				logger().Info(context.Background(), "⚠️ Failed to merge CRDT from", ion.String("args", fmt.Sprintf("⚠️ Failed to merge CRDT from %s: %v", syncMsg.NodeID[:8], err)))
+				log.Warn().
+					Str("self", listenerNode.PeerID.String()).
+					Str("from_node_id", syncMsg.NodeID).
+					Err(err).
+					Msg("CRDT sync: failed to merge sync data received from a buddy; that buddy's state was NOT merged this round")
 			} else {
 				mergedCount++
 				receivedMutex.Lock()
@@ -358,9 +377,37 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		case <-timeout:
 			receivedMutex.Lock()
 			receivedCount := len(receivedFrom)
+			missing := make([]string, 0, totalBuddyNodes-receivedCount)
+			for _, buddyID := range allBuddyNodes {
+				if !receivedFrom[buddyID.String()] {
+					missing = append(missing, buddyID.String())
+				}
+			}
 			receivedMutex.Unlock()
 			elapsed := time.Since(startTime)
-			logger().Info(context.Background(), fmt.Sprintf("⏱️ Sync duration complete (%v) - received from %d/%d buddy nodes, merged %d", elapsed.Round(time.Second), receivedCount, totalBuddyNodes, mergedCount))
+			if receivedCount < totalBuddyNodes {
+				// Degraded sync: some buddies never responded within the 30s
+				// window. This is the case an operator most needs to find —
+				// logged at Warn, with exactly which buddy IDs are missing,
+				// so a stalled/slow/unreachable buddy is identifiable
+				// without cross-referencing separate per-message logs.
+				log.Warn().
+					Str("self", listenerNode.PeerID.String()).
+					Dur("elapsed", elapsed.Round(time.Second)).
+					Int("received", receivedCount).
+					Int("expected", totalBuddyNodes).
+					Int("merged", mergedCount).
+					Strs("missing_buddy_ids", missing).
+					Msg("CRDT sync: 30s window ended with buddies still missing")
+			} else {
+				log.Info().
+					Str("self", listenerNode.PeerID.String()).
+					Dur("elapsed", elapsed.Round(time.Second)).
+					Int("received", receivedCount).
+					Int("expected", totalBuddyNodes).
+					Int("merged", mergedCount).
+					Msg("CRDT sync: 30s window ended, all expected buddies had responded")
+			}
 			subscriptionDone = true
 		}
 

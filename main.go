@@ -733,7 +733,7 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // Initialize main database connection pool
-func initMainDBPool(logger_ctx context.Context, enableLoki bool) error {
+func initMainDBPool(logger_ctx context.Context, _ bool) error {
 	poolingConfig := &config.PoolingConfig{
 		DBName: config.DBName,
 	}
@@ -1457,6 +1457,19 @@ func main() {
 		log.Fatal().Err(err).Msg("fallback window: N/K/B/MaxOffset are not a usable liveness-safe combination (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md, Fallback window section)")
 	}
 
+	// VDF proof-recovery deadline D (messaging/entropy_vdf_deadline.go).
+	// VDFProofRecoveryDeadlineSlots is a compiled-in constant exactly like
+	// B/MaxOffset above, so it hard-exits for the same reason: an out-of-range
+	// D is identical on every node and there is nothing to recover into.
+	//
+	// It has to be checked HERE because it cannot be detected at the point of
+	// use. D = 0 produces a deadline that never fires, and D > N-K produces one
+	// that fires before the mix for that epoch can exist — in both cases the
+	// mechanism looks alive and simply never helps anyone.
+	if err := messaging.ValidateVDFRecoveryParams(); err != nil {
+		log.Fatal().Err(err).Msg("entropy: VDFProofRecoveryDeadlineSlots is out of range for the current N/K — the proof-recovery deadline would either never fire or fire before any proof can exist (messaging/entropy_vdf_deadline.go)")
+	}
+
 	// VDF timing self-consistency (messaging/vdf_timing_params.go, Architecture
 	// §10 decision 12b) — same "built the checker, never called it" shape as
 	// the fallback-window check directly above, and the same reason to
@@ -1481,6 +1494,14 @@ func main() {
 			log.Error().Err(err).Msg("slot recovery: startup recovery failed — consensus participation blocked (fail-closed, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)")
 		} else {
 			fmt.Println("✅ slot/epoch clock recovered from local committed history")
+
+			// NOTE (D-37): the fallback aggregate-store rebuild used to run HERE
+			// and was a guaranteed no-op. It needs the committee-eligibility
+			// source, which is not wired until after node.NewNode() below, so
+			// every block it replayed failed verification and it always
+			// returned 0 — while logging up to 512 "parent certificate failed
+			// verification" errors that look like tampering. It now runs after
+			// that wiring; search for RecoverAggSigStoreAtStartup.
 		}
 	} else {
 		// No ThebeDB means no ExtraData persistence (DB_OPs/backend/block.go's
@@ -1868,6 +1889,54 @@ func main() {
 			log.Warn().
 				Bool("reward_split_enabled", cfg.Consensus.RewardSplitEnabled).
 				Msg("[Committee] sequencer has no pinned consensus.seed_authority_bls_pub (or no network.seednode) — reward-address source stays UNSET; with reward_split_enabled on, every block fails closed at attachAVCConsensusFields")
+		}
+	}
+
+	// ── Fallback aggregate store — rebuild from persisted certificates ────────
+	//
+	// PLACED HERE, NOT WITH SLOT RECOVERY (D-37). It used to sit next to slot
+	// recovery, ~400 lines above, which reads naturally — both are "restore
+	// in-memory state from committed history" — and was a guaranteed no-op.
+	// The replay calls VerifyAndRecordPrevCert, which resolves the eligible
+	// pool via committeeSnapshotFor -> eligibleMembersUncappedForEpoch, and
+	// that returns "committee eligibility source not configured (fail closed)"
+	// until SetCommitteeEligibilitySource / WireCommitteeSources have run —
+	// both of which need n.Host and therefore cannot run before
+	// node.NewNode(). So every replayed block failed, `recovered` was always 0,
+	// and neither call-site branch printed anything, while up to
+	// maxRecoveryScanBlocks "parent certificate failed verification" errors
+	// were logged, which reads as tampering rather than a wiring bug.
+	//
+	// The old position's stated reason — "before node.NewNode() so no live
+	// commit hook can race a half-rebuilt store" — does not survive contact
+	// with what the race actually costs. defaultAggSigStore is mutex-guarded,
+	// so there is no data race; the worst case is a fold running against a
+	// partially-rebuilt window, which fails CLOSED, which is the designed
+	// outcome for a short window anyway. A small, safe, fail-closed race beats
+	// a rebuild that provably never recovers anything.
+	//
+	// Same placement argument as the checkpoint block below: this needs the
+	// committee-eligibility source wired above.
+	//
+	// Thebe gate: without ThebeDB there is no ExtraData persistence, so there
+	// are no durable certificates to replay.
+	if cfg.Thebe.Enabled {
+		if tip, terr := slotStoreRecoveryGetTip(); terr == nil && tip != nil {
+			recovered, rerr := messaging.RecoverAggSigStoreAtStartup(
+				tip.Slot, tip.BlockNumber,
+				func(height uint64) (*config.ZKBlock, error) {
+					return DB_OPs.GetZKBlockByNumber(nil, height)
+				})
+			switch {
+			case rerr != nil:
+				log.Error().Err(rerr).Msg("fallback recovery: rebuilding the aggregate store failed — a fallback epoch may fail closed on this node until enough in-window blocks commit")
+			case recovered > 0:
+				fmt.Printf("✅ fallback aggregate store rebuilt (%d window slot(s)) from persisted certificates\n", recovered)
+			default:
+				// Explicit: D-37 was invisible precisely because zero was
+				// indistinguishable from "not run". Never let that recur.
+				log.Info().Msg("fallback recovery: no in-window certificates were replayed (expected when the collection window has only just opened, or when JMDN_AVC_AGG_CERT is off)")
+			}
 		}
 	}
 

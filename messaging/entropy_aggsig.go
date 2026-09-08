@@ -210,13 +210,36 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 	if len(cert) == 0 {
 		return nil, fmt.Errorf("entropy: empty certificate")
 	}
-	snap, err := committeeSnapshotFor(epoch)
+	// D-36: the pool is resolved WITHOUT this node's block_buddy blocklist.
+	//
+	// committeeSnapshotFor would apply it, and this function derives two
+	// fleet-agreed quantities from the result: the aggCertQuorum denominator
+	// below, and which signers may be counted. With the filtered pool, one
+	// operator's blocklist entry gave n=6/quorum=4 where every peer computed
+	// n=7/quorum=5, so this node folded a certificate its peers rejected,
+	// derived a different fallback seed, and seated a DIFFERENT COMMITTEE —
+	// silently, with no error on either side. Blocking made quorum EASIER,
+	// the exact inversion VerifyCertificate's CON-12 comment forbids.
+	snap, err := fleetCommitteeSnapshotFor(epoch)
 	if err != nil {
 		return nil, fmt.Errorf("entropy: resolving eligible pool for epoch %d: %w", epoch, err)
 	}
 	eligible := make(map[string][]byte, len(snap.Members))
 	for _, m := range snap.Members {
 		eligible[m.PeerID] = m.BLSPub
+	}
+
+	// Numerator only: a locally-blocked peer is a NON-VOTER, but its seat still
+	// sizes n above. Same shape as VerifyCertificate — numerator ⊆ denominator,
+	// so blocking can only ever make quorum harder to reach, never lower the
+	// bar. A blocked signer's certificate simply fails the count on this node
+	// rather than shifting the threshold every peer is measuring against.
+	if blocked := blockedBuddies(); len(blocked) > 0 {
+		for pid := range eligible {
+			if _, isBlocked := blocked[pid]; isBlocked {
+				delete(eligible, pid)
+			}
+		}
 	}
 
 	// The parent's certifier signatures are over the parent's canonical vote
@@ -278,9 +301,71 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 		sigs = append(sigs, sigBytes)
 	}
 
+	// QUORUM FLOOR (added 2026-09-03). Every check above is per-signer: each
+	// signature is valid, each signer is eligible, nobody is counted twice.
+	// None of them constrains HOW MANY signers the certificate carries, and
+	// before this block the only count check in the whole function was the
+	// len(cert) == 0 guard at the top — so a single-signer PrevAggCert passed
+	// verification and was folded into the epoch's fallback seed.
+	//
+	// That matters because the sequencer chooses which qualifying subset of
+	// the parent's YES votes to put in PrevAggCert. The block's OWN
+	// certificate (config.ZKBlock's committee certificate) is tallied against
+	// ByzantineQuorum elsewhere, but nothing tied this field to that one, so
+	// the entropy fold accepted a threshold the consensus path would have
+	// rejected. Architecture §4.2a reasons about a menu of QUALIFYING
+	// subsets; without this check the menu included non-qualifying ones.
+	//
+	// n is the authenticated committee denominator for the parent's epoch, taken
+	// from fleetCommitteeSnapshotFor — the capped eligible set with NO local
+	// block_buddy blocklist applied, so a blocklist cannot shrink n and diverge
+	// this node's threshold from the fleet's.
+	//
+	// That last sentence was ASPIRATIONAL until D-36 was fixed: this line used
+	// committeeSnapshotFor, whose pool runs through
+	// eligibleMembersUncappedForEpoch and therefore did subtract the blocklist.
+	// The comment named eligibleMembers as the thing to avoid and then reached
+	// the same filter through a different door. If you are changing how snap is
+	// resolved, that is the trap to avoid re-entering.
+	//
+	// Fail-closed: a certificate below threshold is not recorded, so the epoch's
+	// fallback seed fails closed rather than folding a value a minority chose.
+	if want := aggCertQuorum(len(snap.Members)); len(sigs) < want {
+		return nil, fmt.Errorf("entropy: certificate carries %d valid signers, below the Byzantine quorum %d for a pool of %d (epoch %d)",
+			len(sigs), want, len(snap.Members), epoch)
+	}
+
 	agg, err := blssign.BLSAggregate(sigs...)
 	if err != nil {
 		return nil, fmt.Errorf("entropy: aggregating %d signatures: %w", len(sigs), err)
 	}
 	return agg, nil
+}
+
+// aggCertQuorum returns how many valid signers a PrevAggCert must carry for a
+// given eligible-pool size. It is the single place that rule is written down.
+//
+// It is deliberately ByzantineQuorum — the SAME ceil(2n/3) the block's own
+// committee certificate is tallied against (consensus_hardening.go) — not a
+// second, weaker rule invented for the entropy path. Before 2026-09-03 the
+// entropy fold had no count rule at all, so it accepted certificates the
+// consensus path would have rejected; the two thresholds being equal is the
+// invariant this function exists to keep.
+//
+// n is capped by consensus.max_validators exactly as the certificate
+// denominator is, and MUST be taken from the FLEET-AGREED pool — never from a
+// locally-filtered set, because a local blocklist that shrinks n drifts this
+// node's threshold away from its peers'.
+//
+// This function cannot enforce that: it receives an int. The caller's choice of
+// snapshot is what makes it true, so the invariant lives at the call site —
+// verifyCertAndAggregate uses fleetCommitteeSnapshotFor, and D-36 is the record
+// of what happens when it does not (n=6/quorum=4 against a fleet computing
+// n=7/quorum=5, hence a different fallback seed and a different committee).
+func aggCertQuorum(poolSize int) int {
+	n := poolSize
+	if lim := committeeSizeLimit(); lim > 0 && lim < n {
+		n = lim
+	}
+	return ByzantineQuorum(n)
 }

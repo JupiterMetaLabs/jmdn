@@ -187,6 +187,30 @@ func eligibleMembersUncapped() (map[string]string, error) {
 // the wired source can serve a specific epoch. Callers MUST treat an error as
 // "no one is eligible" — never as "fall back to current".
 func eligibleMembersUncappedForEpoch(epoch uint64, pinned bool) (map[string]string, error) {
+	return eligibleMembersForEpochFiltered(epoch, pinned, true)
+}
+
+// FleetEligibleForEpoch is eligibleMembersUncappedForEpoch WITHOUT the local
+// block_buddy blocklist — the FLEET-AGREED pool.
+//
+// WHY THIS EXISTS (D-36). The blocklist is node-local operator config, so any
+// fleet-agreed quantity derived from a blocklist-filtered set differs between
+// nodes. VerifyCertificate has always known this and takes its Byzantine
+// denominator from authenticatedCommittee() for exactly this reason (CON-12,
+// see its comment at the top of the function): a blocked peer is a non-voter
+// while its seat still SIZES n, so blocking can only make quorum harder, never
+// lower the bar.
+//
+// Use this for any denominator, threshold or set whose value must match a
+// peer's. Use eligibleMembersUncappedForEpoch — the filtered one — only for
+// deciding whether to COUNT a particular signer.
+func FleetEligibleForEpoch(epoch uint64, pinned bool) (map[string]string, error) {
+	return eligibleMembersForEpochFiltered(epoch, pinned, false)
+}
+
+// eligibleMembersForEpochFiltered is the shared core. Split out so the filtered
+// and unfiltered views cannot drift apart in anything except the blocklist step.
+func eligibleMembersForEpochFiltered(epoch uint64, pinned bool, applyBlocklist bool) (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -209,16 +233,21 @@ func eligibleMembersUncappedForEpoch(epoch uint64, pinned bool) (map[string]stri
 		if pid == "" {
 			continue
 		}
-		if _, isBlocked := blocked[pid]; isBlocked {
-			log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
-			continue
+		if applyBlocklist {
+			if _, isBlocked := blocked[pid]; isBlocked {
+				log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
+				continue
+			}
 		}
 		// Store the authenticated peer_id -> bls_pub binding (normalized) so the
 		// verifier can require a vote's pubkey to match the snapshot-bound key.
 		eligible[pid] = normalizeBLSPub(blsPub)
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
+		if applyBlocklist {
+			return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
+		}
+		return nil, fmt.Errorf("committee eligibility source returned no usable members")
 	}
 	return eligible, nil
 }

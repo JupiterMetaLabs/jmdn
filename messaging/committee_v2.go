@@ -39,6 +39,7 @@
 package messaging
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -51,6 +52,8 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CommitteeV2Enabled gates every behaviour change in this file.
@@ -173,7 +176,7 @@ func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 		return RoundContext{}, fmt.Errorf("%w: height %d, local period %d, block claims period %d",
 			ErrPeriodNotSynced, b.BlockNumber, localPeriod, b.Period)
 	}
-	return RoundContext{
+	rc := RoundContext{
 		SelectionPeriod: SelectionPeriod(EpochForHeight(b.BlockNumber)),
 		EntropyEpoch:    committee.EntropyEpoch(EpochForSlot(b.Slot)),
 		PrevHash:        b.PrevHash.Bytes(),
@@ -186,7 +189,28 @@ func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 		// Cross-checked against the block's own stamped Period above -
 		// this is the verified local value, not the block's bare claim.
 		Period: localPeriod,
-	}, nil
+	}
+
+	// Cross-node determinism check (operator-facing, not debug-only): every
+	// node that reaches this line for the same Height must log an identical
+	// slot/period/entropy_epoch/selection_period tuple. A mismatch here,
+	// compared across two nodes' logs at the same height, localizes the
+	// divergence to BEFORE committee selection even runs (block sync, the
+	// slot clock, or the Period store) rather than inside it. Same
+	// zerolog global logger consensus_hardening.go already uses in this
+	// package (github.com/rs/zerolog/log) - prints to console with no
+	// extra config, unlike the ion/logging named-logger path elsewhere in
+	// this codebase, which defaults to level "warn" and would have
+	// silently dropped an Info line.
+	log.Info().
+		Uint64("height", b.BlockNumber).
+		Uint64("slot", b.Slot).
+		Uint64("period", localPeriod).
+		Uint64("entropy_epoch", uint64(rc.EntropyEpoch)).
+		Uint64("selection_period", uint64(rc.SelectionPeriod)).
+		Msg("committee: round context built")
+
+	return rc, nil
 }
 
 // EpochForHeight maps a block height to the selection epoch.
@@ -276,7 +300,15 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 		return nil, err
 	}
 
-	seed, err := committee.DeriveSeed(SeedSourceFor(rc.EntropyEpoch), committee.SeedInput{
+	// Resolved once and reused by the determinism log below, so the log can
+	// never report entropy from a different source than the seed was built
+	// from.
+	seedSrc, err := SeedSourceFor(rc.EntropyEpoch)
+	if err != nil {
+		return nil, err
+	}
+
+	seed, err := committee.DeriveSeed(seedSrc, committee.SeedInput{
 		EntropyEpoch: rc.EntropyEpoch,
 		PrevHash:     rc.PrevHash,
 		Height:       rc.Height,
@@ -292,7 +324,44 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 		// the draw is a determinism fix rather than a sampling one.
 		k = len(snap.Members)
 	}
-	return committee.CommitteeFor(seed, snap, k)
+
+	members, err := committee.CommitteeFor(seed, snap, k)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cross-node determinism check (operator-facing, not debug-only): same
+	// Height/Period/EntropyEpoch must produce the same entropy_sha256, the
+	// same seed, and the same ordered member list on every node. Members are
+	// logged in CommitteeFor's OWN return order (selection rank, not
+	// re-sorted here), so a log diff also catches a ranking disagreement,
+	// not just a membership one. entropy_sha256 is a hash of the raw
+	// entropy bytes, not the bytes themselves — sufficient to confirm
+	// equality across nodes without printing raw salt/beacon material.
+	// This second EpochEntropy call is redundant with the one inside
+	// DeriveSeed above but is read-only and side-effect-free (SaltSource
+	// returns a static config value; BeaconSource takes an RLock over an
+	// in-memory map) — safe to call again purely for observability, and its
+	// error is intentionally swallowed here: it must never change this
+	// function's return value or error behavior, only what gets logged.
+	memberIDs := make([]string, len(members))
+	for i, m := range members {
+		memberIDs[i] = m.PeerID
+	}
+	evt := log.Info().
+		Uint64("height", rc.Height).
+		Uint64("period", rc.Period).
+		Uint64("entropy_epoch", uint64(rc.EntropyEpoch)).
+		Uint64("selection_period", uint64(rc.SelectionPeriod)).
+		Str("seed", seed.String()).
+		Int("committee_size", len(members)).
+		Str("committee_members", strings.Join(memberIDs, ","))
+	if entropy, entropyErr := seedSrc.EpochEntropy(rc.EntropyEpoch); entropyErr == nil {
+		evt = evt.Str("entropy_sha256", fmt.Sprintf("%x", sha256.Sum256(entropy)))
+	}
+	evt.Msg("committee: buddy committee selected")
+
+	return members, nil
 }
 
 // ErrCommitteeNotPinned is returned when consensus.require_pinned_committee is
@@ -387,6 +456,35 @@ func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 	return snapshotFromEligible(epoch, eligible), nil
 }
 
+// fleetCommitteeSnapshotFor is committeeSnapshotFor WITHOUT this node's local
+// block_buddy blocklist applied — the pool every honest node agrees on.
+//
+// D-36: use this wherever a snapshot sizes a THRESHOLD or any other value that
+// must be identical across the fleet. committeeSnapshotFor's pool passes
+// through eligibleMembersUncappedForEpoch, which subtracts the local blocklist,
+// so a threshold derived from it moves when one operator edits their own
+// config. See FleetEligibleForEpoch for the full reasoning and the CON-12
+// precedent in VerifyCertificate.
+func fleetCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
+	var eligible map[string]string
+	var err error
+	if requirePinnedCommittee() {
+		eligible, err = FleetEligibleForEpoch(epoch, true)
+		if err != nil {
+			return committee.Snapshot{}, fmt.Errorf("%w: epoch %d: %v", ErrCommitteeNotPinned, epoch, err)
+		}
+	} else {
+		// UNPINNED — mirrors pinnedEligibleForEpoch's unpinned branch exactly:
+		// the pool is whatever the source considers current and the epoch
+		// argument is not consulted.
+		eligible, err = FleetEligibleForEpoch(epoch, false)
+		if err != nil {
+			return committee.Snapshot{}, err
+		}
+	}
+	return snapshotFromEligible(epoch, eligible), nil
+}
+
 // snapshotFromEligible builds the pure-package Snapshot from an
 // already-resolved eligible set — the part of committeeSnapshotFor that has
 // nothing to do with HOW the set was resolved (pinned-by-epoch, or live).
@@ -434,12 +532,56 @@ func blsKeyBytes(hexKey string) []byte {
 // THIS IS THE STAGE-2 SEAM. Stage 1 is a configured salt. Stage 2 returns the
 // RANDAO+VDF beacon (committee.BeaconSource) and nothing else in this file, or
 // anywhere downstream, changes.
-func SeedSourceFor(epoch committee.EntropyEpoch) committee.SeedSource {
-	if beacon := activeBeacon(); beacon != nil && beacon.Has(uint64(epoch)) {
-		return beacon
+//
+// FAIL-CLOSED SINCE 2026-09-03. The three states are now distinct, where
+// two of them used to collapse into the same silent salt:
+//
+//	no beacon installed          -> SaltSource, nil   (Stage 1, uniform fleet-wide: safe)
+//	beacon installed, has epoch  -> BeaconSource, nil (Stage 2)
+//	beacon installed, no epoch   -> nil, ErrBeaconEpochUnavailable
+//
+// The third case used to return the salt. That is the whole silent-divergence
+// seam: beacon.Has is a PER-NODE map lookup, so a node that missed the fold
+// (restarted, fast-synced, failed to record a slot) took the salt branch
+// while its peers took the beacon branch, drew a DIFFERENT committee, and
+// produced below-threshold certificates that named no cause. Uniform-wrong
+// is safe; per-node-different is a halt. Refusing to select is the same
+// liveness outcome with a named error instead of a mystery.
+//
+// This mirrors SelectEntropyCommittee's existing discipline
+// (ErrNoBeaconInstalled / ErrEntropyUnavailable, entropy_committee.go) and
+// committee.BeaconSource.EpochEntropy's own instruction: "Callers MUST fail
+// closed on it. Falling back to a default seed would let two nodes - one
+// with the entropy, one without - seat different committees, which is worse
+// than refusing the block."
+func SeedSourceFor(epoch committee.EntropyEpoch) (committee.SeedSource, error) {
+	beacon := activeBeacon()
+	if beacon == nil {
+		// Stage 1. Every node in the fleet is in this state together, because
+		// the beacon is installed from network-wide operator configuration
+		// (Sequencer.InstallAVCBeaconFromEnv), not from local observation.
+		return committee.SaltSource{Salt: stage1Salt()}, nil
 	}
-	return committee.SaltSource{Salt: stage1Salt()}
+	if beacon.Has(uint64(epoch)) {
+		return beacon, nil
+	}
+	log.Error().
+		Uint64("entropy_epoch", uint64(epoch)).
+		Msg("committee: beacon is installed but has no entropy for this epoch — refusing to select a committee. " +
+			"This node cannot agree with peers that DO have it, so selecting from the Stage-1 salt here would " +
+			"seat a different committee and produce certificates that fail below threshold with no named cause. " +
+			"Recover the epoch (accept a peer's VDF proof, or rehydrate persisted beacon state) before this node can vote")
+	return nil, fmt.Errorf("%w: epoch %d", ErrBeaconEpochUnavailable, epoch)
 }
+
+// ErrBeaconEpochUnavailable is returned by SeedSourceFor when a beacon IS
+// installed but has published nothing for the requested epoch.
+//
+// Deliberately distinct from ErrNoBeaconInstalled (entropy_committee.go),
+// which means "no beacon exists at all" and is the legitimate Stage-1 state.
+// This one means "the fleet is on Stage 2 and this node is missing a value
+// its peers have" — a local recovery problem, not a configuration one.
+var ErrBeaconEpochUnavailable = errors.New("messaging: beacon installed but no entropy published for this epoch (fail closed)")
 
 // stage1Salt binds the salt to the pinned authority key when one is configured,
 // so two networks with different authorities cannot share a committee schedule.

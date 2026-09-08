@@ -395,20 +395,9 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// deriving the same one locally from the same certified event.
 			DefaultSlotStore.AdvanceOnCommit(msg.Block.BlockNumber, msg.Block.Period)
 
-			// M4 §C (Architecture §4.2 Rule 2, §4.5) — receiver-side twin of the
-			// hook in broadcast.go's ProcessBlockLocally. See entropy_reveal.go's
-			// header comment for scope (currently a no-op in the live system).
-			foldBlockDeclaredReveals(msg.Block)
-
-			// M4 §D, receiver-side twin — see entropy_finalise.go's header
-			// comment and broadcast.go's ProcessBlockLocally twin.
-			// B1 — verify the parent's commit certificate and DERIVE its aggregate
-			// locally, then record it for the fallback fold. Runs BEFORE
-			// maybeFinaliseCompletedEpochs so a window slot recorded by this block
-			// is available to any epoch this same block finalises.
-			VerifyAndRecordPrevCert(msg.Block)
-
-			maybeFinaliseCompletedEpochs(msg.Block)
+			// M4 §C/§D + B1 + Stage-F receive side — receiver-side twin of
+			// broadcast.go's ProcessBlockLocally, sharing one definition.
+			ApplyBlockEntropyEffects(msg.Block)
 
 			// M4 §4.4 RevealPush — added 2026-08-20. If this node is on the
 			// current epoch's entropy committee and its reveal has not landed
