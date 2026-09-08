@@ -456,6 +456,35 @@ func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 	return snapshotFromEligible(epoch, eligible), nil
 }
 
+// fleetCommitteeSnapshotFor is committeeSnapshotFor WITHOUT this node's local
+// block_buddy blocklist applied — the pool every honest node agrees on.
+//
+// D-36: use this wherever a snapshot sizes a THRESHOLD or any other value that
+// must be identical across the fleet. committeeSnapshotFor's pool passes
+// through eligibleMembersUncappedForEpoch, which subtracts the local blocklist,
+// so a threshold derived from it moves when one operator edits their own
+// config. See FleetEligibleForEpoch for the full reasoning and the CON-12
+// precedent in VerifyCertificate.
+func fleetCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
+	var eligible map[string]string
+	var err error
+	if requirePinnedCommittee() {
+		eligible, err = FleetEligibleForEpoch(epoch, true)
+		if err != nil {
+			return committee.Snapshot{}, fmt.Errorf("%w: epoch %d: %v", ErrCommitteeNotPinned, epoch, err)
+		}
+	} else {
+		// UNPINNED — mirrors pinnedEligibleForEpoch's unpinned branch exactly:
+		// the pool is whatever the source considers current and the epoch
+		// argument is not consulted.
+		eligible, err = FleetEligibleForEpoch(epoch, false)
+		if err != nil {
+			return committee.Snapshot{}, err
+		}
+	}
+	return snapshotFromEligible(epoch, eligible), nil
+}
+
 // snapshotFromEligible builds the pure-package Snapshot from an
 // already-resolved eligible set — the part of committeeSnapshotFor that has
 // nothing to do with HOW the set was resolved (pinned-by-epoch, or live).
