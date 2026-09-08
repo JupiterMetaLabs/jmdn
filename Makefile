@@ -16,7 +16,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
 .PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy \
-        dev-setup dev-check verify-pins
+        local-replace local-replace-undo build-local verify-pins
 
 all: build
 
@@ -75,22 +75,34 @@ lint:
 lint-new:
 	golangci-lint run --new-from-rev=HEAD~1
 
-# ── Module access (private deps) ──────────────────────────────────────────────
-# avc and ThebeDB are PRIVATE repos. Go cannot fetch them through the public
-# proxy, so every developer needs GOPRIVATE plus an https->ssh rewrite. Run this
-# once per machine. Idempotent; `--undo` reverses it.
-dev-setup:
-	@./Scripts/dev-setup-modules.sh
+# ── Offline build via local replaces (no git credentials needed) ──────────────
+# Point the private/sibling JupiterMetaLabs modules at local checkouts sitting
+# next to this repo (../ThebeDB, ../avc, ../JMDN-FastSync, ../JMDN_Merkletree),
+# so `go build` resolves them from disk and never contacts GitHub. Use this on a
+# box with no SSH key / token for the private repos (the symptom is a build error
+# "could not read Username for 'https://github.com'" or "Host key verification
+# failed"). Reverse with `make local-replace-undo`.
+#
+# WARNING: do NOT commit the resulting `=> ../` replaces — `make verify-pins`
+# (and CI) reject filesystem replaces. Run local-replace-undo before pushing.
+local-replace:
+	go mod edit -replace github.com/JupiterMetaLabs/ThebeDB=../ThebeDB
+	go mod edit -replace github.com/JupiterMetaLabs/avc=../avc
+	go mod edit -replace github.com/JupiterMetaLabs/JMDN-FastSync=../JMDN-FastSync
+	go mod edit -replace github.com/JupiterMetaLabs/JMDN_Merkletree=../JMDN_Merkletree
+	@echo "local-replace: 4 modules now resolve from ../ siblings. Build with 'make build' (or 'make build-local'). Undo with 'make local-replace-undo'."
 
-# Same checks, changes nothing. Use this when a build fails with
-# "could not read Username for 'https://github.com'".
-dev-check:
-	@./Scripts/dev-setup-modules.sh --check
+# Remove the local filesystem replaces added by local-replace, restoring the
+# pinned versions in go.mod.
+local-replace-undo:
+	go mod edit -dropreplace github.com/JupiterMetaLabs/ThebeDB
+	go mod edit -dropreplace github.com/JupiterMetaLabs/avc
+	go mod edit -dropreplace github.com/JupiterMetaLabs/JMDN-FastSync
+	go mod edit -dropreplace github.com/JupiterMetaLabs/JMDN_Merkletree
+	@echo "local-replace-undo: removed the 4 local replaces (pinned versions restored)."
 
-# Also generate .go.work.local so you can build against sibling checkouts of
-# avc / ThebeDB / JMDN-FastSync without editing go.mod. Prints the GOWORK export.
-dev-workspace:
-	@./Scripts/dev-setup-modules.sh --workspace
+# One-shot offline build: apply local replaces, then build.
+build-local: local-replace build
 
 # THE PRE-PUSH GATE. Proves the versions pinned in go.mod actually resolve,
 # independently of any workspace file or local replace. If you develop with
