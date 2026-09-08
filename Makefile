@@ -16,7 +16,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
 .PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy \
-        dev-setup local-replace local-replace-undo build-local verify-pins
+        local-replace local-replace-undo build-local verify-pins
 
 all: build
 
@@ -75,13 +75,6 @@ lint:
 lint-new:
 	golangci-lint run --new-from-rev=HEAD~1
 
-# ── Module access (private deps) ──────────────────────────────────────────────
-# avc and ThebeDB are PRIVATE repos. Go cannot fetch them through the public
-# proxy, so every developer needs GOPRIVATE plus an https->ssh rewrite. Run this
-# once per machine. Idempotent; `--undo` reverses it.
-dev-setup:
-	@./Scripts/dev-setup-modules.sh
-
 # ── Offline build via local replaces (no git credentials needed) ──────────────
 # Point the private/sibling JupiterMetaLabs modules at local checkouts sitting
 # next to this repo (../ThebeDB, ../avc, ../JMDN-FastSync, ../JMDN_Merkletree),
@@ -110,11 +103,6 @@ local-replace-undo:
 
 # One-shot offline build: apply local replaces, then build.
 build-local: local-replace build
-
-# Also generate .go.work.local so you can build against sibling checkouts of
-# avc / ThebeDB / JMDN-FastSync without editing go.mod. Prints the GOWORK export.
-dev-workspace:
-	@./Scripts/dev-setup-modules.sh --workspace
 
 # THE PRE-PUSH GATE. Proves the versions pinned in go.mod actually resolve,
 # independently of any workspace file or local replace. If you develop with
