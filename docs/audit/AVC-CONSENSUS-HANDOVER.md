@@ -171,6 +171,9 @@ NOT executed: jmdn's own build and test suite — the audit sandbox exhausted it
 | **D-32** | 3 | `avc` | `extractNodeID` tie-break reads a Go map → nondeterministic merge | PoC 4, 5 | S | `Fixed (avc 193ab86, TestPoC4_MergeTieBreakIsDeterministic + crdt/tiebreak_determinism_test.go)` |
 | **D-33** | — | `jmdn` | Entropy genesis bootstrap — **shipped**; persistence and an observe rung remain | — | M | `Fixed (b5e305a8) — remainder Open` |
 | **D-34** | 3 | `jmdn` | Unbounded maps on the block-receive path (`seenHeights` et al) | — | M | `Open` |
+| **D-35** | 1 | `jmdn` | D-29 chain guard is keyed on the group NAME, not the modulus VALUE — the trapdoored devnet modulus installs on any chain under the name `rsa-2048-frc` (unpinned in avc, matching shape) with the unpinned override set | `TestModulusChainPolicyIsKeyedOnValueNotName` | S | `Fixed (PR #125, enforceModulusChainPolicy)` |
+| **D-36** | 1 | `jmdn` | Fallback fold's Byzantine denominator taken from the block_buddy-FILTERED pool, so one operator's local blocklist moves the threshold (n=6/q=4 vs fleet n=7/q=5) → different fold subset → different seed → **different committee** | `TestAggCertQuorumIsIndependentOfLocalBlocklist` | S | `Fixed (PR #125, fleetCommitteeSnapshotFor)` |
+| **D-37** | 2 | `jmdn` | `RecoverAggSigStoreAtStartup` called ~400 lines before the committee eligibility source is wired — always returned 0, neither call-site branch printed, and the only symptom was up to 512 "parent certificate failed verification" errors that read as tampering | `TestRecoveryRefusesWhenEligibilitySourceIsUnwired` | S | `Fixed (PR #125, relocated + up-front probe)` |
 
 **Devnet items** (§6) are tracked as a group rather than individually numbered: 3 × SEV-3, 6 × SEV-4, all in `jmdt-devnet`.
 
