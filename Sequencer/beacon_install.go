@@ -121,6 +121,19 @@ const allowUnpinnedModulusEnv = "JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS"
 // anything, ever. What pinning guarantees is narrower and achievable: that
 // the modulus in use is the exact number the team deliberately chose.
 func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
+	// D-35: VALUE-keyed chain policy, FIRST, on every path.
+	//
+	// This must precede all three construction paths below, and it must key on
+	// the modulus rather than the name. The name-keyed check inside
+	// newNetworkPinnedRSAGroup is only reached when lookupNetworkPin(groupName)
+	// hits, so before this line a restricted modulus supplied under any other
+	// name — rsa-2048-frc, which is a real registry entry with an EMPTY digest —
+	// missed the lookup, skipped the guard, and installed via the unpinned
+	// override on ANY chain. See enforceModulusChainPolicy for the full trace.
+	if err := enforceModulusChainPolicy(n); err != nil {
+		return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", err)
+	}
+
 	group, pinnedErr := vdf.NewPinnedRSAGroup(n, groupName)
 	if pinnedErr == nil {
 		log.Info().Str("group", groupName).

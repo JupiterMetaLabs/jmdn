@@ -104,14 +104,12 @@ var currentChainID = func() (uint64, bool) {
 // does not list.
 var ErrNetworkPinChainNotAllowed = errors.New("entropy: this VDF modulus is not permitted on this chain")
 
-// enforceNetworkPinChainPolicy is the D-29 guard: it refuses a trapdoored
-// modulus anywhere its policy does not explicitly allow.
+// enforceChainPolicy is the shared decision core for both guards below.
 //
-// Before this existed, the only thing keeping rsa-2048-testnet-ephemeral off
-// mainnet was the sentence "Never ship this group name in a mainnet config" in
-// a comment. Comments do not survive a copied .env; a startup check does.
-func enforceNetworkPinChainPolicy(name string) error {
-	pol, declared := networkPinPolicies[name]
+// Split out deliberately: the name-keyed and value-keyed entry points must
+// reach IDENTICAL verdicts, and the only way to guarantee that is for them to
+// share this function rather than reimplement the same three branches.
+func enforceChainPolicy(name string, pol networkPinPolicy, declared bool, how string) error {
 	if !declared {
 		return fmt.Errorf("%w: network pin %q has no declared policy in "+
 			"Sequencer/vdf_network_pins.go, so its trust assumptions are unknown and it is "+
@@ -134,12 +132,79 @@ func enforceNetworkPinChainPolicy(name string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: %q is pinned for chain(s) %v but this node is on chain %d. "+
+	return fmt.Errorf("%w: %q is pinned for chain(s) %v but this node is on chain %d (%s). "+
 		"TrapdoorKnown=%t — whoever generated this modulus knows its factorisation and can "+
 		"evaluate the VDF instantly, which lets them grind committee selection every epoch "+
 		"while producing proofs that verify. Use a sourced modulus (rsa-2048-frc) or a class "+
 		"group on this network",
-		ErrNetworkPinChainNotAllowed, name, pol.AllowedChainIDs, chainID, pol.TrapdoorKnown)
+		ErrNetworkPinChainNotAllowed, name, pol.AllowedChainIDs, chainID, how, pol.TrapdoorKnown)
+}
+
+// enforceNetworkPinChainPolicy is the NAME-keyed half of the D-29 guard.
+//
+// Before this existed, the only thing keeping rsa-2048-testnet-ephemeral off
+// mainnet was the sentence "Never ship this group name in a mainnet config" in
+// a comment. Comments do not survive a copied .env; a startup check does.
+//
+// NOT SUFFICIENT ON ITS OWN — see enforceModulusChainPolicy. A name-keyed guard
+// only fires when the operator uses the restricted NAME, and the dangerous
+// thing is the NUMBER.
+func enforceNetworkPinChainPolicy(name string) error {
+	pol, declared := networkPinPolicies[name]
+	return enforceChainPolicy(name, pol, declared, "matched by group name")
+}
+
+// pinNameForModulus finds the network pin whose pinned digest equals n's, if
+// any. Keyed on the VALUE, so renaming cannot evade it.
+func pinNameForModulus(n *big.Int) (string, bool, error) {
+	got, err := vdf.ModulusDigest(n)
+	if err != nil {
+		return "", false, err
+	}
+	for name, rec := range networkVDFPins {
+		if rec.Digest != "" && rec.Digest == got {
+			return name, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// enforceModulusChainPolicy is the VALUE-keyed half of the D-29 guard, and the
+// half that actually closes it.
+//
+// WHY THE NAME-KEYED CHECK WAS NOT ENOUGH (D-35). enforceNetworkPinChainPolicy
+// is reached only from newNetworkPinnedRSAGroup, which buildVDFGroup calls only
+// inside `if rec, known := lookupNetworkPin(groupName); known`. That branch is
+// keyed on the group NAME. So supplying the devnet's trapdoored modulus under
+// ANY other name — rsa-2048-frc is the obvious choice, since it is a real
+// registry entry with an EMPTY digest and therefore not pinned — makes the
+// lookup miss, skips the chain guard entirely, and falls through to the
+// JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS path, which happily installs it on any
+// chain. The shape check there passes too: the devnet modulus is exactly
+// 2048 bits / 617 digits, the published dimensions of rsa-2048-frc.
+//
+// A guard on the name protects the label. The trapdoor is in the number. This
+// function therefore runs on EVERY path into buildVDFGroup, before any group is
+// constructed, and asks only "is this NUMBER restricted?" — never "what did the
+// operator call it?".
+//
+// Returns nil for a modulus no network pin claims: that is not this guard's
+// business, and the pinning/override logic in buildVDFGroup handles it. Fails
+// closed on a digest error, which cannot happen for a modulus that will survive
+// ValidateModulus anyway, but must not become a silent bypass if it ever can.
+func enforceModulusChainPolicy(n *big.Int) error {
+	name, restricted, err := pinNameForModulus(n)
+	if err != nil {
+		return fmt.Errorf("%w: cannot compute this modulus's digest to check chain policy, so "+
+			"it is refused rather than assumed permitted: %v", ErrNetworkPinChainNotAllowed, err)
+	}
+	if !restricted {
+		return nil
+	}
+	pol, declared := networkPinPolicies[name]
+	return enforceChainPolicy(name, pol, declared,
+		"matched by MODULUS DIGEST regardless of the supplied group name — renaming a "+
+			"restricted modulus does not change what it is")
 }
 
 // ErrNetworkPinMismatch reports a modulus supplied under a network-pinned name
