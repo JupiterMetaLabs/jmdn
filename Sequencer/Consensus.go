@@ -205,6 +205,59 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		candidates = kept
 	}
 
+	// (Seat-order) The filter above deliberately keeps the WHOLE eligible pool,
+	// because under JMDN_COMMITTEE_V2 the seated committee rotates across all of
+	// it. Everything below truncates, though: ConnectedNessCheck stops at
+	// maxPeersToCheck and the Step-3 split takes the first MaxMainPeers connected
+	// candidates as MainPeers. With a pool larger than those caps, and the probe
+	// list built by ranging over a map, the sequencer could dial and ask for
+	// votes from peers that are NOT seated this round while omitting peers that
+	// are — the votes then fail authorization at tally time and the round loses
+	// quorum with no selection error anywhere in the logs.
+	//
+	// So order the pool by seat before anything truncates it. Ordering only: no
+	// candidate is dropped or duplicated (see Sequencer/committee_seating.go).
+	// FAIL CLOSED — under v2 an unorderable pool means the truncation is back to
+	// arbitrary, which is the silent-halt case; abort the round loudly instead.
+	// With JMDN_COMMITTEE_V2 off this block does not run and behaviour is
+	// unchanged.
+	seatOrdered := false
+	if messaging.CommitteeV2Enabled && len(candidates) > 0 {
+		if zkblock == nil {
+			return fmt.Errorf("CONSENSUSERROR.SEATORDER: nil block, cannot derive the round context (fail-closed)")
+		}
+		roundCtx, rcErr := messaging.RoundContextForBlock(zkblock)
+		if rcErr != nil {
+			return fmt.Errorf("CONSENSUSERROR.SEATORDER: round context unavailable (fail-closed): %w", rcErr)
+		}
+		seated, selErr := messaging.SelectCommittee(roundCtx)
+		if selErr != nil {
+			return fmt.Errorf("CONSENSUSERROR.SEATORDER: committee selection failed (fail-closed): %w", selErr)
+		}
+		// Selection is global and self-inclusive; only dialling excludes self.
+		dialTargets := messaging.DialTargetsForRound(seated, consensus.Host.ID().String())
+		ordered, missingSeats := OrderCandidatesBySeat(candidates, dialTargets)
+		candidates = ordered
+		seatOrdered = true
+
+		logger().Info(trace_ctx, "Committee-source: ordered buddy candidates by seat",
+			ion.Int64("block_number", int64(zkblock.BlockNumber)),
+			ion.Int("candidates", len(candidates)),
+			ion.Int("seated", len(seated)),
+			ion.Int("dial_targets", len(dialTargets)),
+			ion.Int("missing_seats", len(missingSeats)),
+			ion.String("function", "Consensus.Start.seatOrder"))
+		if len(missingSeats) > 0 {
+			// Not fatal on its own: quorum can still be met by the seats that ARE
+			// in the pool. It is the thing to look at first when it is not.
+			logger().Warn(trace_ctx, "Committee-source: seated peers absent from the candidate pool",
+				ion.Int64("block_number", int64(zkblock.BlockNumber)),
+				ion.Int("missing_seats", len(missingSeats)),
+				ion.String("missing_peer_ids", strings.Join(missingSeats, ",")),
+				ion.String("function", "Consensus.Start.seatOrder"))
+		}
+	}
+
 	// Connect to the candidates first via AddPeerCache
 	addPeersCtx, addPeersSpan := tracer.Start(trace_ctx, "Consensus.Start.addPeersToCache")
 	addPeersStartTime := time.Now().UTC()
@@ -248,12 +301,32 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	connectednessCtx, connectednessSpan := tracer.Start(trace_ctx, "Consensus.Start.verifyConnectedness")
 	connectednessStartTime := time.Now().UTC()
 	maxPeersToCheck := config.MaxMainPeers + config.MaxBackupPeers
+
+	// ConvertMapToSlice ranges over a map, so the order it hands to
+	// ConnectedNessCheck — which TRUNCATES at maxPeersToCheck — is randomized per
+	// call. When the pool was seat-ordered above, keep that order across the
+	// map instead, so the cut falls on unseated tail candidates rather than on an
+	// arbitrary subset of the committee. The probe cap is then raised to the full
+	// probe list: under v2 the seated committee rotates over the whole uncapped
+	// pool, so the sequencer wants every reachable pool member accounted for. The
+	// Step-3 split below still caps MainPeers at config.MaxMainPeers — the extra
+	// peers land in backup, which is where the pool tail belongs.
+	probeOrder := helper.ConvertMapToSlice(stats.GetReachablePeers())
+	if seatOrdered {
+		probeOrder = ReachableInCandidateOrder(candidates, stats.GetReachablePeers())
+		if len(probeOrder) > maxPeersToCheck {
+			maxPeersToCheck = len(probeOrder)
+		}
+	}
+
 	logger().Info(connectednessCtx, "Verifying connectedness of peers",
 		ion.Int("max_peers_to_check", maxPeersToCheck),
+		ion.Int("probe_list", len(probeOrder)),
+		ion.Bool("seat_ordered", seatOrdered),
 		ion.String("function", "Consensus.Start.verifyConnectedness"))
 
 	reachablePeers, errMSG := consensus.ConnectedNessCheck(
-		helper.ConvertMapToSlice(stats.GetReachablePeers()),
+		probeOrder,
 		maxPeersToCheck,
 	)
 	if errMSG != nil {
