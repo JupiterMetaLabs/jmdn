@@ -1151,25 +1151,6 @@ func main() {
 	}
 	fmt.Println("Main database pool initialized successfully")
 
-	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
-	// and starts the background worker — it returns immediately. The (possibly
-	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
-	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
-	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
-	// getAddressTransactions return a "still syncing" / 503 error rather than
-	// an ImmuDB-scan fallback, which no longer exists (see PR history).
-	txIndexPath := cfg.Database.TxIndexPath
-	if txIndexPath == "" {
-		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
-	}
-	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
-		// Only Open() (disk/permissions) failures land here — catchup failures
-		// are logged asynchronously by the background goroutine.
-		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
-	} else {
-		fmt.Println("Transaction address index starting (background catchup in progress)")
-	}
-
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
@@ -1358,6 +1339,34 @@ func main() {
 				log.Info().Msg("[genesis] block 0 written (fresh chain)")
 			}
 		}
+	}
+
+	// NOTE(ordering): this block MUST run after the ThebeDB wiring above.
+	// Init() immediately spawns EnsureReady, whose first step is
+	// DB_OPs.GetLatestBlockNumber(ctx, nil) -> getHandle() -> the process-wide
+	// handle set by DB_OPs.SetGlobalHandle inside the cfg.Thebe.Enabled block.
+	// When Init ran before that setter, every boot logged
+	// "[txindex] ALERT: initial catchup failed: ... no ThebeHandle available (conn=<nil>)"
+	// and the index stayed not-ready until a FastsyncV2 catchup happened to call
+	// EnsureReady again. Block-propagation handlers are registered further down,
+	// so no live block can reach IndexBlockAsync before the queue exists.
+	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
+	// and starts the background worker — it returns immediately. The (possibly
+	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
+	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
+	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
+	// getAddressTransactions return a "still syncing" / 503 error rather than
+	// an ImmuDB-scan fallback, which no longer exists (see PR history).
+	txIndexPath := cfg.Database.TxIndexPath
+	if txIndexPath == "" {
+		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
+	}
+	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
+		// Only Open() (disk/permissions) failures land here — catchup failures
+		// are logged asynchronously by the background goroutine.
+		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
+	} else {
+		fmt.Println("Transaction address index starting (background catchup in progress)")
 	}
 
 	// Explorer stats account/DID counter. The stats API used to scan immudb
