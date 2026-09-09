@@ -53,6 +53,19 @@ const EntropyBootstrapDomain = "jmdt/entropy-bootstrap/v1"
 // pinned seed-authority key to bind it to.
 var ErrBootstrapNeedsAuthorityPin = errors.New("entropy: consensus.entropy_bootstrap.epochs is set but consensus.seed_authority_bls_pub is empty - the bootstrap value must be bound to the network's authority pin")
 
+// ErrBootstrapSpanExceedsRetention: the configured bootstrap epochs span more
+// than the beacon's retention window (JMDN_AVC_BEACON_RETAIN_EPOCHS).
+//
+// committee.BeaconSource.evictLocked runs after EVERY Publish, including the
+// ones this file makes during startup - not just once live traffic begins.
+// Its rule is "keep only entropy for epoch >= newest-retain". Publishing a
+// bootstrap set whose span (max-min) is >= retain means the earliest epochs
+// in that set are evicted by the LAST bootstrap Publish call, before the
+// beacon is ever handed to the consensus loop. A genesis chain that needed
+// epoch 0's bootstrap value to seat its very first committee finds it already
+// gone - JMDN-V3-005.
+var ErrBootstrapSpanExceedsRetention = errors.New("entropy: consensus.entropy_bootstrap.epochs spans more than the beacon's retention window - the earliest bootstrap epoch(s) would be evicted during startup, before use")
+
 var (
 	bootstrapEpochsMu sync.RWMutex
 	bootstrapEpochs   = map[uint64]struct{}{}
@@ -76,6 +89,36 @@ func BootstrapEntropy(chainID uint64, authorityPin, seed string, epoch uint64) [
 // cannot drop a later-listed lower epoch. Fails closed on the first Publish
 // error - a partial bootstrap set is worse than none, because the nodes that
 // got further would seat different committees.
+// ValidateBootstrapFitsRetention reports whether every epoch in epochs can
+// survive committee.BeaconSource's eviction (cutoff = newest-retain) once all
+// of them have been published.
+//
+// The binding constraint is the SPAN of the set (max-min), not its count:
+// eviction is keyed on epoch number, so a non-contiguous set is governed by
+// its endpoints the same way a contiguous one is. Called before any Publish
+// happens, so a misconfigured operator sees one clear error at startup
+// instead of a silently-vanished genesis epoch discovered later as
+// ErrBeaconEpochUnavailable.
+func ValidateBootstrapFitsRetention(epochs []uint64, retain uint64) error {
+	if len(epochs) == 0 {
+		return nil
+	}
+	min, max := epochs[0], epochs[0]
+	for _, e := range epochs {
+		if e < min {
+			min = e
+		}
+		if e > max {
+			max = e
+		}
+	}
+	if max-min >= retain {
+		return fmt.Errorf("%w: span %d (epoch %d to %d), retain %d",
+			ErrBootstrapSpanExceedsRetention, max-min, min, max, retain)
+	}
+	return nil
+}
+
 func publishBootstrapEntropy(sink *committee.BeaconSource, chainID uint64, authorityPin, seed string, epochs []uint64) error {
 	if len(epochs) == 0 {
 		return nil
