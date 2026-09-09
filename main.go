@@ -970,8 +970,7 @@ func main() {
 	// = strict_posture set OR mainnet environment. The flags default ON; this
 	// only fires when an operator explicitly turned one off (e.g. via a
 	// JMDN_* env var) on a production node. Fail-closed by design.
-	productionPosture := cfg.Security.StrictPosture ||
-		strings.EqualFold(strings.TrimSpace(cfg.Network.Environment), "mainnet")
+	productionPosture := messaging.IsProductionPosture()
 	if err := messaging.ValidateProductionConsensusPosture(productionPosture); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)

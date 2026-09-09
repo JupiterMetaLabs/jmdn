@@ -20,7 +20,26 @@ package messaging
 import (
 	"fmt"
 	"strings"
+
+	"gossipnode/config/settings"
 )
+
+// IsProductionPosture reports whether this node should be treated as
+// production: security.strict_posture is set, or network.environment is
+// "mainnet". Single source of truth — main.go's SEC-03 check below and any
+// other production-only gate (e.g. VDF group trust level, Sequencer/
+// vdf_network_pins.go) must agree on what "production" means, or one could
+// authorize what the other refuses. An unloaded config is never production —
+// same reasoning as currentChainID in vdf_network_pins.go: assuming a
+// default here would let an unconfigured node silently pass as testnet.
+func IsProductionPosture() bool {
+	if !settings.IsLoaded() {
+		return false
+	}
+	cfg := settings.Get()
+	return cfg.Security.StrictPosture ||
+		strings.EqualFold(strings.TrimSpace(cfg.Network.Environment), "mainnet")
+}
 
 // ValidateProductionConsensusPosture returns a non-nil (fatal) error when the
 // node is in a production posture AND any fail-open consensus hardening flag is
