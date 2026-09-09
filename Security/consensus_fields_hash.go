@@ -51,7 +51,7 @@ const blockHashV3Domain = "jmdn/block-hash/v3"
 // CommitteeSnapshotAnchorEnabled — deploy the binary everywhere with this off,
 // then flip the whole fleet together. There is no gradual cutover; the flag
 // exists so the binary rollout and the consensus change are separate events.
-var ConsensusHashV3Enabled = envOn("JMDN_CONSENSUS_HASH_V3", false)
+var ConsensusHashV3Enabled = envOn("JMDN_CONSENSUS_HASH_V3", true)
 
 // RecomputeBlockHashWithConsensusFields computes the M2b block hash: the six
 // AVC consensus fields plus the existing transaction-content binding.
