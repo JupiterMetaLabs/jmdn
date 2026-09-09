@@ -206,28 +206,45 @@ func resolvePendingFallbacks(block *config.ZKBlock) {
 	sort.Slice(pending, func(i, j int) bool { return pending[i] < pending[j] })
 
 	for _, e := range pending {
+		// JMDN-V3-009 residual: claim BEFORE computing, not after — matching
+		// maybeFinaliseCompletedEpochs' watermark-claim fix (see that
+		// function's comment). Computing FallbackSeedForEpoch unlocked, then
+		// deleting only on success, let two unserialised commit hooks both
+		// pass the check before either claimed the epoch. Worse than
+		// redundant work: defaultAggSigStore.sigs is live, mutable state, so
+		// a signer landing between the two racing reads changes the selected
+		// set — the two computed seeds are not even guaranteed to match.
+		finaliseTrackMu.Lock()
+		if _, still := pendingFallback[e]; !still {
+			finaliseTrackMu.Unlock()
+			continue // another hook already claimed and resolved this epoch
+		}
+		delete(pendingFallback, e)
+		finaliseTrackMu.Unlock()
+
 		seed, err := FallbackSeedForEpoch(e, block.Slot)
 		switch {
 		case err == nil:
-			finaliseTrackMu.Lock()
-			delete(pendingFallback, e)
-			finaliseTrackMu.Unlock()
 			log.Info().Uint64("epoch", e).Uint64("height", block.BlockNumber).
 				Msg("entropy: epoch finalised via the §4.2a aggregate-signature fallback")
 			notifyEpochFinalised(e, seed)
 			pruneAggSigsBelow(cutoffSlotFor(e))
 			pruneRevealsBelow(e + 1)
 		case errors.Is(err, ErrFallbackNotYetReady):
-			// Still collecting; try again on the next block.
-		case errors.Is(err, ErrFallbackDeadlineExceeded):
+			// Still collecting; restore the claim so the next block retries it.
 			finaliseTrackMu.Lock()
-			delete(pendingFallback, e)
+			pendingFallback[e] = struct{}{}
 			finaliseTrackMu.Unlock()
+		case errors.Is(err, ErrFallbackDeadlineExceeded):
 			log.Error().Err(err).Uint64("epoch", e).Uint64("height", block.BlockNumber).
 				Msg("entropy: fallback deadline exceeded — no seed produced for this epoch (fail closed by design; not retried again)")
 			pruneAggSigsBelow(cutoffSlotFor(e))
 			pruneRevealsBelow(e + 1)
 		default:
+			// Unexpected error is retryable: restore the claim.
+			finaliseTrackMu.Lock()
+			pendingFallback[e] = struct{}{}
+			finaliseTrackMu.Unlock()
 			log.Error().Err(err).Uint64("epoch", e).Uint64("height", block.BlockNumber).
 				Msg("entropy: unexpected error resolving a pending fallback epoch")
 		}
