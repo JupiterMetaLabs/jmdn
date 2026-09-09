@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -36,9 +37,10 @@ type StateDB interface {
 	// If deleteEmptyObjects is true, accounts that become empty are removed.
 	CommitToDB(deleteEmptyObjects bool) (common.Hash, error)
 
-	// Finalise finalises state changes for the current transaction without
-	// persisting them. Called at the end of each EVM transaction.
-	Finalise(deleteEmptyObjects bool)
+	// Finalise is declared by the embedded vm.StateDB above. Do not redeclare it
+	// here: since go-ethereum v1.17.5 its signature is
+	// Finalise(bool) *bal.ConstructionBlockAccessList, and a second declaration
+	// with any signature is a duplicate-method error.
 
 	// GetBalanceChanges returns every address whose balance changed this
 	// transaction and its new balance.
@@ -107,13 +109,28 @@ func NewContractDB(didClient pbdid.DIDServiceClient, repo StateRepository) *Cont
 	}
 }
 
-// SetTxContext updates the transaction hash and block number used when recording
-// storage metadata. Call this at the start of each transaction.
-func (c *ContractDB) SetTxContext(txHash common.Hash, blockNumber uint64) {
+// SetBlockContext updates the transaction hash and block number used when
+// recording storage metadata. Call this at the start of each transaction.
+//
+// Renamed from SetTxContext in the go-ethereum v1.17.5 migration: vm.StateDB now
+// declares SetTxContext(common.Hash, int, uint32) with different arity and
+// meaning (EIP-7928 block-access-list indices, no block number). Overwriting this
+// method to satisfy the interface would have silently dropped currentBlock, which
+// storage metadata depends on.
+func (c *ContractDB) SetBlockContext(txHash common.Hash, blockNumber uint64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.currentTxHash = txHash
 	c.currentBlock = blockNumber
+}
+
+// SetTxContext satisfies vm.StateDB (go-ethereum v1.17.5+). ti and
+// blockAccessIndex are EIP-7928 block-access-list inputs, which JMDT does not
+// build — see the note on Finalise. Block context is set via SetBlockContext.
+func (c *ContractDB) SetTxContext(thash common.Hash, ti int, blockAccessIndex uint32) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.currentTxHash = thash
 }
 
 // ============================================================================
@@ -238,8 +255,31 @@ func (c *ContractDB) GetBalanceChanges() map[common.Address]*uint256.Int {
 	return changes
 }
 
-// Finalise is called after each EVM transaction to mark the end of that transaction's state.
-func (c *ContractDB) Finalise(deleteEmptyObjects bool) {}
+// Finalise is called after each EVM transaction to mark the end of that
+// transaction's state.
+//
+// Returns nil: the *bal.ConstructionBlockAccessList return value was added in
+// go-ethereum v1.17.5 for EIP-7928 block access lists, which JMDT does not build.
+// nil is safe — every go-ethereum caller nil-checks it (bal.Merge early-returns
+// on nil, core/types/bal/bal.go:158) and go-ethereum's own StateDB.Finalise also
+// returns nil on the non-Amsterdam path. Nothing in core/vm calls Finalise at all;
+// jmdn drives the EVM through NewEVM/Call/Create.
+//
+// TODO(EIP-7928): return a populated *bal.ConstructionBlockAccessList if JMDT
+// ever activates Amsterdam.
+func (c *ContractDB) Finalise(deleteEmptyObjects bool) *bal.ConstructionBlockAccessList {
+	return nil
+}
+
+// Touch satisfies vm.StateDB (go-ethereum v1.17.5+).
+//
+// go-ethereum calls this only under rules.IsAmsterdam, from
+// RunPrecompiledContract (core/vm/contracts.go:278), to register precompile
+// accounts in the block access list. JMDT does not activate Amsterdam, so it is
+// never invoked. If Amsterdam is ever activated this must load the state object —
+// go-ethereum's own implementation is `s.getStateObject(addr)` — or precompile
+// accounts will be silently omitted from BAL recording.
+func (c *ContractDB) Touch(common.Address) {}
 
 // ============================================================================
 // Metadata & Receipt persistence

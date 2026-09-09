@@ -26,7 +26,10 @@ var canTransferFn vm.CanTransferFunc = func(db vm.StateDB, addr common.Address, 
 	return balance.Cmp(amount) >= 0
 }
 
-var transferFn vm.TransferFunc = func(db vm.StateDB, sender, recipient common.Address, amount *uint256.Int) {
+// transferFn implements vm.TransferFunc. The trailing *params.Rules parameter was
+// added in go-ethereum v1.17.5; it is unused here because JMDT activates no fork
+// whose transfer semantics differ.
+var transferFn vm.TransferFunc = func(db vm.StateDB, sender, recipient common.Address, amount *uint256.Int, _ *params.Rules) {
 	db.SubBalance(sender, amount, tracing.BalanceChangeTransfer)
 	db.AddBalance(recipient, amount, tracing.BalanceChangeTransfer)
 }
@@ -82,7 +85,11 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	// BEFORE the nonce is incremented.  We increment AFTER Create so that all callers
 	// (deploy_contract.go, handlers.go, etc.) can predict the deployed address using the
 	// nonce they read before calling DeployContract — no off-by-one adjustments needed.
-	ret, contractAddr, leftOverGas, err := evm.Create(caller, code, gasLimit, value256)
+	// go-ethereum v1.17.5 takes and returns vm.GasBudget rather than uint64. The
+	// second argument is StateGas, which must stay 0 for a chain that does not
+	// activate Amsterdam — it is only ever non-zero under EIP-8037/8038.
+	ret, contractAddr, gasResult, err := evm.Create(caller, code, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
 
 	// NOTE: go-ethereum's evm.Create already increments the caller nonce inside
 	// create() before deriving the address. A manual SetNonce here was a DOUBLE
@@ -148,8 +155,10 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
 	evm.SetTxContext(txCtx)
 
-	// Call the contract
-	ret, leftOverGas, err := evm.Call(caller, contractAddr, input, gasLimit, value256)
+	// Call the contract. go-ethereum v1.17.5 takes and returns vm.GasBudget; the
+	// StateGas argument stays 0 (non-Amsterdam chain).
+	ret, gasResult, err := evm.Call(caller, contractAddr, input, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
 
 	result := &ExecutionResult{
 		ReturnData: ret,

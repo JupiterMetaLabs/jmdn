@@ -114,13 +114,14 @@ func TraceTransaction(
 		val256 = uint256.NewInt(0)
 	}
 
-	// Execute
+	// Execute. go-ethereum v1.17.5 takes vm.GasBudget rather than uint64; StateGas
+	// stays 0 (non-Amsterdam chain). Results are discarded — the tracer collects them.
 	if to == nil {
 		// Contract creation
-		_, _, _, _ = evmInstance.Create(from, input, gasLimit, val256)
+		_, _, _, _ = evmInstance.Create(from, input, vm.NewGasBudget(gasLimit, 0), val256)
 	} else {
 		// Contract call
-		_, _, _ = evmInstance.Call(from, *to, input, gasLimit, val256)
+		_, _, _ = evmInstance.Call(from, *to, input, vm.NewGasBudget(gasLimit, 0), val256)
 	}
 
 	// Collect result from the tracer

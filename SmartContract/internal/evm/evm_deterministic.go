@@ -96,7 +96,9 @@ func (e *EVMExecutor) DeployContractWithContext(state vm.StateDB, bctx DetBlockC
 	// go-ethereum's Create already bumps the caller nonce inside create(); a manual
 	// SetNonce here double-bumped it, so deploy #2+ from any account mismatched the
 	// enrichment-stamped CREATE address and failed with "contract address collision".
-	ret, contractAddr, leftOverGas, err := evmInstance.Create(caller, code, gasLimit, value256)
+	// go-ethereum v1.17.5: GasBudget in and out; StateGas stays 0 (non-Amsterdam).
+	ret, contractAddr, gasResult, err := evmInstance.Create(caller, code, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
 
 	if leftOverGas > gasLimit {
 		gerr := fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit)
@@ -135,7 +137,9 @@ func (e *EVMExecutor) ExecuteContractWithContext(state vm.StateDB, bctx DetBlock
 	evmInstance := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
 	evmInstance.SetTxContext(txCtx)
 
-	ret, leftOverGas, err := evmInstance.Call(caller, contractAddr, input, gasLimit, value256)
+	// go-ethereum v1.17.5: GasBudget in and out; StateGas stays 0 (non-Amsterdam).
+	ret, gasResult, err := evmInstance.Call(caller, contractAddr, input, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
 
 	// Overflow guard (the HTTP-based ExecuteContract omits this — EVM-30 note).
 	if leftOverGas > gasLimit {

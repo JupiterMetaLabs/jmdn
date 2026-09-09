@@ -16,9 +16,11 @@ type StateDB interface {
 	// If deleteEmptyObjects is true, empty accounts will be deleted
 	CommitToDB(deleteEmptyObjects bool) (common.Hash, error)
 
-	// Finalise finalizes the state changes but doesn't commit to database yet
-	// This is called at the end of transaction execution
-	Finalise(deleteEmptyObjects bool)
+	// Finalise is declared by the embedded vm.StateDB above. Do not redeclare it
+	// here: since go-ethereum v1.17.5 its signature is
+	// Finalise(bool) *bal.ConstructionBlockAccessList, and a second declaration
+	// with any signature is a duplicate-method error. This interface is
+	// structurally identical to contractDB.StateDB, which carries the same note.
 
 	// Additional methods needed by BlockProcessing
 

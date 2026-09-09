@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	gethcore "github.com/ethereum/go-ethereum/core"
+	"github.com/holiman/uint256"
 
 	"gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/internal/evm"
@@ -100,7 +101,10 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 	if err != nil {
 		return nil, fmt.Errorf("evmexec: build state db: %w", err)
 	}
-	cdb.SetTxContext(tx.Hash, bctx.BlockNumber)
+	// Renamed from SetTxContext in the go-ethereum v1.17.5 migration: vm.StateDB now
+	// declares SetTxContext(common.Hash, int, uint32) with different meaning, so
+	// ContractDB's block-context setter was renamed to keep the block number.
+	cdb.SetBlockContext(tx.Hash, bctx.BlockNumber)
 
 	var caller common.Address
 	if tx.From != nil {
@@ -145,7 +149,19 @@ func (e *Executor) ExecuteTx(_ context.Context, tx *config.Transaction, bctx exe
 	// EVM-30: intrinsic gas (Shanghai: Homestead + EIP-2028 + EIP-3860 enabled)
 	// plus execution gas. Informational for receipts; the ledger fee is the flat
 	// config.GasFee (gasLimit-based) applied by the caller.
-	intrinsic, gerr := gethcore.IntrinsicGas(tx.Data, nil, nil, isCreate, true, true, true)
+	// go-ethereum v1.17.5 replaced the (isContractCreation, isHomestead, isEIP2028,
+	// isEIP3860) booleans with (from, to, value, rules). The mapping is exact for
+	// this chain: isContractCreation <-> to == nil, isHomestead <-> rules.IsHomestead,
+	// isEIP2028 <-> rules.IsIstanbul, isEIP3860 <-> rules.IsShanghai — all three true
+	// under NewChainConfig (Homestead and Istanbul at block 0, ShanghaiTime 0). from
+	// and value are read only under rules.IsAmsterdam (intrinsicBaseGasEIP2780), which
+	// JMDT does not activate, so the returned gas is identical to the pre-upgrade call.
+	// isMerge=true is correct: LondonBlock is 0 and the apply path always threads a
+	// non-nil Random (EVM-29).
+	rules := e.evm.ChainConfig.Rules(new(big.Int).SetUint64(bctx.BlockNumber), true, uint64(bctx.Time))
+	// Overflow is immaterial: value only feeds the Amsterdam-gated path above.
+	value256, _ := uint256.FromBig(value)
+	intrinsic, gerr := gethcore.IntrinsicGas(tx.Data, nil, nil, caller, tx.To, value256, rules)
 	if gerr != nil {
 		return &execbridge.ExecResult{
 			Handled: true,

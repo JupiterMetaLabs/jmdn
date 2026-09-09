@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -144,7 +145,20 @@ func (m *MockStateDB) ForEachStorage(addr common.Address, cb func(key, value com
 func (m *MockStateDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 	return common.Hash{}, nil
 }
-func (m *MockStateDB) Finalise(deleteEmptyObjects bool) {}
+// Finalise returns nil — the *bal.ConstructionBlockAccessList return value was
+// added in go-ethereum v1.17.5 for EIP-7928 block access lists, which JMDT does
+// not build. See DB_OPs/contractDB/contractdb.go for the full rationale.
+func (m *MockStateDB) Finalise(deleteEmptyObjects bool) *bal.ConstructionBlockAccessList {
+	return nil
+}
+
+// Touch satisfies vm.StateDB (go-ethereum v1.17.5+). go-ethereum calls this only
+// under rules.IsAmsterdam, which JMDT does not activate.
+func (m *MockStateDB) Touch(common.Address) {}
+
+// SetTxContext satisfies vm.StateDB (go-ethereum v1.17.5+). The arguments are
+// EIP-7928 block-access-list indices, unused by this mock.
+func (m *MockStateDB) SetTxContext(thash common.Hash, ti int, blockAccessIndex uint32) {}
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (m *MockStateDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
 	return common.Hash{}
