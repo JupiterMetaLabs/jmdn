@@ -276,6 +276,9 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		cfg := settings.Get()
 		eb := cfg.Consensus.EntropyBootstrap
 		if len(eb.Epochs) > 0 {
+			if err := ValidateBootstrapFitsRetention(eb.Epochs, retain); err != nil {
+				return false, err
+			}
 			if err := publishBootstrapEntropy(sink, uint64(cfg.Network.ChainID), cfg.Consensus.SeedAuthorityBLSPub, eb.Seed, eb.Epochs); err != nil {
 				return false, err
 			}

@@ -33,10 +33,10 @@ func TestBootstrapEntropy_DeterministicAndDomainSeparated(t *testing.T) {
 		t.Fatal("authority pin should be normalised (trim + lowercase) before hashing")
 	}
 	variants := [][]byte{
-		BootstrapEntropy(8000801, pin, "", 0), // chain id
-		BootstrapEntropy(8000800, pin+"00", "", 0), // pin
+		BootstrapEntropy(8000801, pin, "", 0),         // chain id
+		BootstrapEntropy(8000800, pin+"00", "", 0),    // pin
 		BootstrapEntropy(8000800, pin, "devnet-b", 0), // operator seed
-		BootstrapEntropy(8000800, pin, "", 1), // epoch
+		BootstrapEntropy(8000800, pin, "", 1),         // epoch
 	}
 	for i, v := range variants {
 		if bytes.Equal(a, v) {
@@ -133,5 +133,36 @@ func TestOnEpochFinalised_SkipsSealerForBootstrapSuccessorEpoch(t *testing.T) {
 	vdfSealersMu.Unlock()
 	if !started {
 		t.Fatal("expected a sealer for epoch 2 (not bootstrapped)")
+	}
+}
+
+// JMDN-V3-005: a bootstrap set whose span reaches the retention window gets
+// its earliest epoch(s) evicted by BeaconSource during the bootstrap publish
+// sequence itself - before the chain ever starts. This must be refused at
+// validation, not discovered later as ErrBeaconEpochUnavailable.
+func TestValidateBootstrapFitsRetention_RejectsSpanExceedingRetention(t *testing.T) {
+	epochs := make([]uint64, 0, 11)
+	for e := uint64(0); e <= 10; e++ {
+		epochs = append(epochs, e)
+	}
+	err := ValidateBootstrapFitsRetention(epochs, 6)
+	if err == nil {
+		t.Fatal("span of 10 with retain=6 must be rejected")
+	}
+	if !errors.Is(err, ErrBootstrapSpanExceedsRetention) {
+		t.Fatalf("want ErrBootstrapSpanExceedsRetention, got %v", err)
+	}
+}
+
+func TestValidateBootstrapFitsRetention_AcceptsSpanWithinRetention(t *testing.T) {
+	cases := [][]uint64{
+		{0},                // current actual configuration
+		{0, 1, 2, 3, 4, 5}, // span 5, retain 6: exactly fits
+		{},                 // empty is always fine
+	}
+	for _, epochs := range cases {
+		if err := ValidateBootstrapFitsRetention(epochs, 6); err != nil {
+			t.Fatalf("epochs %v with retain=6 should be accepted, got %v", epochs, err)
+		}
 	}
 }
