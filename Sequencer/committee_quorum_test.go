@@ -51,10 +51,6 @@ func TestQuorum_ProductionCommitteeToleratesF(t *testing.T) {
 	if tolerated := n - q; tolerated != f {
 		t.Fatalf("n=7: formation tolerates %d absent nodes, want f=%d", tolerated, f)
 	}
-	// The regression this fixes: the old gate required all n, tolerating zero.
-	if n-n != 0 {
-		t.Fatal("sanity")
-	}
 }
 
 // Without settings loaded there is no authenticated committee, so the gate must
