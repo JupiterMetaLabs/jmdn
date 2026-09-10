@@ -296,10 +296,19 @@ func TestWarmupIsUnchangedWithFlagOff(t *testing.T) {
 // committees - and the failure would look like a random, rare, unreproducible
 // rejection an hour apart.
 func TestEpochIsDerivedFromTheBlockNotTheClock(t *testing.T) {
-	// Default config: committee_epoch_blocks == 0 means one epoch.
+	// Whatever committee_epoch_blocks is compiled to by default, EpochForHeight
+	// must be exactly height/that-value (0 when the value itself is 0) and
+	// never wall-clock derived. Read the live default instead of hardcoding
+	// it, so this test tracks a deliberate default change (e.g. 0 -> 20)
+	// instead of going stale against it.
+	n := epochLengthBlocks()
 	for _, h := range []uint64{0, 1, 999, 1_000_000} {
-		if got := EpochForHeight(h); got != 0 {
-			t.Fatalf("height %d: epoch %d, want 0 with committee_epoch_blocks unset", h, got)
+		want := uint64(0)
+		if n > 0 {
+			want = h / n
+		}
+		if got := EpochForHeight(h); got != want {
+			t.Fatalf("height %d: epoch %d, want %d (committee_epoch_blocks=%d)", h, got, want, n)
 		}
 	}
 

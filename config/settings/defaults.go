@@ -214,7 +214,17 @@ func DefaultConfig() NodeConfig {
 			// committee.DeriveSeed - and only becomes visible once the eligible
 			// pool is LARGER than max_validators; below that CommitteeFor seats
 			// everyone (avc/committee/select.go).
-			RequirePinnedCommittee: true,
+			//
+			// TEMPORARILY REVERTED TO false. Turning this on halts the chain at
+			// genesis: EpochForHeight(h) = h/20 is 0 for heights 0-19, and the
+			// seed's wire protocol reserves epoch==0 to mean "serve the current
+			// epoch" (seedNodes gorm_jmns_service.go:148-150). The seed therefore
+			// answers with its wall-clock epoch (unix/300) and the exact-match
+			// check in committee_snapshot_client.go:90 correctly refuses it, so
+			// block 1 can never seat a committee. Only period 0 collides; periods
+			// >= 1 resolve correctly, but the chain cannot reach block 20 to get
+			// there. Re-enable once the sentinel collision is fixed.
+			RequirePinnedCommittee: false,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,
 			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
