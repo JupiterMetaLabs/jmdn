@@ -641,7 +641,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	}
 
 	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
-	markMessageProcessed(getMessageIDForBloomFilter(msg))
+	markMessageProcessed(getBlockDedupID(msg))
 
 	// Additively fan the finalized, certified block out over the gossip mesh so it
 	// reaches the whole fleet, not only directly-connected peers. Receivers run the

@@ -40,7 +40,7 @@ func TestInvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 		Transactions: txs,
 	}
 	H := genuine.BlockHash
-	messageID := getMessageIDForBloomFilter(config.BlockMessage{Type: "zkblock", Block: genuine})
+	messageID := getBlockDedupID(config.BlockMessage{Type: "zkblock", Block: genuine})
 
 	// A block arrives with the SAME hash H but a sub-quorum certificate
 	// (1 of 5 < 2f+1 = 3). Same body => same canonical hash, so body binding
@@ -93,7 +93,7 @@ func TestValidBlockIsCachedOnce(t *testing.T) {
 		BlockNumber:  41,
 		Transactions: txs,
 	}
-	messageID := getMessageIDForBloomFilter(config.BlockMessage{Type: "zkblock", Block: b})
+	messageID := getBlockDedupID(config.BlockMessage{Type: "zkblock", Block: b})
 	msg := config.BlockMessage{Type: "zkblock", Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
 
 	if isMessageProcessed(messageID) {
