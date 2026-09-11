@@ -225,8 +225,9 @@ func updateMessageSet(key string) error {
 	return DB_OPs.Create(nil, "crdt:message_set:"+key, true)
 }
 
-// getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
-func getMessageIDForBloomFilter(msg config.BlockMessage) string {
+// getBlockDedupID gets the appropriate ID to use for duplication checking
+// against dedupMessageCache.
+func getBlockDedupID(msg config.BlockMessage) string {
 	// Special handling for ZK blocks to use hash for deduplication
 	if msg.Type == "zkblock" && msg.Block != nil {
 		return fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
@@ -290,7 +291,7 @@ func HandleBlockStream(stream network.Stream) {
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
 	// Check for duplicates
-	messageID := getMessageIDForBloomFilter(msg)
+	messageID := getBlockDedupID(msg)
 	if isMessageProcessed(messageID) {
 		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
 		// a bare peer id for a direct-stream copy. This is the dropped (second)

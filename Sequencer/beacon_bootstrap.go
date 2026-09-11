@@ -97,18 +97,18 @@ func ValidateBootstrapFitsRetention(epochs []uint64, retain uint64) error {
 	if len(epochs) == 0 {
 		return nil
 	}
-	min, max := epochs[0], epochs[0]
+	lo, hi := epochs[0], epochs[0]
 	for _, e := range epochs {
-		if e < min {
-			min = e
+		if e < lo {
+			lo = e
 		}
-		if e > max {
-			max = e
+		if e > hi {
+			hi = e
 		}
 	}
-	if max-min >= retain {
+	if hi-lo >= retain {
 		return fmt.Errorf("%w: span %d (epoch %d to %d), retain %d",
-			ErrBootstrapSpanExceedsRetention, max-min, min, max, retain)
+			ErrBootstrapSpanExceedsRetention, hi-lo, lo, hi, retain)
 	}
 	return nil
 }
