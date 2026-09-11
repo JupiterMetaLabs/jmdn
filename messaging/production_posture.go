@@ -33,6 +33,8 @@ import (
 // same reasoning as currentChainID in vdf_network_pins.go: assuming a
 // default here would let an unconfigured node silently pass as testnet.
 func IsProductionPosture() bool {
+	// Unreachable in production: main.go calls settings.Load() at :870 and
+	// InstallAVCBeaconFromEnv at :1589. The fallback exists so tests can run.
 	if !settings.IsLoaded() {
 		return false
 	}
