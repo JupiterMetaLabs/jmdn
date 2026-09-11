@@ -112,5 +112,15 @@ verify-pins:
 	GOWORK=off go mod verify
 	GOWORK=off go build ./...
 	@! grep -nE '^[[:space:]]*replace[[:space:]]+\S+[[:space:]]+=>[[:space:]]+\.{1,2}/' go.mod \
-	  || { echo "ERROR: local filesystem replace in go.mod — pin a published tag instead"; exit 1; }
+	  || { echo "ERROR: local filesystem replace in go.mod — pin a published tag instead."; \
+	       echo "       Run 'make local-replace-undo' before pushing."; exit 1; }
+	@# Module->module replaces too. The filesystem check above cannot see them, so an
+	@# inert genproto replace sat in go.mod unnoticed from #125 until it was removed.
+	@# A replace on a reproducible freeze branch overrides version selection invisibly:
+	@# it needs a reviewed reason, not to arrive as a side effect of unrelated work.
+	@! grep -nE '^[[:space:]]*replace[[:space:]]' go.mod \
+	  || { echo "ERROR: replace directive in go.mod. v3base is a reproducible freeze —"; \
+	       echo "       a replace silently overrides version selection for everyone who builds."; \
+	       echo "       If it is genuinely required: put a comment above it saying why, and"; \
+	       echo "       narrow the grep in this target to exclude that one module path."; exit 1; }
 	@echo "verify-pins: OK"
