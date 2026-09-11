@@ -83,12 +83,6 @@ func BootstrapEntropy(chainID uint64, authorityPin, seed string, epoch uint64) [
 	return h.Sum(nil)
 }
 
-// publishBootstrapEntropy publishes the bootstrap value for every listed epoch
-// into sink and records the set for IsBootstrapEpoch. Epochs are published in
-// ascending order so BeaconSource's retention eviction (newest - retain)
-// cannot drop a later-listed lower epoch. Fails closed on the first Publish
-// error - a partial bootstrap set is worse than none, because the nodes that
-// got further would seat different committees.
 // ValidateBootstrapFitsRetention reports whether every epoch in epochs can
 // survive committee.BeaconSource's eviction (cutoff = newest-retain) once all
 // of them have been published.
@@ -119,6 +113,12 @@ func ValidateBootstrapFitsRetention(epochs []uint64, retain uint64) error {
 	return nil
 }
 
+// publishBootstrapEntropy publishes the bootstrap value for every listed epoch
+// into sink and records the set for IsBootstrapEpoch. Epochs are published in
+// ascending order so BeaconSource's retention eviction (newest - retain)
+// cannot drop a later-listed lower epoch. Fails closed on the first Publish
+// error - a partial bootstrap set is worse than none, because the nodes that
+// got further would seat different committees.
 func publishBootstrapEntropy(sink *committee.BeaconSource, chainID uint64, authorityPin, seed string, epochs []uint64) error {
 	if len(epochs) == 0 {
 		return nil
