@@ -39,10 +39,6 @@ func forkPair() (*config.ZKBlock, *config.ZKBlock) {
 }
 
 func TestForkAtOneHeightDoesNotShareAConsensusHash(t *testing.T) {
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = true
-	defer func() { ConsensusHashV3Enabled = restore }()
-
 	a, b := forkPair()
 	if RecomputeBlockHashWithConsensusFields(a) == RecomputeBlockHashWithConsensusFields(b) {
 		t.Fatal("two blocks at height 500 with the same transactions but DIFFERENT PARENTS " +
@@ -51,10 +47,6 @@ func TestForkAtOneHeightDoesNotShareAConsensusHash(t *testing.T) {
 }
 
 func TestSameParentDifferentHeightDoesNotShareAConsensusHash(t *testing.T) {
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = true
-	defer func() { ConsensusHashV3Enabled = restore }()
-
 	a := sampleBlock()
 	a.BlockNumber = 500
 	a.PrevHash = common.HexToHash("0xaa")
@@ -70,10 +62,6 @@ func TestSameParentDifferentHeightDoesNotShareAConsensusHash(t *testing.T) {
 
 func TestV3StillBindsEveryFieldV2Bound(t *testing.T) {
 	// Adding two fields must not drop any. Each mutation must change the hash.
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = true
-	defer func() { ConsensusHashV3Enabled = restore }()
-
 	base := RecomputeBlockHashWithConsensusFields(sampleBlock())
 
 	mutations := map[string]func(*config.ZKBlock){
@@ -97,10 +85,6 @@ func TestV3StillBindsEveryFieldV2Bound(t *testing.T) {
 }
 
 func TestV3IsDeterministic(t *testing.T) {
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = true
-	defer func() { ConsensusHashV3Enabled = restore }()
-
 	a, _ := forkPair()
 	first := RecomputeBlockHashWithConsensusFields(a)
 	for i := 0; i < 50; i++ {
@@ -113,10 +97,6 @@ func TestV3IsDeterministic(t *testing.T) {
 func TestGenesisShapedBlockStillHashes(t *testing.T) {
 	// Block 0 has a zero parent. That must hash normally, not be treated as a
 	// missing field, and must not collide with a non-genesis block.
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = true
-	defer func() { ConsensusHashV3Enabled = restore }()
-
 	genesis := sampleBlock()
 	genesis.BlockNumber = 0
 	genesis.PrevHash = common.Hash{}
@@ -135,35 +115,23 @@ func TestGenesisShapedBlockStillHashes(t *testing.T) {
 	}
 }
 
-func TestFlagOffPreservesTheExistingPreimageExactly(t *testing.T) {
-	// The rollout guarantee. With the flag off, behaviour must be byte-identical
-	// to before this change, so a binary carrying the fix can be deployed to the
-	// whole fleet before anyone flips it.
-	restore := ConsensusHashV3Enabled
-	ConsensusHashV3Enabled = false
-	defer func() { ConsensusHashV3Enabled = restore }()
-
-	a, b := forkPair()
-	if RecomputeBlockHashWithConsensusFields(a) != RecomputeBlockHashWithConsensusFields(b) {
-		t.Fatal("with the flag OFF the parent must NOT be bound — otherwise deploying this " +
-			"binary changes consensus before the fleet-wide flip, and upgraded nodes reject " +
-			"un-upgraded ones with consensus_hash_mismatch")
-	}
-}
-
-func TestV2AndV3NeverProduceTheSameDigest(t *testing.T) {
-	// Domain separation. Without a domain bump the two preimages would claim the
-	// same version, and a mixed fleet would fail with no way to tell which side
-	// was wrong.
-	a, _ := forkPair()
-
-	ConsensusHashV3Enabled = false
-	v2 := RecomputeBlockHashWithConsensusFields(a)
-	ConsensusHashV3Enabled = true
-	v3 := RecomputeBlockHashWithConsensusFields(a)
-	ConsensusHashV3Enabled = false
-
-	if v2 == v3 {
-		t.Fatal("v2 and v3 produced the same digest for the same block")
+// TestConsensusHashPreimageIsPinned freezes the ONE consensus-hash format.
+//
+// This replaces the old v2/v3 domain-separation test. That one guarded the
+// boundary BETWEEN two formats; with a single format the thing worth guarding
+// is the format itself. Any change to the domain tag, the field order, or the
+// set of fields changes this digest.
+//
+// IF THIS TEST FAILS you changed the consensus-hash preimage. Every node not
+// carrying your change will reject your blocks with consensus_hash_mismatch.
+// That is a coordinated fleet-wide cutover, not a refactor. Regenerate the
+// constant deliberately — never to make the test pass.
+func TestConsensusHashPreimageIsPinned(t *testing.T) {
+	const want = "0x3a3fe97852bf977715cc6ba6fab9c452fadfc180118bd565f19a01838d970d40"
+	got := RecomputeBlockHashWithConsensusFields(sampleBlock()).Hex()
+	if got != want {
+		t.Fatalf("consensus-hash preimage changed:\n  want %s\n  got  %s\n"+
+			"This is a CONSENSUS CHANGE. See Security/consensus_fields_hash.go's header.",
+			want, got)
 	}
 }
