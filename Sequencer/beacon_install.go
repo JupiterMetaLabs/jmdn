@@ -175,7 +175,7 @@ func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
 			pinnedErr, allowUnpinnedModulusEnv)
 	}
 
-	if messaging.IsProductionPosture() {
+	if isProductionPosture() {
 		return nil, fmt.Errorf("%w: refusing an unpinned VDF modulus even though %s is set — "+
 			"an unpinned modulus's trust level is unknown by definition, which is never "+
 			"acceptable in production (security.strict_posture or network.environment=mainnet)",

@@ -21,6 +21,7 @@ package Sequencer
 // devnet and allow exactly what it exists to prevent. It must fail closed.
 
 import (
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -106,3 +107,55 @@ func TestChainGuardRunsInsideTheGroupBuilder(t *testing.T) {
 		t.Fatal("newNetworkPinnedRSAGroup accepted a trapdoored pin on chain 1")
 	}
 }
+
+// withProductionPosture swaps the posture source for one test — same seam and
+// same shape as withChainID above.
+func withProductionPosture(t *testing.T, production bool) {
+	t.Helper()
+	prev := isProductionPosture
+	isProductionPosture = func() bool { return production }
+	t.Cleanup(func() { isProductionPosture = prev })
+}
+
+// THE case V3-006 exists for. Note the chain id is the one the pin IS allowed
+// on: that is deliberate. With any other chain id the pre-existing D-29 guard
+// fires first and this test would pass without the V3-006 branch existing at
+// all. Putting the pin on its allowed chain is what isolates the new branch.
+func TestTrapdoorPinRefusedInProductionEvenOnItsAllowedChain(t *testing.T) {
+	withChainID(t, devnetChainID, true)
+	withProductionPosture(t, true)
+
+	err := enforceNetworkPinChainPolicy("rsa-2048-testnet-ephemeral")
+	if err == nil {
+		t.Fatal("a modulus whose generator knew p,q was accepted on a production node " +
+			"because its chain id happened to match the allow-list — a copied .env or a " +
+			"chain-id collision is then enough to put a grindable VDF on mainnet")
+	}
+	if !errors.Is(err, ErrTrapdooredGroupInProduction) {
+		t.Fatalf("want ErrTrapdooredGroupInProduction, got %v", err)
+	}
+}
+
+// Control: the posture, and nothing else, is what flips the verdict.
+func TestTrapdoorPinStillAllowedOnItsChainOutsideProduction(t *testing.T) {
+	withChainID(t, devnetChainID, true)
+	withProductionPosture(t, false)
+
+	if err := enforceNetworkPinChainPolicy("rsa-2048-testnet-ephemeral"); err != nil {
+		t.Fatalf("the devnet pin must keep working on the devnet it exists for: %v", err)
+	}
+}
+
+// The override waives the pinned digest; it must not waive production.
+func TestUnpinnedModulusRefusedInProductionDespiteOverride(t *testing.T) {
+	withProductionPosture(t, true)
+	t.Setenv(allowUnpinnedModulusEnv, "1")
+
+	if _, err := buildVDFGroup(testFixtureModulus(t), "not-a-registered-pin"); err == nil {
+		t.Fatal("an unpinned modulus was installed in production because the override env " +
+			"var was set — an unpinned modulus's trust level is unknown by definition")
+	} else if !errors.Is(err, ErrUnpinnedModulusInProduction) {
+		t.Fatalf("want ErrUnpinnedModulusInProduction, got %v", err)
+	}
+}
+

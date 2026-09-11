@@ -115,6 +115,17 @@ var ErrNetworkPinChainNotAllowed = errors.New("entropy: this VDF modulus is not 
 // previously enforced only by comments in this file.
 var ErrTrapdooredGroupInProduction = errors.New("entropy: this VDF modulus's factorisation is known to its generator and is refused on a production node, regardless of chain id")
 
+// isProductionPosture is the production-posture source, swappable in tests for
+// exactly the reason currentChainID is: messaging.IsProductionPosture() reads
+// the process-global loaded settings, and a package test cannot set those
+// without leaving every other test in this binary running as a production node.
+//
+// Production always uses the real function. main.go calls settings.Load() at
+// :870, long before InstallAVCBeaconFromEnv at :1589, so the
+// !settings.IsLoaded() -> false fallback inside it is unreachable on the real
+// path — it exists so tests can run, not as a fail-open.
+var isProductionPosture = messaging.IsProductionPosture
+
 // enforceChainPolicy is the shared decision core for both guards below.
 //
 // Split out deliberately: the name-keyed and value-keyed entry points must
@@ -127,7 +138,7 @@ func enforceChainPolicy(name string, pol networkPinPolicy, declared bool, how st
 			"refused. Declare TrapdoorKnown and AllowedChainIDs for it",
 			ErrNetworkPinChainNotAllowed, name)
 	}
-	if pol.TrapdoorKnown && messaging.IsProductionPosture() {
+	if pol.TrapdoorKnown && isProductionPosture() {
 		return fmt.Errorf("%w: %q (%s)", ErrTrapdooredGroupInProduction, name, how)
 	}
 	if !pol.TrapdoorKnown && len(pol.AllowedChainIDs) == 0 {
