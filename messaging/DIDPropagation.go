@@ -17,7 +17,6 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -38,12 +37,39 @@ type DIDMessage struct {
 	Account   *DB_OPs.Account `json:"account,omitempty"`
 }
 
+// didDedupCapacity carries over the working set the old Bloom filter was
+// sized for (NewWithEstimates(100000, 0.01)) — same capacity, now exact.
+const didDedupCapacity = 100000
+
+// didDedupCache replaces the old *bloom.BloomFilter (JMDN-V3-008, same class
+// as blockPropagation.go's dedupMessageCache). Three defects close with this
+// one declaration:
+//
+//  1. accountOnce was SHARED between this dedup path and InitDIDPropagation.
+//     A DID stream arriving between main.go's SetStreamHandler and its
+//     InitDIDPropagation call could consume the Once here first, so
+//     InitDIDPropagation would skip its whole body and return nil —
+//     accountsClient silently never set. Initializing eagerly removes this
+//     path from the Once entirely; accountOnce now belongs to
+//     InitDIDPropagation alone.
+//  2. `if accountFilter == nil` wrapped around the Once was broken
+//     double-checked locking — an unsynchronized read of a pointer another
+//     goroutine writes inside Do.
+//  3. Test/Add took no lock, and the filter was never rotated: keyed on the
+//     account address, inserts grow monotonically for the process lifetime,
+//     so the false-positive rate climbs without bound and each hit silently
+//     drops a real, never-before-seen DID message, permanently.
+//
+// hashicorp/golang-lru.Cache is documented thread-safe (internal RWMutex), so
+// Contains/Add need no external lock. mustNewDedupCache already exists in
+// this package (blockPropagation.go) — reused here rather than duplicated.
+var didDedupCache = mustNewDedupCache(didDedupCapacity)
+
 // Store for DID message tracking
 var (
-	accountFilter  *bloom.BloomFilter
 	accountsClient *config.PooledConnection
 	accountsMutex  sync.RWMutex
-	accountOnce    sync.Once
+	accountOnce    sync.Once // InitDIDPropagation only — see didDedupCache
 )
 
 // InitDIDPropagation initializes the DID propagation system
@@ -51,9 +77,6 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 	var initErr error
 
 	accountOnce.Do(func() {
-		// Initialize the bloom filter for DID messages
-		accountFilter = bloom.NewWithEstimates(100000, 0.01)
-
 		if existingClient != nil {
 			// Use the provided client instead of creating a new one
 			accountsMutex.Lock()
@@ -69,8 +92,8 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 	return initErr
 }
 
-// deriveMessageID builds the bloom-filter dedup key from the account address
-// alone. The key is therefore identical on every node and at every hop, so a
+// deriveMessageID builds the dedup key from the account address alone. The
+// key is therefore identical on every node and at every hop, so a
 // given account is deduped consistently network-wide, and it cannot be varied
 // by a peer to defeat dedup. An account address maps to a single creation
 // event, so keying on the address is sufficient for this channel.
@@ -79,26 +102,15 @@ func deriveMessageID(addr common.Address) string {
 	return base64.URLEncoding.EncodeToString(sum[:])[:24]
 }
 
-// isAccountMessageProcessed checks if this message has already been processed
+// isAccountMessageProcessed reports whether this account's DID message was
+// already processed. Exact — never a false positive. See didDedupCache.
 func isAccountMessageProcessed(messageID string) bool {
-	// Initialize filter if not already done
-	if accountFilter == nil {
-		accountOnce.Do(func() {
-			accountFilter = bloom.NewWithEstimates(100000, 0.01)
-		})
-	}
-	return accountFilter.Test([]byte(messageID))
+	return didDedupCache.Contains(messageID)
 }
 
 // markAccountMessageProcessed marks a message as processed
 func markAccountMessageProcessed(messageID string) {
-	// Initialize filter if not already done
-	if accountFilter == nil {
-		accountOnce.Do(func() {
-			accountFilter = bloom.NewWithEstimates(100000, 0.01)
-		})
-	}
-	accountFilter.Add([]byte(messageID))
+	didDedupCache.Add(messageID, struct{}{})
 }
 
 // storeAccountInDB stores the Account document in the accounts database
