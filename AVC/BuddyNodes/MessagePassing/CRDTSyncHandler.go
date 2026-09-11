@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -15,7 +16,6 @@ import (
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
-	"gossipnode/crdt"
 	"gossipnode/seednode"
 
 	avcdatalayer "github.com/JupiterMetaLabs/avc/buddynodes/datalayer"
@@ -840,5 +840,29 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 		}
 		merged++
 	}
+
+	// D-31: close the TOCTOU between the watermark check above and these
+	// writes.
+	//
+	// The check at the top of this function reads DefaultWatermark once. The
+	// writes happen after a JSON unmarshal and a loop over every element. In
+	// that window ConvergeAndCompact can run on another goroutine, advance the
+	// watermark, and CompactVotesBelowHeight can delete this very key — after
+	// which the Adds above put it straight back. The result is a vote for a
+	// height the node has already evaluated and discarded, resurrected by a
+	// lagging peer's sync data, with nothing in the logs to say so.
+	//
+	// A lock would have to span this whole function and serialise every merge
+	// against compaction. Re-checking afterwards is cheaper and reaches the
+	// same invariant: nothing at or below the watermark survives a merge. If
+	// the watermark moved past us while we worked, undo the key.
+	if height, ok := avcvotes.HeightFromKey(key); ok && height <= avcvotes.DefaultWatermark.Current() {
+		listenerNode.VoteCRDTLayer.CRDTLayer.Delete(key)
+		logger().Info(context.Background(), "vote sync: watermark advanced mid-merge — discarding resurrected key",
+			ion.String("key", key), ion.Uint64("height", height),
+			ion.Uint64("watermark", avcvotes.DefaultWatermark.Current()))
+		return 0, nil
+	}
+
 	return merged, nil
 }

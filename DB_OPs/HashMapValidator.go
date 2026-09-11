@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
+	hashmap "github.com/JupiterMetaLabs/avc/crdt/hashmap"
 	"gossipnode/config"
-	hashmap "gossipnode/crdt/HashMap"
 )
 
 // ValidateHashMapKeys checks that all keys in the HashMap actually exist in the database

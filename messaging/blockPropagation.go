@@ -17,8 +17,8 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -37,11 +37,44 @@ import (
 var (
 	peerTimeouts     = make(map[string]time.Time)
 	peerTimeoutMutex sync.RWMutex
-	messageFilter    *bloom.BloomFilter
 	// immuClient       *config.PooledConnection // unused: declared but never assigned or read
 	immuClientOnce sync.Once
 	globalHost     host.Host // Add this line
 )
+
+// dedupMessageCacheCapacity bounds the exact, bounded dedup cache below
+// (JMDN-V3-008). Not a target false-positive rate - there IS no false
+// positive with an exact map-backed cache, so this number only trades off
+// how far back duplicate detection reaches against memory: an entry older
+// than the newest dedupMessageCacheCapacity distinct messages can be evicted
+// and, if resent, reprocessed. That is a bounded liveness/efficiency cost,
+// never a correctness one - unlike the old Bloom filter, aging an entry out
+// here can only cause an occasional redundant reprocessing of a genuine old
+// duplicate, never the silent drop of a brand-new valid block.
+const dedupMessageCacheCapacity = 50000
+
+// dedupMessageCache replaces the old *bloom.BloomFilter (JMDN-V3-008: fixed
+// 10,000-entry/1%-target Bloom filter, never rotated, unsynchronized Test/Add
+// - false-positive rate climbed to ~83% by 50,000 inserts and dropped a real
+// block as a duplicate on every hit, permanently, with no way to tell a
+// collision from a genuine repeat).
+//
+// hashicorp/golang-lru.Cache is documented thread-safe (internal RWMutex), so
+// Contains/Add need no external lock. Initialized directly at package load,
+// not lazily behind a nil check - closes both the unsynchronized-init race
+// AND the latent nil-pointer risk if anything ever called isMessageProcessed
+// before StartBlockPropagationCleanup had run.
+var dedupMessageCache = mustNewDedupCache(dedupMessageCacheCapacity)
+
+func mustNewDedupCache(size int) *lru.Cache[string, struct{}] {
+	c, err := lru.New[string, struct{}](size)
+	if err != nil {
+		// Unreachable: size is a positive compile-time constant. lru.New only
+		// errors for size <= 0.
+		panic(fmt.Sprintf("messaging: dedup cache: %v", err))
+	}
+	return c
+}
 
 // maxBlockStreamBytes caps a single direct block-propagation stream read so a
 // peer that opens the stream and streams an endless body (no newline) cannot
@@ -65,9 +98,6 @@ func StartBlockPropagationCleanup() {
 			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
-	}
-	if messageFilter == nil {
-		messageFilter = bloom.NewWithEstimates(10000, 0.01)
 	}
 	BlockPropagationLocalGRO.Go(GRO.BlockPropagationPeersCleanupThread, func(ctx context.Context) error {
 		cleanupPeerTimeouts(ctx)
@@ -145,14 +175,15 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	broadcastLogger().Info(context.Background(), "Peer timed out for sending duplicate block", ion.String("peer", peerID), ion.String("duration", duration.String()))
 }
 
-// isMessageProcessed checks if this message has already been processed
+// isMessageProcessed checks if this message has already been processed.
+// Exact (never a false positive) — see dedupMessageCache's doc comment.
 func isMessageProcessed(messageID string) bool {
-	return messageFilter.Test([]byte(messageID))
+	return dedupMessageCache.Contains(messageID)
 }
 
-// markMessageProcessed marks a message as processed
+// markMessageProcessed marks a message as processed.
 func markMessageProcessed(messageID string) {
-	messageFilter.Add([]byte(messageID))
+	dedupMessageCache.Add(messageID, struct{}{})
 }
 
 // storeMessageInDB stores a message in ImmuDB using the appropriate key
@@ -183,23 +214,20 @@ func storeMessageInDB(msg config.BlockMessage) error {
 	return nil
 }
 
-// updateMessageSet adds a message key to the grow-only set in ImmuDB
+// updateMessageSet durably records that key has been stored.
+//
+// One record per key (O(1) per call) instead of reading and rewriting a
+// single grow-only map on every message (JMDN-V3-008: that map was never
+// pruned, so each write's cost grew with the total historical message count).
+// Nothing else in the codebase reads the old "crdt:message_set" map key, so
+// this change of storage shape has no other reader to break.
 func updateMessageSet(key string) error {
-
-	const setKey = "crdt:message_set"
-
-	var messageSet map[string]bool
-	err := DB_OPs.ReadJSON(setKey, &messageSet)
-	if err != nil {
-		messageSet = make(map[string]bool)
-	}
-
-	messageSet[key] = true
-	return DB_OPs.Create(nil, setKey, messageSet)
+	return DB_OPs.Create(nil, "crdt:message_set:"+key, true)
 }
 
-// getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
-func getMessageIDForBloomFilter(msg config.BlockMessage) string {
+// getBlockDedupID gets the appropriate ID to use for duplication checking
+// against dedupMessageCache.
+func getBlockDedupID(msg config.BlockMessage) string {
 	// Special handling for ZK blocks to use hash for deduplication
 	if msg.Type == "zkblock" && msg.Block != nil {
 		return fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
@@ -263,7 +291,7 @@ func HandleBlockStream(stream network.Stream) {
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
 	// Check for duplicates
-	messageID := getMessageIDForBloomFilter(msg)
+	messageID := getBlockDedupID(msg)
 	if isMessageProcessed(messageID) {
 		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
 		// a bare peer id for a direct-stream copy. This is the dropped (second)

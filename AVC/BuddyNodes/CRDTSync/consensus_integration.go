@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
+	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/Pubsub"
-	"gossipnode/crdt"
 
 	"github.com/libp2p/go-libp2p/core/host"
 )

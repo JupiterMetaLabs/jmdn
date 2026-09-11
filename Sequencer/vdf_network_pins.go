@@ -8,6 +8,7 @@ import (
 	"github.com/JupiterMetaLabs/avc/vdf"
 
 	"gossipnode/config/settings"
+	"gossipnode/messaging"
 )
 
 // Network-owned VDF modulus pins.
@@ -104,6 +105,27 @@ var currentChainID = func() (uint64, bool) {
 // does not list.
 var ErrNetworkPinChainNotAllowed = errors.New("entropy: this VDF modulus is not permitted on this chain")
 
+// ErrTrapdooredGroupInProduction reports a network pin whose factorisation is
+// known to its generator (TrapdoorKnown) matched on a production node.
+//
+// JMDN-V3-006. Refused INDEPENDENTLY of AllowedChainIDs: that check stops
+// this pin from being used on the WRONG chain; this one stops a PRODUCTION
+// node from using it even if it happens to sit on the allowed chain id (a
+// chain-id collision or copy-pasted config) - "never on mainnet" was
+// previously enforced only by comments in this file.
+var ErrTrapdooredGroupInProduction = errors.New("entropy: this VDF modulus's factorisation is known to its generator and is refused on a production node, regardless of chain id")
+
+// isProductionPosture is the production-posture source, swappable in tests for
+// exactly the reason currentChainID is: messaging.IsProductionPosture() reads
+// the process-global loaded settings, and a package test cannot set those
+// without leaving every other test in this binary running as a production node.
+//
+// Production always uses the real function. main.go calls settings.Load() at
+// :870, long before InstallAVCBeaconFromEnv at :1589, so the
+// !settings.IsLoaded() -> false fallback inside it is unreachable on the real
+// path — it exists so tests can run, not as a fail-open.
+var isProductionPosture = messaging.IsProductionPosture
+
 // enforceChainPolicy is the shared decision core for both guards below.
 //
 // Split out deliberately: the name-keyed and value-keyed entry points must
@@ -115,6 +137,9 @@ func enforceChainPolicy(name string, pol networkPinPolicy, declared bool, how st
 			"Sequencer/vdf_network_pins.go, so its trust assumptions are unknown and it is "+
 			"refused. Declare TrapdoorKnown and AllowedChainIDs for it",
 			ErrNetworkPinChainNotAllowed, name)
+	}
+	if pol.TrapdoorKnown && isProductionPosture() {
+		return fmt.Errorf("%w: %q (%s)", ErrTrapdooredGroupInProduction, name, how)
 	}
 	if !pol.TrapdoorKnown && len(pol.AllowedChainIDs) == 0 {
 		return nil // no trapdoor holder, no chain restriction

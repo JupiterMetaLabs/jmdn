@@ -191,10 +191,39 @@ func DefaultConfig() NodeConfig {
 			// height), which the Stage-1 SeedSource ignores - the safe,
 			// test-guarded default (TestEpochIsDerivedFromTheBlockNotTheClock).
 			// Activating a real block-based epoch length is a deliberate,
-			// network-wide coordinated change, not a default.
-			CommitteeEpochBlocks: 0,
-			// W1 pool pinning: OFF. Needs a source that can serve a past epoch,
-			// and a non-zero committee_epoch_blocks. See config.go.
+			// network-wide coordinated change - which is what the value below
+			// now is. 20 blocks: the pool refreshes often enough that a newly
+			// registered validator waits at most 20 blocks to become eligible,
+			// while the seed still stores only one frozen snapshot per 20
+			// blocks. MUST stay > 0 while RequirePinnedCommittee is true:
+			// EpochForHeight returns 0 when this is 0, and the seed reads epoch
+			// 0 as its "current epoch" sentinel, so every pinned read then fails
+			// the exact-epoch check (committee_snapshot_client.go) and committee
+			// selection halts fleet-wide.
+			CommitteeEpochBlocks: 20,
+			// W1 pool pinning: ON. Every node resolving a block asks the seed
+			// for the snapshot frozen for THAT SelectionPeriod (height/20)
+			// rather than "whatever is current", so all nodes selecting the same
+			// block/round draw from byte-identical pool bytes and a validator
+			// join/leave cannot move the committee mid-round. Requires a seed
+			// that can serve a past epoch (jmns GetCommitteeSnapshot does) and a
+			// non-zero committee_epoch_blocks above.
+			//
+			// NOTE: per-block / per-round committee ROTATION does NOT come from
+			// these two values - it comes from Height+Period inside
+			// committee.DeriveSeed - and only becomes visible once the eligible
+			// pool is LARGER than max_validators; below that CommitteeFor seats
+			// everyone (avc/committee/select.go).
+			//
+			// TEMPORARILY REVERTED TO false. Turning this on halts the chain at
+			// genesis: EpochForHeight(h) = h/20 is 0 for heights 0-19, and the
+			// seed's wire protocol reserves epoch==0 to mean "serve the current
+			// epoch" (seedNodes gorm_jmns_service.go:148-150). The seed therefore
+			// answers with its wall-clock epoch (unix/300) and the exact-match
+			// check in committee_snapshot_client.go:90 correctly refuses it, so
+			// block 1 can never seat a committee. Only period 0 collides; periods
+			// >= 1 resolve correctly, but the chain cannot reach block 20 to get
+			// there. Re-enable once the sentinel collision is fixed.
 			RequirePinnedCommittee: false,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,

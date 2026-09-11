@@ -98,6 +98,14 @@ import (
 // working local setup into production without noticing what they copied.
 const allowUnpinnedModulusEnv = "JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS"
 
+// ErrUnpinnedModulusInProduction: JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS was set
+// on a production node. JMDN-V3-006 — an unpinned modulus's trust level is
+// unknown by definition, which this override exists to waive; that is never
+// acceptable in production regardless of chain id, and was previously
+// stopped only by the comment above ("Do not set it on mainnet"), not by
+// code.
+var ErrUnpinnedModulusInProduction = errors.New("entropy: unpinned VDF modulus override is refused in production posture")
+
 // buildVDFGroup constructs the VDF group, preferring pinned provenance.
 //
 // Default path: vdf.NewPinnedRSAGroup, which requires the group name to name
@@ -165,6 +173,13 @@ func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
 			"avc/vdf's registry, set %s=1 to proceed - it will log a security finding on "+
 			"every startup. Do not set it on mainnet",
 			pinnedErr, allowUnpinnedModulusEnv)
+	}
+
+	if isProductionPosture() {
+		return nil, fmt.Errorf("%w: refusing an unpinned VDF modulus even though %s is set — "+
+			"an unpinned modulus's trust level is unknown by definition, which is never "+
+			"acceptable in production (security.strict_posture or network.environment=mainnet)",
+			ErrUnpinnedModulusInProduction, allowUnpinnedModulusEnv)
 	}
 
 	// The override waives the DIGEST, not every provenance check. If the name
@@ -276,6 +291,9 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		cfg := settings.Get()
 		eb := cfg.Consensus.EntropyBootstrap
 		if len(eb.Epochs) > 0 {
+			if err := ValidateBootstrapFitsRetention(eb.Epochs, retain); err != nil {
+				return false, err
+			}
 			if err := publishBootstrapEntropy(sink, uint64(cfg.Network.ChainID), cfg.Consensus.SeedAuthorityBLSPub, eb.Seed, eb.Epochs); err != nil {
 				return false, err
 			}
