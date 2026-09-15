@@ -104,6 +104,12 @@ func TestEquivocationReadErrorFailsClosed(t *testing.T) {
 		t.Fatalf("want rejection reason %q, got %q (err: %v)",
 			"equivocation_unreadable", rej.reason, rej.err)
 	}
+	if !rej.localFault {
+		t.Fatal("rejection is not marked localFault — HandleReceivedBlockMessage would " +
+			"timeoutPeer(30s) the SENDER for OUR store being unreadable. Since this fires " +
+			"for every inbound block while the store is down, that walks the entire peer " +
+			"set into timeout and self-partitions the node")
+	}
 }
 
 // TestEquivocationWriteErrorFailsClosed — CON-21.
@@ -139,6 +145,63 @@ func TestEquivocationWriteErrorFailsClosed(t *testing.T) {
 	if rej.reason != "equivocation_write_failed" {
 		t.Fatalf("want rejection reason %q, got %q (err: %v)",
 			"equivocation_write_failed", rej.reason, rej.err)
+	}
+	if !rej.localFault {
+		t.Fatal("rejection is not marked localFault — the sender would be timed out for " +
+			"30s because OUR durable write failed. See the read-path test for why that " +
+			"self-partitions the node")
+	}
+}
+
+// TestGenuineEquivocationIsNotLocalFault is the other half of the localFault
+// contract, and the reason the two flags cannot be collapsed into one.
+//
+// A real signed fork IS the peer's fault and MUST still be punished: it keeps
+// timeoutPeer, and its metric keeps the peer's id. Without this test, marking
+// every equivocation rejection localFault — the obvious "fix" for the
+// self-partition bug — would pass the two tests above while silently disarming
+// the punishment for actual Byzantine behaviour.
+func TestGenuineEquivocationIsNotLocalFault(t *testing.T) {
+	ctx := context.Background()
+
+	store := newErrEquivStore() // healthy: the fault is the peer's, not ours
+	SetEquivocationStore(store)
+	t.Cleanup(func() { SetEquivocationStore(nil) })
+	resetEquivocation()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	key2, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("genkey2: %v", err)
+	}
+
+	b1 := failClosedBlock(74, signedTx(t, key, 0))
+	m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1, "peerA", "peerB", "peerC")}
+	if rej := validateRemoteBlock(ctx, m1); rej != nil {
+		t.Fatalf("first block at height 74 should pass, got %s: %v", rej.reason, rej.err)
+	}
+
+	// A DIFFERENT block at the same height: a signed fork.
+	b2 := failClosedBlock(74, signedTx(t, key2, 0))
+	if b2.BlockHash == b1.BlockHash {
+		t.Fatal("test setup: b1 and b2 must differ")
+	}
+	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2, "peerA", "peerB", "peerC")}
+
+	rej := validateRemoteBlock(ctx, m2)
+	if rej == nil {
+		t.Fatal("a conflicting block at a height already seen must be rejected as equivocation")
+	}
+	if rej.reason != "equivocation" {
+		t.Fatalf("want reason %q, got %q", "equivocation", rej.reason)
+	}
+	if rej.localFault {
+		t.Fatal("a genuine signed fork was marked localFault — the peer would escape the " +
+			"30s timeout and the metric would lose their id, disarming the punishment for " +
+			"real Byzantine behaviour")
 	}
 }
 

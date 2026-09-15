@@ -339,10 +339,23 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 				ion.Err(rej.err),
 				ion.String("reason", rej.reason),
 				ion.String("peer", remotePeer),
+				ion.Bool("local_fault", rej.localFault),
 				ion.String("block_hash", msg.Block.BlockHash.Hex()),
 				ion.Uint64("block_number", msg.Block.BlockNumber))
-			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
-			timeoutPeer(remotePeer, 30*time.Second)
+			if rej.localFault {
+				// OUR fault, not theirs. Refuse the block — fail-closed is
+				// fail-closed — but do not time the peer out and do not tag
+				// the metric with their id: this rejection fires for every
+				// inbound block while the local dependency is unhealthy, so
+				// punishing senders would time out the whole peer set and
+				// self-partition the node, and the counter would page an
+				// operator about innocent peers instead of the real cause.
+				// The "local" label keeps that visible and bounds cardinality.
+				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, "local").Inc()
+			} else {
+				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
+				timeoutPeer(remotePeer, 30*time.Second)
+			}
 			return // no forward, no mutation, no persistence, NOT cached
 		}
 
@@ -501,11 +514,36 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 type blockRejection struct {
 	reason string
 	err    error
+	// localFault marks a rejection caused by THIS node's own infrastructure
+	// rather than by anything the sending peer did. The block is still
+	// refused — fail-closed is fail-closed — but the peer is not punished for
+	// it and the metric is not labelled with their id. See rejectLocal.
+	localFault bool
 }
 
 // reject builds a *blockRejection with a metric reason and a formatted error.
+// Use this for a defect in the BLOCK: the peer sent something invalid.
 func reject(reason, format string, args ...interface{}) *blockRejection {
 	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// rejectLocal is reject for a fault in THIS NODE, not in the block.
+//
+// The distinction is not cosmetic. The caller punishes a rejection by timing
+// the sending peer out for 30s (HandleReceivedBlockMessage), which drops their
+// stream. A local-fault rejection fires on every inbound block for as long as
+// the local dependency is unhealthy, so routing it through that path walks the
+// entire peer set into timeout and self-partitions the node — turning a
+// recoverable storage problem into a network one, while the
+// BlocksRejectedCounter blames named honest peers for it.
+//
+// Introduced with the CON-08/CON-21 equivocation guards, whose rejections can
+// only be produced by the local durable store failing. Anything else that
+// refuses a block because a LOCAL dependency is unavailable belongs here too.
+func rejectLocal(reason, format string, args ...interface{}) *blockRejection {
+	r := reject(reason, format, args...)
+	r.localFault = true
+	return r
 }
 
 // admitZKBlock is the validate-before-cache gate: a zkblock hash only enters the

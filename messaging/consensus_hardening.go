@@ -786,7 +786,13 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 			// empty, so the durable read is the ONLY equivocation defence. A
 			// read error must reject, not fall through to "first sighting" —
 			// matching linkageDecision's tip_unreadable (audit CON-08).
-			return reject("equivocation_unreadable",
+			//
+			// rejectLocal, not reject: the sending peer did nothing wrong, OUR
+			// store is unhealthy. A plain reject would time them out for 30s,
+			// and since this fires for EVERY inbound block while the store is
+			// down, it would walk the whole peer set into timeout and
+			// self-partition the node.
+			return rejectLocal("equivocation_unreadable",
 				"durable equivocation read failed at height %d: %v (fail closed)", number, err)
 		case found:
 			seenHeights[number] = prev // warm the in-memory cache
@@ -805,7 +811,10 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 			// durable write leaves a hole the fail-closed read cannot detect —
 			// a later read returns not-found and treats a conflicting block as
 			// a first sighting. Reject rather than record in-memory-only.
-			return reject("equivocation_write_failed",
+			//
+			// rejectLocal for the same reason as the read path above: this is
+			// our storage failing, not the peer's block being bad.
+			return rejectLocal("equivocation_write_failed",
 				"durable equivocation write failed at height %d: %v (fail closed)", number, err)
 		}
 	}
