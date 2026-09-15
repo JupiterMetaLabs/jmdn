@@ -59,11 +59,16 @@ var ErrBootstrapNeedsAuthorityPin = errors.New("entropy: consensus.entropy_boots
 // committee.BeaconSource.evictLocked runs after EVERY Publish, including the
 // ones this file makes during startup - not just once live traffic begins.
 // Its rule is "keep only entropy for epoch >= newest-retain". Publishing a
-// bootstrap set whose span (max-min) is >= retain means the earliest epochs
+// bootstrap set whose span (max-min) is > retain means the earliest epochs
 // in that set are evicted by the LAST bootstrap Publish call, before the
 // beacon is ever handed to the consensus loop. A genesis chain that needed
 // epoch 0's bootstrap value to seat its very first committee finds it already
 // gone - JMDN-V3-005.
+//
+// The boundary is > and not >=: an epoch survives iff e >= newest-retain, so
+// at span == retain the earliest epoch sits exactly ON the cutoff and is kept.
+// Simulated against evictLocked with retain=6: span 6 evicts nothing, span 7
+// evicts epoch 0.
 var ErrBootstrapSpanExceedsRetention = errors.New("entropy: consensus.entropy_bootstrap.epochs spans more than the beacon's retention window - the earliest bootstrap epoch(s) would be evicted during startup, before use")
 
 var (
@@ -106,7 +111,12 @@ func ValidateBootstrapFitsRetention(epochs []uint64, retain uint64) error {
 			hi = e
 		}
 	}
-	if hi-lo >= retain {
+	// > retain, not >=. An epoch survives eviction iff e >= newest-retain
+	// (committee/beacon.go evictLocked: cutoff = newest-retain, delete e <
+	// cutoff), so a set spanning exactly retain has its earliest epoch sitting
+	// ON the cutoff and keeps it. Rejecting at >= refused a genesis config
+	// that works; the error text below reported a span that was never evicted.
+	if hi-lo > retain {
 		return fmt.Errorf("%w: span %d (epoch %d to %d), retain %d",
 			ErrBootstrapSpanExceedsRetention, hi-lo, lo, hi, retain)
 	}
