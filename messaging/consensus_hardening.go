@@ -744,10 +744,26 @@ func SetEquivocationStore(s EquivocationStore) { equivocationStore = s }
 // DIFFERENT block hash was already seen at this height (a signed fork / double
 // proposal). It consults the durable store in addition to the in-memory
 // map, so a conflicting block at a height first seen BEFORE a restart is still
-// caught. Durable-store errors are non-fatal: it falls back to in-memory
-// (degraded) rather than stalling consensus, matching the linkage
-// fail-open-on-infra posture. Only fully-validated blocks reach here (called
-// last in validateRemoteBlock), so the map is populated only by validated blocks.
+// caught. Only fully-validated blocks reach here (called last in
+// validateRemoteBlock), so the map is populated only by validated blocks.
+//
+// BOTH STORE PATHS FAIL CLOSED (audit CON-08 read, CON-21 write). This is
+// deliberately NOT the linkage "fail-open-on-infra" posture, because the two
+// are not comparable: after a restart the in-memory seenHeights map is empty,
+// so the durable store is the ONLY equivocation defence there is. Degrading to
+// in-memory on a store error does not degrade detection, it removes it — and
+// silently, at exactly the moment the store is unhealthy.
+//
+// # Do not "simplify" this back to log-and-continue
+//
+// It was already fixed once and silently un-fixed once. 0167cd21 (read) and
+// 1cfcc76d (write) landed, then merge 524fe714 resolved this hunk to the
+// pre-fix side and restored the fail-open code. Both fix commits remained
+// ancestors of the branch, so every "is the fix merged?" check answered yes
+// for five weeks while the shipped binary had no equivocation defence on
+// either path. equivocation_fail_closed_test.go pins the behaviour STRINGS for
+// that reason: a merge graph cannot detect this class of revert, and a test
+// that asserts on behaviour can.
 func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	seenHeightsMu.Lock()
 	defer seenHeightsMu.Unlock()
@@ -766,8 +782,12 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 		prev, found, err := equivocationStore.FirstSeenHash(number)
 		switch {
 		case err != nil:
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable read failed; using in-memory only")
+			// Fail closed: after a restart the in-memory seenHeights map is
+			// empty, so the durable read is the ONLY equivocation defence. A
+			// read error must reject, not fall through to "first sighting" —
+			// matching linkageDecision's tip_unreadable (audit CON-08).
+			return reject("equivocation_unreadable",
+				"durable equivocation read failed at height %d: %v (fail closed)", number, err)
 		case found:
 			seenHeights[number] = prev // warm the in-memory cache
 			if prev != hashHex {
@@ -779,13 +799,19 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	}
 
 	// First sighting of this height (this session and durably). Record both.
-	seenHeights[number] = hashHex
 	if equivocationStore != nil {
 		if err := equivocationStore.RecordFirstSeen(number, hashHex); err != nil {
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable write failed; recorded in-memory only")
+			// Fail closed to match the hardened read (CON-08/CON-21): a failed
+			// durable write leaves a hole the fail-closed read cannot detect —
+			// a later read returns not-found and treats a conflicting block as
+			// a first sighting. Reject rather than record in-memory-only.
+			return reject("equivocation_write_failed",
+				"durable equivocation write failed at height %d: %v (fail closed)", number, err)
 		}
 	}
+	// In-memory cache set only AFTER the durable write succeeds, so the two
+	// never disagree.
+	seenHeights[number] = hashHex
 	return nil
 }
 
