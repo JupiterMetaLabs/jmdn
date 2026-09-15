@@ -420,28 +420,44 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	// case "eth_getCode":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing address and block tag")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
-	// 	addr, _ := req.Params[0].(string)
-	// 	num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	code, err := handler.service.GetCode(ctx, addr, num)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, code, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+	// eth_getCode reports the code stored at an address: "0x" for an
+	// externally-owned account, hex-encoded bytecode for a contract. It is a
+	// state read and performs no execution, unlike eth_call above.
+	case "eth_getCode":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing address")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		addr := mustString(req.Params[0])
+		// GetCode does not read the address, so without this check a malformed
+		// value would return "0x" and read as a confirmed externally-owned
+		// account. Mirrors the guard on eth_getTransactionsByAddress above.
+		if !common.IsHexAddress(addr) {
+			resp, _ := invalidParams(req, "address must be a valid hex address")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		// The block tag is optional; callers commonly send the address alone.
+		tag := "latest"
+		if len(req.Params) > 1 {
+			tag = mustString(req.Params[1])
+		}
+		num, err := parseBlockTag(ctx, handler.service, tag)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		code, err := handler.service.GetCode(ctx, addr, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, code, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
 
 	case "eth_feeHistory":
 		if len(req.Params) < 2 {

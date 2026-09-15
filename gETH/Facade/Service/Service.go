@@ -728,27 +728,37 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	return gasPrice, nil
 }
 
-// GetCode implements the Service interface - retrieves contract code at a specific address and block
+// GetCode implements the Service interface - reports the code stored at addr as
+// of block, in the form eth_getCode returns: "0x" for an account with no code,
+// hex-encoded bytecode otherwise.
+//
+// This chain has no contract execution and the account state carries no code
+// field, so every address is an externally-owned account and "0x" is the correct
+// result for every input. An EVM chain returns "0x" for externally-owned
+// accounts as well, so the response format does not change if contract support
+// is added later.
+//
+// addr and block are accepted but not read, because the result cannot depend on
+// them while no address can hold code. Adding contract deployment requires
+// replacing the constant with a state lookup and honouring block, in the same
+// change: a constant returned in front of an execution layer reports deployed
+// contracts as externally-owned accounts, and the response carries no error to
+// signal it.
 func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) (string, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Log the operation
-	if err := Logger.LogData(opCtx, fmt.Sprintf("GetCode called for address: %s, block: %s", addr, block.String()), "GetCode", 1); err != nil {
-		fmt.Printf("Failed to log GetCode operation: %v\n", err)
+	// block is nil-able; format it without dereferencing.
+	blockLabel := "latest"
+	if block != nil {
+		blockLabel = block.String()
 	}
 
-	// For now, return "0x" as there's no contract code storage implemented yet
-	// TODO: Implement actual contract code retrieval from state/storage
-	// This would typically involve:
-	// 1. Getting the state at the specified block
-	// 2. Looking up the account at the given address
-	// 3. Returning the code field (empty for EOAs, bytecode for contracts)
-
-	// Log success
-	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned 0x for address: %s", addr), "GetCode", 1); logErr != nil {
-		fmt.Printf("Failed to log GetCode success: %v\n", logErr)
+	// Log the operation. Input and result are recorded together: the call does
+	// no work between them that a second span could report on.
+	if err := Logger.LogData(opCtx, fmt.Sprintf("GetCode(%s, %s) returned 0x", addr, blockLabel), "GetCode", 1); err != nil {
+		fmt.Printf("Failed to log GetCode operation: %v\n", err)
 	}
 
 	return "0x", nil
