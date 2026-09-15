@@ -157,12 +157,54 @@ func TestValidateBootstrapFitsRetention_RejectsSpanExceedingRetention(t *testing
 func TestValidateBootstrapFitsRetention_AcceptsSpanWithinRetention(t *testing.T) {
 	cases := [][]uint64{
 		{0},                // current actual configuration
-		{0, 1, 2, 3, 4, 5}, // span 5, retain 6: exactly fits
+		{0, 1, 2, 3, 4, 5}, // span 5, retain 6: comfortably inside
 		{},                 // empty is always fine
 	}
 	for _, epochs := range cases {
 		if err := ValidateBootstrapFitsRetention(epochs, 6); err != nil {
 			t.Fatalf("epochs %v with retain=6 should be accepted, got %v", epochs, err)
 		}
+	}
+}
+
+// TestValidateBootstrapFitsRetention_Boundary pins the exact cutoff, which the
+// two tests above straddle without ever landing on.
+//
+// They test spans 0, 5 (accept) and 10 (reject) against retain=6. Every one of
+// those gives the same verdict under `>= retain` and under `> retain`, so the
+// pair passed identically against an operator that was off by one -- and it
+// was: the guard rejected span == retain, a configuration that actually works.
+//
+// The rule, from committee/beacon.go evictLocked: cutoff = newest-retain, and
+// entries are dropped when e < cutoff. So an epoch survives iff
+// e >= newest-retain, i.e. iff newest-e <= retain. At span == retain the
+// earliest epoch sits exactly ON the cutoff and is KEPT. Only span > retain
+// loses anything.
+//
+// Span 6 is therefore the only value that distinguishes the two operators, and
+// it is the one value neither existing test used.
+func TestValidateBootstrapFitsRetention_Boundary(t *testing.T) {
+	const retain = uint64(6)
+
+	// span == retain: the earliest epoch lands on the cutoff and survives.
+	// Verified against evictLocked: publishing 0..6 with retain=6 evicts nothing.
+	fits := []uint64{0, 1, 2, 3, 4, 5, 6}
+	if err := ValidateBootstrapFitsRetention(fits, retain); err != nil {
+		t.Fatalf("span %d with retain %d must be ACCEPTED (earliest epoch sits on the "+
+			"cutoff, evictLocked drops nothing) — rejecting it refuses a working genesis "+
+			"config: %v", fits[len(fits)-1]-fits[0], retain, err)
+	}
+
+	// span == retain+1: the earliest epoch falls below the cutoff and is evicted.
+	// Verified against evictLocked: publishing 0..7 with retain=6 evicts epoch 0.
+	overflows := []uint64{0, 1, 2, 3, 4, 5, 6, 7}
+	err := ValidateBootstrapFitsRetention(overflows, retain)
+	if err == nil {
+		t.Fatalf("span %d with retain %d must be REJECTED — epoch %d is evicted by the "+
+			"final bootstrap Publish, before the chain starts",
+			overflows[len(overflows)-1]-overflows[0], retain, overflows[0])
+	}
+	if !errors.Is(err, ErrBootstrapSpanExceedsRetention) {
+		t.Fatalf("want ErrBootstrapSpanExceedsRetention, got %v", err)
 	}
 }
