@@ -200,6 +200,23 @@ func DefaultConfig() NodeConfig {
 			// 0 as its "current epoch" sentinel, so every pinned read then fails
 			// the exact-epoch check (committee_snapshot_client.go) and committee
 			// selection halts fleet-wide.
+			//
+			// BREAKING — CONSENSUS-AFFECTING DEFAULT, changed 0 -> 20.
+			// Spelling out the consequence the paragraph above only implies:
+			// this value is the DENOMINATOR of EpochForHeight (height / N), and
+			// the epoch it yields selects the committee. Two nodes running
+			// different values compute different epochs for the SAME height and
+			// therefore seat DIFFERENT COMMITTEES — they will reject each
+			// other's blocks. Nothing overrides this from YAML or env in any
+			// deployment in this fleet today, so the compiled default governs
+			// and a binary carrying a different one is a fork, not a
+			// misconfiguration.
+			//
+			// Rollout: rebuild and restart the WHOLE fleet together. There is
+			// no gradual cutover and no flag to stage it behind — the
+			// coordination has to happen outside the code. A rolling restart
+			// across binaries built either side of this change splits the
+			// network for the duration of the roll.
 			CommitteeEpochBlocks: 20,
 			// W1 pool pinning: ON. Every node resolving a block asks the seed
 			// for the snapshot frozen for THAT SelectionPeriod (height/20)
