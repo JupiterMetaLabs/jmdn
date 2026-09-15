@@ -32,8 +32,26 @@ import (
 // with the same transactions, slot and period produced the SAME ConsensusHash —
 // and since BlockHash is transactions-only they collided too, making
 // CanonicalVoteMessageV4 byte-identical for both. A certificate gathered for one
-// fork verified against the other, and checkEquivocation (keyed on BlockHash,
-// blockPropagation.go:677) saw one block where there were two.
+// fork verified against the other.
+//
+// WHAT THIS FIXES, AND WHAT IT DOES NOT. The certificate-replay half is closed:
+// the v4 vote now signs a ConsensusHash that differs between the two forks, so
+// a cert gathered for one no longer verifies against the other.
+//
+// EQUIVOCATION DETECTION IS NOT FIXED and this comment used to claim it was.
+// checkEquivocation is still keyed on BlockHash (blockPropagation.go:677), and
+// BlockHash remains transactions-only — attachAVCConsensusFields never rewrites
+// it (Block/consensus_fields.go). Two forks carrying the same transactions
+// therefore still share a BlockHash, so the equivocation map sees one entry, not
+// two. Worse, the pre-validation dedup key is that same colliding value
+// (getBlockDedupID -> "zkblock:"+BlockHash), so the second fork is discarded as
+// a DUPLICATE at blockPropagation.go:295 and never reaches the check at all.
+//
+// Closing detection means re-keying BOTH the equivocation map and the dedup
+// cache onto ConsensusHash, which changes what "the same block" means on the
+// receive path. That is a design change, not a follow-up edit, and it is
+// deliberately not attempted here. Until it lands, do not read this file as
+// evidence that forks are detected.
 //
 // The old branch and its JMDN_CONSENSUS_HASH_V3 flag were removed before testnet
 // launch: with no live fleet and no history to re-verify, one unconditional
