@@ -420,28 +420,34 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	// case "eth_getCode":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing address and block tag")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
-	// 	addr, _ := req.Params[0].(string)
-	// 	num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	code, err := handler.service.GetCode(ctx, addr, num)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, code, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+	case "eth_getCode":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing address")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		addr, _ := req.Params[0].(string)
+		// The block tag is optional: some clients call eth_getCode(address) with
+		// no second param. parseBlockTag maps "" to "latest".
+		blockTag := ""
+		if len(req.Params) >= 2 {
+			blockTag = mustString(req.Params[1])
+		}
+		num, err := parseBlockTag(ctx, handler.service, blockTag)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		code, err := handler.service.GetCode(ctx, addr, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, code, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
 
 	case "eth_feeHistory":
 		if len(req.Params) < 2 {
