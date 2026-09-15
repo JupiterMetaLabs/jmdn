@@ -1587,6 +1587,26 @@ func main() {
 	// when unset: the node stays on Stage 1 (salt-based) committee
 	// selection exactly as it does today.
 	if beaconInstalled, beaconErr := Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
+		// A PRODUCTION-POSTURE SECURITY REFUSAL IS FATAL. Everything else here
+		// falls back to Stage 1 and logs, which is right for a misconfiguration
+		// — but wrong for these two, and dangerously so.
+		//
+		// JMDN-V3-006 added guards that refuse a trapdoored or unpinned VDF
+		// modulus on a production node. They return an error to THIS call site,
+		// which logged it and carried on. The node then booted on Stage-1 salt
+		// entropy: different committee-selection entropy from what the operator
+		// configured and from every peer whose beacon DID install, with one log
+		// line as the only signal. The guards read as fail-closed and the
+		// process was not. Refusing to start is the whole point of a production
+		// posture check — see the SEC-03 check at the top of main for the shape
+		// this should have had from the start.
+		if errors.Is(beaconErr, Sequencer.ErrTrapdooredGroupInProduction) ||
+			errors.Is(beaconErr, Sequencer.ErrUnpinnedModulusInProduction) {
+			fmt.Printf("Refusing to start: %v\n", beaconErr)
+			log.Error().Err(beaconErr).
+				Msg("entropy: production-posture VDF refusal — refusing to start rather than silently downgrading to Stage 1")
+			os.Exit(1)
+		}
 		fmt.Printf("AVC beacon (Stage 2 RANDAO+VDF) configuration present but invalid: %v\n", beaconErr)
 		log.Error().Err(beaconErr).Msg("entropy: AVC beacon (Stage 2) misconfigured — refusing to install, staying on Stage 1")
 	} else if beaconInstalled {
