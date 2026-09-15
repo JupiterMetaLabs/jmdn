@@ -92,12 +92,15 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	}
 
 	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
-	// attachment point — set Slot/Period from jmdn's own live tracking and,
-	// when the rollout flag is on, recompute BlockHash to bind them. Must run
-	// after all other validation above and before consensus.Start below —
-	// see Block/consensus_fields.go for the full rationale. Fails closed
-	// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8) if this node's
-	// slot/epoch clock has not been recovered from its committed history.
+	// attachment point — set Slot/Period from jmdn's own live tracking and
+	// compute the separate ConsensusHash that binds them. BlockHash is NOT
+	// touched (corrected 2026-09-15: this said "when the rollout flag is on,
+	// recompute BlockHash"; no flag gates this path and BlockHash is never
+	// rewritten here). Must run after all other validation above and before
+	// consensus.Start below — see Block/consensus_fields.go for the full
+	// rationale. Fails closed (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)
+	// if this node's slot/epoch clock has not been recovered from its
+	// committed history.
 	if err := attachAVCConsensusFields(block); err != nil {
 		if s.logger != nil {
 			s.logger.Error(ctx, "gRPC: refusing to propose — consensus-field attach failed (reason in error)", err)

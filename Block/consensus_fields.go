@@ -23,18 +23,28 @@ import (
 	"gossipnode/messaging"
 )
 
-// attachAVCConsensusFields sets the two fields that already have a real,
-// live source (Slot, Period - from this morning's M0.1/M3 work) and, only
-// when the M2b rollout flag is on, recomputes BlockHash to cryptographically
-// bind all six consensus fields plus transaction contents. This OVERWRITES
-// whatever BlockHash the caller (today, effectively the orchestrator's own
-// legacy formula) supplied - required, since the six-field hash cannot be
-// computed by anything upstream of jmdn, which is the only place these
-// fields exist. Every other node re-derives and checks this same hash via
-// Security.CheckBlockHash / messaging.checkBodyBinding on receipt - already
-// wired and tested (Security/blockhash_m2b_flag_test.go,
-// messaging/body_binding_m2b_flag_test.go) - so this producer-side write is
-// the missing half of an already-closed loop, not a new one.
+// attachAVCConsensusFields sets the two fields that already have a real, live
+// source (Slot, Period - from this morning's M0.1/M3 work) and computes the
+// SEPARATE ConsensusHash that cryptographically binds all six consensus fields
+// plus transaction contents.
+//
+// CORRECTED 2026-09-15. This comment previously said the function "recomputes
+// BlockHash ... This OVERWRITES whatever BlockHash the caller supplied", and
+// that it did so "only when the M2b rollout flag is on". Both halves were
+// wrong, and had been for some time:
+//
+//   - BlockHash is NEVER written here. It stays the orchestrator-submitted,
+//     transactions-only identity. Rebinding it broke every tx-only validator
+//     (Security.CheckZKBlockValidation, messaging.checkBodyBinding, the AVC
+//     structural validator) and the vote, all of which recompute the tx-only
+//     hash — see the block comment at the ConsensusHash assignment below.
+//   - There is no rollout flag on this path. The consensus-fields digest is
+//     computed unconditionally on every proposed block, and the v2/v3 preimage
+//     flag it once referred to was removed with the v3 format freeze.
+//
+// The binding lives in the separate ConsensusHash field, which the committee's
+// v4 vote signs over and messaging.checkConsensusBinding recomputes and
+// enforces on the receive path.
 //
 // RandaoReveals is now populated — CHANGED 2026-08-20. It was previously left
 // at zero with the note "the entropy-committee reveal pipeline (M4) is not
