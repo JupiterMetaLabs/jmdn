@@ -296,19 +296,40 @@ func TestWarmupIsUnchangedWithFlagOff(t *testing.T) {
 // committees - and the failure would look like a random, rare, unreproducible
 // rejection an hour apart.
 func TestEpochIsDerivedFromTheBlockNotTheClock(t *testing.T) {
-	// Whatever committee_epoch_blocks is compiled to by default, EpochForHeight
-	// must be exactly height/that-value (0 when the value itself is 0) and
-	// never wall-clock derived. Read the live default instead of hardcoding
-	// it, so this test tracks a deliberate default change (e.g. 0 -> 20)
-	// instead of going stale against it.
-	n := epochLengthBlocks()
-	for _, h := range []uint64{0, 1, 999, 1_000_000} {
-		want := uint64(0)
-		if n > 0 {
-			want = h / n
-		}
+	// PIN THE DEFAULT. committee_epoch_blocks is the denominator of
+	// EpochForHeight, and the epoch it yields selects the committee: two nodes
+	// compiled with different values seat DIFFERENT COMMITTEES at the same
+	// height and reject each other's blocks. Nothing overrides it from YAML or
+	// env anywhere in this fleet, so the compiled default IS the consensus
+	// parameter and a change to it is a coordinated fleet-wide restart.
+	//
+	// This assertion is hardcoded on purpose. It previously read the value via
+	// epochLengthBlocks() and computed `want` from it — the same helper the
+	// function under test uses — which reduced to asserting f(h) == f(h). That
+	// cannot fail for ANY default, so the 0 -> 20 change (as breaking as the
+	// consensus-hash format freeze, which got a golden digest) sailed through
+	// with no test able to notice.
+	//
+	// If this fails because the default moved deliberately: update the constant
+	// AND schedule the fleet restart. Never update it just to go green.
+	const wantEpochBlocks = uint64(20)
+	if n := epochLengthBlocks(); n != wantEpochBlocks {
+		t.Fatalf("committee_epoch_blocks default is %d, want %d — this is a CONSENSUS "+
+			"parameter: nodes with different values seat different committees for the "+
+			"same height. If the change is intended, update this constant and coordinate "+
+			"a fleet-wide rebuild+restart; there is no flag to stage it behind", n, wantEpochBlocks)
+	}
+
+	// With that pinned, assert the mapping against literals rather than against
+	// a re-derivation of the function under test.
+	for h, want := range map[uint64]uint64{
+		0: 0, 1: 0, 19: 0, // first epoch spans heights 0..19
+		20: 1, 39: 1, // second epoch
+		999: 49, 1_000_000: 50_000,
+	} {
 		if got := EpochForHeight(h); got != want {
-			t.Fatalf("height %d: epoch %d, want %d (committee_epoch_blocks=%d)", h, got, want, n)
+			t.Fatalf("height %d: epoch %d, want %d (committee_epoch_blocks=%d)",
+				h, got, want, wantEpochBlocks)
 		}
 	}
 
