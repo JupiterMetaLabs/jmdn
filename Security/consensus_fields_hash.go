@@ -78,6 +78,7 @@ const blockHashDomain = "jmdn/block-hash/v3"
 //	   || u64:VotingSnapshotEpoch
 //	   || len:encodeCertSigners(PrevAggCert)
 //	   || len:CommitteeSnapshotHash
+//	   || len:VdfParamsDigest
 //	   || len:concat(txContentHash_i)
 //	    )
 //
@@ -129,6 +130,16 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR is on, same "zero is honest" rule as
 	// VdfProof/SeedEpoch above.
 	committee.WriteField(&buf, block.CommitteeSnapshotHash)
+	// VdfParamsDigest (audit D-39/D-54, added 2026-09-16). The fleet VDF parameter
+	// identity (group ‖ modulus digest ‖ T — messaging.VDFIdentityDigest) that
+	// produced this block's committee-selection entropy. Hash-covering it makes a
+	// node on divergent VDF parameters produce a DIFFERENT ConsensusHash and be
+	// rejected fleet-wide — the tamper-proof half of the D-39/D-54 fix, above the
+	// advisory adoption-path check in messaging.VerifyAndAcceptVDFProof. Empty
+	// until Stage 2 is installed, same "zero is honest" rule as VdfProof /
+	// CommitteeSnapshotHash above. Adding it is a coordinated fleet cutover (see
+	// this file's header); it rides the Stage-2 enablement restart.
+	committee.WriteField(&buf, []byte(block.VdfParamsDigest))
 	committee.WriteField(&buf, txContentConcat(block.Transactions))
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))

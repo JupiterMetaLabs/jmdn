@@ -74,6 +74,7 @@ func TestV3StillBindsEveryFieldV2Bound(t *testing.T) {
 		"CommitteeSnapshotHash": func(b *config.ZKBlock) { b.CommitteeSnapshotHash = []byte("tampered") },
 		"BlockNumber":           func(b *config.ZKBlock) { b.BlockNumber++ },
 		"PrevHash":              func(b *config.ZKBlock) { b.PrevHash = common.HexToHash("0xdead") },
+		"VdfParamsDigest":       func(b *config.ZKBlock) { b.VdfParamsDigest = "tampered" }, // D-39/D-54
 	}
 	for name, mutate := range mutations {
 		blk := sampleBlock()
@@ -127,7 +128,7 @@ func TestGenesisShapedBlockStillHashes(t *testing.T) {
 // That is a coordinated fleet-wide cutover, not a refactor. Regenerate the
 // constant deliberately — never to make the test pass.
 func TestConsensusHashPreimageIsPinned(t *testing.T) {
-	const want = "0x3a3fe97852bf977715cc6ba6fab9c452fadfc180118bd565f19a01838d970d40"
+	const want = "0x79c9ced89c6a1ad55c0190b249a7315dacef0194ebc7ad32f94d61ee2c448c52"
 	got := RecomputeBlockHashWithConsensusFields(sampleBlock()).Hex()
 	if got != want {
 		t.Fatalf("consensus-hash preimage changed:\n  want %s\n  got  %s\n"+
