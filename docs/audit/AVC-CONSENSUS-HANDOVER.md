@@ -2,18 +2,18 @@
 
 | | |
 |---|---|
-| **Status / Verdict** | **No-Go for mainnet.** **No-Go for enabling Stage 2 entropy until `D-39` and `D-54` are fixed with regression evidence** (rev 6: D-24, D-25, D-27, D-29 and D-35 — every earlier gate — are now `Fixed` and re-verified against live code; **D-25 had been carried as an open SEV-1 since 2026-09-03 while the code was already fail-closed**). D-39 and D-54 must land **together**: binding difficulty `T` without binding the group leaves half the divergence open. **Go for continued devnet use** — but only because the devnet's `T` and modulus are fleet-uniform and the modulus guard now refuses the trapdoored pin by value on any other chain **and refuses to boot** in production posture (87636d7). **One cutover note:** 8872912 froze the consensus-hash preimage as the single format, so the next fleet upgrade is a **coordinated restart, not a rolling one** — a node on the old binary forks. |
+| **Status / Verdict** | **No-Go for mainnet.** **Stage 2 entropy: the gate is CLEAR as of PR #135 (2026-09-16)** — D-39 and D-54 landed together as one identity (group ‖ modulus digest ‖ T), joining D-24, D-25, D-27, D-29 and D-35. **But enable it only on a uniformly upgraded fleet:** two of the three new protections are unconditional (install-time refusal of a divergent `T`; identity hash-covered in the `ConsensusHash` preimage, so a wrong-parameter node forks), while the adoption-path check that *names the cause* is skipped when either side's field is empty, by design, so a mixed fleet degrades to the pre-fix nameless failure. No posture gate forces the promotion — **D-59**. See §0.3. **Go for continued devnet use** — but only because the devnet's `T` and modulus are fleet-uniform and the modulus guard now refuses the trapdoored pin by value on any other chain **and refuses to boot** in production posture (87636d7). **One cutover note:** 8872912 froze the consensus-hash preimage as the single format, so the next fleet upgrade is a **coordinated restart, not a rolling one** — a node on the old binary forks. |
 | **Date** | 2026-09-03, **last revised 2026-09-15 (rev 6)** (rev 3 re-derived from `v3base` after all four repos moved; rev 4 added D-35…D-37 from the PR #125 review; rev 5 restored D-38…D-50; **rev 6 re-verified every `Fixed` claim against live code after PR #129 merged, then compressed the closed rows** — see the rev-6 note under §2.2) |
 | **Scope** | Originally audited at `jmdn@84d0c54f` · `avc@1c13324` · `ThebeDB@6b8f6d1` · `jmdt-devnet@fd52106` (`main` — **no `v3base` branch exists in that repo**), re-based to `jmdn@dda7c4a9` on 2026-09-04. **Rev 5 re-verified against `jmdn@291d44c` and `avc@4df28ca` (= `v0.1.0-v3base.5`); rev 6 re-verified against `jmdn@e4f18da`, `avc@4df28ca`, `ThebeDB@533622a` after PR #129 merged.** Entropy pipeline end-to-end, committee selection seam, vote ingest and BLS signing path, block-hash preimages, CRDT merge determinism, quorum arithmetic (all four implementations), devnet config vs code expectations; rev 4 added the persistence layer, the fallback aggregate-signature fold, VDF network pins, and the libp2p vdf-proof pull protocol. |
 | **Method** | Full source trace → Go 1.26.0 toolchain in a clean sandbox → `go vet` + `go test -race` across avc's consensus packages (all green) → **9 proof-of-concept tests written and executed** → Go race detector on the reveal-fold path → viper precedence reproduced by execution to settle two config claims → re-derivation from `v3base` after the repos moved mid-audit → rev 4: five parallel line-by-line readers over PR #125's 61-file diff → rev 5: every §0-§2 claim, command, path, symbol and count re-resolved against the live tree. |
 | **Companion file** | `avc/tests/audit/audit_poc_test.go` — executable evidence, **but read §0.5 first: it tests `avc`, and cannot see a jmdn-side fix.** PoCs 1-3 still pass, and that is *not* evidence D-25/D-27 are open — both are `Fixed`. PoCs 4-5 are **INVERTED** and pass while the D-32 fix holds (the only pair whose fix landed in the same module). Invert each remaining assertion when fixing, to convert it into a regression test. D-24's regression test is `avc/randao/accumulator_race_test.go` (`TestFoldIsRaceFreeUnderConcurrentWriters`, `TestFoldIsRaceFreeAgainstConcurrentReaders`) — untagged, runs on a plain `go test`. The `-tags defects` probe it was promoted from was **deleted** in avc `b11b686`. |
 | **Reproduce** | `cd avc && go test ./tests/audit/ -v` (9 tests, ~10s — **PoC 4 and PoC 5 are INVERTED regression tests** that pass while the D-32 fix holds; **PoC 1-3 also pass, but they assert `avc`'s behaviour, not jmdn's — D-25 and D-27 are both `Fixed`. See §0.5**) · `cd avc && go test -race ./randao/` (D-24's fix — `accumulator_race_test.go`; the old `-tags defects TestAccumulatorFoldRace` probe was **deleted** once promoted, so that command no longer exists) · `cd avc && go test -race ./quorum/... ./committee/... ./crdt/... ./beacon/... ./randao/... ./vdf/...` (baseline, clean) |
-| **Prior audits** | This register starts at **D-24** because the 2026-08-31 cross-repo audit in `WORKDIR2/audits/` held `D-1…D-23`. **Those were renumbered to `XR-1…XR-23` on 2026-09-15** (1:1, no content change) to end a five-way `D-n` namespace collision across the workspace — see that document's header. **So `D-1…D-23` no longer exist anywhere; this register's space is `D-24…D-58` and the gap below D-24 is historical, not a hole.** `WORKDIR2/audits/` is a local archive, outside git. New findings are **D-24…D-58** (D-35…D-37 from the PR #125 review; D-38…D-50 restored 2026-09-11; D-51…D-55 added rev 5; D-56/D-57 from the PR #129 review; **D-58 added rev 6** — see the note under §2.2). Never renumber. |
+| **Prior audits** | This register starts at **D-24** because the 2026-08-31 cross-repo audit in `WORKDIR2/audits/` held `D-1…D-23`. **Those were renumbered to `XR-1…XR-23` on 2026-09-15** (1:1, no content change) to end a five-way `D-n` namespace collision across the workspace — see that document's header. **So `D-1…D-23` no longer exist anywhere; this register's space is `D-24…D-58` and the gap below D-24 is historical, not a hole.** `WORKDIR2/audits/` is a local archive, outside git. New findings are **D-24…D-59** (D-35…D-37 from the PR #125 review; D-38…D-50 restored 2026-09-11; D-51…D-55 added rev 5; D-56/D-57 from the PR #129 review; **D-58 added rev 6; D-59 added 2026-09-16 reviewing PR #135** — see the note under §2.2). Never renumber. |
 | **⚠ Third register, UNCOMMITTED** | A separate register with its own `SEC/CON/STO/EVM/SYN/NET/API/PRC` ID space lives at **`WORKDIR2/THEBE-AUDIT-HLD.md`** — outside every git repo. **54 jmdn source files cite those IDs** (recounted 2026-09-15; an earlier revision said 52) as the reason their code is shaped the way it is — `CON-` 20 files, `EVM-` 10, `SEC-` 9, `NET-` 6, `API-` 6, `STO-` 4, `SYN-` 1, `PRC-` 1 — so a fresh clone cannot resolve any of them. It also carries a live CRITICAL, `API-10`: `gETH/Facade/rpc/http_server.go` runs batch JSON-RPC in goroutines with **zero `recover()`**, so a peer-triggered panic kills the node (re-verified unfixed 2026-09-15). **Commit that file into `jmdn/docs/audit/` — beside this register — before these cross-references mean anything.** No `DEP-` ID is cited anywhere in jmdn code. |
 
 **How to collaborate on this document:** the Findings Register (§2) is the living part — update the Status column there (rules in §2.1). Everything below §2 is the evidence body; append corrections rather than rewriting history. New audit passes append new finding IDs.
 
-**Cross-repo note:** of the **35** register rows (D-24…D-58), **31 are `jmdn`**, 2 are `avc` (D-24, D-32) and 2 are shared (D-52, D-53); the 9 `jmdt-devnet` items are tracked as an unnumbered group in §6. This document lives in `jmdn` because that is where most fixes land; the PoC suite lives in `avc` because that is the only module it compiles in. The register's Repo column says who owns each row.
+**Cross-repo note:** of the **36** register rows (D-24…D-59), **32 are `jmdn`**, 2 are `avc` (D-24, D-32) and 2 are shared (D-52, D-53); the 9 `jmdt-devnet` items are tracked as an unnumbered group in §6. This document lives in `jmdn` because that is where most fixes land; the PoC suite lives in `avc` because that is the only module it compiles in. The register's Repo column says who owns each row.
 
 ---
 
@@ -74,7 +74,7 @@ Every fix — whatever branch it lands on — must contain, **atomically in the 
 2. the corresponding PoC assertion in `avc/tests/audit/audit_poc_test.go` **inverted** — the defect proof becomes the regression test. Each PoC's failure message already names what to do;
 3. the §2.2 register row flipped to `Fixed (<commit>, <test name>)`.
 
-A fix missing (2) or (3) is not done. **Twenty-six of the 35 rows have no PoC** (recounted rev 6; an earlier revision said eighteen, before D-51…D-58 were added) — D-28, D-30, D-31, D-33, D-34 and all of D-38…D-58 — because they need a running node, a two-node harness, or arrived after the PoC suite was frozen. For those, rule (2) means **write the test the finding's "Done when" clause describes.** **Nine** rows carry a PoC or named test: D-24, D-25, D-26, D-27, D-29, D-32, D-35, D-36, D-37.
+A fix missing (2) or (3) is not done. **Twenty-seven of the 36 rows have no PoC** (recounted 2026-09-16; earlier revisions said eighteen, then twenty-six) — D-28, D-30, D-31, D-33, D-34 and all of D-38…D-59 — because they need a running node, a two-node harness, or arrived after the PoC suite was frozen. For those, rule (2) means **write the test the finding's "Done when" clause describes.** **Nine** rows carry a PoC or named test: D-24, D-25, D-26, D-27, D-29, D-32, D-35, D-36, D-37.
 
 > **Rule (2) needs an amendment, and §0.5 explains why.** "Invert the PoC" assumes the PoC and the
 > fix live in the same module. Three of the five PoCs do not — they are in `avc`, and the fix is in
@@ -95,18 +95,40 @@ A fix missing (2) or (3) is not done. **Twenty-six of the 35 rows have no PoC** 
 D-33 (entropy genesis bootstrap) shipped shortly before this audit and is a good fix. It also made the beacon *reachable for the first time*, which put the reveal-fold path into play — and that path was guarded by an accumulator with no synchronisation (D-24). Before D-33, `entropyAccumulatorFor` always failed and `Fold` never ran. That accident is gone, and so, now, is the race it exposed.
 
 ```
-STAGE 2 ENTROPY GATE — as of rev 6 (2026-09-15)
-                                    JMDN_AVC_VDF_MODULUS_HEX
-D-39 ─┐  fleet agreement on         JMDN_AVC_VDF_GROUP_NAME
-      ├──► the VDF parameters  ──►  JMDN_AVC_VDF_DIFFICULTY_T
-D-54 ─┘  (land them TOGETHER)
+STAGE 2 ENTROPY GATE — CLEAR as of PR #135 (2026-09-16)
+
+  no blocking finding remains
+       │
+       └──►  enabling Stage 2 entropy    JMDN_AVC_VDF_MODULUS_HEX
+             ONLY on a uniformly         JMDN_AVC_VDF_GROUP_NAME
+             upgraded fleet (below)      JMDN_AVC_VDF_DIFFICULTY_T
 
 CLEARED:  D-24  (avc 498241b — mutex on randao.Accumulator)
           D-25  (PR #125 6eb0cc7 — SeedSourceFor fails closed; see below)
           D-27  (PR #129 7e6a798 + f121048 — bootstrap/retention boundary)
           D-29  (PR #125 + #129 543d307/87636d7 — production-posture refusal)
           D-35  (PR #125 — value-keyed modulus chain policy)
+          D-39  ┐ PR #135 — group ‖ modulus digest ‖ T bound as ONE identity,
+          D-54  ┘ landed together as this section required
 ```
+
+> **The gate is clear, but Stage 2 is not unconditional — read this before setting the three env vars.**
+>
+> PR #135 gives three protections, and only two of them are unconditional:
+>
+> | | Conditional? |
+> |---|---|
+> | Install-time refusal of a divergent `T` on a pinned group (`beacon_install.go`) | **No** — fires at boot |
+> | Identity hash-covered in the M2b `ConsensusHash` preimage | **No** — a wrong-parameter node forks rather than diverging quietly |
+> | Adoption-path CHECK 0, which *names the cause* | **Yes** — skipped when either side's field is empty |
+>
+> The third is deliberately additive so the rollout can proceed node by node
+> (`TestVerifyAndAcceptVDFProof_IdentityGateIsAdditive` pins it). The consequence:
+> **until every node stamps, a mixed fleet degrades to the pre-fix nameless failure** — which was
+> D-54's original complaint. Nothing forces the promotion; see **D-59**.
+>
+> **So: enable Stage 2 only on a uniformly upgraded fleet, and verify every node reports a non-empty
+> `vdf_identity` at boot** (`beacon_install.go` logs it) before setting the env vars anywhere.
 
 Enabling the beacon before D-24 *used to* convert a silent divergence into a validator crash loop (`fatal error: concurrent map writes` is unrecoverable); `498241b` closes that. ~~Enabling before D-27 still silently discards pinned bootstrap epochs~~ — closed rev 6.
 
@@ -176,37 +198,54 @@ Two are **negative checks** recording claims that were tested and did *not* repr
 
 ```
 DECISION  No-Go for mainnet.
-          No-Go for Stage 2 entropy until D-39 and D-54 are fixed with
-          regression evidence (§0.3). They must land TOGETHER.
+          STAGE 2 ENTROPY: the gate is now CLEAR (PR #135, 2026-09-16) —
+          conditionally. See the condition below; it is not "ship it".
           Go for devnet.
 
           The entropy pipeline moved from "cannot start" to "can start
-          unsafely" and is now most of the way back: the silent-divergence
-          seam itself (D-25) is closed. What remains for Stage 2 is
-          FLEET AGREEMENT on the VDF parameters — D-39 (difficulty T) and
-          D-54 (the group/modulus) — neither of which any node can detect
-          locally when it is wrong.
+          unsafely" and is now back: the silent-divergence seam (D-25) is
+          closed, and fleet agreement on the VDF parameters — D-39
+          (difficulty T) and D-54 (group/modulus) — landed together in
+          PR #135 as one identity: group ‖ modulus digest ‖ T.
+
+          THE CONDITION ON STAGE 2. Enable only on a UNIFORMLY UPGRADED
+          fleet. Two of the three protections are unconditional: the
+          install-time refusal of a divergent T on a pinned group
+          (Sequencer/beacon_install.go), and hash-coverage of the identity
+          in the M2b ConsensusHash preimage, which makes a wrong-parameter
+          node fork rather than diverge silently. The THIRD — the
+          adoption-path check that names the cause — is skipped when
+          either side's field is empty, by design, so the rollout can be
+          additive. Until every node stamps, detection is incomplete and
+          a mixed fleet degrades to the pre-fix nameless failure. There is
+          no posture gate forcing the promotion; that gap is RC-2 and is
+          tracked as D-59.
+
+          MAINNET IS UNAFFECTED by PR #135 and stays No-Go: D-26 (SEV-1),
+          D-51 (SEV-2) and the D-28 / D-38 partials are untouched by it.
 
 TALLY (recounted from the §2.2 table, rev 6 — 2026-09-15)
 
-  35 rows = 11 Fixed · 2 Partial · 1 Decided-no-change · 21 Open
+  36 rows = 13 Fixed · 2 Partial · 1 Decided-no-change · 20 Open
 
-  Fixed (11)    D-24 D-25 D-27 D-29 D-30 D-32 D-33 D-35 D-36 D-37 D-41
+  Fixed (13)    D-24 D-25 D-27 D-29 D-30 D-32 D-33 D-35 D-36 D-37 D-39 D-41
+                D-54
   Partial (2)   D-28  cert replay CLOSED, equivocation DETECTION open
                 D-38  flag deleted (a) CLOSED; posture-check gap (b) open
   Decided (1)   D-56  keep 20 / keep CadenceBlocks 0 — residual: epoch-0
                       sentinel collision, gates RequirePinnedCommittee
-  Open (21)     D-26 D-31 D-34 D-39 D-40 D-42 D-43 D-44 D-45 D-46 D-47
-                D-48 D-49 D-50 D-51 D-52 D-53 D-54 D-55 D-57 D-58
+  Open (20)     D-26 D-31 D-34 D-40 D-42 D-43 D-44 D-45 D-46 D-47
+                D-48 D-49 D-50 D-51 D-52 D-53 D-55 D-57 D-58 D-59
 
-BY SEVERITY   5 + 7 + 17 + 5 + 1 = 35
+BY SEVERITY   5 + 7 + 18 + 5 + 1 = 36
   SEV-1   5   D-24✓ D-25✓ D-35✓ D-36✓ | OPEN: D-26 only
-  SEV-2   7   D-27✓ D-29✓ D-37✓ | OPEN: D-28(detection), D-38(b), D-39, D-51
-  SEV-3  17   D-30✓ D-32✓ D-41✓ D-56(decided) | OPEN: D-31 D-34 D-40 D-42
-              D-43 D-44 D-45 D-46 D-52 D-53 D-54 D-57 D-58(NEW rev 6)
+  SEV-2   7   D-27✓ D-29✓ D-37✓ D-39✓ | OPEN: D-28(detection), D-38(b), D-51
+  SEV-3  18   D-30✓ D-32✓ D-41✓ D-54✓ D-56(decided) | OPEN: D-31 D-34 D-40
+              D-42 D-43 D-44 D-45 D-46 D-52 D-53 D-57 D-58
+              D-59(NEW — PR #135's promotion gap, RC-2)
   SEV-4   5   OPEN: D-47 D-48 D-49 D-50 D-55
   Unrated 1   D-33✓ (remainders open — persistence, observe rung)
-  Devnet  9   §6, tracked as a group, NOT in the 35
+  Devnet  9   §6, tracked as a group, NOT in the 36
 
 WATCH OUT
   · PR #129's "D-31" commit (1624583) is MIS-TAGGED — it does not touch D-31,
@@ -228,7 +267,7 @@ SCOPE
                seedNodes.
   Evidence     D-29/D-35/D-36/D-37 ship executed jmdn tests. D-25…D-34 are
                source-traced, not compiler-verified (the original sandbox
-               exhausted its filesystem on jmdn's dep graph). D-38…D-58
+               exhausted its filesystem on jmdn's dep graph). D-38…D-59
                source-traced, re-verified at v3base@291d44c on 2026-09-11.
                REV 6: every row -- Fixed and Open alike -- re-checked at
                e4f18da on 2026-09-15. No row is older than that. See Appx C.1.
@@ -366,6 +405,8 @@ SCOPE
 | **D-57** | 3 | `jmdn` | **The D-31-tagged fix erases equivocation evidence.** `1624583` closes a real TOCTOU (a merge can re-create a key the compactor just deleted) by re-checking the watermark after the writes and, if it moved, calling `CRDTLayer.Delete(key)` — **the whole LWWSet, not just the elements this merge added** (`CRDTSyncHandler.go:860`). If that key already held a peer's genuine conflicting votes, the proof is destroyed before `ConvergeAndCompact`'s C5 pass evaluates it — the exact ordering `avc crdt/votes/converge.go` says the two steps were fused to prevent, and `CompactVotesBelowHeight`'s own doc warns against. `ReportEquivocation` never fires, the reputation event and metric are lost, and the operator log reports the deletion as a *successful defence*. The delete is unconditional on the watermark condition, so it does not require that anything merged: a peer can send `{"adds":{}}` and still trigger it, retrying near each watermark advance to make honest nodes erase proof of a victim's equivocation | — | S | `Open — GATED, not live. Unreachable at the default: VoteCRDTDualWrite = envOn("JMDN_VOTE_CRDT_V2", false) and compactConvergedVotes returns early when off, so the watermark never leaves 0 and the re-check never fires for height >= 1. BLOCKER before that flag is turned on — do NOT flip JMDN_VOTE_CRDT_V2 until this is closed. RECOMMENDED FIX (2026-09-15), in preference order: (1) DROP THE DELETE ENTIRELY. It is not load-bearing. CompactVotesBelowHeight collects the key on the next sweep regardless, and by construction that runs AFTER C5 evaluates the evidence — which is the ordering converge.go was fused to guarantee. The TOCTOU the delete was added to close is already covered: Watermark.Set is monotonic (CAS, refuses regression), every deletion in ConvergeAndCompact is preceded in program order by the Set that authorises it, and MemStore.Delete/AppendOp share one mutex — so a merge cannot resurrect a key past the sweep. The re-check earns a log line, not a delete. (2) If a delete is kept for hygiene, scope it to what THIS call added — LWWRemove the specific elements merged in the loop above — never the whole object. Either way add a two-goroutine regression test: pre-seed a peer''s conflicting votes at height H, advance the watermark between the merge write and the re-check, and assert ReportEquivocation STILL fires. Note the current code also deletes when merged == 0, so an empty {"adds":{}} from any peer triggers it — the test should cover that input too` |
 
 | **D-58** | 3 | `jmdn` | **Epoch-entropy persistence failures are silently discarded at both write sites.** `PersistEpochEntropy` (`messaging/entropy_persist.go:37`) is the durability half of D-33's remainder-1 fix, and **both** its call sites drop the error: `Sequencer/vdf_sealer.go:123` `_ = messaging.PersistEpochEntropy(forEpoch)` (after a successful seal) and `messaging/entropy_vdf_accept.go:199` `_ = PersistEpochEntropy(declaredEpoch)` (after accepting a peer's proof). A node that seals or adopts an epoch, fails to write it, and restarts has **no record it ever held that epoch and no signal it lost one** — `RehydrateBeaconFromDisk` simply restores fewer epochs than it should, reporting success | — | S | `Open — found rev 6 (2026-09-15) while re-verifying D-33's remainder 1.` **Severity is LIVENESS, not divergence — and only because D-25 is now fixed.** Post-D-25 the missing epoch makes `SeedSourceFor` return `ErrBeaconEpochUnavailable`, so the node refuses to select and halts loudly instead of seating a different committee; before D-25's fix this same loss was a silent fork. **Fix:** log at ERROR with the epoch and, on the sealer path, treat a persist failure as a seal failure — the entropy is worthless to this node after a restart if it was never written. Cheap: two call sites. **Verify:** force the write to fail, restart, assert the node names the lost epoch rather than reporting a clean rehydrate. Related, not duplicate: **D-47** (the restore *window* is a compile-time constant that `JMDN_AVC_BEACON_RETAIN_EPOCHS` does not move) and **D-45** (the newest-pointer RMW that can strand a written epoch) |
+
+| **D-59** | 3 | `jmdn` | **The D-39/D-54 identity check has no promotion path — it is opt-in permanently.** PR #135 binds group ‖ modulus ‖ T into one identity and checks it three ways, but the adoption-path check (`entropy_vdf_accept.go` CHECK 0) fires only when **both** sides carry a non-empty value: `if local != "" && block.VdfParamsDigest != "" && …`. The leniency is deliberate and pinned by `TestVerifyAndAcceptVDFProof_IdentityGateIsAdditive` so the rollout can be additive — but **nothing ever makes it mandatory.** `ValidateProductionConsensusPosture` does not require a non-empty local identity, and `checkConsensusBinding` independently skips a zero `ConsensusHash`, so a block with both empty passes both layers and falls through to `vdf.Verify` — the pre-fix nameless failure D-54 was written about. **Not a break of the security property** (a wrong-parameter proof still fails `vdf.Verify`, and the install-time `T` refusal and hash-coverage are unconditional); the loss is *detection and attribution* during and after rollout | — | S | `Open — found reviewing PR #135, 2026-09-16.` **This is RC-2's eighth instance** — a two-state gate with no observe rung and no promotion step — in a register where RC-2 is already a named root-cause pattern. **Fix:** once the fleet is uniformly upgraded, add the local VDF identity to `ValidateProductionConsensusPosture` (a Stage-2 production node with an empty identity refuses to boot) and log at ERROR when a boundary block arrives with an empty `VdfParamsDigest` while the local identity is set — that log line is the observe rung, and it tells the operator exactly which peers are un-upgraded. **Verify:** a production-posture node with Stage 2 installed and no identity refuses to start; a boundary block with an empty digest is logged, named, and counted |
 
 **Devnet items** (§6) are tracked as a group rather than individually numbered: 3 × SEV-3, 6 × SEV-4, all in `jmdt-devnet`.
 
@@ -813,7 +854,7 @@ Recorded so they are not re-litigated. Two are locked by negative PoCs (§0.5). 
 
 ### 7.3 Root-cause patterns
 
-Thirty-five findings, six underlying causes. Each pattern has more than one instance, which is how it is known to be a pattern rather than a bug. **Fixing instances without fixing patterns will regenerate them — and RC-3 demonstrably did regenerate: it produced D-24, D-29 and D-32 in the first pass, then D-35 and D-36 in the PR #125 pass, in code written by people who had read this table.**
+Thirty-six findings, six underlying causes. Each pattern has more than one instance, which is how it is known to be a pattern rather than a bug. **Fixing instances without fixing patterns will regenerate them — and RC-3 demonstrably did regenerate: it produced D-24, D-29 and D-32 in the first pass, then D-35 and D-36 in the PR #125 pass, in code written by people who had read this table.**
 
 RC-2's instance list is also longer than it looks. Every one of these flags has exactly two states, off-and-silently-different or on-and-hard, with no observe rung: `COMMITTEE_V2`, `AGG_CERT`, `SNAPSHOT_ANCHOR`, `M2B_HASH`, **`UNSIGNED_VALIDATOR_VOTES`**, and **`VOTE_CRDT_V2`** — that last one gates the *entire* avc v2 vote keyspace, including D-26's identity guard, so every vote hardening avc ships is inert until it flips.
 
@@ -1022,7 +1063,7 @@ cd avc && go test -race ./randao/
 |---|---|---|
 | ~~`TestAccumulatorFoldRace`~~ → `TestFoldIsRaceFreeUnderConcurrentWriters` + `TestFoldIsRaceFreeAgainstConcurrentReaders` | D-24 | **FIXED, PROBE PROMOTED.** The `-tags defects` probe was deleted in avc `b11b686`; its replacement is the untagged `avc/randao/accumulator_race_test.go`, which must pass CLEAN. Historical: before `498241b` the probe produced 2 DATA RACE blocks on linux/arm64 go1.26.0 and 4 on darwin/arm64 go1.26.3, citing the `mix` XOR and the `folded` map write — `accumulator.go:249-250` and `:252` in today's numbering, paired with the `:241` read (the old `:195/:209/:211` citations have all drifted) |
 
-**Findings with no PoC — 26 of 35 rows** (recounted rev 6; earlier revisions said 23 of 32 and "eighteen", both stale)**:** D-28, D-30, D-31, D-33, D-34, and all of D-38…D-58. Each needs a running node, a two-node harness, or arrived after this suite was frozen. Their "Done when" clauses describe the test to write. **§0.2 rule 2 applies to those descriptions — but see §0.5 before inverting anything:** where the fix lands in `jmdn` and the PoC lives in `avc`, inverting is impossible or wrong, and the rule means *add a jmdn-side test* instead.
+**Findings with no PoC — 27 of 36 rows** (recounted 2026-09-16; earlier revisions said 23 of 32, "eighteen", and 26 of 35 — all stale)**:** D-28, D-30, D-31, D-33, D-34, and all of D-38…D-59. Each needs a running node, a two-node harness, or arrived after this suite was frozen. Their "Done when" clauses describe the test to write. **§0.2 rule 2 applies to those descriptions — but see §0.5 before inverting anything:** where the fix lands in `jmdn` and the PoC lives in `avc`, inverting is impossible or wrong, and the rule means *add a jmdn-side test* instead.
 
 **Findings that DO carry executable evidence — 9 rows**, and these are the ones to imitate:
 
