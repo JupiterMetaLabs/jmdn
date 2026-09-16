@@ -140,6 +140,14 @@ type ZKBlock struct {
 	// this epoch's entropy (§3.2). Changes only at epoch boundaries.
 	SeedEpoch uint64 `json:"seed_epoch,omitempty"`
 
+	// VdfParamsDigest is the fleet-checked VDF parameter identity
+	// (group name ‖ modulus digest ‖ difficulty T — messaging.VDFIdentityDigest),
+	// audit D-39/D-54. Stamped on the epoch-boundary block alongside VdfProof;
+	// empty on every other block and on Stage-1 nodes. Advisory today: compared
+	// on proof adoption to name a fleet parameter disagreement (it is NOT yet
+	// folded into ConsensusHash — see docs/audit/D-39-D-54-FIX.md).
+	VdfParamsDigest string `json:"vdf_params_digest,omitempty"`
+
 	// VotingSnapshotEpoch is the declared voting pool that T_vote and T_agg are
 	// checked against (§3.2). Checkpoint-locked; verifiers check monotonicity
 	// only, since "is this the newest" is unenforceable (finding A6).

@@ -270,6 +270,29 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		return false, errors.New("entropy: JMDN_AVC_VDF_DIFFICULTY_T must be a positive uint64")
 	}
 
+	// D-39 — T is a chain parameter, not a per-host env var. For a network-pinned
+	// group the fleet's T is pinned alongside its modulus; refuse a divergent
+	// per-host value, which is otherwise silent on the node that is wrong (it
+	// rejects every honest peer's proof AND publishes divergent entropy into its
+	// own sink, seating a committee no peer agrees with).
+	if pinnedT, ok := pinnedDifficultyFor(groupName); ok && difficulty != pinnedT {
+		return false, fmt.Errorf("%w: group %q pins T=%d, but JMDN_AVC_VDF_DIFFICULTY_T=%d",
+			ErrVDFDifficultyNotChainPinned, groupName, pinnedT, difficulty)
+	}
+
+	// D-39/D-54 — bind group ‖ modulus digest ‖ T into one fleet-checked identity
+	// and publish it, for the boundary-block stamp (Block/consensus_fields.go)
+	// and the adoption-path comparison (messaging.VerifyAndAcceptVDFProof).
+	// buildVDFGroup already validated the modulus, so ModulusDigest cannot fail.
+	modDigest, mdErr := vdf.ModulusDigest(n)
+	if mdErr != nil {
+		return false, fmt.Errorf("entropy: computing VDF modulus digest for the fleet identity: %w", mdErr)
+	}
+	messaging.SetLocalVDFIdentity(messaging.VDFIdentityDigest(groupName, modDigest, difficulty))
+	log.Warn().Str("group", groupName).Str("modulus_sha256", modDigest).Uint64("difficulty_t", difficulty).
+		Str("vdf_identity", messaging.LocalVDFIdentity()).
+		Msg("entropy: VDF fleet identity computed (group ‖ modulus ‖ T) — boundary blocks carry it and adopters compare it (D-39/D-54)")
+
 	retain := uint64(committee.MinRetainedEpochs)
 	if retainStr := strings.TrimSpace(os.Getenv("JMDN_AVC_BEACON_RETAIN_EPOCHS")); retainStr != "" {
 		r, rErr := strconv.ParseUint(retainStr, 10, 64)

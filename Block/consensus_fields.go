@@ -172,6 +172,10 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		}
 		block.VdfProof = raw
 		block.SeedEpoch = epoch
+		// D-39/D-54 — stamp this node's fleet-checked VDF identity
+		// (group ‖ modulus ‖ T) so every adopter compares parameters explicitly
+		// and a disagreement names the cause. Empty on Stage-1 (no beacon).
+		block.VdfParamsDigest = messaging.LocalVDFIdentity()
 	}
 
 	// BlockHash is the orchestrator-submitted, transactions-only identity and is

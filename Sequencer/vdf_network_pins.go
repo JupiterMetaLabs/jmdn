@@ -73,15 +73,39 @@ type networkPinPolicy struct {
 	// Required when TrapdoorKnown is set. Empty means unrestricted and is only
 	// legal for a pin nobody holds a trapdoor for.
 	AllowedChainIDs []uint64
+
+	// PinnedDifficultyT is the fleet-agreed VDF difficulty T for this group.
+	// When non-zero, InstallAVCBeaconFromEnv REFUSES to start Stage 2 unless
+	// JMDN_AVC_VDF_DIFFICULTY_T equals it — making T a chain parameter rather
+	// than a per-host env var (audit D-39: a divergent T is undetectable to the
+	// node that is wrong, so it must not be settable per host on a pinned group).
+	// Zero means "not pinned" (dev/unpinned groups), where T stays operator-set.
+	PinnedDifficultyT uint64
 }
 
 // networkPinPolicies is the policy table. Keys must match networkVDFPins
 // exactly; TestEveryNetworkPinHasAPolicy enforces that.
 var networkPinPolicies = map[string]networkPinPolicy{
 	"rsa-2048-testnet-ephemeral": {
-		TrapdoorKnown:   true,
-		AllowedChainIDs: []uint64{8000800}, // jmdt devnet (jmdt-devnet/.env JMDN_CHAIN_ID)
+		TrapdoorKnown:     true,
+		AllowedChainIDs:   []uint64{8000800}, // jmdt devnet (jmdt-devnet/.env JMDN_CHAIN_ID)
+		PinnedDifficultyT: 476510,            // fleet T for this group (jmdt-devnet/.env JMDN_AVC_VDF_DIFFICULTY_T)
 	},
+}
+
+// ErrVDFDifficultyNotChainPinned reports JMDN_AVC_VDF_DIFFICULTY_T disagreeing
+// with the fleet-pinned T for a network-pinned group (audit D-39). T is a chain
+// parameter: a per-host value is undetectable to the node that is wrong, so a
+// pinned group refuses to start Stage 2 on any other T.
+var ErrVDFDifficultyNotChainPinned = errors.New("entropy: VDF difficulty T disagrees with the fleet-pinned value for this group")
+
+// pinnedDifficultyFor returns the fleet-pinned T for a group, if one is declared.
+func pinnedDifficultyFor(groupName string) (uint64, bool) {
+	pol, ok := networkPinPolicies[groupName]
+	if !ok || pol.PinnedDifficultyT == 0 {
+		return 0, false
+	}
+	return pol.PinnedDifficultyT, true
 }
 
 // currentChainID reports the configured network chain id, and whether it is
