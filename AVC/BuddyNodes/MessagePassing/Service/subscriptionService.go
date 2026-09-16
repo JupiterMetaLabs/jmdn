@@ -224,6 +224,23 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		globalVars := AVCStruct.NewGlobalVariables()
 		listenerNode := globalVars.Get_ForListner()
 
+		// D-26(a): msg.Data.Sender is an unauthenticated JSON payload field —
+		// any peer can set it to any peer.ID. msg.Sender is the
+		// libp2p-authenticated origin (set from msg.GetFrom() on receipt,
+		// SubscriberHelper.go:293 / SubscriptionManager.go:257). Everything
+		// below this point — the CRDT write's NodeID/Key and every log line —
+		// keyed on the unauthenticated field, so any peer could write votes
+		// under an arbitrary victim peer's identity. Same check as the
+		// direct-stream sibling, ListenerHandler.go:1020
+		// (message.Sender != s.Conn().RemotePeer()).
+		if msg.Data.Sender != msg.Sender {
+			logger().Warn(logger_ctx, "Vote message sender mismatch — rejecting (unauthenticated payload sender)",
+				ion.String("authenticated_sender", msg.Sender.String()),
+				ion.String("payload_sender", msg.Data.Sender.String()),
+				ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			return errors.New("vote message payload sender does not match the authenticated sender")
+		}
+
 		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
 			// Own vote arriving back via pubsub republication.
 			// Skip BFT re-triggering (prevents infinite loops) but DO store
