@@ -692,16 +692,70 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 		weights = nil
 	}
 
-	// Filter weights to only include peers that voted; collect rejection reasons.
-	// When weights are unavailable (seed denied the read), use equal weight 1.0.
+	// D-26(b): when the seed denied the weight read, membership must still come
+	// from SOMEWHERE authenticated. It used to come from nowhere.
+	//
+	// THE DEFECT. The equal-weight fallback above set `weight := 1.0; exists :=
+	// true` for every key present in the CRDT, and `weights == nil` is the
+	// NORMAL case on a buddy (the seed enforces sequencer-only auth on the
+	// peer-list read — that is what the warning above is about). So on the
+	// default path any peer that could get an element into this node's vote
+	// CRDT was counted as a full-weight voter, committee member or not. Note
+	// this is distinct from D-26(a)/impersonation, which is about writing under
+	// ANOTHER peer's identity (addressed by 64f924e + phase 2); this limb is a
+	// non-member voting as ITSELF and is not touched by that work.
+	//
+	// THE FIX. Fall back to EQUAL WEIGHT, not to EQUAL WEIGHT FOR EVERYONE:
+	// admission comes from the same authenticated committee source the v2 path
+	// already uses (processVotesFromCRDT_v2 -> authorizedCommittee, wired at
+	// main.go:1542 on both JMDN_COMMITTEE_V2 settings). The seed's weight map
+	// stays authoritative whenever it IS available, so the working path is
+	// byte-identical to before.
+	//
+	// WHY THE FILTERED (blocklist-applied, capped) SET IS RIGHT HERE. This is
+	// an "should I COUNT this signer" decision, not a denominator, so D-36's
+	// rule points at eligibleMembers rather than FleetEligibleForEpoch — see
+	// the doc on messaging.FleetEligibleForEpoch. A buddy-local divergence here
+	// cannot inflate quorum either way: this tally is only this buddy's own
+	// conclusion, and the authoritative 2f+1 is the sequencer's
+	// VerifyCertificate over seated signatures.
+	//
+	// FAIL CLOSED, and it cannot strand a healthy node. If the committee source
+	// is unavailable this returns an error instead of admitting everyone, which
+	// matches processVotesFromCRDT_v2 (Utils.go:209-216) and VerifyCertificate.
+	// That is safe rather than merely principled: a node with no eligibility
+	// source already cannot reach this function at all — the mandatory
+	// certificate check in admitZKBlock (messaging.VerifyCertificate ->
+	// authenticatedCommittee) reads the SAME committeeEligibilityFn and fails
+	// closed, so such a node drops every block long before it tallies one. See
+	// the comment above the wiring at main.go:1877.
+	var authorizedForFallback map[string]string
+	if weights == nil {
+		var acErr error
+		authorizedForFallback, acErr = authorizedCommittee()
+		if acErr != nil {
+			logger().Error(logger_ctx, "Peer weights unavailable AND the authenticated committee could not be resolved — refusing to tally rather than counting every CRDT key as a full-weight voter (D-26b)", acErr,
+				ion.String("function", "Structs.ProcessVotesFromCRDT"))
+			return 0, nil, errors.New("weights unavailable and authorized committee unresolvable: " + acErr.Error())
+		}
+		logger().Info(logger_ctx, "Using equal weights restricted to the authenticated committee (D-26b)",
+			ion.Int("authorized_members", len(authorizedForFallback)),
+			ion.String("function", "Structs.ProcessVotesFromCRDT"))
+	}
+
+	// Filter to peers that voted AND are entitled to; collect rejection reasons.
+	// Weight source: the seed's map when available, else equal weight 1.0 over
+	// the authenticated committee resolved just above (never over all comers).
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
 	rejectionReasons := make(map[string]string)
 	for peerID, vote := range voteData {
 		weight := 1.0
-		exists := true
+		var exists bool
 		if weights != nil {
 			weight, exists = weights[peerID]
+		} else {
+			_, exists = authorizedForFallback[peerID]
 		}
 		if exists {
 			filteredVoteData[peerID] = vote.vote
@@ -716,16 +770,27 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 				ion.String("block_hash", vote.blockHash),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		} else {
-			logger().Debug(logger_ctx, "Peer not found in weights, skipping",
+			// Name the ACTUAL reason: with the seed's map present this is "not in
+			// weights"; without it, it is "not in the authenticated committee"
+			// (D-26b). Reporting the wrong one sends whoever reads this log to the
+			// seed to debug a committee-membership problem, or the reverse.
+			reason := "not present in the seed weight map"
+			if weights == nil {
+				reason = "not a member of the authenticated committee (equal-weight fallback)"
+			}
+			logger().Debug(logger_ctx, "Vote skipped: peer not entitled to vote",
 				ion.String("peer_id", peerID),
+				ion.String("reason", reason),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		}
 	}
 
 	if len(filteredVoteData) == 0 {
-		logger().Error(logger_ctx, "No votes found after filtering by weights", nil,
+		logger().Error(logger_ctx, "No votes remain after filtering to entitled voters", nil,
+			ion.Int("votes_before_filter", len(voteData)),
+			ion.Bool("used_seed_weights", weights != nil),
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("no votes found after filtering by weights")
+		return 0, nil, errors.New("no votes remain after filtering to entitled voters")
 	}
 
 	// Call votemodule.VoteAggregation with filtered maps
