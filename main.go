@@ -1804,8 +1804,12 @@ func main() {
 					// only signals a debounced, async pusher (never blocks the
 					// apply path); the periodic timer remains the backstop.
 					localMon := syncMonitor
+					// TriggerCheckAfterApply, NOT TriggerCheck: the push fires
+					// ~750ms after the store, inside runCheck's 30s propagation
+					// guard, so TriggerCheck skipped itself on every block and the
+					// seednode only ever saw the periodic (1–30 min) report.
 					seedPushHook := startSeedBlockHeadPusher(ctx, func(c context.Context) {
-						localMon.TriggerCheck(c)
+						localMon.TriggerCheckAfterApply(c)
 					})
 					// Compose with the unconditionally-registered Stage 6
 					// compaction hook above rather than overwriting it —
