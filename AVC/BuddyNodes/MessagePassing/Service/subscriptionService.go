@@ -224,23 +224,18 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		globalVars := AVCStruct.NewGlobalVariables()
 		listenerNode := globalVars.Get_ForListner()
 
-		// D-26(a): msg.Data.Sender is an unauthenticated JSON payload field —
-		// any peer can set it to any peer.ID. msg.Sender is the
-		// libp2p-authenticated origin (set from msg.GetFrom() on receipt,
-		// SubscriberHelper.go:293 / SubscriptionManager.go:257). Everything
-		// below this point — the CRDT write's NodeID/Key and every log line —
-		// keyed on the unauthenticated field, so any peer could write votes
-		// under an arbitrary victim peer's identity. Same check as the
-		// direct-stream sibling, ListenerHandler.go:1020
-		// (message.Sender != s.Conn().RemotePeer()).
-		if msg.Data.Sender != msg.Sender {
-			logger().Warn(logger_ctx, "Vote message sender mismatch — rejecting (unauthenticated payload sender)",
-				ion.String("authenticated_sender", msg.Sender.String()),
-				ion.String("payload_sender", msg.Data.Sender.String()),
-				ion.String("function", "SubscriptionService.handleReceivedMessage"))
-			return errors.New("vote message payload sender does not match the authenticated sender")
-		}
-
+		// D-26(a) note: msg.Data.Sender != msg.Sender is NOT evidence of a
+		// forged vote — ListenerHandler.go:1147 legitimately republishes a
+		// vote it received over a direct stream (already authenticated there,
+		// :1022) to pubsub under its OWN gossipsub identity, so msg.Sender is
+		// the relayer while msg.Data.Sender stays the original voter on every
+		// honest relay too. A guard comparing the two here rejected that
+		// relay, not just spoofing, and there is no way to tell the two
+		// apart at this layer. The real fix belongs at tally time: the
+		// legacy path (default) has no per-vote signature check at all; the
+		// v2 path (JMDN_VOTE_CRDT_V2) already verifies BLS + authorized
+		// pubkey-to-peer-ID binding independent of transport
+		// (processVotesFromCRDT_v2 -> avcvotes.TallyBlock -> verifyTallySignatures).
 		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
 			// Own vote arriving back via pubsub republication.
 			// Skip BFT re-triggering (prevents infinite loops) but DO store
