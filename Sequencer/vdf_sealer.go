@@ -19,6 +19,7 @@ package Sequencer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"gossipnode/messaging"
 
 	"sync"
@@ -118,9 +119,20 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 			// Persist both the entropy and the proof: the mix that produced
 			// them is unrecoverable once this epoch ages out, and the proof is
 			// what lets a peer recover the epoch from us later without a chain
-			// scan. Non-fatal by design — this runs on a background goroutine
-			// and must never take the node down.
-			_ = messaging.PersistEpochEntropy(forEpoch)
+			// scan.
+			//
+			// A PersistEpochEntropy failure now surfaces as a seal failure
+			// (D-58) rather than being discarded (`_ = ...`): this goroutine
+			// has no synchronous consumer to protect, unlike
+			// entropy_vdf_accept.go's adopt path, so there is no liveness
+			// reason to hide it. A seal this node cannot prove it holds after
+			// a restart is not a successful seal — silently reporting success
+			// here just moves the same failure to a later moment with no
+			// diagnostic left. The goroutine itself still never crashes over
+			// this; only SealResult.Err changes.
+			if perr := messaging.PersistEpochEntropy(forEpoch); perr != nil {
+				err = fmt.Errorf("seal succeeded but persisting entropy failed (epoch will not survive a restart): %w", perr)
+			}
 			if raw, merr := proof.MarshalBinary(); merr == nil {
 				_ = messaging.PersistVDFProof(forEpoch, raw)
 			}
