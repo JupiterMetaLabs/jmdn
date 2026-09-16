@@ -140,6 +140,26 @@ func VerifyAndAcceptVDFProof(block *config.ZKBlock) error {
 
 	declaredEpoch := block.SeedEpoch
 
+	// CHECK 0 — fleet VDF-parameter identity (audit D-39 + D-54). vdf.Proof
+	// carries only T, and the group/modulus was bound only implicitly by
+	// vdf.Verify re-deriving the challenge — so a parameter disagreement surfaced
+	// as a nameless verify failure (D-54) and a divergent T was never agreed
+	// fleet-wide at all (D-39). The boundary block now declares group ‖ modulus ‖
+	// T as one digest; compare it explicitly and name the cause. Enforced only
+	// when BOTH sides carry one, so the rollout is additive: a pre-upgrade
+	// proposer leaves it empty and Stage-1 nodes have no local identity. Once the
+	// fleet is upgraded every boundary block carries it, and a node with the
+	// wrong parameters detects itself here (the audit's core complaint).
+	if local := LocalVDFIdentity(); local != "" && block.VdfParamsDigest != "" && block.VdfParamsDigest != local {
+		log.Error().Uint64("height", block.BlockNumber).Uint64("for_epoch", declaredEpoch).
+			Str("local_vdf_identity", local).Str("block_vdf_identity", block.VdfParamsDigest).
+			Msg("entropy: VdfProof REJECTED — the block's VDF parameter identity (group ‖ modulus ‖ T) " +
+				"does not match this node's. Two nodes on different VDF parameters cannot agree on committee " +
+				"entropy; align JMDN_AVC_VDF_GROUP_NAME / _MODULUS_HEX / _DIFFICULTY_T with the fleet")
+		return fmt.Errorf("%w: local %s, block %s (epoch %d)",
+			ErrVDFIdentityMismatch, local, block.VdfParamsDigest, declaredEpoch)
+	}
+
 	// CHECK 1 — the proof must sit on its epoch's boundary slot. Off-boundary
 	// blocks leave VdfProof zero by design (Block/consensus_fields.go), so a
 	// populated field anywhere else is malformed, not merely unexpected.
