@@ -232,8 +232,27 @@ func (m *Monitor) GetStatus() Status {
 }
 
 // TriggerCheck performs an immediate sync check. Safe to call concurrently.
+// The propagation guard applies: if this node stored a block within the last
+// blockPropagationWindow the check is skipped (see runCheck).
 func (m *Monitor) TriggerCheck(ctx context.Context) Status {
-	return m.runCheck(ctx)
+	return m.runCheckOpts(ctx, true)
+}
+
+// TriggerCheckAfterApply is TriggerCheck WITHOUT the propagation guard. It is
+// the entry point for the event-driven seednode head push (seed_blockhead_push.go),
+// which fires ~750ms after this node stored a block — i.e. always inside the
+// 30s guard window. Routed through TriggerCheck, that push skipped itself on
+// every single block, so the seednode learned a node's head only from the
+// 1–30 min periodic timer. Observed on the testnet: sequencer at 822, seednode
+// still holding 821 eight minutes later, every validator's gap check reading
+// "local=820 seq=821 delta=1" and dismissing a real gap as propagation lag.
+//
+// The guard exists to avoid reporting a stale root while a block is mid-write
+// on a node that RECEIVED it; the after-apply push runs after the write is
+// durable (LatestBlockAdvanceHook fires under latestBlockMu, after the store),
+// so there is no stale root to protect against here.
+func (m *Monitor) TriggerCheckAfterApply(ctx context.Context) Status {
+	return m.runCheckOpts(ctx, false)
 }
 
 // Start launches the background loop. Returns error if called twice.
@@ -289,15 +308,22 @@ func (m *Monitor) Start(ctx context.Context) error {
 	return nil
 }
 
-// runCheck executes one full sync cycle. Serialised by runMu.
+// runCheck executes one full sync cycle with the propagation guard. Serialised by runMu.
 func (m *Monitor) runCheck(ctx context.Context) Status {
+	return m.runCheckOpts(ctx, true)
+}
+
+// runCheckOpts is runCheck with the propagation guard switchable. guard=false is
+// used only by TriggerCheckAfterApply, whose caller has just finished storing a
+// block and needs the seednode to learn the new head now.
+func (m *Monitor) runCheckOpts(ctx context.Context, guard bool) Status {
 	m.runMu.Lock()
 	defer m.runMu.Unlock()
 
 	// Fix 2: propagation guard — if a block was written recently, skip this cycle.
 	// The node may be mid-propagation; reporting a stale root causes a false out-of-sync.
 	last := m.reporter.LastBlockReceivedAt()
-	if !last.IsZero() {
+	if guard && !last.IsZero() {
 		if since := time.Since(last); since < m.blockPropagationWindow {
 			log.Printf("[syncmonitor] skipping check — block received %v ago (propagation window %v)",
 				since.Round(time.Millisecond), m.blockPropagationWindow)

@@ -15,7 +15,7 @@ import (
 // block_head — and the ops "latest block per endpoint" view it feeds — lag real
 // state by minutes. This file adds an ADDITIVE push: right after a block's state
 // is committed (DB_OPs.UpdateLatestBlockMonotonic advances), fire an immediate
-// Monitor.TriggerCheck so the seednode learns the new head within ~1s. The
+// Monitor.TriggerCheckAfterApply so the seednode learns the new head within ~1s. The
 // periodic timer stays as the backstop for missed events / seednode outages.
 
 // seedBlockHeadPushDebounce coalesces a burst of applied blocks (e.g. a catch-up
@@ -25,7 +25,8 @@ const seedBlockHeadPushDebounce = 750 * time.Millisecond
 
 // startSeedBlockHeadPusher launches the background pusher with the production
 // debounce window and returns the fire-and-forget hook to hand to
-// DB_OPs.SetLatestBlockAdvanceHook. trigger is normally syncMonitor.TriggerCheck.
+// DB_OPs.SetLatestBlockAdvanceHook. trigger must be syncMonitor.TriggerCheckAfterApply
+// (TriggerCheck would be skipped by the propagation guard — see that method's doc).
 func startSeedBlockHeadPusher(ctx context.Context, trigger func(context.Context)) func(uint64) {
 	return newSeedBlockHeadPusher(ctx, trigger, seedBlockHeadPushDebounce)
 }

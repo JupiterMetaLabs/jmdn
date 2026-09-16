@@ -236,6 +236,42 @@ func TestFix2_PropagationGuardSkipsCheck(t *testing.T) {
 	}
 }
 
+// The event-driven seednode head push (seed_blockhead_push.go) fires ~750ms
+// after this node stores a block — always inside the propagation window. It
+// must therefore use TriggerCheckAfterApply, which bypasses the guard; routed
+// through TriggerCheck it would be skipped on every block and the seednode would
+// only see the periodic report (observed: seednode 8 min behind the sequencer).
+func TestAfterApplyPushBypassesPropagationGuard(t *testing.T) {
+	t.Parallel()
+	bi := &stubReporter{head: 5}
+	sc := &stubSeedClient{isSynced: true}
+	mon := syncmonitor.New(bi, sc, 0).WithOutOfSyncThreshold(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// A block was stored "just now" — the guarded path must skip...
+	bi.lastReceived = time.Now()
+	before := sc.callCount.Load()
+	mon.TriggerCheck(ctx)
+	if got := sc.callCount.Load(); got != before {
+		t.Fatalf("guarded TriggerCheck inside the window must not report; got %d calls", got-before)
+	}
+
+	// ...and the after-apply path must report regardless.
+	bi.head = 6
+	st := mon.TriggerCheckAfterApply(ctx)
+	if got := sc.callCount.Load(); got != before+1 {
+		t.Fatalf("TriggerCheckAfterApply must report to the seednode inside the window; got %d calls", got-before)
+	}
+	if st.Error != "" {
+		t.Fatalf("unexpected error: %s", st.Error)
+	}
+	if st.LocalHead != 6 {
+		t.Fatalf("after-apply report must carry the NEW head (6), got %d", st.LocalHead)
+	}
+}
+
 // ─── Fix 3: consecutive out-of-sync threshold ────────────────────────────────
 
 func TestFix3_ConsecutiveThresholdGatesReconcile(t *testing.T) {
