@@ -1,10 +1,12 @@
 package MessagePassing
 
 import (
+	"context"
 	"os"
 
 	AVCStruct "gossipnode/config/PubSubMessages"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -168,4 +170,94 @@ func voteRequesterAuthorized(remote peer.ID) bool {
 		}
 	}
 	return false
+}
+
+// observeVoteRequesterAuth reports what the requester gate WOULD decide,
+// without deciding anything. It is the missing observe rung on this flag's
+// rollout ladder (audit RC-2), and it exists to answer one question with
+// measurements instead of argument.
+//
+// THE QUESTION. This gate has been default-off since it was written, and the
+// reason is recorded at the top of this file: the sequencer is believed to be
+// "frequently ABSENT from currentBuddySet()", so enabling the gate would reject
+// the legitimate sequencer and halt the chain. That belief is why the flag has
+// never been flipped and why SetAuthorizedRequesterSource was specified but
+// never wired. It has also never been measured. This function measures it: on
+// every vote-result request it records whether the requester was in the buddy
+// set, whether that set was empty, and what the gate would therefore have done.
+//
+// WHY NOT JUST WIRE THE AUTHORITATIVE SOURCE. The authoritative set is
+// specified as "committee snapshot UNION pinned sequencer", and the pinned
+// sequencer is CON-01, which is not implemented -- there is no sequencer pin in
+// config anywhere in this repo. Wiring the source as committee-only would make
+// it authoritative (ok==true) and therefore definitive, which is precisely the
+// fail-closed-on-the-wrong-set outcome the file warns about. So the source
+// stays unwired and this measures the legacy path, which is what actually runs.
+//
+// HOW TO READ THE OUTPUT. Over a few hundred rounds on devnet:
+//   - would_allow=false appearing at all means flipping the default today would
+//     reject real traffic. Do not flip it; CON-01 is required first.
+//   - would_allow=true with reason=legacy_buddy_set_empty_failopen means the
+//     gate is passing only because of the empty-set fail-open at the bottom of
+//     voteRequesterAuthorized -- it would authorize ANYONE in that state, so
+//     flipping the default buys nothing until that path is closed.
+//   - would_allow=true with reason=legacy_buddy_set_member throughout means the
+//     premise this flag has been held back on does not hold in practice, and
+//     the default can be flipped with the empty-set fail-open removed.
+//
+// This function never changes a decision and never returns one. Deliberately
+// cheap: one map-free slice scan over at most MaxMainPeers entries, on a path
+// that is already doing a CRDT tally and a BLS signature.
+func observeVoteRequesterAuth(ctx context.Context, remote peer.ID) {
+	// Nothing to shadow once the gate is live -- the real decision is then the
+	// observation, and voteRequesterAuthorized already logs its rejections.
+	if enforceVoteRequesterAuth {
+		return
+	}
+
+	wouldAllow := false
+	reason := ""
+
+	switch {
+	case voteRequesterAuthorizer != nil:
+		wouldAllow = voteRequesterAuthorizer(remote)
+		reason = "injected_authorizer"
+	case remote == "":
+		reason = "empty_remote_peer"
+	default:
+		if authorizedRequesterSource != nil {
+			if set, ok := authorizedRequesterSource(); ok {
+				_, member := set[remote]
+				wouldAllow = member
+				reason = "authoritative_source"
+				break
+			}
+		}
+		buddies := currentBuddySet()
+		switch {
+		case len(buddies) == 0:
+			wouldAllow = true
+			reason = "legacy_buddy_set_empty_failopen"
+		default:
+			for _, p := range buddies {
+				if p == remote {
+					wouldAllow = true
+					break
+				}
+			}
+			if wouldAllow {
+				reason = "legacy_buddy_set_member"
+			} else {
+				reason = "legacy_buddy_set_nonmember"
+			}
+		}
+	}
+
+	logger().Info(ctx, "Vote-requester gate SHADOW decision (observe only — nothing was rejected)",
+		ion.String("remote_peer_id", remote.String()),
+		ion.Bool("would_allow", wouldAllow),
+		ion.String("reason", reason),
+		ion.Int("buddy_set_size", len(currentBuddySet())),
+		ion.Bool("authoritative_source_wired", authorizedRequesterSource != nil),
+		ion.String("function", "MessagePassing.observeVoteRequesterAuth"))
 }

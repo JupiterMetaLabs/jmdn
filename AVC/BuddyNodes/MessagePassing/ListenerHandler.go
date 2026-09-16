@@ -1537,6 +1537,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// no peer can obtain a genuine committee signature for a caller-supplied hash.
 	// The stream's remote peer ID is transport-authenticated, so this membership
 	// check is sound. Fail closed: an unknown buddy set authorizes no one.
+	// D-26(d) observe rung: record what the gate WOULD decide before the gate
+	// (which is default-off) decides nothing. No-op once the flag is on.
+	observeVoteRequesterAuth(voteResultSpanCtx, remotePeer)
+
 	if !voteRequesterAuthorized(remotePeer) {
 		voteResultSpan.SetAttributes(attribute.String("status", "unauthorized_vote_requester"))
 		logger().Warn(voteResultSpanCtx, "Rejecting vote result request: requester is not an authorized committee member",
