@@ -34,6 +34,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog/log"
 )
 
@@ -714,10 +715,29 @@ func verifyBlockProof(_ *config.ZKBlock) error { return nil }
 
 // ---- Equivocation detection --------------------------------------------------
 
+// seenHeightsCacheCapacity bounds the in-memory equivocation fast-path cache
+// (D-34). It never holds the only copy of a first-seen height — every miss
+// already falls through to the durable equivocationStore
+// (FirstSeenHash/RecordFirstSeen, below) — so bounding it costs nothing but
+// one extra durable read on a miss for a height old enough to have been
+// evicted. Sized generously past any plausible in-flight window; it exists to
+// stop unbounded growth over a long-lived process, not to bound recency
+// tightly.
+const seenHeightsCacheCapacity = 100000
+
 var (
 	seenHeightsMu sync.Mutex
-	seenHeights   = make(map[uint64]string) // height -> first-seen block hash hex
+	seenHeights   = mustNewHeightCache(seenHeightsCacheCapacity) // height -> first-seen block hash hex
 )
+
+func mustNewHeightCache(size int) *lru.Cache[uint64, string] {
+	c, err := lru.New[uint64, string](size)
+	if err != nil {
+		// Unreachable: size is a positive compile-time constant.
+		panic(fmt.Sprintf("messaging: equivocation height cache: %v", err))
+	}
+	return c
+}
 
 // EquivocationStore persists the first-seen block hash per height so
 // equivocation detection survives a process restart. checkEquivocation
@@ -769,7 +789,7 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	defer seenHeightsMu.Unlock()
 
 	// Fast path: already recorded in this session.
-	if prev, ok := seenHeights[number]; ok {
+	if prev, ok := seenHeights.Get(number); ok {
 		if prev != hashHex {
 			return reject("equivocation",
 				"conflicting block at height %d: already saw %s, now %s", number, prev, hashHex)
@@ -795,7 +815,7 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 			return rejectLocal("equivocation_unreadable",
 				"durable equivocation read failed at height %d: %v (fail closed)", number, err)
 		case found:
-			seenHeights[number] = prev // warm the in-memory cache
+			seenHeights.Add(number, prev) // warm the in-memory cache
 			if prev != hashHex {
 				return reject("equivocation",
 					"conflicting block at height %d: already saw %s (durable), now %s", number, prev, hashHex)
@@ -820,7 +840,7 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	}
 	// In-memory cache set only AFTER the durable write succeeds, so the two
 	// never disagree.
-	seenHeights[number] = hashHex
+	seenHeights.Add(number, hashHex)
 	return nil
 }
 
