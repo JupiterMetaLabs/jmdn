@@ -17,7 +17,6 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	MessagePassingStructs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
-	"gossipnode/explorer/lifecycle"
 	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/common"
@@ -26,6 +25,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
 	"gossipnode/seednode"
@@ -1627,6 +1627,13 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 				consensus.ZKBlockData.GetZKBlock().BlockHash.Hex(),
 				committee, votes, consensusReached)
 
+			// D-61: feed the sequencer's own recent round outcome into the
+			// push-suspend guard. When the sequencer's rounds are failing (its
+			// fault — stale snapshot, building on a block the fleet lacks), the
+			// reputation push is suspended so a sequencer-caused fleet-wide dip
+			// is not written to the seed as everyone's selection weight.
+			reputation.DefaultRoundHealth.Record(consensusReached)
+
 			// Surface reputation to Telegram. Only OBJECTIVE faults alert: a
 			// selected committee member that returned no vote (Absent), a bad
 			// signature, or a provable equivocation — each with the peer's new
@@ -2320,7 +2327,13 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			// block-bound (v3) or legacy message. Mirrors the ObserveRound gate
 			// at ProcessVoteCollection; never affects this function's return
 			// value or the quorum count above. Kill switch: JMDN_REPUTATION_OBSERVE=0.
-			if reputation.Enabled {
+			//
+			// D-60: do NOT charge a peer that is merely BEHIND. An abstain returns
+			// an empty signature (r.Signature == ""), and a can't-validate reject
+			// carries a sync/behind reason — neither is an objective fault, and
+			// charging them created the reputation death-spiral of 2026-09-17.
+			if reputation.Enabled &&
+				reputation.ShouldChargeBadSignature(r.Signature != "", r.RejectionReasons[r.PeerID]) {
 				reputation.Default.Observe(r.PeerID, reputation.BadSignature)
 			}
 			continue

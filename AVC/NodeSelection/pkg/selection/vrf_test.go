@@ -120,7 +120,10 @@ func TestVRF_MultipleBuddiesWithASNDiversity(t *testing.T) {
 	t.Logf("✓ Selected %d buddies across %d ASNs", len(buddies), len(asnCount))
 }
 
-// TestVRF_SelectionScoreFiltering tests that low-score nodes are excluded
+// TestVRF_SelectionScoreFiltering tests the D-59 fail-safe: low-score nodes are
+// excluded by the band, but when the band would empty the candidate set while
+// active peers exist, selection FALLS BACK to them rather than halting the chain.
+// (Reputation is observe-only and must never, on its own, stop block production.)
 func TestVRF_SelectionScoreFiltering(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -139,15 +142,27 @@ func TestVRF_SelectionScoreFiltering(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create nodes with low selection scores (< 0.5)
+	// All active peers below the floor (the incident: weights 0.30–0.43).
 	nodes := createTestNodesWithScore(20, 0.3)
 
-	_, err = selector.SelectBuddy(ctx, "node-1", nodes)
-	if err == nil {
-		t.Error("Expected error when all nodes have low selection scores")
+	// D-59: must NOT halt — the fail-safe returns a peer from the active set.
+	buddy, err := selector.SelectBuddy(ctx, "node-1", nodes)
+	if err != nil {
+		t.Fatalf("D-59 fail-safe: expected a fallback selection when all scores are low, got error: %v", err)
 	}
+	if buddy == nil {
+		t.Fatal("D-59 fail-safe: expected a non-nil buddy from the active fallback set")
+	}
+	t.Logf("✓ Fail-safe selected a buddy instead of halting (proof len=%d)", len(buddy.Proof))
 
-	t.Logf("✓ Correctly rejected nodes with score < 0.5")
+	// With genuinely no active peers, it must still fail (nothing to select).
+	dead := createTestNodesWithScore(3, 0.3)
+	for i := range dead {
+		dead[i].IsActive = false
+	}
+	if _, err := selector.SelectBuddy(ctx, "node-1", dead); err == nil {
+		t.Error("expected ErrNoPeersAvailable when there are no active peers at all")
+	}
 }
 
 // TestVRF_Determinism tests that same inputs produce same outputs
