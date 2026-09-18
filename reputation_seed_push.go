@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -12,6 +14,24 @@ import (
 	"gossipnode/metrics"
 	"gossipnode/seednode"
 )
+
+// envBoolDefaultTrue reads a boolean env var defaulting to true (any of
+// "0"/"false"/"no"/"off" disables). Local to package main; envUint64 lives in
+// vote_crdt_compaction.go but there is no shared envOn here.
+func envBoolDefaultTrue(key string) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return true
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	switch v {
+	case "0", "no", "off", "NO", "OFF", "false", "FALSE":
+		return false
+	}
+	return true
+}
 
 // reputationPusher is the minimal seam pushReputationOnce needs — satisfied
 // today by *seednode.Client without any change to that package (its
@@ -104,6 +124,16 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 		log.Info().Msg("[ReputationPush] no seednode client configured — reputation push disabled")
 		return
 	}
+	// D-62: restore the persisted store before the first push, so accumulated
+	// scores (and an operator's recovery) survive a restart instead of resetting
+	// everyone to Start. Missing/corrupt file loads as empty (prior behaviour).
+	if path := reputationStorePath(); path != "" {
+		if err := reputation.Default.Load(path); err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("[ReputationPush] failed to load persisted reputation store — starting empty")
+		} else {
+			log.Info().Str("path", path).Msg("[ReputationPush] restored persisted reputation store")
+		}
+	}
 	interval := time.Duration(reputationPushIntervalSeconds()) * time.Second
 
 	go func() {
@@ -133,10 +163,42 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 // pushReputationOnce is the testable core of one tick (regular or
 // immediate): snapshot, remap, push, log. Split out so a test can call it
 // directly without waiting on a ticker.
+// reputationPushSuspendEnabled gates the D-61 self-fault suspend. Default ON;
+// set JMDN_REPUTATION_PUSH_SUSPEND=0 to always push (pre-D-61 behaviour).
+func reputationPushSuspendEnabled() bool { return envBoolDefaultTrue("JMDN_REPUTATION_PUSH_SUSPEND") }
+
+// reputationStorePath is the durable store file (D-62). Empty ⇒ no persistence
+// (the pre-fix in-memory-only behaviour, reset on restart).
+func reputationStorePath() string { return os.Getenv("JMDN_REPUTATION_STORE_PATH") }
+
 func pushReputationOnce(ctx context.Context, seedClient reputationPusher) {
 	if !reputation.Enabled {
 		return
 	}
+
+	// D-62: persist the store every tick so a restart does not snap every peer
+	// back to Start (0.50 → weight 0.70) and overwrite the seed / an operator's
+	// manual recovery on the next push. Best-effort; a write failure only
+	// degrades restart recovery. Runs even when the push is suspended below.
+	if path := reputationStorePath(); path != "" {
+		if err := reputation.Default.Save(path); err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("[ReputationPush] failed to persist reputation store")
+		}
+	}
+
+	// D-61: while THIS sequencer's own recent rounds are failing, suspend the
+	// push. A sequencer-caused fleet-wide dip (stale snapshot / building on a
+	// block the fleet lacks) otherwise gets written to the seed as every peer's
+	// selection weight — the feedback loop behind the 2026-09-17 halt. Stale
+	// seed weights are safer than weights derived from a broken sequencer.
+	if reputationPushSuspendEnabled() &&
+		reputation.DefaultRoundHealth.ShouldSuspendPush(0.5, 5) {
+		metrics.ReputationPushSuspendedGauge.Set(1)
+		log.Warn().Msg("[ReputationPush] SUSPENDED — sequencer's own recent round success rate < 50%; " +
+			"not pushing (a sequencer fault must not become the fleet's selection weights)")
+		return
+	}
+	metrics.ReputationPushSuspendedGauge.Set(0)
 	// A4-COMPLETION-LLD.md §3.4's ordering mechanism: label this node's own
 	// metrics with whether it's the sequencer, independent of whether there's
 	// anything to push this tick -- IsSequencer() is a cheap local check

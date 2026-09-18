@@ -31,3 +31,15 @@ var ReputationNodeIsSequencerGauge = factory.NewGauge(
 		Help: "1 if this node currently holds a registered sequencer sign key, 0 otherwise",
 	},
 )
+
+// ReputationPushSuspendedGauge (D-61) is 1 while the reputation push is suspended
+// because the sequencer's own recent round success rate is below quorum, 0 when
+// pushing normally. An operator seeing this stuck at 1 knows the SEQUENCER is the
+// problem (not the fleet's reputation) — the exact misdiagnosis that turned the
+// 2026-09-17 lag into a >1h halt.
+var ReputationPushSuspendedGauge = factory.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "reputation_push_suspended",
+		Help: "1 if the reputation seed-push is currently suspended due to low sequencer round success rate, 0 otherwise",
+	},
+)

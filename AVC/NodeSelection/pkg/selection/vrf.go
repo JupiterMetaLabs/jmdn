@@ -70,9 +70,10 @@ func (s *VRFSelector) SelectBuddy(
 		return nil, ErrNoPeersAvailable
 	}
 
-	// Filter eligible nodes (score >= 0.5)
+	// Filter eligible nodes (score >= 0.5), with the reputation fail-safe: if the
+	// band empties the set while active peers exist, fall back to them (D-59).
 	filterConfig := DefaultFilterConfig()
-	eligible := FilterEligible(nodeID, nodes, filterConfig)
+	eligible, _ := FilterEligibleOrActive(nodeID, nodes, filterConfig)
 
 	if len(eligible) == 0 {
 		return nil, ErrNoPeersAvailable
@@ -195,9 +196,9 @@ func (s *VRFSelector) SelectMultipleBuddies(
 		return nil, fmt.Errorf("nodeID cannot be empty")
 	}
 
-	// Filter eligible nodes (score >= 0.5)
+	// Filter eligible nodes (score >= 0.5), with the reputation fail-safe (D-59).
 	filterConfig := DefaultFilterConfig()
-	eligible := FilterEligible(nodeID, nodes, filterConfig)
+	eligible, _ := FilterEligibleOrActive(nodeID, nodes, filterConfig)
 
 	if len(eligible) == 0 {
 		return nil, ErrNoPeersAvailable
