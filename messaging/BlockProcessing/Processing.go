@@ -218,6 +218,44 @@ func acquireBlockApplyLock(blockHash string) func() {
 	}
 }
 
+// affectedAccountsForBlock returns every account a block's application can touch,
+// and therefore every account that MUST be snapshotted into originalState for a
+// clean rollback: each tx sender and (non-nil) recipient, the coinbase and zkvm
+// addresses, AND every fee-recipient the reward split credits.
+//
+// D-67: the FeeRecipients term is load-bearing. config.SplitFee credits each
+// FeeRecipient (the cert signers' reward addresses — normally none of the tx
+// senders/receivers/coinbase/zkvm) per tx. If they are not in originalState,
+// BOTH rollback paths (the in-loop tx-failure path and the post-apply
+// fingerprint path) restore everything EXCEPT the reward credits, leaving them
+// applied — and a re-delivery credits them a SECOND time (a certain double-credit
+// divergence, strictly worse than a clean halt). Coinbase is included, so
+// SplitFee's no-recipients coinbase fallback is covered.
+//
+// Nil tx.From / CoinbaseAddr / ZKVMAddr are guarded (the caller validates them
+// upstream, but the guard keeps this helper pure and unit-testable).
+func affectedAccountsForBlock(block *config.ZKBlock) map[common.Address]bool {
+	m := make(map[common.Address]bool)
+	for _, tx := range block.Transactions {
+		if tx.From != nil {
+			m[*tx.From] = true
+		}
+		if tx.To != nil { // nil for contract deployments — no recipient account
+			m[*tx.To] = true
+		}
+	}
+	if block.CoinbaseAddr != nil {
+		m[*block.CoinbaseAddr] = true
+	}
+	if block.ZKVMAddr != nil {
+		m[*block.ZKVMAddr] = true
+	}
+	for _, fr := range block.FeeRecipients {
+		m[fr.Addr] = true
+	}
+	return m
+}
+
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
@@ -297,17 +335,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	// Store original state to enable rollback - captures balance + nonce + txcount atomically
 	originalState := make(map[common.Address]AccountSnapshot)
-	affectedAccounts := make(map[common.Address]bool)
-
-	// First, collect all affected DIDs from the block
-	for _, tx := range block.Transactions {
-		affectedAccounts[*tx.From] = true
-		if tx.To != nil { // nil for contract deployments — no recipient account
-			affectedAccounts[*tx.To] = true
-		}
-	}
-	affectedAccounts[*block.CoinbaseAddr] = true
-	affectedAccounts[*block.ZKVMAddr] = true
+	affectedAccounts := affectedAccountsForBlock(block)
 
 	span.SetAttributes(attribute.Int("affected_accounts", len(affectedAccounts)))
 
@@ -507,6 +535,81 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		successfullyProcessedTxs = append(successfullyProcessedTxs, tx.Hash.Hex())
 	}
 
+	// D-67: state-fingerprint verification runs BEFORE the block-processed marker
+	// is written, and a mismatch ROLLS BACK this block's applied+marked prefix.
+	// The old order wrote the marker first and checked the fingerprint after: a
+	// failed check then returned with the block already marked AND its account
+	// writes still applied, so the next delivery hit the marker, took the
+	// "already processed, skipping" fast path (which does NO fingerprint check),
+	// and stored the block unverified — advancing the head past diverged state and
+	// bypassing the fail-closed gate. Fail-closed requires verifying first and,
+	// on failure, leaving NOTHING marked or applied so a re-delivery re-verifies
+	// from a clean state (catch-up then re-applies the block deterministically).
+	//
+	// rollbackApplied mirrors the in-loop failure path: revoke the per-tx markers
+	// FIRST, then restore balances, both under the state-apply lock, so a crash
+	// between them fails toward bounded double-apply (repairable) rather than a
+	// permanent silent skip. A revoke failure aborts the balance restore, leaving
+	// a consistent applied+marked prefix that replay retries.
+	rollbackApplied := func() {
+		DB_OPs.LockStateApply()
+		if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
+			DB_OPs.UnlockStateApply()
+			span.RecordError(revokeErr)
+			logger().Error(span_ctx, "post-apply rollback: marker revocation failed — applied+marked prefix left consistent (replay retries)",
+				revokeErr,
+				ion.Int("prefix_txs", len(successfullyProcessedTxs)),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			return
+		}
+		if rbErr := rollbackState(span_ctx, originalState, accountsClient); rbErr != nil {
+			span.RecordError(rbErr)
+			logger().Error(span_ctx, "post-apply rollback: balance restore failed after revoke (replay re-applies, bounded double-apply)",
+				rbErr,
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+		}
+		DB_OPs.UnlockStateApply()
+		for _, txHash := range successfullyProcessedTxs {
+			cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
+		}
+	}
+
+	if execbridge.Enabled() {
+		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
+		if fperr != nil {
+			rollbackApplied()
+			return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w", block.BlockNumber, fperr)
+		}
+		switch {
+		case block.StateFingerprint == "":
+			// PRODUCER path: stamp our fingerprint so receivers can verify
+			// (rollout-safe — unstamped blocks are never compared).
+			block.StateFingerprint = fp
+		case block.StateFingerprint != fp:
+			span.SetAttributes(attribute.String("status", "state_divergence_halt"))
+			logger().Error(span_ctx, "STATE DIVERGENCE — post-apply fingerprint does not match block-carried value; rolling back and halting (fail closed, no marker written)",
+				fmt.Errorf("state fingerprint mismatch"),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("local_fingerprint", fp),
+				ion.String("block_fingerprint", block.StateFingerprint),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			rollbackApplied()
+			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
+		}
+	}
+
 	// tx_processed markers are committed atomically with each tx's
 	// balances inside the loop rather than in a single block-end batch. A
 	// block-end batch would write 2×txs+1 entries in ONE ExecAll, exceeding
@@ -550,41 +653,6 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		ion.String("topic", TOPIC),
 		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 	)
-
-	// P2.5 state-fingerprint verification. When contract execution is enabled,
-	// recompute the canonical post-apply account-state fingerprint and reconcile
-	// it with the value the block carries:
-	//   - carried empty  → PRODUCER path: stamp our fingerprint so receivers can
-	//     verify (rollout-safe — unstamped blocks are never compared);
-	//   - carried set + mismatch → this node's ledger DIVERGED from the producer's:
-	//     HALT the block (fail-closed) before advancing the applied anchor, rather
-	//     than serve a wrong balance (the reproduced live=1000 vs synced=2000 class).
-	// Runs only under execbridge.Enabled() so the O(N) rescan never taxes a fleet
-	// with contracts off. NOTE: full cryptographic binding is CON-02 v3; here the
-	// carried value's trust rests on the single honest sequencer.
-	if execbridge.Enabled() {
-		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
-		if fperr != nil {
-			return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w", block.BlockNumber, fperr)
-		}
-		switch {
-		case block.StateFingerprint == "":
-			block.StateFingerprint = fp
-		case block.StateFingerprint != fp:
-			span.SetAttributes(attribute.String("status", "state_divergence_halt"))
-			logger().Error(span_ctx, "STATE DIVERGENCE — post-apply fingerprint does not match block-carried value; halting",
-				fmt.Errorf("state fingerprint mismatch"),
-				ion.String("block_hash", block.BlockHash.Hex()),
-				ion.Int64("block_number", int64(block.BlockNumber)),
-				ion.String("local_fingerprint", fp),
-				ion.String("block_fingerprint", block.StateFingerprint),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-			)
-			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
-		}
-	}
 
 	// Advance the accounts-applied anchor (accountsdb). Runs AFTER the atomic
 	// marker commit — the block's effects are proven applied at this point. This

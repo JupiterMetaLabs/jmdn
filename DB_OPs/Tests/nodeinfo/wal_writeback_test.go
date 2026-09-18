@@ -61,7 +61,18 @@ func (c *captureHandle) StoreBlock(_ context.Context, b *config.ZKBlock) error {
 	return nil
 }
 
-func (c *captureHandle) StoreZKBlock(_ context.Context, _ *config.ZKBlock) error { return nil }
+// StoreZKBlock is now the single store path DB_OPs.StoreZKBlock routes through
+// (D-64: block → snapshot → [zkproof] → txs in one idempotent chain, so a
+// proofless block still gets its FK-parent snapshot row). The WAL writers
+// (WriteHeaders/WriteData → DB_OPs.StoreZKBlock) therefore land here, not in
+// StoreBlock, so this is where the harness records the block + its txs.
+func (c *captureHandle) StoreZKBlock(_ context.Context, b *config.ZKBlock) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.blocks = append(c.blocks, b.BlockNumber)
+	c.txs += len(b.Transactions)
+	return nil
+}
 
 // GetBlock simulates "block not found" so WriteData builds a fresh ZKBlock.
 func (c *captureHandle) GetBlock(_ context.Context, n uint64) (*thebegateway.BlockRecord, error) {
