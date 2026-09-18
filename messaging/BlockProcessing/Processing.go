@@ -218,6 +218,44 @@ func acquireBlockApplyLock(blockHash string) func() {
 	}
 }
 
+// affectedAccountsForBlock returns every account a block's application can touch,
+// and therefore every account that MUST be snapshotted into originalState for a
+// clean rollback: each tx sender and (non-nil) recipient, the coinbase and zkvm
+// addresses, AND every fee-recipient the reward split credits.
+//
+// D-67: the FeeRecipients term is load-bearing. config.SplitFee credits each
+// FeeRecipient (the cert signers' reward addresses — normally none of the tx
+// senders/receivers/coinbase/zkvm) per tx. If they are not in originalState,
+// BOTH rollback paths (the in-loop tx-failure path and the post-apply
+// fingerprint path) restore everything EXCEPT the reward credits, leaving them
+// applied — and a re-delivery credits them a SECOND time (a certain double-credit
+// divergence, strictly worse than a clean halt). Coinbase is included, so
+// SplitFee's no-recipients coinbase fallback is covered.
+//
+// Nil tx.From / CoinbaseAddr / ZKVMAddr are guarded (the caller validates them
+// upstream, but the guard keeps this helper pure and unit-testable).
+func affectedAccountsForBlock(block *config.ZKBlock) map[common.Address]bool {
+	m := make(map[common.Address]bool)
+	for _, tx := range block.Transactions {
+		if tx.From != nil {
+			m[*tx.From] = true
+		}
+		if tx.To != nil { // nil for contract deployments — no recipient account
+			m[*tx.To] = true
+		}
+	}
+	if block.CoinbaseAddr != nil {
+		m[*block.CoinbaseAddr] = true
+	}
+	if block.ZKVMAddr != nil {
+		m[*block.ZKVMAddr] = true
+	}
+	for _, fr := range block.FeeRecipients {
+		m[fr.Addr] = true
+	}
+	return m
+}
+
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
@@ -297,17 +335,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	// Store original state to enable rollback - captures balance + nonce + txcount atomically
 	originalState := make(map[common.Address]AccountSnapshot)
-	affectedAccounts := make(map[common.Address]bool)
-
-	// First, collect all affected DIDs from the block
-	for _, tx := range block.Transactions {
-		affectedAccounts[*tx.From] = true
-		if tx.To != nil { // nil for contract deployments — no recipient account
-			affectedAccounts[*tx.To] = true
-		}
-	}
-	affectedAccounts[*block.CoinbaseAddr] = true
-	affectedAccounts[*block.ZKVMAddr] = true
+	affectedAccounts := affectedAccountsForBlock(block)
 
 	span.SetAttributes(attribute.Int("affected_accounts", len(affectedAccounts)))
 
