@@ -156,31 +156,35 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	if err != nil {
 		return fmt.Errorf("StoreZKBlock: %w", err)
 	}
-	if err := h.StoreBlock(ctx, block); err != nil {
+	// Single, unconditional projection chain: block → snapshot → [zkproof] →
+	// transactions (backend.StoreZKBlock). D-64: the snapshot is the FK parent of
+	// transactions and MUST be written for every block, proof or not; the old
+	// split here (StoreBlock, then StoreZKBlock ONLY when a proof was present, then
+	// a separate per-tx loop) meant a proofless block — every catch-up block —
+	// wrote a `blocks` row but no `snapshots` row, so each transaction insert
+	// violated fk_txn_snapshot and the tx/snapshot projection was silently lost to
+	// the outbox. Routing through the one chain also removes the previous
+	// double-write of the block and every transaction on the proof path.
+	//
+	// All gateway writers are idempotent upserts, so a second pass over a
+	// partially-projected block (blocks row present, snapshot missing) COMPLETES
+	// the projection instead of failing on the FK (deliverable E).
+	if err := h.StoreZKBlock(ctx, block); err != nil {
 		return fmt.Errorf("StoreZKBlock: %w", err)
 	}
-	// Write ZK proof if present
-	if block.ProofHash != "" || len(block.StarkProof) > 0 {
-		if err := h.StoreZKBlock(ctx, block); err != nil {
-			return fmt.Errorf("StoreZKBlock: zk proof: %w", err)
-		}
-	}
-	// Write transactions and collect unique sender addresses
-	senders := make(map[string]struct{}, len(block.Transactions))
-	for i := range block.Transactions {
-		tx := block.Transactions[i]
-		if err := h.StoreTransaction(ctx, &tx, block.BlockNumber, i); err != nil {
-			return fmt.Errorf("StoreZKBlock: tx[%d]: %w", i, err)
-		}
-		if tx.From != nil {
-			senders[tx.From.Hex()] = struct{}{}
-		}
-	}
-	// Refresh tx_nonce + tx_count_sent for every sender in this block
-	for addr := range senders {
-		_ = h.RefreshAccountTxStats(ctx, addr) // best-effort; don't fail block write
-	}
-	// Record the store time for the sync monitor's propagation guard.
+
+	// D-66: tx_count_sent and tx_nonce are consensus-fingerprint fields
+	// (state_fingerprint AccountLeaf) and are maintained AUTHORITATIVELY by the
+	// apply path (account_recon: TxCountSent++, TxNonce=nonce+1; persisted via
+	// apply_account; monotonic-guarded by merge_account). The previous
+	// RefreshAccountTxStats call here RE-DERIVED both from the `transactions`
+	// projection (reader.go sqlRefreshAccountTxStats), which (a) is a rebuildable
+	// view that must never define a fingerprint field, and (b) went one low the
+	// moment a tx row was missing (the D-64 loss), flipping the sender's leaf and
+	// causing STATE DIVERGENCE on the next block. The tx_nonce recompute
+	// (MAX(nonce)+1 over present rows) can likewise disagree with the applied
+	// nonce under accepted future-nonce gaps (Security.go:620). Removed — the
+	// apply path is the single source of truth for both.
 	lastBlockStoredUnixNano.Store(time.Now().UnixNano())
 	return nil
 }
@@ -245,8 +249,15 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	if convErr != nil {
 		return nil, fmt.Errorf("GetZKBlockByNumber(%d): convert: %w", blockNumber, convErr)
 	}
+	// D-65: restore ZK proof fields. A genuine "no proof row" is fine — proofless
+	// blocks are legitimate and, with D-64, still project fully. But a REAL read
+	// error (connection, decode) must NOT be swallowed: silently returning a block
+	// with empty ProofHash/StarkProof is exactly how a served/reconstructed block
+	// lost its proof and cascaded proofless blocks across the fleet. Surface it.
 	if proof, err := h.GetZKProof(ctx, blockNumber); err == nil {
 		zkProofRecordToZKBlock(proof, blk)
+	} else if !IsNotFound(err) {
+		return nil, fmt.Errorf("GetZKBlockByNumber(%d): zk proof read: %w", blockNumber, err)
 	}
 	if txRecs, err := h.GetTransactionsByBlock(ctx, blockNumber); err == nil {
 		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
