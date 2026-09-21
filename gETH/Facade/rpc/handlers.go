@@ -18,8 +18,10 @@ import (
 
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/pkg/gatekeeper"
 	"gossipnode/txstatus"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -28,6 +30,33 @@ import (
 type Handlers struct{ service Service.Service }
 
 func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: service} }
+
+// authHeaderFromContext returns the Authorization header stashed by the HTTP
+// front-end for JSON-RPC expensive-method gating (JMDN-H05).
+func authHeaderFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(rpcAuthHeaderKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// requireExpensiveRPC enforces feature-flag (default OFF) + admin auth when enabled.
+func requireExpensiveRPC(ctx context.Context, enabled bool, method string) error {
+	if !enabled {
+		return fmt.Errorf("%s disabled (set features.enable_* and provide ADMIN_TOKEN)", method)
+	}
+	var secCfg *settings.SecurityConfig
+	if settings.IsLoaded() {
+		cfg := settings.Get().Security
+		secCfg = &cfg
+	} else {
+		secCfg = &settings.SecurityConfig{}
+	}
+	if err := gatekeeper.ValidateAdminAuthHeader(authHeaderFromContext(ctx), secCfg); err != nil {
+		return fmt.Errorf("%s requires admin auth: %w", method, err)
+	}
+	return nil
+}
 
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
@@ -41,6 +70,15 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 	case "solc_compile":
+		// JMDN-H05: default OFF; when enabled, require admin_http token.
+		enableSolc := false
+		if settings.IsLoaded() {
+			enableSolc = settings.Get().Features.EnableSolcCompile
+		}
+		if err := requireExpensiveRPC(ctx, enableSolc, "solc_compile"); err != nil {
+			resp := RespErr(req.ID, -32001, err.Error())
+			return resp, nil
+		}
 		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
 		if len(req.Params) == 0 {
 			resp, _ := invalidParams(req, "missing params")
@@ -644,6 +682,15 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, err
 
 	case "debug_traceTransaction":
+		// JMDN-H05: default OFF; when enabled, require admin_http token.
+		enableTrace := false
+		if settings.IsLoaded() {
+			enableTrace = settings.Get().Features.EnableDebugTrace
+		}
+		if err := requireExpensiveRPC(ctx, enableTrace, "debug_traceTransaction"); err != nil {
+			resp := RespErr(req.ID, -32001, err.Error())
+			return resp, nil
+		}
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))

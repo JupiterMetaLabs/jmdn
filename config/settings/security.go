@@ -14,6 +14,7 @@ const (
 	ServiceEthGRPC         = "eth_grpc"
 	ServiceBFTBuddy        = "bft_buddy"
 	ServiceBFTSequencer    = "bft_sequencer"
+	ServiceAdminHTTP       = "admin_http" // Token auth for expensive/admin HTTP + RPC
 )
 
 // AuthType defines the authentication method required for a service
@@ -99,6 +100,9 @@ func DefaultSecurityConfig() SecurityConfig {
 		// (security.global_rate_limit / global_burst); 0 disables.
 		GlobalRateLimit: 50,
 		GlobalBurst:     100,
+		// JMDN-H02: never trust forwarded client IPs unless operators opt in
+		// with BOTH TrustForwardedHeaders and a non-empty TrustedProxies list.
+		TrustForwardedHeaders: false,
 
 		Services: map[string]Policy{
 			// 1. Explorer API (HTTP public - Had basic token auth before)
@@ -115,10 +119,20 @@ func DefaultSecurityConfig() SecurityConfig {
 				TLS:      false,
 				AuthType: AuthTypeNone,
 			},
-			// 3. JSON-RPC (HTTP public)
+			// 3. JSON-RPC (HTTP public). Per-service rate_limit left 0 here so
+			// the shipped YAML (and GlobalRateLimit) are the authoritative floor;
+			// posture tests assert the "both zero → flagged" case against defaults.
 			ServiceEthRPC: {
 				TLS:      false,
 				AuthType: AuthTypeNone,
+			},
+			// 3b. Admin HTTP (token) — /sync/reconcile + gated expensive RPC
+			ServiceAdminHTTP: {
+				TLS:       false,
+				AuthType:  AuthTypeToken,
+				TokenEnv:  "ADMIN_TOKEN",
+				RateLimit: 20,
+				Burst:     40,
 			},
 			// 4. CLI Admin (gRPC local)
 			ServiceCLI: {

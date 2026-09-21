@@ -10,10 +10,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
+
+// MaxSoliditySourceBytes caps Solidity source accepted by CompileSolidity
+// before spawning solc (JMDN-H05). 512 KiB is generous for real contracts
+// while blocking trivial memory/CPU DoS via megabyte-sized inputs.
+const MaxSoliditySourceBytes = 512 * 1024
+
+// SolcCompileTimeout bounds a single solc invocation.
+const SolcCompileTimeout = 30 * time.Second
 
 // CompiledContract holds compilation results
 type CompiledContract struct {
@@ -40,6 +49,11 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	sourceCode, err := ioutil.ReadFile(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read source file: %w", err)
+	}
+
+	// JMDN-H05: reject oversized input before spawning solc.
+	if len(sourceCode) > MaxSoliditySourceBytes {
+		return nil, fmt.Errorf("solidity source too large: %d bytes (max %d)", len(sourceCode), MaxSoliditySourceBytes)
 	}
 
 	// Create a standard JSON input
@@ -79,10 +93,15 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 		return nil, fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Run solc compiler with standard JSON input
-	cmd := exec.Command("solc", "--standard-json", inputFile.Name())
+	// Run solc compiler with standard JSON input — bounded by context timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), SolcCompileTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "solc", "--standard-json", inputFile.Name())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("solc compilation timed out after %s", SolcCompileTimeout)
+		}
 		logger().Error(context.Background(), "Solc execution failed", err,
 			ion.String("output", string(output)))
 		return nil, fmt.Errorf("solc compilation failed: %s - %w", output, err)

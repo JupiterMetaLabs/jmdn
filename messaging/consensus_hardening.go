@@ -31,6 +31,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -541,7 +542,11 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensu
 		// legacy is still permitted.
 		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, consensusHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
-			verified = BLS_Verifier.Verify(r, vote) == nil
+			if BLS_Verifier.Verify(r, vote) == nil {
+				verified = true
+				log.Warn().Str("peer", r.PeerID).Msg("SECURITY: legacy (unbound) BLS vote accepted (RejectLegacyVotes=off)")
+				metrics.ConsensusLegacyVotesTotal.Inc()
+			}
 		}
 		if !verified {
 			log.Warn().Str("peer", r.PeerID).Msg("committee vote signature failed verification")

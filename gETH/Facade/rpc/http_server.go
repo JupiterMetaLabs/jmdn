@@ -108,7 +108,12 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 const maxBatchSize = 100
 
+func withRPCAuth(ctx context.Context, authHeader string) context.Context {
+	return context.WithValue(ctx, rpcAuthHeaderKey, authHeader)
+}
+
 func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
+	reqCtx := withRPCAuth(c.Request.Context(), c.GetHeader("Authorization"))
 	body, err := c.GetRawData()
 	if err != nil || len(body) == 0 {
 		write(c, RespErr(nil, -32700, "Parse error"))
@@ -145,7 +150,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 			wg.Add(1)
 			go func(i int, req Request) {
 				defer wg.Done()
-				resps[i], _ = s.h.Handle(c.Request.Context(), req)
+				resps[i], _ = s.h.Handle(reqCtx, req)
 			}(i, req)
 		}
 		wg.Wait()
@@ -160,7 +165,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
-	resp, _ := s.h.Handle(c.Request.Context(), req)
+	resp, _ := s.h.Handle(reqCtx, req)
 	write(c, resp)
 }
 
