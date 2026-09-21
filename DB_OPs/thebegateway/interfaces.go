@@ -118,4 +118,12 @@ type OutboxStore interface {
 	Next(ctx context.Context, limit int) ([]OutboxEntry, error)
 	Ack(ctx context.Context, id int64) error
 	IncrementAttempts(ctx context.Context, id int64, nextRetryAt time.Time) error
+	// RequeueExhausted resets attempts=0 (and next_retry_at=now) on every entry
+	// that has hit MaxOutboxAttempts and is therefore permanently skipped by
+	// Next(). It is the recovery hook for the D-64 projection gap: a tx row whose
+	// projection FK-failed while its snapshot was missing exhausts its 3 attempts
+	// within a minute and is stranded forever; once ReprojectRange writes the
+	// snapshot FK parent, requeuing makes the worker drain those entries. Returns
+	// the number of entries requeued.
+	RequeueExhausted(ctx context.Context) (int, error)
 }

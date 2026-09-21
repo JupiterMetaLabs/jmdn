@@ -1276,6 +1276,12 @@ func main() {
 		outboxWorker.Start()
 		defer outboxWorker.Stop()
 
+		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
+		// writing a missing snapshot does not un-skip tx rows that already exhausted
+		// their retries, so reproject resets those exhausted entries and this worker
+		// then drains them.
+		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
+
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
@@ -1306,6 +1312,44 @@ func main() {
 			} else {
 				log.Info().Int("updated", upd).Int("skipped", skip).Msg("[backfill] account-nonce backfill complete")
 				fmt.Fprintf(os.Stderr, "backfill: account_nonces stamped on %d block(s), %d skipped\n", upd, skip)
+			}
+		}
+
+		// One-shot reprojection repair (F / D-64). Set JMDN_REPROJECT_RANGE=<from>-<to>
+		// to rebuild the SQL projection for a block range whose snapshots/transactions
+		// were lost to the pre-D-64 catch-up gap. Each present block is re-stored via
+		// the idempotent StoreZKBlock chain, which writes the missing `snapshots` FK
+		// parent; the outbox worker then drains that block's pending transaction rows.
+		// Replaces the manual psql snapshot-insert procedure (TESTNET-RUNBOOK §5c).
+		// Idempotent and safe on healthy blocks; unset the env once it reports complete.
+		if rng := strings.TrimSpace(os.Getenv("JMDN_REPROJECT_RANGE")); rng != "" {
+			fromStr, toStr, ok := strings.Cut(rng, "-")
+			from, e1 := strconv.ParseUint(strings.TrimSpace(fromStr), 10, 64)
+			to, e2 := strconv.ParseUint(strings.TrimSpace(toStr), 10, 64)
+			if !ok || e1 != nil || e2 != nil {
+				log.Error().Str("range", rng).Msg("[reproject] invalid JMDN_REPROJECT_RANGE (want <from>-<to>, e.g. 822-835) — skipping")
+			} else if n, rerr := DB_OPs.ReprojectRange(from, to); rerr != nil {
+				log.Error().Err(rerr).Uint64("from", from).Uint64("to", to).Int("reprojected", n).Msg("[reproject] range repair FAILED")
+			} else {
+				log.Info().Uint64("from", from).Uint64("to", to).Int("reprojected", n).Msg("[reproject] range repair complete — outbox will drain pending tx rows")
+			}
+		}
+
+		// One-shot tx_count_sent reconciliation (C, opt-in). Set
+		// JMDN_RECONCILE_TXCOUNT=1 to compare every account's stored counter (a
+		// fingerprint field) against the transactions projection and log any
+		// disagreement — the early warning for the D-64/D-66 drift. Read-only, but it
+		// scans accounts ⋈ transactions, so it is opt-in rather than a default-boot cost.
+		if os.Getenv("JMDN_RECONCILE_TXCOUNT") == "1" {
+			rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			mis, rcerr := DB_OPs.LogTxCountReconciliation(rctx, db.SQL.GetDB())
+			rcancel()
+			if rcerr != nil {
+				log.Error().Err(rcerr).Msg("[reconcile] tx_count_sent reconciliation failed")
+			} else if mis > 0 {
+				log.Warn().Int("mismatches", mis).Msg("[reconcile] tx_count_sent disagrees with the projection — see stderr; repair with JMDN_REPROJECT_RANGE")
+			} else {
+				log.Info().Msg("[reconcile] tx_count_sent matches the transactions projection")
 			}
 		}
 

@@ -339,19 +339,28 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	span.SetAttributes(attribute.Int("affected_accounts", len(affectedAccounts)))
 
-	// Fetch and store original state BEFORE any processing
+	// Fetch and store original state BEFORE any processing.
 	for addr := range affectedAccounts {
 		doc, err := DB_OPs.GetAccount(accountsClient, addr)
-		if err == nil {
+		switch {
+		case err == nil:
 			originalState[addr] = AccountSnapshot{
 				Balance:     doc.Balance,
 				TxNonce:     doc.TxNonce,
 				TxCountSent: doc.TxCountSent,
 				UpdatedAt:   doc.UpdatedAt,
 			}
-		} else {
-			// Account doesn't exist yet — zero-value snapshot, rollback will restore to 0
+		case DB_OPs.IsNotFound(err):
+			// Genuinely new account — zero-value snapshot; rollback restores to 0.
 			originalState[addr] = AccountSnapshot{Balance: "0"}
+		default:
+			// FAIL CLOSED: a transient/real read error (timeout, connection) is NOT
+			// proof the account is absent. Snapshotting Balance:"0" here would make a
+			// later rollback ZERO a real, funded account — silent corruption. Nothing
+			// has been applied yet at this point, so abort cleanly and let the block
+			// be retried against a readable store.
+			return fmt.Errorf("block %d: rollback-snapshot capture failed for %s: %w (fail closed — not assuming the account is absent)",
+				block.BlockNumber, addr.Hex(), err)
 		}
 	}
 

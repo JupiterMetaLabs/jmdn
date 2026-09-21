@@ -86,6 +86,37 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	if serr := DB_OPs.StoreZKBlock(nil, block); serr != nil {
 		return hasCert, fmt.Errorf("thebesync apply: block %d store: %w", block.BlockNumber, serr)
 	}
+	// B (D-65): guard against a PARTIALLY-projected store. StoreZKBlock returns nil
+	// even when a transaction projection fails and is enqueued to the outbox
+	// (best-effort), so "no error" is NOT proof the block fully landed.
+	//
+	// A plain refusal here does NOT help: the block ROW is already written and the
+	// local tip is MAX(block_number) (Applier.LocalTip → GetLatestBlockNumber), so
+	// returning an error would not hold the head back — block N would just be
+	// skipped with its transactions missing. So REPAIR inline instead: the
+	// in-memory `block` still carries every transaction, and its snapshot FK parent
+	// now exists (the StoreZKBlock above wrote it), so a second StoreZKBlock lands
+	// the tx rows. Re-verify, and fail only if it is STILL partial — now a loud,
+	// localized projection fault rather than a silent gap.
+	if len(block.Transactions) > 0 {
+		stored, rerr := DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
+		if rerr != nil {
+			return hasCert, fmt.Errorf("thebesync apply: block %d verify projection: %w", block.BlockNumber, rerr)
+		}
+		if len(stored.Transactions) != len(block.Transactions) {
+			if serr := DB_OPs.StoreZKBlock(nil, block); serr != nil {
+				return hasCert, fmt.Errorf("thebesync apply: block %d reproject store: %w", block.BlockNumber, serr)
+			}
+			stored, rerr = DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
+			if rerr != nil {
+				return hasCert, fmt.Errorf("thebesync apply: block %d re-verify projection: %w", block.BlockNumber, rerr)
+			}
+			if len(stored.Transactions) != len(block.Transactions) {
+				return hasCert, fmt.Errorf("thebesync apply: block %d STILL partially projected after inline retry — %d of %d transactions in SQL (projection fault; run JMDN_REPROJECT_RANGE)",
+					block.BlockNumber, len(stored.Transactions), len(block.Transactions))
+			}
+		}
+	}
 	// Tip marker is monotonic and self-healing (ReconcileBlockNumber), so a marker
 	// failure is non-fatal — the block is already durably stored. Matches
 	// ProcessBlockLocally's non-fatal treatment.
