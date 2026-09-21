@@ -86,6 +86,25 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	if serr := DB_OPs.StoreZKBlock(nil, block); serr != nil {
 		return hasCert, fmt.Errorf("thebesync apply: block %d store: %w", block.BlockNumber, serr)
 	}
+	// B (D-65): refuse to advance the head on a PARTIALLY-projected store.
+	// StoreZKBlock returns nil even when a transaction projection FK-fails and is
+	// enqueued to the outbox (best-effort), so "no error" is NOT proof the block
+	// fully landed. With D-64 the snapshot is always written first and the tx
+	// projection runs inline, so a healthy store re-reads with every tx present.
+	// If it does not — a transient projection gap, or a node not yet carrying
+	// D-64 — advancing the head would strand this block with missing transactions
+	// (the exact catch-up defect). Fail the block so it is retried/re-synced (or
+	// repaired with JMDN_REPROJECT_RANGE) rather than silently skipped past.
+	if len(block.Transactions) > 0 {
+		stored, rerr := DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
+		if rerr != nil {
+			return hasCert, fmt.Errorf("thebesync apply: block %d verify projection: %w", block.BlockNumber, rerr)
+		}
+		if len(stored.Transactions) != len(block.Transactions) {
+			return hasCert, fmt.Errorf("thebesync apply: block %d partially projected — %d of %d transactions in SQL; refusing to advance the head (retry / JMDN_REPROJECT_RANGE)",
+				block.BlockNumber, len(stored.Transactions), len(block.Transactions))
+		}
+	}
 	// Tip marker is monotonic and self-healing (ReconcileBlockNumber), so a marker
 	// failure is non-fatal — the block is already durably stored. Matches
 	// ProcessBlockLocally's non-fatal treatment.

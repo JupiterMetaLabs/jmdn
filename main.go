@@ -1329,6 +1329,24 @@ func main() {
 			}
 		}
 
+		// One-shot tx_count_sent reconciliation (C, opt-in). Set
+		// JMDN_RECONCILE_TXCOUNT=1 to compare every account's stored counter (a
+		// fingerprint field) against the transactions projection and log any
+		// disagreement — the early warning for the D-64/D-66 drift. Read-only, but it
+		// scans accounts ⋈ transactions, so it is opt-in rather than a default-boot cost.
+		if os.Getenv("JMDN_RECONCILE_TXCOUNT") == "1" {
+			rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			mis, rcerr := DB_OPs.LogTxCountReconciliation(rctx, db.SQL.GetDB())
+			rcancel()
+			if rcerr != nil {
+				log.Error().Err(rcerr).Msg("[reconcile] tx_count_sent reconciliation failed")
+			} else if mis > 0 {
+				log.Warn().Int("mismatches", mis).Msg("[reconcile] tx_count_sent disagrees with the projection — see stderr; repair with JMDN_REPROJECT_RANGE")
+			} else {
+				log.Info().Msg("[reconcile] tx_count_sent matches the transactions projection")
+			}
+		}
+
 		// Genesis allocation (bootstrap / 2-node determinism gate). If
 		// JMDN_GENESIS_ALLOC names a JSON {"0xADDR":"balanceWei"} file, seed those
 		// accounts now — before any block is produced or applied — so the fleet's

@@ -72,3 +72,27 @@ GOWORK=off go test ./DB_OPs/...                     # D-65/D-66 (thebe_ops)
 GOWORK=off go test ./messaging/BlockProcessing/...  # D-67 (Processing reorder)
 gofmt -l DB_OPs messaging/BlockProcessing           # must print nothing
 ```
+
+---
+
+## Rev 2 — review follow-ups landed
+
+- **D-67b (blocker)** — fee-recipient rollback gap: fixed via `affectedAccountsForBlock`;
+  test `messaging/BlockProcessing/affected_accounts_test.go`.
+- **B (D-65)** — round-trip test added (`DB_OPs/thebe_ops_review_test.go`,
+  `TestGetZKBlockByNumber_PreservesZKFieldsThroughJSON`); **applier-refuse implemented**
+  in `thebesync/apply.go`: after `StoreZKBlock`, re-read the block and refuse to advance
+  the head if fewer transactions are projected than the block carries (partial store →
+  retry / reproject instead of a silent skip).
+- **C (D-66)** — no-refresh test added (`TestStoreZKBlock_DoesNotCallRefreshAccountTxStats`);
+  **startup reconciliation** added (`DB_OPs.LogTxCountReconciliation`, opt-in via
+  `JMDN_RECONCILE_TXCOUNT=1`) — logs any account whose `tx_count_sent` disagrees with the
+  transactions projection, the early warning for this drift.
+- **F** — `DB_OPs.ReprojectRange(from,to)` + boot trigger `JMDN_REPROJECT_RANGE=<from>-<to>`
+  re-stores each block in a range so the missing `snapshots` FK parent is written and the
+  outbox drains the pending tx rows; replaces the manual psql procedure (RUNBOOK §5c).
+  Test `DB_OPs/reproject_test.go`. A `-cmd reproject` gRPC variant is the remaining nicety
+  (needs a proto RPC + regen).
+
+All still **untested in-sandbox**; validate on a build host with the commands above plus
+`./thebesync/...`.
