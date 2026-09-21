@@ -96,3 +96,27 @@ gofmt -l DB_OPs messaging/BlockProcessing           # must print nothing
 
 All still **untested in-sandbox**; validate on a build host with the commands above plus
 `./thebesync/...`.
+
+---
+
+## Rev 3 — second-review blockers fixed
+
+- **F blocker (reproject could not land the 834/835 tx rows).** Correct: exhausted
+  outbox entries (`attempts >= MaxOutboxAttempts=3`) are retained but skipped by
+  `Next()`, and `ReprojectRange` read the block from SQL (no txs), so writing the
+  snapshot alone never revived them. Fix: `OutboxStore.RequeueExhausted` (reset
+  `attempts=0`), wired via `DB_OPs.SetOutboxRequeuer` (main.go) and called by
+  `ReprojectRange` after the snapshot write; the worker then drains them. Tests:
+  `outbox_requeue_test.go`, and `reproject_test` asserts the requeuer fires. If an
+  entry was dropped (not just exhausted), re-pull the range via thebesync.
+- **B blocker (applier refusal did not stop head advance).** Correct: tip =
+  `MAX(block_number)` and the block row is written before the check, so `return err`
+  could not hold the head. Fix: repair inline — retry `StoreZKBlock` (in-memory
+  block carries all txs; snapshot FK parent now exists → rows land), re-verify, fail
+  only if STILL partial.
+- **Hardening (non-blocking):** rollback-snapshot capture now fails closed on a
+  non-"not found" `GetAccount` error instead of snapshotting `Balance:"0"` (which a
+  rollback would apply, zeroing a real account).
+
+Operator interim (before the requeue ships) remains valid: after the snapshot row
+exists, `sqlite3 <kv_path>/outbox.db "UPDATE thebe_outbox SET attempts=0, next_retry_at=strftime('%s','now') WHERE attempts>=3"`.
