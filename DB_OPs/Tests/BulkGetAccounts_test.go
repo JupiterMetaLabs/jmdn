@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,13 @@ func Test_GetMultipleAccounts(t *testing.T) {
 
 		err = DB_OPs.CreateAccount(conn, didAddress, address, metadata)
 		if err != nil {
+			// Integration test: needs a wired ThebeDB handle (SetGlobalHandleFactory),
+			// which only main.go installs after ThebeDB init. Unit runs (go test ./...)
+			// have none, so skip cleanly instead of failing (and later panicking on an
+			// empty result). Run it against a live node / in the integration harness.
+			if strings.Contains(err.Error(), "no ThebeHandle available") {
+				t.Skipf("integration: requires a wired ThebeDB handle, not available in unit runs (%v)", err)
+			}
 			t.Fatalf("Failed to create account %d: %v", i, err)
 		}
 		fmt.Printf("✅ Created account %d: %s -> %s\n", i+1, didAddress, address.Hex())
