@@ -1276,6 +1276,12 @@ func main() {
 		outboxWorker.Start()
 		defer outboxWorker.Stop()
 
+		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
+		// writing a missing snapshot does not un-skip tx rows that already exhausted
+		// their retries, so reproject resets those exhausted entries and this worker
+		// then drains them.
+		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
+
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this

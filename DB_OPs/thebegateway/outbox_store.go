@@ -73,6 +73,11 @@ const (
         UPDATE thebe_outbox
         SET attempts = attempts + 1, next_retry_at = ?
         WHERE id = ?`
+
+	sqlRequeueExhausted = `
+        UPDATE thebe_outbox
+        SET attempts = 0, next_retry_at = ?
+        WHERE attempts >= ?`
 )
 
 type sqliteOutboxStore struct {
@@ -195,6 +200,25 @@ func (s *sqliteOutboxStore) IncrementAttempts(ctx context.Context, id int64, nex
 		return fmt.Errorf("outbox: increment attempts id=%d: %w", id, err)
 	}
 	return nil
+}
+
+// RequeueExhausted resets attempts=0 and next_retry_at=now on every entry that
+// has reached MaxOutboxAttempts (and is therefore permanently skipped by Next()),
+// so the worker will retry them. Exhausted entries are RETAINED in the table (Ack
+// deletes only on success), so this reliably finds them. Returns the count
+// requeued. Safe/idempotent: the projection appliers are ON CONFLICT DO NOTHING,
+// so a requeued entry that turns out to already be projected simply Acks.
+// Time: O(rows updated).
+func (s *sqliteOutboxStore) RequeueExhausted(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, sqlRequeueExhausted, time.Now().Unix(), MaxOutboxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: requeue exhausted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("outbox: requeue exhausted rows: %w", err)
+	}
+	return int(n), nil
 }
 
 // ExponentialBackoff returns the next retry time for a given attempt count.

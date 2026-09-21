@@ -44,6 +44,13 @@ func TestReprojectRange_ReStoresEachPresentBlock(t *testing.T) {
 	SetGlobalHandle(h)
 	defer SetGlobalHandle(nil)
 
+	// Wire a requeuer spy: ReprojectRange MUST requeue exhausted outbox entries
+	// after writing snapshots, or the FK-failed tx rows (already past their retry
+	// ceiling) stay permanently skipped and never land.
+	requeueCalls := 0
+	SetOutboxRequeuer(func(context.Context) (int, error) { requeueCalls++; return 4, nil })
+	defer SetOutboxRequeuer(nil)
+
 	n, err := ReprojectRange(822, 828)
 	if err != nil {
 		t.Fatalf("ReprojectRange: %v", err)
@@ -58,6 +65,9 @@ func TestReprojectRange_ReStoresEachPresentBlock(t *testing.T) {
 		if got != 822 && got != 827 && got != 828 {
 			t.Errorf("re-stored an absent block %d (should have been skipped)", got)
 		}
+	}
+	if requeueCalls != 1 {
+		t.Errorf("outbox requeuer called %d times, want 1 — reproject must requeue exhausted entries so the worker retries the pending tx rows", requeueCalls)
 	}
 }
 

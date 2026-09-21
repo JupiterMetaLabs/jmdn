@@ -1,9 +1,22 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
+
+// outboxRequeuer, when wired by main() (SetOutboxRequeuer), resets exhausted
+// outbox entries (attempts >= MaxOutboxAttempts) so the worker retries them.
+// ReprojectRange calls it after writing the snapshots: a tx row whose projection
+// FK-failed while its snapshot was missing exhausts its 3 attempts within a
+// minute and is then permanently skipped by the worker — writing the snapshot
+// alone does NOT un-skip it. Nil when no seednode/outbox is configured.
+var outboxRequeuer func(context.Context) (int, error)
+
+// SetOutboxRequeuer wires the node's outbox requeue hook (main() passes
+// thebegateway OutboxStore.RequeueExhausted). Call once at startup.
+func SetOutboxRequeuer(fn func(context.Context) (int, error)) { outboxRequeuer = fn }
 
 // ReprojectRange rebuilds the SQL projection for blocks [from,to] on THIS node,
 // repairing the D-64 catch-up gap where a block got a `blocks` row but no
@@ -45,8 +58,31 @@ func ReprojectRange(from, to uint64) (reprojected int, err error) {
 		}
 		reprojected++
 	}
-	fmt.Printf("[reproject] range [%d..%d]: re-stored %d block(s) in %s; "+
-		"the outbox will drain any pending transaction rows now their snapshot FK parent exists\n",
-		from, to, reprojected, time.Since(start))
+
+	// Writing the snapshots is necessary but NOT sufficient: any tx row whose
+	// projection FK-failed before the snapshot existed has, by now, exhausted its
+	// MaxOutboxAttempts retries and is permanently skipped by the outbox worker.
+	// Requeue those exhausted entries so the worker retries them now that the FK
+	// parent exists. Without this, ReprojectRange writes snapshots but the missing
+	// transactions never land.
+	requeued := 0
+	if outboxRequeuer != nil {
+		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		n, rqErr := outboxRequeuer(rctx)
+		cancel()
+		if rqErr != nil {
+			fmt.Printf("[reproject] WARNING: outbox requeue failed: %v — exhausted tx rows may stay stranded; "+
+				"re-run once the outbox is reachable, or re-pull the range via thebesync\n", rqErr)
+		}
+		requeued = n
+	} else {
+		fmt.Printf("[reproject] NOTE: no outbox requeuer wired — if tx rows were exhausted (>=%d attempts) they stay "+
+			"skipped; ensure the node's outbox is wired (SetOutboxRequeuer), or re-pull the range via thebesync\n",
+			3)
+	}
+
+	fmt.Printf("[reproject] range [%d..%d]: re-stored %d block(s), requeued %d exhausted outbox entrie(s) in %s; "+
+		"the worker will now drain the pending transaction rows\n",
+		from, to, reprojected, requeued, time.Since(start))
 	return reprojected, nil
 }

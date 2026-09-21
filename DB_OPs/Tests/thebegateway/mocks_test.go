@@ -125,6 +125,9 @@ type spyOutbox struct {
 	ackErr       error
 	incrCalls    []int64
 	incrErr      error
+	requeueCalls int
+	requeued     int
+	requeueErr   error
 }
 
 func (m *spyOutbox) Enqueue(_ context.Context, _ thebegateway.OutboxEntry) error {
@@ -155,6 +158,13 @@ func (m *spyOutbox) IncrementAttempts(_ context.Context, id int64, _ time.Time) 
 	defer m.mu.Unlock()
 	m.incrCalls = append(m.incrCalls, id)
 	return m.incrErr
+}
+
+func (m *spyOutbox) RequeueExhausted(_ context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requeueCalls++
+	return m.requeued, m.requeueErr
 }
 
 func (m *spyOutbox) ackCount() int {
