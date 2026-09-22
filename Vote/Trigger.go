@@ -230,10 +230,14 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.String("function", "Vote.SubmitVote"))
 	}
 
-	// NEW — additive, flagged. Nothing here may ever affect vt.Vote,
-	// blockHash, or this function's return value. A failure here is logged
-	// and dropped; the legacy write above remains the only one that matters
-	// until Stage 4 rewires the readers.
+	// D-26(a)/D-51 cutover: VoteCRDTDualWrite is now permanently true
+	// (vote_crdt_v2.go) — this is the write that actually matters for the
+	// tally decision (Structs.ProcessVotesFromCRDT reads only this
+	// keyspace now). The legacy write above is kept for other legacy CRDT
+	// consumers unrelated to vote tallying (e.g. Sequencer's
+	// voterPeerIDsForBlock buddy-set expansion) and stays byte-identical;
+	// nothing here may affect vt.Vote, blockHash, or this function's
+	// return value, and a failure here is logged and dropped, not fatal.
 	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
 		// Per-vote BLS signature. Nothing in the codebase signs individual
 		// votes before this — the existing signer only produces an

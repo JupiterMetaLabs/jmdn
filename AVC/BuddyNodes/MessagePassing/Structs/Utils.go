@@ -27,18 +27,33 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go) —
-// same env var, same default. Duplicated rather than imported: Vote ->
-// MessagePassing -> Structs already exists (Vote/Trigger.go imports
-// MessagePassing; MessagePassing/ListenerHandler.go imports Structs), so
-// Structs -> Vote would be an import cycle. The two must never disagree:
-// Stage 4's entire revert story (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §10 —
-// "readers -> TallyBlock | high | flag off") depends on the read side and
-// the write side flipping together. This duplication pattern (an env-flag
-// helper copied per package rather than shared) already exists in Security,
-// messaging, Vote, and internal/reputation — see Vote/vote_crdt_v2.go's own
-// comment on envOn.
-var voteCRDTV2Enabled = envOnStructs("JMDN_VOTE_CRDT_V2", false)
+// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go).
+// Duplicated rather than imported: Vote -> MessagePassing -> Structs already
+// exists (Vote/Trigger.go imports MessagePassing; MessagePassing/
+// ListenerHandler.go imports Structs), so Structs -> Vote would be an
+// import cycle. The two must never disagree: the read side (this file) and
+// the write side (Vote/vote_crdt_v2.go) have to flip together, which is
+// exactly why both are now hardcoded true in the same commit rather than
+// left as two separately-toggleable env reads.
+//
+// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): permanently true,
+// not env-gated. See Vote/vote_crdt_v2.go's package doc comment for the full
+// reasoning — short version: the legacy path below (processVotesFromCRDT_legacy)
+// has no per-vote signature and keys its CRDT write on an unauthenticated
+// payload field; a naive fix at that ingest point was tried and reverted
+// (18806fb) because it also rejects legitimate direct-stream-to-pubsub vote
+// relay, which is indistinguishable from forgery at that layer. The real
+// authentication boundary is HERE, at tally time, via TallyBlock's
+// committee-registered-pubkey + BLS-signature check — so this is the one
+// flag flip that actually matters, and it ships in the same coordinated
+// fleet-wide restart as every other D-26 fix, not as a separate rollout.
+// processVotesFromCRDT_legacy is kept, unreachable, only because
+// legacy_vote_panic_test.go calls it directly to pin its own
+// malformed-input crash fix; do not route production traffic to it again.
+var voteCRDTV2Enabled = true
+
+// envOnStructs is retained for any future flag that needs this exact
+// duplication pattern; it no longer determines voteCRDTV2Enabled.
 
 func envOnStructs(key string, def bool) bool {
 	v, ok := os.LookupEnv(key)
@@ -152,25 +167,22 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 // targetBlockHash is required - votes without matching block_hash are skipped.
 // The second return value maps peerID -> rejection_reason for peers that voted -1.
 //
-// Stage 4 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §6): gated by the same
-// JMDN_VOTE_CRDT_V2 flag as the write side (Vote.VoteCRDTDualWrite) so this
-// stage stays revertible by a single flag flip, per the LLD's §10 build-order
-// table ("4 | readers -> TallyBlock | high | flag off"):
-//   - flag OFF (default today, since Stage 2's dual-write also defaults
-//     off): legacy peer-keyed read, UNCHANGED from before Stage 4 — reads
-//     listenerNode.CRDTLayer, decides via the seed-node-weighted
-//     voteaggregation.VoteAggregation. This remains the only path that runs
-//     in production until the fleet flips JMDN_VOTE_CRDT_V2 on.
-//   - flag ON: new block-keyed read via avcvotes.TallyBlock against
-//     listenerNode.VoteCRDTLayer, decided by the unweighted
-//     voteaggregation.MajorityDecision (Gap 2 — reputation weight must never
-//     multiply an already-cast vote) and preserving RejectionReason per peer
-//     from the typed VoteRecord instead of an untyped map (Gap 1).
+// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): voteCRDTV2Enabled
+// is now permanently true, so this always takes the block-keyed read via
+// avcvotes.TallyBlock against listenerNode.VoteCRDTLayer, decided by the
+// unweighted voteaggregation.MajorityDecision (Gap 2 — reputation weight
+// must never multiply an already-cast vote) and preserving RejectionReason
+// per peer from the typed VoteRecord instead of an untyped map (Gap 1).
 //
-// height is now a required parameter (it was not before Stage 4) because
-// TallyBlock needs it and every call site has it available; threaded
-// unconditionally on both the legacy and v2 paths so no call site carries
-// two different signatures depending on the flag.
+// The legacy peer-keyed read (listenerNode.CRDTLayer, the seed-node-weighted
+// voteaggregation.VoteAggregation) is no longer reachable from here — it has
+// no per-vote signature, and its CRDT write is keyed on an unauthenticated
+// payload field (D-26(a)). processVotesFromCRDT_legacy is kept in this file,
+// unreachable in production, only because legacy_vote_panic_test.go still
+// calls it directly to pin its malformed-input crash fix.
+//
+// height is a required parameter because TallyBlock needs it; every call
+// site already has it available.
 func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
 	if listenerNode == nil {
 		logger().Error(logger_ctx, "Listener node not initialized", nil,
