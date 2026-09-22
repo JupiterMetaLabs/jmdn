@@ -1537,10 +1537,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// no peer can obtain a genuine committee signature for a caller-supplied hash.
 	// The stream's remote peer ID is transport-authenticated, so this membership
 	// check is sound. Fail closed: an unknown buddy set authorizes no one.
-	// D-26(d) observe rung: record what the gate WOULD decide before the gate
-	// (which is default-off) decides nothing. No-op once the flag is on.
-	observeVoteRequesterAuth(voteResultSpanCtx, remotePeer)
-
+	// D-26(d) (AVC-CONSENSUS-HANDOVER.md rev 7): the gate is now permanently
+	// enforced (no more default-off / observe-only shadow rung — that rung's
+	// entire purpose was answering whether it was safe to flip the flag, and
+	// it now IS flipped, unconditionally, as part of this coordinated
+	// release; see consensus_vote_authz.go).
 	if !voteRequesterAuthorized(remotePeer) {
 		voteResultSpan.SetAttributes(attribute.String("status", "unauthorized_vote_requester"))
 		logger().Warn(voteResultSpanCtx, "Rejecting vote result request: requester is not an authorized committee member",

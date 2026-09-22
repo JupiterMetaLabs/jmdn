@@ -302,6 +302,7 @@ func setDefaults(v *viper.Viper) {
 	// Consensus
 	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
 	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
+	v.SetDefault("consensus.sequencer_pinned_peer_id", d.Consensus.SequencerPinnedPeerID)
 	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
 	v.SetDefault("consensus.committee_epoch_blocks", d.Consensus.CommitteeEpochBlocks)
 	v.SetDefault("consensus.require_pinned_committee", d.Consensus.RequirePinnedCommittee)
