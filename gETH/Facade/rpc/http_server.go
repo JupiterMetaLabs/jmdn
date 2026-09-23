@@ -69,6 +69,9 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB (JMDN-V3-013)
 	}
 	secCfg := &settings.Get().Security
 	tlsEnabled, middleware, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, s.logger)
@@ -112,8 +115,14 @@ func withRPCAuth(ctx context.Context, authHeader string) context.Context {
 	return context.WithValue(ctx, rpcAuthHeaderKey, authHeader)
 }
 
+// maxRequestBodyBytes bounds a single JSON-RPC request body (JMDN-V3-013).
+// 10 MiB comfortably covers large batches / contract-deploy payloads while
+// bounding per-request memory use.
+const maxRequestBodyBytes = 10 << 20
+
 func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 	reqCtx := withRPCAuth(c.Request.Context(), c.GetHeader("Authorization"))
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
 	body, err := c.GetRawData()
 	if err != nil || len(body) == 0 {
 		write(c, RespErr(nil, -32700, "Parse error"))

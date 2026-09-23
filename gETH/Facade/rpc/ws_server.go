@@ -91,6 +91,14 @@ func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	}
 }
 
+// JMDN-V3-007: still-open hardening for the public WS endpoint — bound
+// per-message size and per-connection subscription count. (Rate limiting,
+// auth and TLS remain open; see DEVNET-VALIDATION notes / audit tracking.)
+const (
+	maxWSMessageBytes       = 1 << 20 // 1 MiB per WS frame/message
+	maxSubscriptionsPerConn = 50      // eth_subscribe cap per connection
+)
+
 type sub struct {
 	id   string
 	stop func()
@@ -110,6 +118,10 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	// JMDN-V3-007: bound per-message size so one connection cannot force
+	// unbounded buffer growth reading a single frame.
+	conn.SetReadLimit(maxWSMessageBytes)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -134,6 +146,14 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Method == "eth_subscribe" {
+			mu.Lock()
+			tooMany := len(subs) >= maxSubscriptionsPerConn
+			mu.Unlock()
+			if tooMany {
+				_ = conn.WriteJSON(RespErr(req.ID, -32000, "too many subscriptions on this connection"))
+				continue
+			}
+
 			// params: [subscriptionType, (optional) filter]
 			if len(req.Params) < 1 {
 				_ = conn.WriteJSON(RespErr(req.ID, -32602, "missing subscription type"))
