@@ -716,13 +716,12 @@ func verifyBlockProof(_ *config.ZKBlock) error { return nil }
 // ---- Equivocation detection --------------------------------------------------
 
 // seenHeightsCacheCapacity bounds the in-memory equivocation fast-path cache
-// (D-34). It never holds the only copy of a first-seen height — every miss
-// already falls through to the durable equivocationStore
-// (FirstSeenHash/RecordFirstSeen, below) — so bounding it costs nothing but
-// one extra durable read on a miss for a height old enough to have been
-// evicted. Sized generously past any plausible in-flight window; it exists to
-// stop unbounded growth over a long-lived process, not to bound recency
-// tightly.
+// (D-34). It never holds the only copy in practice — blockPropagation.go:121
+// auto-wires DBEquivocationStore on every node, so a miss falls through to
+// the durable store. If that wiring is ever removed, this cache becomes the
+// only copy and eviction loses first-seen state. Sized generously past any
+// plausible in-flight window; it exists to stop unbounded growth over a
+// long-lived process, not to bound recency tightly.
 const seenHeightsCacheCapacity = 100000
 
 var (
