@@ -841,27 +841,33 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 		merged++
 	}
 
-	// D-31: close the TOCTOU between the watermark check above and these
-	// writes.
+	// D-31: the TOCTOU between the watermark check above and these writes.
 	//
 	// The check at the top of this function reads DefaultWatermark once. The
 	// writes happen after a JSON unmarshal and a loop over every element. In
-	// that window ConvergeAndCompact can run on another goroutine, advance the
-	// watermark, and CompactVotesBelowHeight can delete this very key — after
-	// which the Adds above put it straight back. The result is a vote for a
-	// height the node has already evaluated and discarded, resurrected by a
-	// lagging peer's sync data, with nothing in the logs to say so.
+	// that window ConvergeAndCompact can run on another goroutine and advance
+	// the watermark for this key's height.
 	//
-	// A lock would have to span this whole function and serialise every merge
-	// against compaction. Re-checking afterwards is cheaper and reaches the
-	// same invariant: nothing at or below the watermark survives a merge. If
-	// the watermark moved past us while we worked, undo the key.
+	// D-57: this used to call CRDTLayer.Delete(key) here — deleting the WHOLE
+	// LWWSet, not just the elements this merge added. If that key already
+	// held a peer's genuine conflicting votes, this destroyed the
+	// equivocation evidence before ConvergeAndCompact's C5 pass could
+	// evaluate it — and unconditionally: a peer sending {"adds":{}} near a
+	// watermark advance triggered it with nothing actually merged.
+	//
+	// The delete was never load-bearing. CompactVotesBelowHeight's own
+	// regular sweep collects this key on its next pass regardless, and by
+	// construction that sweep runs AFTER C5 evaluates the evidence — the
+	// exact ordering avc/crdt/votes/converge.go fuses the two steps to
+	// guarantee. Watermark.Set is monotonic (CAS, refuses regression), every
+	// deletion in ConvergeAndCompact is preceded in program order by the Set
+	// that authorises it, and the CRDT store serialises Add/Delete under one
+	// mutex — so a merge cannot resurrect a key past the sweep. The re-check
+	// below earns a log line, not a delete.
 	if height, ok := avcvotes.HeightFromKey(key); ok && height <= avcvotes.DefaultWatermark.Current() {
-		listenerNode.VoteCRDTLayer.CRDTLayer.Delete(key)
-		logger().Info(context.Background(), "vote sync: watermark advanced mid-merge — discarding resurrected key",
+		logger().Info(context.Background(), "vote sync: watermark advanced mid-merge for a key already below it — leaving it for compaction's next sweep rather than deleting here",
 			ion.String("key", key), ion.Uint64("height", height),
 			ion.Uint64("watermark", avcvotes.DefaultWatermark.Current()))
-		return 0, nil
 	}
 
 	return merged, nil

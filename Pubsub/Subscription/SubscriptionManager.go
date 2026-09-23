@@ -208,6 +208,19 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 					ion.String("topic", topic),
 					ion.Int("messages_processed", messageCount),
 					ion.String("function", "SubscriptionManager.Subscribe"))
+				// JMDN-V3-012(d): this goroutine is exiting for good (sub.Next will
+				// never succeed again on this *pubsub.Subscription), so the map
+				// entry must not outlive it. Left in place, a later Subscribe()
+				// for the same topic finds the dead entry, bumps refCount and
+				// appends a handler that is never invoked -- a silent subscription
+				// leak. Only remove the entry if it is still THIS run's managed
+				// subscription (guards a benign race with a concurrent
+				// Unsubscribe/Subscribe that already replaced it).
+				sm.mutex.Lock()
+				if cur, ok := sm.subscriptions[topic]; ok && cur == managed {
+					delete(sm.subscriptions, topic)
+				}
+				sm.mutex.Unlock()
 				return err
 			}
 
