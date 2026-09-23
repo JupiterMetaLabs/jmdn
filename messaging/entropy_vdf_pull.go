@@ -151,6 +151,34 @@ type VDFProofResponse struct {
 	Proof []byte `json:"proof,omitempty"`
 }
 
+// vdfBeaconInstalled records whether Stage 2 (RANDAO+VDF beacon) was
+// installed on this node -- set once at startup by main.go, right after
+// Sequencer.InstallAVCBeaconFromEnv resolves (D-48). HandleVDFProofRequestStream
+// consults it to skip the per-request KV read entirely on a node that never
+// installed Stage 2: such a node holds no VDF proofs for any epoch, so the
+// lookup could only ever miss.
+var (
+	vdfBeaconInstalledMu sync.Mutex
+	vdfBeaconInstalled   bool
+)
+
+// SetVDFBeaconInstalled records whether this node's beacon (Stage 2
+// RANDAO+VDF) was installed. Call once at startup, from main.go, right after
+// Sequencer.InstallAVCBeaconFromEnv resolves (D-48) -- covers every branch of
+// that call, including the misconfigured-but-non-fatal one, which leaves the
+// installed state at its zero value (false).
+func SetVDFBeaconInstalled(installed bool) {
+	vdfBeaconInstalledMu.Lock()
+	vdfBeaconInstalled = installed
+	vdfBeaconInstalledMu.Unlock()
+}
+
+func vdfBeaconIsInstalled() bool {
+	vdfBeaconInstalledMu.Lock()
+	defer vdfBeaconInstalledMu.Unlock()
+	return vdfBeaconInstalled
+}
+
 // HandleVDFProofRequestStream is the receive side, registered on
 // config.VDFProofRequestProtocol at node startup (node/node.go).
 //
@@ -180,7 +208,13 @@ func HandleVDFProofRequestStream(s network.Stream) {
 	}
 
 	resp := VDFProofResponse{Epoch: req.Epoch}
-	if encoded, ok := LookupVDFProof(req.Epoch); ok {
+	if !vdfBeaconIsInstalled() {
+		// D-48: this node never installed Stage 2, so it holds no VDF proofs
+		// for any epoch -- skip the KV read entirely rather than pay a lookup
+		// that can only ever miss.
+		log.Debug().Str("from", remote.String()).Uint64("epoch", req.Epoch).
+			Msg("vdf proof pull: beacon not installed on this node -- answering not-found without a KV read")
+	} else if encoded, ok := LookupVDFProof(req.Epoch); ok {
 		// Refuse to serve anything oversized even from our own store: the
 		// bound is part of the wire contract, not just an input filter.
 		if len(encoded) <= DB_OPs.MaxVDFProofBytes {
