@@ -12,6 +12,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/consensus/adapters"
 
@@ -229,10 +230,14 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.String("function", "Vote.SubmitVote"))
 	}
 
-	// NEW — additive, flagged. Nothing here may ever affect vt.Vote,
-	// blockHash, or this function's return value. A failure here is logged
-	// and dropped; the legacy write above remains the only one that matters
-	// until Stage 4 rewires the readers.
+	// D-26(a)/D-51 cutover: VoteCRDTDualWrite is now permanently true
+	// (vote_crdt_v2.go) — this is the write that actually matters for the
+	// tally decision (Structs.ProcessVotesFromCRDT reads only this
+	// keyspace now). The legacy write above is kept for other legacy CRDT
+	// consumers unrelated to vote tallying (e.g. Sequencer's
+	// voterPeerIDsForBlock buddy-set expansion) and stays byte-identical;
+	// nothing here may affect vt.Vote, blockHash, or this function's
+	// return value, and a failure here is logged and dropped, not fatal.
 	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
 		// Per-vote BLS signature. Nothing in the codebase signs individual
 		// votes before this — the existing signer only produces an
@@ -310,6 +315,60 @@ func (vt *VoteTrigger) SubmitVote() error {
 	}
 
 	// Reuse existing logger_ctx from above (already created with tracer)
+
+	// D-26(a) PHASE 1 — publish this vote under OUR OWN libp2p identity, in
+	// addition to the direct-stream send below.
+	//
+	// WHY. The CRDT write on the pubsub receive path keys on msg.Data.Sender,
+	// a JSON payload field (Service/subscriptionService.go:309). The obvious
+	// hardening — reject when it disagrees with the authenticated msg.Sender —
+	// was tried and reverted (4d621ea), because it is not decidable at that
+	// layer: ListenerHandler.go:1147 legitimately RELAYS a vote it received
+	// over a direct stream, republishing it under the RELAYER's gossipsub key
+	// while the payload still names the original voter. "Honest relay of V's
+	// vote" and "attacker forging a vote as V" are byte-identical to the
+	// receiver, so no comparison there can separate them.
+	//
+	// The relay is what breaks the binding, so this removes the need for it.
+	// When the voter publishes its own vote, msg.Data.Sender == msg.GetFrom()
+	// on every honest message, and the receiver can key the CRDT on the
+	// authenticated identity instead of the payload one — which makes writing
+	// under another peer's key structurally impossible rather than merely
+	// checked. That is PHASE 2 (drop the relay at ListenerHandler.go:1147,
+	// key the write on msg.Sender); it requires the whole fleet to be on this
+	// phase first, or a node still sending direct-stream-only is stranded.
+	//
+	// SAFE ON A MIXED FLEET, which is the whole point of splitting it:
+	//   - new voter -> old buddy: arrives by pubsub AND via the old relay.
+	//     The duplicate is inert — the legacy tally does last-write-wins per
+	//     peer key (Structs/Utils.go:648) and LWWAdd of an identical element
+	//     is a no-op, so both copies resolve to the same vote.
+	//   - old voter -> new buddy: the relay is untouched and still runs.
+	// Nothing rejects anything in this phase; it is purely additive.
+	//
+	// Non-fatal by design. The direct-stream send below is still load-bearing
+	// while any peer runs the old code, so a publish failure must not skip it
+	// — and conversely this must not mask a direct-send failure, which is why
+	// the loop's error handling is left exactly as it was.
+	if pubSubNode := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); pubSubNode != nil && pubSubNode.PubSub != nil {
+		if perr := Publisher.Publish(logger_ctx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, voteMessage, map[string]string{}); perr != nil {
+			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — falling back to direct-stream relay only",
+				ion.Err(perr),
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.String("function", "Vote.SubmitVote"))
+		} else {
+			logger().Info(logger_ctx, "Published own vote to the consensus topic under this node's authenticated identity",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.String("function", "Vote.SubmitVote"))
+		}
+	} else {
+		logger().Warn(logger_ctx, "PubSub node unavailable — own vote will reach peers only via the direct-stream relay",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.String("block_hash", blockHash),
+			ion.String("function", "Vote.SubmitVote"))
+	}
 
 	// Try to send to multiple nodes if first attempt fails
 	maxAttempts := 3

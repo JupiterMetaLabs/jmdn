@@ -20,9 +20,9 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
-	"gossipnode/explorer/lifecycle"
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/explorer/lifecycle"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -1537,6 +1537,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// no peer can obtain a genuine committee signature for a caller-supplied hash.
 	// The stream's remote peer ID is transport-authenticated, so this membership
 	// check is sound. Fail closed: an unknown buddy set authorizes no one.
+	// D-26(d) (AVC-CONSENSUS-HANDOVER.md rev 7): the gate is now permanently
+	// enforced (no more default-off / observe-only shadow rung — that rung's
+	// entire purpose was answering whether it was safe to flip the flag, and
+	// it now IS flipped, unconditionally, as part of this coordinated
+	// release; see consensus_vote_authz.go).
 	if !voteRequesterAuthorized(remotePeer) {
 		voteResultSpan.SetAttributes(attribute.String("status", "unauthorized_vote_requester"))
 		logger().Warn(voteResultSpanCtx, "Rejecting vote result request: requester is not an authorized committee member",
@@ -1609,6 +1614,80 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
 		logger().Info(context.Background(), "❌ Invalid vote result request payload; rejecting")
 		return
+	}
+
+	// D-26(c): resolve the BLOCK IDENTITY LOCALLY. The caller may say WHICH
+	// block; it must not say what that block's height or consensus digest IS.
+	//
+	// THE DEFECT. Everything above parsed block_hash, block_number and
+	// consensus_hash out of the requester's payload and passed all three
+	// straight to SignMessageForBlock — this node never looked the block up.
+	// Combined with the requester gate being default-off and its authoritative
+	// source unwired (D-26d, consensus_vote_authz.go:20/:136), any peer that
+	// could open a SubmitMessageProtocol stream could obtain a genuine committee
+	// BLS signature over a (hash, height, digest) triple of its own choosing.
+	// The signature is real; only the thing it attests to was attacker-supplied.
+	//
+	// THE FIX. Look the block up in this node's own consensus cache and sign
+	// ITS height and ITS consensus digest. The request's block_hash still
+	// selects the block — that part is legitimately the caller's to choose, and
+	// the tally below is scoped by it — but block_number and consensus_hash are
+	// now this node's own view, so a mismatched pair cannot be signed into
+	// existence.
+	//
+	// REFUSING WHEN THE BLOCK IS UNKNOWN IS SAFE, not merely strict. Two
+	// independent reasons: (1) the cache is keyed on ZKBlock.BlockHash and is
+	// never evicted in production — RemoveGloalVarCacheConsensusMessage and
+	// ClearGloalVarCacheConsensusMessage have no non-test callers — so "absent"
+	// means this node genuinely never saw the block, not that it aged out;
+	// (2) ProcessVotesFromCRDT below is already scoped by targetBlockHash and
+	// errors out (after 3 retries) when no votes exist for it, and that error
+	// path already returns without signing. So an invented hash was already
+	// failing a few lines later; this makes it fail here, for the right reason,
+	// and additionally covers the case where votes exist for a block this node
+	// itself never received.
+	//
+	// Scoped to the block-bound path. An empty block_hash still takes the legacy
+	// unbound SignMessage branch untouched, and a local block carrying no
+	// ConsensusHash yields "" -> a v3 signature, which is the documented
+	// fallback the verify sites already handle.
+	if targetBlockHash != "" {
+		localCM := AVCStruct.LookupConsensusMessageByBlockHash(targetBlockHash)
+		if localCM == nil || localCM.ZKBlock == nil {
+			voteResultSpan.SetAttributes(attribute.String("status", "unknown_block_refused"))
+			logger().Warn(voteResultSpanCtx, "Refusing to sign a vote for a block this node has never seen (D-26c)",
+				ion.String("remote_peer_id", remotePeer.String()),
+				ion.String("requested_block_hash", targetBlockHash),
+				ion.Uint64("requested_block_number", targetBlockNumber),
+				ion.String("function", "MessagePassing.handleVoteResultRequest"))
+			writeRawError(s, `{"error":"unknown block: this node has no consensus message for the requested block hash","vote_result":0}`, config.Delimiter)
+			return
+		}
+
+		// ConsensusHashHex is the codebase's own idiom for this (config/ZKBlock.go):
+		// "" on a zero hash, which selects the v3 vote domain rather than binding an
+		// all-zero digest. Using it keeps this call site consistent with every other
+		// vote sign/verify site and avoids a second way to spell the same check.
+		localNumber := localCM.ZKBlock.BlockNumber
+		localConsensusHash := localCM.ZKBlock.ConsensusHashHex()
+
+		// Disagreement is not rejected — this node signs its own view either way,
+		// so there is nothing left to exploit — but it is never silent. A
+		// mismatch means either a buggy/rolling sequencer or an attempt to steer
+		// what gets signed, and both need to be visible.
+		if targetBlockNumber != localNumber || (targetConsensusHash != "" && targetConsensusHash != localConsensusHash) {
+			logger().Warn(voteResultSpanCtx, "Vote-result request disagrees with this node's own view of the block — signing the LOCAL values (D-26c)",
+				ion.String("remote_peer_id", remotePeer.String()),
+				ion.String("block_hash", targetBlockHash),
+				ion.Uint64("requested_block_number", targetBlockNumber),
+				ion.Uint64("local_block_number", localNumber),
+				ion.String("requested_consensus_hash", targetConsensusHash),
+				ion.String("local_consensus_hash", localConsensusHash),
+				ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		}
+
+		targetBlockNumber = localNumber
+		targetConsensusHash = localConsensusHash
 	}
 
 	// Ensure buddy nodes are populated from the cached consensus message

@@ -6,80 +6,115 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// Default-off: with the gate disabled, every requester is accepted so consensus
-// liveness is preserved. This is the state a stock deployment runs in until
-// JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 is set.
-func TestVoteRequesterAuthorized_DisabledByDefaultAcceptsAll(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
+// D-26(d) / CON-03, AVC-CONSENSUS-HANDOVER.md rev 7: the gate is now
+// permanently enforced, with no disabled state and no fail-open branch.
+// These tests replace the pre-rev-7 suite, which asserted a default-off
+// master switch and two distinct fail-open cases (empty buddy set, gate
+// disabled) — both deliberately inverted or removed below, matching the
+// same rev-7 change these tests exist to pin.
+
+// Only an authenticated member of the resolved authoritative set (committee
+// ∪ pinned sequencer) may request this node's signed vote; every other peer
+// is rejected.
+func TestVoteRequesterAuthorized_SourceResolvesMembershipDecides(t *testing.T) {
 	defer SetVoteResultRequesterAuthorizer(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
+	defer SetAuthorizedRequesterSource(nil)
 
-	enforceVoteRequesterAuth = false
-	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{peer.ID("committee-peer")} })
+	seq := peer.ID("pinned-sequencer")
+	member := peer.ID("committee-1")
+	stranger := peer.ID("stranger")
 
-	if !voteRequesterAuthorized(peer.ID("any-peer")) {
-		t.Fatalf("gate disabled: any requester must be accepted (liveness)")
-	}
-}
-
-// Enabled: only an authenticated committee member (the sequencer) may request
-// this node's signed vote; every other peer is rejected.
-func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
-	defer SetVoteResultRequesterAuthorizer(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = true
-
-	seq := peer.ID("sequencer-peer")
-	other := peer.ID("committee-peer-2")
-	nonMember := peer.ID("nonmember-peer")
-
-	SetVoteResultRequesterAuthorizer(nil)
-	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{seq, other} })
+	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		return AuthorizedRequesterSet([]peer.ID{member}, seq), true
+	})
 
 	if !voteRequesterAuthorized(seq) {
-		t.Fatalf("legitimate sequencer (in buddy set) must be authorized")
+		t.Fatalf("pinned sequencer must be authorized even though it is not a committee member")
 	}
-	if !voteRequesterAuthorized(other) {
-		t.Fatalf("committee member (in buddy set) must be authorized")
+	if !voteRequesterAuthorized(member) {
+		t.Fatalf("committee member must be authorized")
 	}
-	if voteRequesterAuthorized(nonMember) {
-		t.Fatalf("non-committee peer authorized to request a signed vote")
-	}
-}
-
-// Enabled but the committee set is unknown/empty at request time: fail open
-// (accept) rather than stall consensus. This is the case where fail-closing
-// would block liveness.
-func TestVoteRequesterAuthorized_EnabledEmptySetFailsOpen(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
-	defer SetVoteResultRequesterAuthorizer(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = true
-
-	SetVoteResultRequesterAuthorizer(nil)
-	SetVoteBuddySetProvider(func() []peer.ID { return nil })
-
-	if !voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("empty committee set must FAIL OPEN (accept) to preserve liveness")
+	if voteRequesterAuthorized(stranger) {
+		t.Fatalf("non-member must be rejected when the authoritative source resolves")
 	}
 }
 
-// An injected authorizer (startup/test override) has final say when enabled.
-func TestVoteRequesterAuthorized_EnabledInjectedAuthorizerWins(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
+// Inverted from the pre-rev-7 suite: an empty resolved set must reject
+// everyone, not fail open. A deployment with no sequencer pin and no
+// committee members resolved has nobody to authorize — that is a
+// misconfiguration to surface as rejected requests, not a reason to accept
+// an arbitrary caller's signature request.
+func TestVoteRequesterAuthorized_EmptyResolvedSetRejectsEveryone(t *testing.T) {
 	defer SetVoteResultRequesterAuthorizer(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = true
+	defer SetAuthorizedRequesterSource(nil)
 
-	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{peer.ID("someone-else")} })
+	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		return map[peer.ID]struct{}{}, true
+	})
+
+	if voteRequesterAuthorized(peer.ID("anyone")) {
+		t.Fatalf("an empty authoritative set must reject every requester (no more fail-open)")
+	}
+}
+
+// Inverted from TestVoteRequesterAuthorized_SourceIndeterminateFallsBack: a
+// momentarily unresolvable source (ok==false) now fails CLOSED. There is no
+// more legacy buddy-set fallback to fall back to.
+func TestVoteRequesterAuthorized_SourceIndeterminateFailsClosed(t *testing.T) {
+	defer SetVoteResultRequesterAuthorizer(nil)
+	defer SetAuthorizedRequesterSource(nil)
+
+	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) { return nil, false })
+
+	if voteRequesterAuthorized(peer.ID("anyone")) {
+		t.Fatalf("an indeterminate source must reject the requester (fail closed), not fall back to an unauthenticated legacy path")
+	}
+}
+
+// New: the source not being wired at all (nil) — the state of this node's
+// own boot window before main.go's startup wiring runs — also fails closed.
+func TestVoteRequesterAuthorized_SourceNotWiredFailsClosed(t *testing.T) {
+	defer SetVoteResultRequesterAuthorizer(nil)
+	defer SetAuthorizedRequesterSource(nil)
+	SetAuthorizedRequesterSource(nil)
+
+	if voteRequesterAuthorized(peer.ID("anyone")) {
+		t.Fatalf("an unwired source must reject the requester (fail closed)")
+	}
+}
+
+// An injected authorizer (startup/test override) has final say and is
+// consulted before the authoritative source at all.
+func TestVoteRequesterAuthorized_InjectedAuthorizerWins(t *testing.T) {
+	defer SetVoteResultRequesterAuthorizer(nil)
+	defer SetAuthorizedRequesterSource(nil)
+
+	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		return map[peer.ID]struct{}{}, true // would reject everyone if consulted
+	})
 	SetVoteResultRequesterAuthorizer(func(p peer.ID) bool { return p == peer.ID("x") })
 
 	if !voteRequesterAuthorized(peer.ID("x")) {
 		t.Fatalf("injected authorizer must allow x")
 	}
 	if voteRequesterAuthorized(peer.ID("someone-else")) {
-		t.Fatalf("injected authorizer must override the buddy-set membership path")
+		t.Fatalf("injected authorizer must override the authoritative-source path")
+	}
+}
+
+// An empty remote peer ID (should not occur — the stream layer authenticates
+// the remote peer — but defense in depth) is always rejected, regardless of
+// the source.
+func TestVoteRequesterAuthorized_EmptyRemotePeerRejected(t *testing.T) {
+	defer SetVoteResultRequesterAuthorizer(nil)
+	defer SetAuthorizedRequesterSource(nil)
+
+	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		return AuthorizedRequesterSet([]peer.ID{peer.ID("")}, ""), true
+	})
+
+	if voteRequesterAuthorized(peer.ID("")) {
+		t.Fatalf("an empty remote peer id must never be authorized")
 	}
 }
 
@@ -102,81 +137,5 @@ func TestAuthorizedRequesterSet_Composition(t *testing.T) {
 	noSeq := AuthorizedRequesterSet([]peer.ID{peer.ID("c1")}, "")
 	if len(noSeq) != 1 {
 		t.Fatalf("empty pinned sequencer must be omitted; got %d members", len(noSeq))
-	}
-}
-
-// CON-03 core: when the authoritative source RESOLVES (ok==true), it is
-// definitive. The pinned sequencer — which is NOT in the buddy set — is allowed,
-// and a non-member is rejected EVEN WHEN the legacy buddy set is empty (the old
-// fail-open is closed).
-func TestVoteRequesterAuthorized_AuthoritativeSourceIsDefinitive(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
-	defer SetVoteResultRequesterAuthorizer(nil)
-	defer SetAuthorizedRequesterSource(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = true
-
-	seq := peer.ID("pinned-sequencer")
-	member := peer.ID("committee-1")
-	stranger := peer.ID("stranger")
-
-	// Empty buddy set on purpose: proves the decision comes from the source, and
-	// that the old "empty set -> accept anyone" fail-open no longer applies.
-	SetVoteBuddySetProvider(func() []peer.ID { return nil })
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return AuthorizedRequesterSet([]peer.ID{member}, seq), true
-	})
-
-	if !voteRequesterAuthorized(seq) {
-		t.Fatalf("pinned sequencer must be authorized even though it is not in the buddy set")
-	}
-	if !voteRequesterAuthorized(member) {
-		t.Fatalf("committee member must be authorized")
-	}
-	if voteRequesterAuthorized(stranger) {
-		t.Fatalf("non-member must be REJECTED when the authoritative source resolves (fail-open closed)")
-	}
-}
-
-// When the authoritative source is momentarily UNRESOLVABLE (ok==false), the gate
-// falls back to the liveness-preserving legacy buddy-set path rather than halting.
-func TestVoteRequesterAuthorized_SourceIndeterminateFallsBack(t *testing.T) {
-	defer SetVoteBuddySetProvider(nil)
-	defer SetVoteResultRequesterAuthorizer(nil)
-	defer SetAuthorizedRequesterSource(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = true
-
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) { return nil, false })
-
-	// Fallback with an empty buddy set -> liveness fail-open (accept).
-	SetVoteBuddySetProvider(func() []peer.ID { return nil })
-	if !voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("indeterminate source + empty buddy set must fail open (liveness)")
-	}
-
-	// Fallback with a populated buddy set -> membership decides.
-	inSet := peer.ID("buddy-1")
-	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{inSet} })
-	if !voteRequesterAuthorized(inSet) {
-		t.Fatalf("indeterminate source: buddy-set member must be accepted")
-	}
-	if voteRequesterAuthorized(peer.ID("outsider")) {
-		t.Fatalf("indeterminate source: non-buddy must be rejected when the set is populated")
-	}
-}
-
-// The master switch still wins: with the gate disabled, even a configured
-// authoritative source that would reject the peer is bypassed (non-breaking).
-func TestVoteRequesterAuthorized_DisabledBypassesSource(t *testing.T) {
-	defer SetAuthorizedRequesterSource(nil)
-	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
-	enforceVoteRequesterAuth = false
-
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return map[peer.ID]struct{}{}, true // would reject everyone if consulted
-	})
-	if !voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("disabled gate must accept without consulting the source")
 	}
 }
