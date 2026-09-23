@@ -236,7 +236,7 @@ func TestEquivocationWriteErrorLeavesNoInMemoryRecord(t *testing.T) {
 	}
 
 	seenHeightsMu.Lock()
-	cached, present := seenHeights[72]
+	cached, present := seenHeights.Get(72)
 	seenHeightsMu.Unlock()
 
 	if present {
@@ -276,7 +276,7 @@ func TestEquivocationHealthyStoreStillPasses(t *testing.T) {
 		t.Fatal("height 73 should have been recorded durably")
 	}
 	seenHeightsMu.Lock()
-	_, present := seenHeights[73]
+	_, present := seenHeights.Get(73)
 	seenHeightsMu.Unlock()
 	if !present {
 		t.Fatal("height 73 should be cached in-memory after a successful durable write")

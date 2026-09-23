@@ -92,7 +92,7 @@ var testChainID = big.NewInt(1337)
 
 func resetEquivocation() {
 	seenHeightsMu.Lock()
-	seenHeights = make(map[uint64]string)
+	seenHeights = mustNewHeightCache(seenHeightsCacheCapacity)
 	seenHeightsMu.Unlock()
 }
 
