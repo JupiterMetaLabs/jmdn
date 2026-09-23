@@ -107,6 +107,8 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
+  enable_solc_compile: false  # JMDN-H05: off unless admin opts in
+  enable_debug_trace: false   # JMDN-H05: off unless admin opts in
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
@@ -133,13 +135,17 @@ security:
   cert_dir: "certs"
   ip_cache_size: 10000
 
-  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense)
-  global_rate_limit: 0
-  global_burst: 0
+  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense).
+  # Non-zero enables limiting (0 = unlimited in gatekeeper). 500 req/s sustained
+  # with burst 1000 is generous for local wallets / explorers yet stops open floods.
+  global_rate_limit: 500
+  global_burst: 1000
 
-  # Cloud Native / Load Balancer Support
-  trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
-  trusted_proxies: []             # Optional: ["10.0.0.0/8"]
+  # Cloud Native / Load Balancer Support.
+  # Default false: do not trust X-Forwarded-For / X-Real-IP unless operators set
+  # BOTH trust_forwarded_headers=true AND a non-empty trusted_proxies list (LB CIDRs).
+  trust_forwarded_headers: false
+  trusted_proxies: []             # Required when trust_forwarded_headers is true, e.g. ["10.0.0.0/8"]
 
   # Trusted Clients — IPs/CIDRs that bypass rate limiting entirely.
   # For co-located services (orchestrator) and VPC-internal node peers.
@@ -158,15 +164,25 @@ security:
       tls: true             # User req: "must be true"
       auth_type: "hybrid"   # Prefer mTLS, fallback to Token
       token_env: "EXPLORER_API_KEY"
-      rate_limit: 0
-      burst: 0
+      rate_limit: 100       # public read API — 100 rps/IP, burst 200
+      burst: 200
 
     # 2. JSON-RPC (Public - Rate Limited)
     eth_rpc:
       tls: false            # Public endpoint
       auth_type: "none"
-      rate_limit: 0
-      burst: 0
+      rate_limit: 200       # JSON-RPC can be chatty; 200 rps/IP still blocks DoS
+      burst: 400
+
+
+    # Admin HTTP (token) — used by POST /sync/reconcile and gated expensive RPC.
+    # Set ADMIN_TOKEN in the environment. Fail closed when unset (requests reject).
+    admin_http:
+      tls: false
+      auth_type: "token"
+      token_env: "ADMIN_TOKEN"
+      rate_limit: 20
+      burst: 40
 
     # 3. Block Ingest/Sequencer (Internal - Token Auth)
     block_ingest_http:
@@ -195,8 +211,8 @@ security:
       tls: true
       auth_type: "hybrid"
       token_env: "DID_AUTH_TOKEN"
-      rate_limit: 0
-      burst: 0
+      rate_limit: 50
+      burst: 100
 
     # 7. Mempool (P2P - Standard TLS)
     mempool_service:
