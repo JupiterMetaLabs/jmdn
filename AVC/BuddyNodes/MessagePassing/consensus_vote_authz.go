@@ -43,11 +43,19 @@ import (
 
 // voteRequesterAuthorizer, when non-nil, fully decides whether a requester peer
 // is authorized. Tests inject this to force allow/deny without a live source.
+//
+// Deliberately unexported (D-26(d) review follow-up): this fully overrides
+// the fail-closed committee-membership check below it, so it must not be
+// reachable from outside this package. There is no production wiring for it
+// anywhere in the repo -- only consensus_vote_authz_test.go (same package)
+// ever calls the setter -- and unexporting is a compiler-enforced guarantee
+// of that, not just a naming convention or a comment.
 var voteRequesterAuthorizer func(peer.ID) bool
 
-// SetVoteResultRequesterAuthorizer overrides the built-in committee-membership
-// check. Call once at startup or in tests.
-func SetVoteResultRequesterAuthorizer(fn func(peer.ID) bool) { voteRequesterAuthorizer = fn }
+// setVoteRequesterAuthorizerForTest overrides the built-in committee-
+// membership check. Test-only -- see voteRequesterAuthorizer's comment for
+// why this is unexported rather than merely documented as test-only.
+func setVoteRequesterAuthorizerForTest(fn func(peer.ID) bool) { voteRequesterAuthorizer = fn }
 
 // authorizedRequesterSource supplies the AUTHORITATIVE set of peers allowed
 // to request this node's signed vote, plus an `ok` flag telling whether that

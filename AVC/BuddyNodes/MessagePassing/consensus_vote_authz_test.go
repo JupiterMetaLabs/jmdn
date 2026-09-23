@@ -17,7 +17,7 @@ import (
 // ∪ pinned sequencer) may request this node's signed vote; every other peer
 // is rejected.
 func TestVoteRequesterAuthorized_SourceResolvesMembershipDecides(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 
 	seq := peer.ID("pinned-sequencer")
@@ -45,7 +45,7 @@ func TestVoteRequesterAuthorized_SourceResolvesMembershipDecides(t *testing.T) {
 // misconfiguration to surface as rejected requests, not a reason to accept
 // an arbitrary caller's signature request.
 func TestVoteRequesterAuthorized_EmptyResolvedSetRejectsEveryone(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 
 	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
@@ -61,7 +61,7 @@ func TestVoteRequesterAuthorized_EmptyResolvedSetRejectsEveryone(t *testing.T) {
 // momentarily unresolvable source (ok==false) now fails CLOSED. There is no
 // more legacy buddy-set fallback to fall back to.
 func TestVoteRequesterAuthorized_SourceIndeterminateFailsClosed(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 
 	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) { return nil, false })
@@ -74,7 +74,7 @@ func TestVoteRequesterAuthorized_SourceIndeterminateFailsClosed(t *testing.T) {
 // New: the source not being wired at all (nil) — the state of this node's
 // own boot window before main.go's startup wiring runs — also fails closed.
 func TestVoteRequesterAuthorized_SourceNotWiredFailsClosed(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 	SetAuthorizedRequesterSource(nil)
 
@@ -86,13 +86,13 @@ func TestVoteRequesterAuthorized_SourceNotWiredFailsClosed(t *testing.T) {
 // An injected authorizer (startup/test override) has final say and is
 // consulted before the authoritative source at all.
 func TestVoteRequesterAuthorized_InjectedAuthorizerWins(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 
 	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
 		return map[peer.ID]struct{}{}, true // would reject everyone if consulted
 	})
-	SetVoteResultRequesterAuthorizer(func(p peer.ID) bool { return p == peer.ID("x") })
+	setVoteRequesterAuthorizerForTest(func(p peer.ID) bool { return p == peer.ID("x") })
 
 	if !voteRequesterAuthorized(peer.ID("x")) {
 		t.Fatalf("injected authorizer must allow x")
@@ -106,7 +106,7 @@ func TestVoteRequesterAuthorized_InjectedAuthorizerWins(t *testing.T) {
 // the remote peer — but defense in depth) is always rejected, regardless of
 // the source.
 func TestVoteRequesterAuthorized_EmptyRemotePeerRejected(t *testing.T) {
-	defer SetVoteResultRequesterAuthorizer(nil)
+	defer setVoteRequesterAuthorizerForTest(nil)
 	defer SetAuthorizedRequesterSource(nil)
 
 	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
