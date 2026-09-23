@@ -554,11 +554,22 @@ func verifyTallySigTasksConcurrently(tasks []tallySigTask, chainID, height uint6
 }
 
 // processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical
-// in behavior to ProcessVotesFromCRDT before this stage. Kept verbatim (not
-// deleted) so JMDN_VOTE_CRDT_V2=off — the default — is a true no-op change,
-// per the LLD's revertibility requirement. Do not add Stage 4 concepts
-// (RejectionReason typing, MajorityDecision, TallyBlock) here; that would
-// defeat the point of keeping a flag-off path.
+// in behavior to ProcessVotesFromCRDT before that stage.
+//
+// STATICALLY UNREACHABLE from production code since the D-26(a)/D-51 cutover.
+// voteCRDTV2Enabled is hardcoded true (see its declaration), so
+// ProcessVotesFromCRDT always routes to processVotesFromCRDT_v2. This function
+// is retained only because legacy_vote_panic_test.go calls it directly, which
+// is what keeps the malformed-element fix below pinned.
+//
+// The revertibility this comment used to cite is GONE, not merely unexercised:
+// JMDN_VOTE_CRDT_V2 no longer exists anywhere in non-test code, so no env
+// override restores this path. Rolling back to it means rolling back the
+// binary and restarting the fleet. Do not re-introduce a flag branch here to
+// "make it revertible again" without reading the cutover's rollout note first
+// — half a fleet on each read path is the mixed-fleet hazard described there.
+// Do not add Stage 4 concepts (RejectionReason typing, MajorityDecision,
+// TallyBlock) here either; this is a frozen record of the old behaviour.
 func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, map[string]string, error) {
 	if listenerNode.CRDTLayer == nil {
 		logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
@@ -621,8 +632,12 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 				// that is neither float64 nor string. The element is
 				// peer-supplied via the CRDT, so one node gossiping a
 				// malformed vote crashed every legacy-path node that read it,
-				// and the legacy path is the CODE DEFAULT
-				// (JMDN_VOTE_CRDT_V2 unset).
+				// and the legacy path WAS the code default back when
+				// JMDN_VOTE_CRDT_V2 defaulted off. Since the D-26(a)/D-51
+				// cutover that flag is gone and this path is statically
+				// unreachable from production code, so this guard is now
+				// retained for the test that pins it (and for any future
+				// revert) rather than for a live read path.
 				logger().Error(logger_ctx, "Invalid vote value type", nil,
 					ion.String("vote_value_raw", fmt.Sprintf("%+q", fmt.Sprintf("%v", voteValueRaw))),
 					ion.String("vote_value_go_type", fmt.Sprintf("%T", voteValueRaw)),
