@@ -186,7 +186,17 @@ func markMessageProcessed(messageID string) {
 	dedupMessageCache.Add(messageID, struct{}{})
 }
 
-// storeMessageInDB stores a message in ImmuDB using the appropriate key
+// storeMessageInDB is a best-effort message-bookkeeping hook. ImmuDB is
+// gone (see the ThebeDB migration, commit 9288ef9); the actual block data
+// for a zkblock message is already durably persisted earlier in the same
+// caller via DB_OPs.StoreZKBlock (see HandleReceivedBlockMessage). Both
+// DB_OPs.Create calls in this function are currently no-ops — Create only
+// does real work for the "latest_block"/"header_latest_block" sentinel
+// keys (see DB_OPs/thebe_ops.go) — so this function does not persist
+// anything today; it exists for its (also currently misleading, see below)
+// log line and its call into updateMessageSet. Verified under D-34 item 2:
+// moot, not broken — nothing reads the keys this function would have
+// written.
 func storeMessageInDB(msg config.BlockMessage) error {
 	// Determine the key - focus on ZK blocks
 	var key string
@@ -210,17 +220,27 @@ func storeMessageInDB(msg config.BlockMessage) error {
 		return err
 	}
 
-	broadcastLogger().Debug(context.Background(), "Message stored in ThebeDB", ion.String("key", key), ion.String("type", msg.Type))
+	broadcastLogger().Debug(context.Background(), "Message bookkeeping call completed (no-op: DB_OPs.Create does not persist this key)", ion.String("key", key), ion.String("type", msg.Type))
 	return nil
 }
 
-// updateMessageSet durably records that key has been stored.
+// updateMessageSet is a best-effort per-key marker call. Historically it
+// recorded that key had been stored, but DB_OPs.Create is now a no-op for
+// any key outside the "latest_block"/"header_latest_block" sentinels (see
+// DB_OPs/thebe_ops.go), so today this call persists nothing and always
+// returns nil.
 //
-// One record per key (O(1) per call) instead of reading and rewriting a
-// single grow-only map on every message (JMDN-V3-008: that map was never
-// pruned, so each write's cost grew with the total historical message count).
-// Nothing else in the codebase reads the old "crdt:message_set" map key, so
-// this change of storage shape has no other reader to break.
+// D-34 item 2, verified moot, not broken: nothing in the codebase reads a
+// "crdt:message_set:*" key, in current code, all git history, or any test
+// — the loss of persistence has no observable effect. This one-key-per-call
+// shape (O(1)) replaced a single grow-only "crdt:message_set" map that was
+// read and rewritten whole on every call (JMDN-V3-008: that map was never
+// pruned, so each write's cost grew with the total historical message
+// count) — but that map's own read had already been silently failing ever
+// since the ThebeDB migration (commit 9288ef9, ~2.5 months before
+// JMDN-V3-008), always falling back to a fresh single-entry map, so the
+// O(n^2) growth problem JMDN-V3-008 fixed had already stopped occurring by
+// the time that refactor landed.
 func updateMessageSet(key string) error {
 	return DB_OPs.Create(nil, "crdt:message_set:"+key, true)
 }
