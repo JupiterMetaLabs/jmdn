@@ -25,9 +25,13 @@ package Sequencer
 // never gets sealed or published.
 import (
 	"errors"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/beacon"
+	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 	"github.com/rs/zerolog/log"
 
@@ -69,6 +73,63 @@ var (
 	vdfSealersMu sync.Mutex
 	vdfSealers   = make(map[uint64]*VDFSealer)
 )
+
+// D-31: configuredBeaconRetainEpochs re-derives the SAME
+// JMDN_AVC_BEACON_RETAIN_EPOCHS value beacon_install.go's
+// InstallAVCBeaconFromEnv already computes (same env var, same default,
+// same parse rule, verified against beacon_install.go:296-301) EXCEPT for
+// error handling: this is retention bookkeeping consulted on every
+// sealerFor/CancelSealer call on an already-running node, which must never
+// abort over a malformed value another code path (beacon_install.go) already
+// validated at startup. Duplicating this three-line env read here rather
+// than exporting and sharing it is exactly the kind of divergence-prone
+// pattern D-47 (still Open as of this fix) already flags for the sibling
+// mix-store window (messaging/entropy_mix_store.go's hardcoded
+// mixRetainEpochs, which does NOT read this env var at all) — this map
+// inherits that same duplication risk, it does not resolve it. D-47 remains
+// its own, separate, unaddressed finding.
+func configuredBeaconRetainEpochs() uint64 {
+	retain := uint64(committee.MinRetainedEpochs)
+	if retainStr := strings.TrimSpace(os.Getenv("JMDN_AVC_BEACON_RETAIN_EPOCHS")); retainStr != "" {
+		if r, err := strconv.ParseUint(retainStr, 10, 64); err == nil {
+			retain = r
+		}
+	}
+	return retain
+}
+
+// evictOldSealersLocked bounds vdfSealers — D-31's second half: before this,
+// nothing ever removed an entry outside tests (the only delete(vdfSealers,
+// ...) in this file is ClearSealerForTest), so the map grew by one entry per
+// epoch for the life of the process.
+//
+// "newest" is computed from the map's OWN current contents plus the epoch
+// just being touched, rather than from a separately-tracked package variable:
+// a separate counter would not reset when a test swaps vdfSealers for a fresh
+// map (see vdf_seal_wiring_test.go's resetVDFWiringState), and would then
+// evict small test epoch numbers immediately using a stale "newest" left
+// over from an unrelated earlier test. Deriving it from live map keys makes
+// this self-contained and exactly as test-swappable as vdfSealers itself.
+//
+// Caller must hold vdfSealersMu.
+func evictOldSealersLocked(touchedEpoch uint64) {
+	retain := configuredBeaconRetainEpochs()
+	newest := touchedEpoch
+	for e := range vdfSealers {
+		if e > newest {
+			newest = e
+		}
+	}
+	if newest < retain {
+		return
+	}
+	cutoff := newest - retain
+	for e := range vdfSealers {
+		if e < cutoff {
+			delete(vdfSealers, e)
+		}
+	}
+}
 
 // InstallEpochFinalisedHook registers this file's sealing trigger with
 // messaging's Stage-D seam. Call once at startup, any time relative to
@@ -119,10 +180,15 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 	vdfSealersMu.Lock()
 	defer vdfSealersMu.Unlock()
 	if s, ok := vdfSealers[forEpoch]; ok {
+		// D-31: this is also the path a CancelSealer-planted, pre-cancelled
+		// placeholder (see CancelSealer below) is returned through — sealerFor
+		// must return the SAME object, not replace it with a fresh one, or
+		// Start's s.cancelled check would never see the cancellation.
 		return s
 	}
 	s := NewVDFSealer(pipeline)
 	vdfSealers[forEpoch] = s
+	evictOldSealersLocked(forEpoch)
 	return s
 }
 
@@ -143,10 +209,29 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 func CancelSealer(forEpoch uint64) {
 	vdfSealersMu.Lock()
 	s, ok := vdfSealers[forEpoch]
-	vdfSealersMu.Unlock()
 	if !ok {
+		// D-31: a peer's proof for forEpoch can be adopted before THIS node's
+		// own onEpochFinalised has fired for it — Stage D's fold timing is not
+		// fleet-synchronised, so a late/slow node can still be waiting on its
+		// own mix while a faster peer has already sealed and gossiped. Before
+		// this, that ordering silently dropped the cancellation here (bare
+		// `return`): there was no VDFSealer yet to mark, so nothing stopped
+		// the LATER onEpochFinalised call from creating a fresh one and
+		// launching a full ~T_vdf evaluation for an epoch already resolved —
+		// exactly the wasted CPU this function's own doc comment says it
+		// exists to avoid.
+		//
+		// Planting an already-cancelled placeholder here closes that: sealerFor
+		// returns THIS SAME object on its later map hit rather than replacing
+		// it, and Start (vdf_sealer.go) now checks s.cancelled before ever
+		// launching the goroutine.
+		s = &VDFSealer{resultCh: make(chan SealResult, 1), cancelled: true}
+		vdfSealers[forEpoch] = s
+		evictOldSealersLocked(forEpoch)
+		vdfSealersMu.Unlock()
 		return
 	}
+	vdfSealersMu.Unlock()
 	s.Cancel()
 }
 
