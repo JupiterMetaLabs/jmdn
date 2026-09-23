@@ -72,6 +72,17 @@ func activeVDFPipeline() *beacon.Pipeline {
 var (
 	vdfSealersMu sync.Mutex
 	vdfSealers   = make(map[uint64]*VDFSealer)
+
+	// evictedBelow is a monotonic watermark: every epoch strictly less than
+	// this value has already been evicted from vdfSealers (or the package is
+	// fresh and none ever existed). It exists because eviction alone does not
+	// stop a LATER call from resurrecting an evicted epoch: sealerFor's
+	// map-miss path cannot tell "this epoch is brand new" apart from "this
+	// epoch's sealer was evicted", and building a fresh (non-cancelled)
+	// sealer for the latter would relaunch a full ~T_vdf evaluation for an
+	// epoch this node has already moved well past. See sealerFor and
+	// CancelSealer below for the two places this is consulted.
+	evictedBelow uint64
 )
 
 // D-31: configuredBeaconRetainEpochs re-derives the SAME
@@ -124,6 +135,13 @@ func evictOldSealersLocked(touchedEpoch uint64) {
 		return
 	}
 	cutoff := newest - retain
+	// Advance the resurrection-guard watermark alongside the actual deletes
+	// below -- see evictedBelow's own comment for why this is required, not
+	// just bookkeeping: without it, sealerFor/CancelSealer cannot tell an
+	// evicted epoch apart from a brand-new one.
+	if cutoff > evictedBelow {
+		evictedBelow = cutoff
+	}
 	for e := range vdfSealers {
 		if e < cutoff {
 			delete(vdfSealers, e)
@@ -186,6 +204,19 @@ func sealerFor(forEpoch uint64, pipeline *beacon.Pipeline) *VDFSealer {
 		// Start's s.cancelled check would never see the cancellation.
 		return s
 	}
+	if forEpoch < evictedBelow {
+		// This epoch's sealer (if it ever had one) was already evicted, and
+		// the node has moved on far enough that a legitimate new request for
+		// it should never occur -- onEpochFinalised only ever advances
+		// forward. Refuse to build a fresh sealer: return a pre-cancelled one
+		// that is NOT stored in vdfSealers, so Start() on it is a no-op and
+		// SealerResultFor keeps reporting "not ready" for this epoch -- the
+		// correct fail-closed answer for an epoch this stale -- instead of
+		// silently launching a full ~T_vdf evaluation for a chain position
+		// long since resolved (or, on a replayed/duplicate finalisation
+		// event, never actually needed at all).
+		return &VDFSealer{resultCh: make(chan SealResult, 1), cancelled: true}
+	}
 	s := NewVDFSealer(pipeline)
 	vdfSealers[forEpoch] = s
 	evictOldSealersLocked(forEpoch)
@@ -210,6 +241,15 @@ func CancelSealer(forEpoch uint64) {
 	vdfSealersMu.Lock()
 	s, ok := vdfSealers[forEpoch]
 	if !ok {
+		if forEpoch < evictedBelow {
+			// Already evicted and past the point any legitimate caller
+			// should still be resolving -- nothing to cancel, and planting a
+			// placeholder here would just be transient map noise removed on
+			// the next eviction pass anyway. See sealerFor's matching check
+			// (same evictedBelow watermark) for the full reasoning.
+			vdfSealersMu.Unlock()
+			return
+		}
 		// D-31: a peer's proof for forEpoch can be adopted before THIS node's
 		// own onEpochFinalised has fired for it — Stage D's fold timing is not
 		// fleet-synchronised, so a late/slow node can still be waiting on its

@@ -102,3 +102,65 @@ func TestCancelSealer_PlacedPlaceholderIsAlsoSubjectToEviction(t *testing.T) {
 			"it must be evicted like any other sealer entry, not held onto forever")
 	}
 }
+
+// TestSealerFor_RefusesToResurrectAnEvictedEpoch is the resurrection guard
+// itself: eviction alone does not stop a LATER sealerFor call from building a
+// fresh, non-cancelled sealer for an epoch whose entry was already evicted --
+// sealerFor's map-miss path cannot otherwise tell "brand new epoch" apart
+// from "evicted epoch". Without evictedBelow, this would relaunch a full
+// ~T_vdf evaluation for an epoch the node has already moved well past.
+func TestSealerFor_RefusesToResurrectAnEvictedEpoch(t *testing.T) {
+	resetVDFWiringState(t)
+	p := &beacon.Pipeline{}
+
+	sealerFor(1, p)
+	const highestEpoch = uint64(committee.MinRetainedEpochs) + 50
+	for e := uint64(2); e <= highestEpoch; e++ {
+		sealerFor(e, p)
+	}
+
+	vdfSealersMu.Lock()
+	_, stillPresent := vdfSealers[1]
+	vdfSealersMu.Unlock()
+	if stillPresent {
+		t.Fatal("precondition failed: epoch 1 should already be evicted by this point")
+	}
+
+	resurrected := sealerFor(1, p)
+	if !resurrected.Cancelled() {
+		t.Fatal("sealerFor resurrected epoch 1 as a FRESH, non-cancelled sealer after eviction -- " +
+			"Start() on this would relaunch a full VDF evaluation for an epoch the node has long " +
+			"since moved past")
+	}
+
+	vdfSealersMu.Lock()
+	_, insertedAgain := vdfSealers[1]
+	vdfSealersMu.Unlock()
+	if insertedAgain {
+		t.Fatal("a refused/evicted epoch was re-inserted into vdfSealers -- it should be returned " +
+			"as a standalone refused sealer, not stored, or it just becomes evictable-again noise")
+	}
+}
+
+// TestCancelSealer_NoOpForAnAlreadyEvictedEpoch is the CancelSealer half of
+// the same guard: cancelling an epoch that is already known-evicted must not
+// plant a placeholder that just gets deleted on the next eviction pass.
+func TestCancelSealer_NoOpForAnAlreadyEvictedEpoch(t *testing.T) {
+	resetVDFWiringState(t)
+	p := &beacon.Pipeline{}
+
+	sealerFor(1, p)
+	const highestEpoch = uint64(committee.MinRetainedEpochs) + 50
+	for e := uint64(2); e <= highestEpoch; e++ {
+		sealerFor(e, p)
+	}
+
+	CancelSealer(1)
+
+	vdfSealersMu.Lock()
+	_, present := vdfSealers[1]
+	vdfSealersMu.Unlock()
+	if present {
+		t.Fatal("CancelSealer re-inserted an already-evicted epoch into vdfSealers")
+	}
+}
