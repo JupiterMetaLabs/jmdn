@@ -558,7 +558,25 @@ A buddy cannot read peer weights (the seed enforces sequencer-only auth on that 
 **Root cause.** RC-1 at (b) and (d); a trust-boundary placement error at (a) — authentication was treated as a per-handler concern rather than a property enforced once at the boundary.
 
 **Fix — code level.**
-1. **(a)** Reject when `msg.Data.Sender != msg.Sender`; key the CRDT on `msg.Sender`. Mirror the wording at `ListenerHandler.go:1020` so the two read alike.
+1. ~~**(a)** Reject when `msg.Data.Sender != msg.Sender`; key the CRDT on `msg.Sender`. Mirror the wording at `ListenerHandler.go:1020` so the two read alike.~~
+   > **STRUCK 2026-09-23 — this prescription is WRONG. It was implemented, and reverted.**
+   >
+   > `ListenerHandler.go:1147` legitimately republishes a direct-stream vote to pubsub under the
+   > **relayer's** gossipsub identity while the payload keeps the original voter — the republication's
+   > own log line records `republisher_peer_id` and `original_sender` as two different values. So
+   > `Data.Sender != Sender` on **every honest relay**, and a guard comparing them rejects honest
+   > relay and forgery alike. The two are not distinguishable at that layer.
+   >
+   > Evidence: the guard (PR #147 `617dd0e`), its revert, and the explanatory comment now sitting at
+   > the defect site, `Service/subscriptionService.go` (PR #149). **Do not re-add this guard.**
+   >
+   > **The correct route is two phases.** *Phase 1* — have the voter publish its own vote under its
+   > own libp2p identity, so `Data.Sender == GetFrom()` on every honest message (PR #147 `fb52015`;
+   > additive and mixed-fleet safe). *Phase 2* — **not yet scheduled** — drop the relay at
+   > `ListenerHandler.go:1147` and key the CRDT write on the authenticated `msg.Sender`, which makes
+   > a write under another peer's key **structurally impossible** rather than merely checked. Phase 2
+   > requires the whole fleet on phase 1 first, or a node still sending direct-stream-only is
+   > stranded. **D-26(a) stays Open until phase 2 lands.**
 2. **(b)** When `weights == nil`, fall back to equal weight *over the authenticated committee*, resolved from `authenticatedCommittee()` — which the verifier already trusts.
 3. **(c)** Look the block up locally by `targetBlockHash` and sign only *its* `BlockNumber` and recomputed `ConsensusHash`. Refuse if the block is unknown. The caller may say **which** block; it must not say what that block's height or digest is.
 4. **(d)** Default `enforceVoteRequesterAuth` on, wire `SetAuthorizedRequesterSource` at startup, remove the empty-set fail-open, add the flag to `production_posture.go`.
@@ -567,7 +585,7 @@ A buddy cannot read peer weights (the seed enforces sequencer-only auth on that 
 - **Move authentication to the boundary.** Have the subscriber layer stamp the authenticated peer id onto every decoded message and make the payload's own sender field unreadable by handlers — delete it from the wire type, or rename it so any remaining use is a compile error. One enforcement point instead of a per-handler convention is the only version of this that stays fixed.
 - **Sign votes, don't just aggregate them.** The legacy `Vote` has no signature, so its authenticity rests entirely on transport. Either require a per-vote signature on the legacy keyspace, or finish the v2 cutover (`JMDN_VOTE_CRDT_V2`), which already carries per-vote BLS signatures and the corrected unweighted `MajorityDecision`. Finishing the cutover retires (a) and (b) together.
 
-**Done when.** A vote whose payload sender differs from its transport sender is rejected and not stored (test); a signature request for a `(hash, height)` pair matching no local block is refused (test); with `weights == nil` a non-committee peer is excluded from the tally (test); a mainnet node refuses to boot with requester-auth off; `AVC/VoteModule` has table tests for `VoteAggregation` and `MajorityDecision` covering ties and empty input.
+**Done when.** ~~A vote whose payload sender differs from its transport sender is rejected and not stored (test)~~ — **struck with fix (1) above; that test would assert the broken guard.** Instead: **the CRDT write is keyed on the authenticated `msg.Sender`, so an element under another peer's key cannot be constructed** (phase-2 test); a signature request for a `(hash, height)` pair matching no local block is refused (test); with `weights == nil` a non-committee peer is excluded from the tally (test); a mainnet node refuses to boot with requester-auth off; `AVC/VoteModule` has table tests for `VoteAggregation` and `MajorityDecision` covering ties and empty input.
 
 ---
 
