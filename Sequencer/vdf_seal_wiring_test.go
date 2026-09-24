@@ -19,7 +19,9 @@ func resetVDFWiringState(t *testing.T) {
 
 	vdfSealersMu.Lock()
 	savedSealers := vdfSealers
+	savedEvictedBelow := evictedBelow
 	vdfSealers = make(map[uint64]*VDFSealer)
+	evictedBelow = 0
 	vdfSealersMu.Unlock()
 
 	t.Cleanup(func() {
@@ -29,6 +31,7 @@ func resetVDFWiringState(t *testing.T) {
 
 		vdfSealersMu.Lock()
 		vdfSealers = savedSealers
+		evictedBelow = savedEvictedBelow
 		vdfSealersMu.Unlock()
 	})
 }
