@@ -193,6 +193,31 @@ type ConsensusSettings struct {
 	// by any other key is rejected. Empty => snapshot verification cannot pin and
 	// the consumer stays disabled (fail-closed; no committee source).
 	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
+
+	// SequencerPinnedPeerID is the PINNED libp2p peer ID of this fleet's
+	// sequencer (D-26(d) / THEBE-AUDIT-HLD.md CON-03), distributed out-of-band
+	// (genesis/config) exactly like SeedAuthorityBLSPub above — the sequencer
+	// is a single, static, per-fleet identity with no rotation mechanism
+	// anywhere in this codebase, so a config-level pin, not a discovered
+	// value, is the correct source of truth.
+	//
+	// It is consumed as the authoritative UNION member alongside the
+	// authenticated committee snapshot for the vote-result-requester gate
+	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go:
+	// AuthorizedRequesterSet) — the set of peers a buddy node will BLS-sign a
+	// vote result for on request. Before this pin existed, that gate had no
+	// reliable authenticated source for "who is the sequencer" (the only
+	// available signals were self-declared and unauthenticated: a
+	// broadcast buddy list, or msg.SequencerID in a consensus message), so
+	// the gate could only fail open or risk rejecting the legitimate
+	// sequencer — this pin closes that gap.
+	//
+	// Empty => the requester gate's authorized set is committee-only, which
+	// risks rejecting the legitimate sequencer if it is not itself a
+	// resolvable committee member. production_posture.go's
+	// ValidateProductionConsensusPosture warns/fails on this being unset in
+	// a production posture — see that file.
+	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	//

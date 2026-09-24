@@ -31,6 +31,7 @@ import (
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
@@ -1630,7 +1631,13 @@ func main() {
 	// are read from environment rather than pinned in code). A safe no-op
 	// when unset: the node stays on Stage 1 (salt-based) committee
 	// selection exactly as it does today.
-	if beaconInstalled, beaconErr := Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
+	// D-48: beaconInstalled also gates messaging.HandleVDFProofRequestStream
+	// (node/node.go's VDFProofRequestProtocol registration) below, via
+	// messaging.SetVDFBeaconInstalled — hoisted out of the if/else-if chain
+	// so that call sees the same value regardless of which branch ran.
+	var beaconInstalled bool
+	var beaconErr error
+	if beaconInstalled, beaconErr = Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
 		// A PRODUCTION-POSTURE SECURITY REFUSAL IS FATAL. Everything else here
 		// falls back to Stage 1 and logs, which is right for a misconfiguration
 		// — but wrong for these two, and dangerously so.
@@ -1656,6 +1663,14 @@ func main() {
 	} else if beaconInstalled {
 		fmt.Println("✅ AVC beacon (Stage 2 RANDAO+VDF) installed")
 	}
+	// D-48: gate the VDF-proof pull responder (messaging.HandleVDFProofRequestStream)
+	// on whether the beacon is actually installed, not a separate on/off flag —
+	// there is nothing for it to serve, and no reason for it to do the
+	// per-request KV read at all, on a node that never installed Stage 2.
+	// A misconfigured-but-non-fatal beacon (the beaconErr!=nil, non-exit branch
+	// above) leaves beaconInstalled at its zero value (false), so this call
+	// sees the correct state for every branch above, including that one.
+	messaging.SetVDFBeaconInstalled(beaconInstalled)
 
 	// Initialize the listener node for handling submit message protocol
 	// This sets up the SubmitMessageProtocol handler for vote submission
@@ -1921,6 +1936,46 @@ func main() {
 	// with Sequencer/consensus_statemachine.go's NewConsensus wiring — same pinned,
 	// authenticated snapshot. The `|| EnableCatchup` arm preserves the prior
 	// empty-pin TOFU read path for catchup nodes (CommitteeSourcesAuto pin-or-TOFU).
+	// D-26(d)/CON-03: wire the vote-result-requester gate's authoritative
+	// source (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) here,
+	// unconditionally, for every node role (sequencer or buddy) and before
+	// branching on role below — the closure itself reads config and the
+	// committee-eligibility source LAZILY on each call, not at wiring time,
+	// so it does not need WireCommitteeSources or the seed client below to
+	// have run first; it only needs to be wired before this node's stream
+	// handler can plausibly receive a request (node.NewNode(), earlier in
+	// startup than this point), which one unconditional call site here
+	// guarantees regardless of which role branch below actually executes.
+	MessagePassing.SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		var committee []peer.ID
+		if members, err := messaging.EligibleCommitteePeerIDs(); err == nil {
+			committee = make([]peer.ID, 0, len(members))
+			for pid := range members {
+				if p, decErr := peer.Decode(pid); decErr == nil {
+					committee = append(committee, p)
+				}
+			}
+		}
+		// Committee resolution failing does not make the whole source
+		// indeterminate: the pinned sequencer is a static config value that
+		// never depends on live committee resolution, so it is still
+		// authorized on its own even during a committee-source hiccup —
+		// this is the liveness property the pin exists to provide. ok is
+		// always true: an unresolved committee degrades the set (possibly
+		// to pin-only, or empty if unpinned too), it never makes the
+		// decision indeterminate.
+		var pinned peer.ID
+		if raw := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID); raw != "" {
+			if p, decErr := peer.Decode(raw); decErr == nil {
+				pinned = p
+			} else {
+				log.Error().Err(decErr).Str("configured_value", raw).
+					Msg("[D-26d] consensus.sequencer_pinned_peer_id is not a valid peer ID — sequencer will not be authorized via the pin until this is corrected")
+			}
+		}
+		return MessagePassing.AuthorizedRequesterSet(committee, pinned), true
+	})
+
 	if cfg.Network.SeedNode != "" && (cfg.Consensus.SeedAuthorityBLSPub != "" || cfg.FastSync.EnableCatchup) {
 		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
 			log.Error().Err(err).

@@ -34,6 +34,27 @@ func SnapshotConsensusMessages() map[string]*ConsensusMessage {
 	return out
 }
 
+// LookupConsensusMessageByBlockHash returns the cached consensus message for a
+// block hash, or nil when this node has never seen that block.
+//
+// Exists for the vote-result signing path (audit D-26c): a buddy must resolve
+// the block it is about to BLS-sign for from ITS OWN state, never from the
+// requester's payload. SnapshotConsensusMessages would also work but copies the
+// whole map per call, and this cache has no eviction in production
+// (Remove/Clear are both dead code), so that copy grows without bound. This is
+// the O(1) read.
+//
+// The returned pointer is shared — treat it read-only, exactly as with
+// SnapshotConsensusMessages.
+func LookupConsensusMessageByBlockHash(blockHash string) *ConsensusMessage {
+	if blockHash == "" {
+		return nil
+	}
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return cacheConsensuMessage[blockHash]
+}
+
 type ConsensusMessage struct {
 	ZKBlock      *config.ZKBlock
 	Buddies      map[int]Buddy_PeerMultiaddr
