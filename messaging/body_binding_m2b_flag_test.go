@@ -68,9 +68,20 @@ func TestCheckConsensusBinding_ClosesTheTamperGap(t *testing.T) {
 		t.Fatal("a rewritten Period must be rejected by checkConsensusBinding (ConsensusHash no longer matches)")
 	}
 
-	// A block with no ConsensusHash (pre-v4) is skipped, not rejected.
-	b2 := &config.ZKBlock{Transactions: txs, Period: 7}
+	// A block with no ConsensusHash (pre-v4) and Period 0 is skipped, not
+	// rejected: Period 0 selects the same committee it always did.
+	b2 := &config.ZKBlock{Transactions: txs, Period: 0}
 	if rej := checkConsensusBinding(b2); rej != nil {
-		t.Fatalf("zero ConsensusHash must be skipped (rollout leniency), got rejection: %+v", rej)
+		t.Fatalf("zero ConsensusHash with Period 0 must be skipped (rollout leniency), got rejection: %+v", rej)
+	}
+
+	// Fix 3: once timeout certificates can advance Period, a zero
+	// ConsensusHash with Period > 0 is the tamper gap itself - a relay could
+	// zero the hash and rewrite Period to pick a different committee. No
+	// honest block can look like this: the proposer always sets ConsensusHash
+	// (Block/consensus_fields.go), and no block has ever had Period > 0.
+	b3 := &config.ZKBlock{Transactions: txs, Period: 7}
+	if rej := checkConsensusBinding(b3); rej == nil || rej.reason != "consensus_hash_missing" {
+		t.Fatalf("zero ConsensusHash with Period > 0 must be rejected as consensus_hash_missing, got %+v", rej)
 	}
 }

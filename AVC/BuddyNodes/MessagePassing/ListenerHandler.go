@@ -1570,6 +1570,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var targetBlockHash string
 	var targetBlockNumber uint64
 	var targetConsensusHash string
+	// targetPeriod is the round (Period) of the LOCALLY known block, used by
+	// the per-round signing lock below (fix 3, internal/roundlock).
+	var targetPeriod uint64
 	var voteResultReq struct {
 		BlockHash     string `json:"block_hash"`
 		BlockNumber   uint64 `json:"block_number"`   // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
@@ -1673,6 +1676,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 		targetBlockNumber = localNumber
 		targetConsensusHash = localConsensusHash
+		targetPeriod = localCM.ZKBlock.Period
 	}
 
 	// Ensure buddy nodes are populated from the cached consensus message
@@ -1790,6 +1794,23 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// disabled or the block hash is unavailable.
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
+	// Fix 3 / §7.1b mutual exclusion: never sign a block result for a round
+	// this node has already declared timed out (and, via the same ledger,
+	// never sign a timeout for a round it has signed a block result for).
+	// A block certificate (seated 2f+1) and a timeout certificate (pool 2/3)
+	// are quorums over different sets, so this per-node refusal is what stops
+	// both existing for one round. See internal/roundlock.
+	if targetBlockHash != "" {
+		if err := lockBlockResultRound(targetBlockNumber, targetPeriod); err != nil {
+			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for a round this node already timed out",
+				ion.Uint64("block_number", targetBlockNumber),
+				ion.Uint64("period", targetPeriod),
+				ion.String("error", err.Error()),
+				ion.String("function", "MessagePassing.handleVoteResultRequest"))
+			writeRawError(s, `{"error":"round timed out: this node signed a timeout vote for this round","vote_result":0}`, config.Delimiter)
+			return
+		}
+	}
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
 		// v4 when the request carried a ConsensusHash (binds the consensus fields),
 		// else v3. Verify sites try v4 then fall back to v3, so a buddy that got no

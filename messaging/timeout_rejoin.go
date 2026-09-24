@@ -45,6 +45,16 @@ var TimeoutCertRejoinEnabled = os.Getenv("JMDN_TIMEOUT_CERT_REJOIN") == "1"
 // peer must not stall the others.
 const timeoutCertRejoinTimeout = 5 * time.Second
 
+// timeoutRejoinActive reports whether the catch-up RPC is live. Fix 3: it is
+// also live whenever JMDN_TIMEOUT_CERT_WIRING is on. Once certificates can
+// advance Period, a node that missed one fails closed on every block of the
+// new period (ErrPeriodNotSynced) until it fetches it, so running the wiring
+// without catch-up is exactly the "half-live" mixed state this file's flag
+// doc warns against. One flag to flip, not two that must agree.
+func timeoutRejoinActive() bool {
+	return TimeoutCertRejoinEnabled || TimeoutCertWiringEnabled
+}
+
 // TimeoutCertRejoinRequest is the wire request: "what's your latest accepted
 // TimeoutCertificate for this height?" No other fields needed — the server
 // answers strictly from its own already-verified PeriodStore state, it does
@@ -77,7 +87,7 @@ func HandleTimeoutCertRejoinStream(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer()
 
-	if !TimeoutCertRejoinEnabled {
+	if !timeoutRejoinActive() {
 		return
 	}
 
@@ -179,7 +189,7 @@ func requestLatestTimeoutCertificate(ctx context.Context, h host.Host, p peer.ID
 // "nobody has a certificate for this height" is the expected steady state
 // for the overwhelming majority of heights (most rounds never time out).
 func RequestLatestTimeoutCertificateFromPeers(h host.Host, peers []peer.ID, height uint64) (uint64, bool, error) {
-	if !TimeoutCertRejoinEnabled {
+	if !timeoutRejoinActive() {
 		return 0, false, nil
 	}
 	var lastErr error

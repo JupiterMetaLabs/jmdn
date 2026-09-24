@@ -62,6 +62,7 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
+	"gossipnode/internal/roundlock"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog/log"
@@ -222,9 +223,25 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 		return
 	}
 
-	period := DefaultPeriodStore.PeriodFor(height) + 1
+	failedPeriod := DefaultPeriodStore.PeriodFor(height)
+	period := failedPeriod + 1
 
-	priv, _, err := BLS_Signer.LocalBLSKeypair()
+	// Fix 3: ask the whole pool to sign. Without this the sequencer was the
+	// only signer and the pool-wide quorum (2/3 of every eligible peer) could
+	// never be reached. Sent regardless of whether this node can sign its own
+	// vote below - receivers verify it against the pinned sequencer id and
+	// sign their own. See timeout_request.go.
+	defer broadcastTimeoutRequest(h, height, failedPeriod)
+
+	// Mutual exclusion (§7.1b) through the shared per-round ledger, the same
+	// one the buddy vote-result signer consults - see internal/roundlock.
+	if ok, taken := roundlock.Default.TryLock(roundlock.Round{Height: height, Period: failedPeriod}, roundlock.Timeout); !ok {
+		log.Warn().Uint64("height", height).Uint64("period", failedPeriod).Str("already_signed", taken.String()).
+			Msg("timeout flow: this node already signed the other side of this round, refusing to sign a timeout vote (§7.1b)")
+		return
+	}
+
+	priv, err := timeoutRequestBLSKey() // BLS_Signer.LocalBLSKeypair in production
 	if err != nil {
 		log.Warn().Err(err).Uint64("height", height).
 			Msg("timeout flow: could not load local BLS keypair, cannot sign timeout vote")
