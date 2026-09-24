@@ -155,7 +155,10 @@ func newVoteCRDTCompactionHook(ctx context.Context, trigger func(context.Context
 // jmdn's own consensus state is untouched either way.
 func compactConvergedVotes(ctx context.Context, tip, k uint64) {
 	if !Vote.VoteCRDTDualWrite {
-		return // v2 CRDT unused — nothing to compact
+		// Unreachable in production since the D-26(a)/D-51 cutover made
+		// VoteCRDTDualWrite permanently true (vote_crdt_v2.go) — kept as a
+		// defensive guard, not a live rollout branch.
+		return
 	}
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()

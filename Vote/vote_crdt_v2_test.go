@@ -54,14 +54,17 @@ func TestEnvOn_DefaultsAndOverrides(t *testing.T) {
 	}
 }
 
-func TestVoteCRDTDualWrite_OffByDefault(t *testing.T) {
-	// This asserts the package-level default the var was initialized with,
-	// not a live re-read of the env — same limitation every other envOn-based
-	// flag in this codebase has (JMDN_M2B_HASH etc.): it is read once at
-	// package init. Documented here so it isn't mistaken for a bug in a
-	// future test that sets the env var and expects the var to change.
-	if VoteCRDTDualWrite {
-		t.Fatal("VoteCRDTDualWrite must default to false — same discipline as every other rollout flag in this repo")
+func TestVoteCRDTDualWrite_PermanentlyOn(t *testing.T) {
+	// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): this used to
+	// assert VoteCRDTDualWrite defaulted to false, matching every other
+	// envOn-based rollout flag in this codebase. It is now permanently true
+	// and no longer env-gated at all — see the package doc comment in
+	// vote_crdt_v2.go for why (the legacy no-signature tally path is the
+	// actual D-26(a) defect; finishing this cutover is the fix). Inverted
+	// deliberately, not a regression: a future change that makes this false
+	// again would silently reopen D-26(a)/D-51 and must fail this test.
+	if !VoteCRDTDualWrite {
+		t.Fatal("VoteCRDTDualWrite must stay permanently true post-D-26(a)-cutover — see vote_crdt_v2.go")
 	}
 }
 

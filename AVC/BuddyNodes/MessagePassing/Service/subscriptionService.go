@@ -224,26 +224,37 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		globalVars := AVCStruct.NewGlobalVariables()
 		listenerNode := globalVars.Get_ForListner()
 
-		// D-26(a) note: msg.Data.Sender != msg.Sender is NOT evidence of a
-		// forged vote — ListenerHandler.go:1147 legitimately republishes a
-		// vote it received over a direct stream (already authenticated there,
-		// :1022) to pubsub under its OWN gossipsub identity, so msg.Sender is
-		// the relayer while msg.Data.Sender stays the original voter on every
-		// honest relay too. A guard comparing the two here rejected that
-		// relay, not just spoofing, and there is no way to tell the two
-		// apart at this layer. The real fix belongs at tally time: the
-		// legacy path (default) has no per-vote signature check at all; the
-		// v2 path (JMDN_VOTE_CRDT_V2) already verifies BLS + authorized
-		// pubkey-to-peer-ID binding independent of transport
-		// (processVotesFromCRDT_v2 -> avcvotes.TallyBlock -> verifyTallySignatures).
-		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
+		// D-26(a) CLOSED — this handler now keys on the AUTHENTICATED sender.
+		//
+		// msg.Sender is libp2p's msg.GetFrom() (Pubsub/Subscription/
+		// SubscriberHelper.go:293, SubscriptionManager.go:257) — the identity
+		// gossipsub authenticated for this delivery. msg.Data.Sender is a JSON
+		// field the publisher fills in itself and is no longer read here.
+		//
+		// WHY A COMPARISON WAS NOT THE FIX. Rejecting on
+		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted
+		// (4d621ea): handleSubmitVote used to republish a direct-stream vote
+		// to pubsub under the RELAYER's identity, so the two disagreed on every
+		// honest relay too and no guard at this layer could tell relay from
+		// forgery. The fix was to remove the ambiguity instead of trying to
+		// judge it: phase 1 (f430919) made every voter publish its own vote
+		// under its own identity, and phase 2 (this change) dropped that
+		// republish and re-keyed here. There is now exactly one sender for a
+		// vote, and it is authenticated by the transport.
+		//
+		// PRECONDITION THIS SHIPPED ON: every node runs phase 1. A node that
+		// only sends via direct stream has no republisher any more, so its vote
+		// reaches one peer and no one else — silently. This released as a
+		// coordinated fleet-wide restart on that basis (operator-confirmed),
+		// the same restart the v2 vote-CRDT read cutover already required.
+		if listenerNode != nil && msg.Sender == listenerNode.PeerID {
 			// Own vote arriving back via pubsub republication.
 			// Skip BFT re-triggering (prevents infinite loops) but DO store
 			// in CRDT — SubmitVote() already stores it, this is a no-op upsert
 			// that keeps the CRDT consistent and doesn't cost anything.
 			logger().Info(logger_ctx, "Received own vote via pubsub — storing in CRDT, skipping BFT re-trigger",
 				ion.String("topic", config.PubSub_ConsensusChannel),
-				ion.String("vote_from", msg.Data.Sender.String()),
+				ion.String("vote_from", msg.Sender.String()),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			// Fall through to CRDT storage below; early return removed intentionally.
 		}
@@ -252,7 +263,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			ion.String("to_buddy_node", listenerNode.PeerID.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
-			ion.String("sender", msg.Data.Sender.String()),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("vote_message", msg.Data.Message),
 			ion.String("channel", msg.Topic),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -299,12 +310,31 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 				}
 			}
 
-			// Use the sender's peer ID as the CRDT set key to separate votes by sender
+			// D-26(a): key on msg.Sender — the libp2p-AUTHENTICATED publisher —
+			// not on msg.Data.Sender, which the publisher chooses. Keying on
+			// the payload field let any peer write elements under any other
+			// peer's CRDT key; keying on the authenticated identity makes that
+			// structurally impossible rather than merely checked, because a
+			// peer cannot publish under an identity it does not hold a key for.
+			//
+			// msg.Data.Sender is now only a claim. It is no longer read for
+			// anything, but a disagreement is worth surfacing: post-phase-2
+			// there is no honest reason for the two to differ, so a mismatch
+			// is either a stale pre-phase-1 publisher or an attempted
+			// impersonation. Logged, not rejected — the write is already safe
+			// because it is keyed on the authenticated id regardless.
+			if msg.Data.Sender != "" && msg.Data.Sender != msg.Sender {
+				logger().Warn(logger_ctx, "vote payload sender disagrees with the authenticated publisher — keying on the authenticated one (D-26a)",
+					ion.String("authenticated_sender", msg.Sender.String()),
+					ion.String("claimed_sender", msg.Data.Sender.String()),
+					ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			}
+
 			OP := &Types.OP{
-				NodeID: msg.Data.Sender,
+				NodeID: msg.Sender,
 				OpType: int8(1), // 1 for add, -1 for remove
 				KeyValue: Types.KeyValue{
-					Key:   msg.Data.Sender.String(), // Use peer ID as the key to separate votes by sender
+					Key:   msg.Sender.String(), // authenticated peer ID — separates votes by real sender
 					Value: msg.Data.Message,
 				},
 			}
@@ -318,7 +348,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 			logger().Info(logger_ctx, "Successfully added vote to CRDT",
 				ion.String("topic", config.PubSub_ConsensusChannel),
-				ion.String("sender", msg.Data.Sender.String()),
+				ion.String("sender", msg.Sender.String()),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 			// Only trigger vote processing once (check if already triggered)
