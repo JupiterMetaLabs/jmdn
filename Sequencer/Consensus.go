@@ -182,6 +182,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// authorization: the sequencer only picks signed, authorized peers. FAIL
 	// CLOSED — if the eligible set is unavailable while pinned, abort the round
 	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
+	//
+	// pinnedEligible keeps that same set for the seat-resolution step below, so a
+	// seat is only ever added to the pool if it is also in the signed set.
+	var pinnedEligible map[string]struct{}
 	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
 		// WarmupPeerIDs, not EligibleCommitteePeerIDs: under JMDN_COMMITTEE_V2 the
 		// seated committee rotates across the WHOLE uncapped pool every height, so
@@ -204,6 +208,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			ion.Int("eligible_set_size", len(eligible)),
 			ion.String("function", "Consensus.Start.committeeFilter"))
 		candidates = kept
+		pinnedEligible = eligible
 	}
 
 	// (Seat-order) The filter above deliberately keeps the WHOLE eligible pool,
@@ -237,6 +242,39 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 		// Selection is global and self-inclusive; only dialling excludes self.
 		dialTargets := messaging.DialTargetsForRound(seated, consensus.Host.ID().String())
+
+		// (Seat-resolve) The pool above is NodeSelection's reputation-filtered
+		// list; the seats are not reputation-filtered. A seat the weight band
+		// dropped has no multiaddr here and could never be asked to vote, while
+		// it still counts toward n - the missing_seats:7 / dialable:0 halt. Look
+		// such seats up in the seed's ListBuddy address book and add them, so
+		// every seat is dialled. Best-effort: on a seed error nothing is added
+		// and the round proceeds as before. See committee_seat_resolve.go.
+		if len(MissingSeatIDs(candidates, dialTargets)) > 0 {
+			bookCtx, bookCancel := context.WithTimeout(trace_ctx, 3*time.Second)
+			book, bookErr := seatAddressBook(bookCtx)
+			bookCancel()
+			if bookErr != nil {
+				logger().Warn(trace_ctx, "Committee-source: seat address book unavailable; missing seats stay undialled",
+					ion.Int64("block_number", int64(zkblock.BlockNumber)),
+					ion.String("error", bookErr.Error()),
+					ion.String("function", "Consensus.Start.seatResolve"))
+			} else {
+				var res SeatResolution
+				candidates, res = ResolveMissingSeats(candidates, dialTargets, book, pinnedEligible)
+				logger().Info(trace_ctx, "Committee-source: resolved seated peers missing from the candidate pool",
+					ion.Int64("block_number", int64(zkblock.BlockNumber)),
+					ion.Int("address_book_size", len(book)),
+					ion.Int("added", len(res.Added)),
+					ion.String("added_peer_ids", strings.Join(res.Added, ",")),
+					ion.Int("no_address", len(res.NoAddress)),
+					ion.String("no_address_peer_ids", strings.Join(res.NoAddress, ",")),
+					ion.Int("unauthorized", len(res.Unauthorized)),
+					ion.String("unauthorized_peer_ids", strings.Join(res.Unauthorized, ",")),
+					ion.String("function", "Consensus.Start.seatResolve"))
+			}
+		}
+
 		ordered, missingSeats := OrderCandidatesBySeat(candidates, dialTargets)
 		candidates = ordered
 		seatOrdered = true
