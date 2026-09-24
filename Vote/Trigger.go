@@ -334,25 +334,34 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// on every honest message, and the receiver can key the CRDT on the
 	// authenticated identity instead of the payload one — which makes writing
 	// under another peer's key structurally impossible rather than merely
-	// checked. That is PHASE 2 (drop the relay at ListenerHandler.go:1147,
-	// key the write on msg.Sender); it requires the whole fleet to be on this
-	// phase first, or a node still sending direct-stream-only is stranded.
+	// checked. That was PHASE 2, and it HAS NOW LANDED in this same branch:
+	// the relay in handleSubmitVote is deleted and the receive-path write is
+	// keyed on msg.Sender.
 	//
-	// SAFE ON A MIXED FLEET, which is the whole point of splitting it:
-	//   - new voter -> old buddy: arrives by pubsub AND via the old relay.
-	//     The duplicate is inert — the legacy tally does last-write-wins per
-	//     peer key (Structs/Utils.go:648) and LWWAdd of an identical element
-	//     is a no-op, so both copies resolve to the same vote.
-	//   - old voter -> new buddy: the relay is untouched and still runs.
-	// Nothing rejects anything in this phase; it is purely additive.
+	// WHAT THIS PUBLISH IS AND IS NOT ON THE HOOK FOR — this was previously
+	// described as "falling back to the direct-stream relay" on failure, which
+	// is now false twice over: the relay is gone, and this publish was never
+	// the path a tallied vote travels.
 	//
-	// Non-fatal by design. The direct-stream send below is still load-bearing
-	// while any peer runs the old code, so a publish failure must not skip it
-	// — and conversely this must not mask a direct-send failure, which is why
-	// the loop's error handling is left exactly as it was.
+	// The consensus-relevant write is avcvotes.AddVote above (the v2,
+	// block-keyed, BLS-signed keyspace). That is what
+	// Structs.processVotesFromCRDT_v2 -> avcvotes.TallyBlock reads, and it
+	// reaches other nodes through the CRDT sync service (3s interval, topic
+	// pubsub-crdt-sync), not through this topic.
+	//
+	// This publish feeds PubSub_ConsensusChannel, whose receive path writes the
+	// LEGACY CRDT layer — no longer read by the tally after the v2 cutover.
+	// So a failure here does not drop a vote from anyone's quorum; it leaves
+	// peers' legacy layer without this entry. Logged at WARN rather than
+	// escalated for that reason, and because CRDT sync re-publishes v2 state
+	// every 3s, so a transient pubsub fault at vote time self-heals on the
+	// next tick rather than needing a fallback here.
+	//
+	// It must still not mask a direct-send failure, which is why the loop's
+	// error handling below is left exactly as it was.
 	if pubSubNode := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); pubSubNode != nil && pubSubNode.PubSub != nil {
 		if perr := Publisher.Publish(logger_ctx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, voteMessage, map[string]string{}); perr != nil {
-			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — falling back to direct-stream relay only",
+			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — peers' legacy CRDT layer will miss this entry; the tallied v2 vote is unaffected and propagates via CRDT sync",
 				ion.Err(perr),
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
@@ -364,7 +373,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("function", "Vote.SubmitVote"))
 		}
 	} else {
-		logger().Warn(logger_ctx, "PubSub node unavailable — own vote will reach peers only via the direct-stream relay",
+		logger().Warn(logger_ctx, "PubSub node unavailable — own vote not published to the consensus topic; the tallied v2 vote is unaffected and propagates via CRDT sync",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
 			ion.String("function", "Vote.SubmitVote"))
