@@ -9,13 +9,59 @@ package Sequencer
 import (
 	"testing"
 
+	"github.com/JupiterMetaLabs/avc/randao"
 	"github.com/JupiterMetaLabs/avc/vdf"
 )
 
+// D-31: this used to be a bare smoke test (call it, assert nothing) — that
+// let the actual behavior drift stale under it, since CancelSealer's old
+// "no sealer? just return" was a SILENT no-op that dropped the cancellation
+// entirely. It has since been fixed to plant a pre-cancelled placeholder
+// instead (see CancelSealer's doc comment in vdf_seal_wiring.go for the race
+// this closes: a peer's proof for forEpoch can be adopted before THIS node's
+// own onEpochFinalised fires for it). This test now pins that behavior.
 func TestCancelSealerIsSafeWhenNoSealerExists(t *testing.T) {
-	// A peer proof can arrive for an epoch this node never started sealing —
-	// a restarted or late node is exactly that case.
-	CancelSealer(987654)
+	const epoch = 987654
+	t.Cleanup(func() { ClearSealerForTest(epoch) })
+
+	if SealerCancelledForTest(epoch) {
+		t.Fatal("precondition: epoch must start with no sealer registered")
+	}
+
+	CancelSealer(epoch)
+
+	if !SealerCancelledForTest(epoch) {
+		t.Fatal("CancelSealer on an epoch with no existing sealer must plant a pre-cancelled " +
+			"placeholder, not silently no-op — otherwise a LATER onEpochFinalised call for the " +
+			"same epoch creates a fresh, non-cancelled sealer and launches a full ~T_vdf " +
+			"evaluation for an epoch a peer's proof already resolved")
+	}
+}
+
+// TestSealerFor_ReturnsCancelSealersPlaceholder_NotAFreshSealer proves the
+// other half of the same fix: sealerFor must return the SAME pre-cancelled
+// object CancelSealer planted, and Start on it must refuse to launch.
+func TestSealerFor_ReturnsCancelSealersPlaceholder_NotAFreshSealer(t *testing.T) {
+	const epoch = 987655 // distinct from the epoch above — tests may run in any order
+	t.Cleanup(func() { ClearSealerForTest(epoch) })
+
+	CancelSealer(epoch) // plants the placeholder; epoch has no sealer yet
+
+	s := sealerFor(epoch, nil) // pipeline is never touched by a cancelled Start, so nil is safe
+	if !s.Cancelled() {
+		t.Fatal("sealerFor must return the SAME pre-cancelled sealer CancelSealer planted for " +
+			"this epoch, not construct a fresh (non-cancelled) one")
+	}
+
+	s.Start(epoch, randao.Seed{})
+
+	// A launched Start assigns s.cancel; a refused one (the cancelled branch)
+	// never reaches that line. This is a synchronous, deterministic check of
+	// exactly the guard added for D-31 — it does not depend on any goroutine
+	// actually running or racing.
+	if _, ready := s.Result(); ready {
+		t.Fatal("Start on a pre-cancelled sealer must never produce a result")
+	}
 }
 
 func TestCancelSealerMarksTheEpochCancelled(t *testing.T) {

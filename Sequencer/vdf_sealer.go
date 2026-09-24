@@ -81,6 +81,19 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s.mu.Lock()
+	if s.cancelled {
+		// D-31: this sealer was pre-cancelled by CancelSealer BEFORE Start was
+		// ever called on it — a peer's proof for forEpoch was adopted while
+		// this node was still waiting on its own Stage-D fold (see
+		// vdf_seal_wiring.go's CancelSealer doc comment for the race this
+		// closes). Launching a ~T_vdf evaluation here would be pure waste:
+		// the epoch is already resolved, and SealerResultFor already reports
+		// "not ready" for a cancelled sealer with no result ever latched, so
+		// there is nothing this evaluation could still usefully produce.
+		s.mu.Unlock()
+		cancel()
+		return
+	}
 	if s.cancel != nil {
 		// Already started. Do NOT launch a second evaluation for the same
 		// epoch — sealerFor keys one VDFSealer per epoch precisely so this

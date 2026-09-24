@@ -74,7 +74,29 @@ func (s *WSServer) Serve(addr string) error {
 func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWS)
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+		// Pre-upgrade hardening, mirroring http_server.go's own timeouts
+		// (JMDN-V3-013): without these, this listener had no connection-level
+		// bound at all -- a slowloris-style client could hold the handshake
+		// open indefinitely.
+		//
+		// Verified safe for the post-upgrade WebSocket connection itself:
+		// once handleWS's Upgrade call hijacks the connection (see
+		// net/http.ResponseWriter's Hijacker interface), net/http stops
+		// enforcing these server-level timeouts on it -- an http.Server with
+		// a 1s ReadTimeout/WriteTimeout whose handler hijacks then sleeps 3s
+		// past both before writing still completes that write successfully
+		// (verified with a standalone net/http test, not shipped as part of
+		// this codebase). These fields only bound the pre-upgrade HTTP
+		// handshake handled by this http.Server.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB, matching http_server.go
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
