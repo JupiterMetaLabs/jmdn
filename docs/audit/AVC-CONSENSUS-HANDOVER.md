@@ -234,18 +234,20 @@ s.Cancel() before delete, not yet execution-verified — see that row).
 Recount whenever a row moves: Appendix C.2's
 "a register decays fastest in its summary layer".)
 
-  50 rows = 32 Fixed · 3 Partial · 1 Decided-no-change · 14 Open
+  50 rows = 32 Fixed · 4 Partial · 1 Decided-no-change · 13 Open
 
   Fixed (32)    D-24 D-25 D-26 D-27 D-29 D-30 D-31 D-32 D-33 D-34 D-35 D-36
                 D-37 D-39 D-41 D-51 D-54 D-57 D-58 D-60 D-61 D-62 D-63 D-64
                 D-65 D-66 D-67 D-68 D-69 D-70 D-71 D-73
-  Partial (3)   D-28  cert replay CLOSED, equivocation DETECTION open
+  Partial (4)   D-28  cert replay CLOSED, equivocation DETECTION open
                 D-38  flag deleted (a) CLOSED; posture-check gap (b) open
+                D-46  (b) s.cancelled honoured in Start CLOSED (#153);
+                      (a) T unbounded / WithCancel not WithTimeout open
                 D-48  responder gate CLOSED (PR #154); rate limit,
                       concurrency cap, resource-manager limits open
   Decided (1)   D-56  keep 20 / keep CadenceBlocks 0 — residual: epoch-0
                       sentinel collision, gates RequirePinnedCommittee
-  Open (14)     D-40 D-42 D-43 D-44 D-45 D-46 D-47
+  Open (13)     D-40 D-42 D-43 D-44 D-45 D-47
                 D-49 D-50 D-52 D-53 D-55 D-59 D-72
 
 BY SEVERITY   5 + 11 + 26 + 7 + 1 = 50
@@ -254,7 +256,7 @@ BY SEVERITY   5 + 11 + 26 + 7 + 1 = 50
   SEV-2  11   D-27✓ D-29✓ D-37✓ D-39✓ D-51✓ D-64✓ D-67✓ D-68✓ D-70✓
               | OPEN: D-28(detection), D-38(b)
   SEV-3  26   D-30✓ D-31✓ D-32✓ D-34✓ D-41✓ D-54✓ D-57✓ D-58✓ D-60✓ D-61✓ D-62✓ D-65✓ D-66✓
-              D-71✓ D-73✓ D-56(decided) | OPEN: D-40 D-42 D-43 D-44 D-45 D-46 D-52 D-53 D-59 D-72
+              D-71✓ D-73✓ D-56(decided) | PARTIAL: D-46 | OPEN: D-40 D-42 D-43 D-44 D-45 D-52 D-53 D-59 D-72
   SEV-4   7   D-63✓ D-69✓ | PARTIAL: D-48 | OPEN: D-47 D-49 D-50 D-55
   Unrated 1   D-33✓ (remainders open — persistence, observe rung)
   Devnet  9   §6, tracked as a group, NOT in the 50
@@ -403,7 +405,7 @@ SCOPE
 | **D-43** | 3 | `jmdn` | **A proposer can disable pull-recovery fleet-wide.** `PersistVDFProof` stores the caller's RAW bytes; `vdf.Proof.UnmarshalBinary` is `json.Unmarshal`, which ignores unknown fields. ~6.8 KB of padding clears `MaxVDFProofBytes` *after* verification succeeds, so every adopting node keeps its entropy but stores no proof and answers `Found:false` — switching off the mechanism `entropy_vdf_persist.go` exists to serve, at zero attacker cost | — | S | `Open` |
 | **D-44** | 3 | `jmdn` | **VDF recovery can never target the epoch it exists to recover.** `VDFRecoveryTargetEpoch = EpochForSlot(currentSlot) + 1`, so for a node inside epoch E the boundary block carrying E's proof is already past and the target is E+1; CHECK 3 then needs `FinalisedMixFor(E)`, which a node that missed E's cutoff never finalised. It helps only a slow local evaluator — not the offline/restarted/late-joining cases its own documentation headlines | — | M | `Open` |
 | **D-45** | 3 | `jmdn` | The `beacon_entropy_newest` / `vdf_proof_newest` pointer advance is a **non-atomic read-modify-write** under no lock, and three of its four failure modes are discarded. Concurrent writers for epochs 9 and 10 can leave the pointer at 9 with a record at 10, and there is no fallback index (`GetAllKeys` is a removed-ImmuDB stub), so the record is unreachable — permanently stranding an epoch whose mix cannot be recomputed | — | S | `Open` |
-| **D-46** | 3 | `jmdn` | **Sealer lifecycle.** (a) `T` has no upper bound and `Start` uses `context.WithCancel`, not `WithTimeout`, and the only cancellation source is an adopted peer proof — which never arrives if nobody's `T` fits the runway, so one never-terminating 2048-bit modmul goroutine accumulates per epoch. (b) `Start` checks only `s.cancel != nil` and never reads `s.cancelled`, so a `Cancel` landing in `sealerFor`'s unlocked window is silently lost and the full ~T_vdf evaluation runs anyway — contradicting `Cancel`'s own doc | — | S | `Open` |
+| **D-46** | 3 | `jmdn` | **Sealer lifecycle.** (a) `T` has no upper bound and `Start` uses `context.WithCancel`, not `WithTimeout`, and the only cancellation source is an adopted peer proof — which never arrives if nobody's `T` fits the runway, so one never-terminating 2048-bit modmul goroutine accumulates per epoch. (b) `Start` checks only `s.cancel != nil` and never reads `s.cancelled`, so a `Cancel` landing in `sealerFor`'s unlocked window is silently lost and the full ~T_vdf evaluation runs anyway — contradicting `Cancel`'s own doc | `Sequencer/vdf_sealer_cancel_test.go`, `Sequencer/d73_evict_cancels_test.go` | S | `Partial — (b) CLOSED, (a) still OPEN.` **(b) Fixed by PR #153** (`a187ee5`): `Start` now reads `s.cancelled` before launching anything (`Sequencer/vdf_sealer.go:85`) and returns, so a `Cancel` landing in `sealerFor`'s unlocked window is honoured rather than silently lost. The row read `Open` wholesale after that merged; corrected here rather than left, because the two limbs now have different states and `Open` alone does not say which is live. **(a) NOT fixed, deliberately still open:** `Start` is still `context.WithCancel` (`:82`), not `WithTimeout`, and nothing bounds `T`. A node running an oversized or divergent `T` — the D-39/D-54 scenario — still evaluates past any useful horizon. **What HAS changed is (a)'s blast radius, not (a):** cancellation is no longer limited to an adopted peer proof. `CancelSealer` plants a pre-cancelled placeholder on a map miss (D-31) and `evictOldSealersLocked` now cancels before dropping the handle (D-73), so a runaway evaluation is released when its epoch falls out of the retention window instead of running on unreachable and unstoppable. That bounds how long one survives; it does not bound `T`, which is what (a) asks for. **Fix for (a):** derive a deadline for `Start` from the pinned `T` (or a multiple of it) instead of an open-ended context, and reject a `T` above a configured ceiling at install time alongside the D-39 pin checks |
 | **D-47** | 4 | `jmdn` | **Retention windows pinned to the floor while the beacon's is configurable.** `mixRetainEpochs = committee.MinRetainedEpochs + 1` and `RehydrateBeaconFromDisk`'s window are compile-time constants, but `JMDN_AVC_BEACON_RETAIN_EPOCHS` moves the sink's retention — so raising it buys no extra proof-adoption window and no extra restored epochs. Separately `defaultEntropyAccumulatorStore.accs` has no eviction anywhere in `messaging/` | — | S | `Open` |
 | **D-48** | 4 | `jmdn` | `/p2p/randao/vdf-proof/1.0.0` is registered on **every** node with no feature gate, unlike its sibling `HandleTimeoutCertRejoinStream` — and `node/node.go:231-234` claims parity it does not have. Per-request work is properly bounded, but there is no per-peer rate limit and no concurrency cap, and `libp2p.New` pins no resource-manager limits | `messaging/d48_vdf_beacon_gate_test.go` | S | `Partial (PR #154, 9e5bd71) — the un-gated-registration half is CLOSED; the throttling half is NOT.` **Closed:** `messaging.SetVDFBeaconInstalled` now exists and `HandleVDFProofRequestStream` returns early on a node that never installed Stage 2, giving the responder the feature gate `node/node.go:231-234` already claimed parity on. ⚠ **Note how this was found:** `SetVDFBeaconInstalled` was CALLED by `1c44341`/`89fb11c` while never being DEFINED anywhere in the repo's history (confirmed with `git log --all -S`) — so those commits could not compile on their own. A bisect across this branch will hit non-building intermediate commits. **Still OPEN, verified absent from `messaging/entropy_vdf_pull.go` on this branch:** no per-peer rate limit, no concurrency cap, and `libp2p.New` still pins no resource-manager limits. Do not close this row until those land. |
 | **D-49** | 4 | `jmdn` | **Release hygiene.** Four `*ForTest` seams — `SeedSealResultForTest`, `ClearSealerForTest`, `SealerCancelledForTest`, `AggSigStoreSlotsForTest` — carry no build tag and compile into the release binary; the first injects an arbitrary `vdf.Proof` straight into the production sealer map. `DB_OPs/beacon_entropy.go`, `messaging/entropy_persist.go` and `messaging/entropy_vdf_persist.go` have no test file at all; `DB_OPs.NewestVDFProofEpoch` is a dead exported API | — | S | `Open` |
