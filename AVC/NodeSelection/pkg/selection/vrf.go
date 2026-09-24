@@ -129,7 +129,7 @@ const VRFRoundDomain = "jmdn/vrf-round/v1"
 // (so the committee actually rotates and the proof is verifiable per round) is
 // the gated consensus-cadence step; this primitive is what that step will call.
 func BuildVRFRoundMessage(nodeID string, networkSalt []byte, round uint64) []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%d", VRFRoundDomain, nodeID, string(networkSalt), round))
+	return fmt.Appendf(nil, "%s|%s|%s|%d", VRFRoundDomain, nodeID, string(networkSalt), round)
 }
 
 // VerifyVRFProof checks a VRF (hash, proof) pair against the selecting node's

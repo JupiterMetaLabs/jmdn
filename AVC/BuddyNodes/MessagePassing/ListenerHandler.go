@@ -17,7 +17,6 @@ import (
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/AVC/BuddyNodes/common"
-	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -1130,50 +1129,36 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleSubmitVote"))
 
-		// Now publish the vote to pubsub so ALL other buddy nodes can receive it
-		if pubSubNode != nil && pubSubNode.PubSub != nil {
-			logger().Info(voteSpanCtx, "Republishing vote to pubsub for all buddy nodes",
-				ion.String("republisher_peer_id", listenerNode.PeerID.String()),
-				ion.String("original_sender", message.Sender.String()),
-				ion.String("channel", config.PubSub_ConsensusChannel),
-				ion.Int64("timestamp", message.Timestamp),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "MessagePassing.handleSubmitVote"))
-
-			// This is necessary because the vote was sent via direct stream to ONE node
-			// We need to republish it to pubsub so ALL buddy nodes receive it
-			if err := Publisher.Publish(voteSpanCtx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
-				voteSpan.RecordError(err)
-				voteSpan.SetAttributes(attribute.String("status", "republish_failed"))
-				logger().Error(voteSpanCtx, "Failed to republish vote to pubsub",
-					err,
-					ion.String("remote_peer_id", remotePeer.String()),
-					ion.String("channel", config.PubSub_ConsensusChannel),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "MessagePassing.handleSubmitVote"))
-			} else {
-				voteSpan.SetAttributes(attribute.String("republish_status", "success"))
-				logger().Info(voteSpanCtx, "Successfully republished vote to pubsub",
-					ion.String("remote_peer_id", remotePeer.String()),
-					ion.String("channel", config.PubSub_ConsensusChannel),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "MessagePassing.handleSubmitVote"))
-			}
-		} else {
-			voteSpan.SetAttributes(attribute.String("status", "pubsub_not_available"))
-			logger().Warn(voteSpanCtx, "Cannot republish vote - pubSubNode or pubSubNode.PubSub is nil",
-				ion.String("remote_peer_id", remotePeer.String()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "MessagePassing.handleSubmitVote"))
-		}
+		// D-26(a) phase 2: the republish-to-pubsub relay that used to live here
+		// is REMOVED.
+		//
+		// It existed because a vote arrived here over a direct stream addressed
+		// to this one node, and the rest of the committee had no other way to
+		// see it. It republished under THIS node's gossipsub identity while the
+		// payload kept the original voter's, which is precisely why the vote
+		// CRDT could not key on the authenticated sender: on every honest relay
+		// the two legitimately disagreed. A guard comparing them was tried
+		// (617dd0e) and reverted (4d621ea) for exactly that reason.
+		//
+		// Phase 1 (f430919) removed the NEED for it: every voter now publishes
+		// its own vote to PubSub_ConsensusChannel under its own authenticated
+		// identity, in addition to the direct-stream send. With that in place
+		// the relay only produced a duplicate — inert for the tally, since the
+		// vote CRDT dedupes an identical re-delivery (avc
+		// TestAddVote_IdenticalRedeliveryIsIdempotent, v0.1.0-v3base.5: the
+		// element string is deterministic and LWWSet.Adds is keyed on it), but
+		// it cost one extra pubsub message per vote and, far more importantly,
+		// it was the sole reason the ingest path had to trust a self-declared
+		// sender field. Dropping it lets subscriptionService.go key the CRDT
+		// write on msg.Sender, which closes D-26(a).
+		//
+		// PRECONDITION THIS SHIPPED ON — read before reverting phase 1: a node
+		// that still only sends via direct stream has no republisher any more,
+		// so its vote reaches exactly one peer and is invisible to everyone
+		// else, with no error raised anywhere. This released as a coordinated
+		// fleet-wide restart (operator-confirmed), riding the same restart the
+		// v2 vote-CRDT read cutover already required. Do not re-introduce a
+		// direct-stream-only vote path without restoring a relay with it.
 	}
 
 	duration := time.Since(startTime).Seconds()

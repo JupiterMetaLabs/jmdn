@@ -14,9 +14,16 @@ package Structs
 // from the CRDT, so it is peer-supplied: any node that gossips a malformed
 // vote element crashes every legacy-path node that reads it.
 //
-// Only reachable with JMDN_VOTE_CRDT_V2 unset/false, which is the CODE
-// DEFAULT -- so it is exactly the node that missed the env var, already
-// running under weaker rules, that also crashes.
+// WAS only reachable with JMDN_VOTE_CRDT_V2 unset/false, which WAS the code
+// default -- so it was exactly the node that missed the env var, already
+// running under weaker rules, that also crashed.
+//
+// That premise no longer holds. Since the D-26(a)/D-51 cutover the flag is
+// gone and voteCRDTV2Enabled is hardcoded true, so processVotesFromCRDT_legacy
+// is statically unreachable from production code and this test reaches it by
+// calling it directly. The test is kept deliberately: the function is still
+// compiled in (see its doc comment), and any future revert that reinstates the
+// legacy read path must not reinstate this panic along with it.
 
 import (
 	"context"

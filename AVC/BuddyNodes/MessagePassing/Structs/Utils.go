@@ -27,18 +27,33 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go) —
-// same env var, same default. Duplicated rather than imported: Vote ->
-// MessagePassing -> Structs already exists (Vote/Trigger.go imports
-// MessagePassing; MessagePassing/ListenerHandler.go imports Structs), so
-// Structs -> Vote would be an import cycle. The two must never disagree:
-// Stage 4's entire revert story (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §10 —
-// "readers -> TallyBlock | high | flag off") depends on the read side and
-// the write side flipping together. This duplication pattern (an env-flag
-// helper copied per package rather than shared) already exists in Security,
-// messaging, Vote, and internal/reputation — see Vote/vote_crdt_v2.go's own
-// comment on envOn.
-var voteCRDTV2Enabled = envOnStructs("JMDN_VOTE_CRDT_V2", false)
+// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go).
+// Duplicated rather than imported: Vote -> MessagePassing -> Structs already
+// exists (Vote/Trigger.go imports MessagePassing; MessagePassing/
+// ListenerHandler.go imports Structs), so Structs -> Vote would be an
+// import cycle. The two must never disagree: the read side (this file) and
+// the write side (Vote/vote_crdt_v2.go) have to flip together, which is
+// exactly why both are now hardcoded true in the same commit rather than
+// left as two separately-toggleable env reads.
+//
+// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): permanently true,
+// not env-gated. See Vote/vote_crdt_v2.go's package doc comment for the full
+// reasoning — short version: the legacy path below (processVotesFromCRDT_legacy)
+// has no per-vote signature and keys its CRDT write on an unauthenticated
+// payload field; a naive fix at that ingest point was tried and reverted
+// (18806fb) because it also rejects legitimate direct-stream-to-pubsub vote
+// relay, which is indistinguishable from forgery at that layer. The real
+// authentication boundary is HERE, at tally time, via TallyBlock's
+// committee-registered-pubkey + BLS-signature check — so this is the one
+// flag flip that actually matters, and it ships in the same coordinated
+// fleet-wide restart as every other D-26 fix, not as a separate rollout.
+// processVotesFromCRDT_legacy is kept, unreachable, only because
+// legacy_vote_panic_test.go calls it directly to pin its own
+// malformed-input crash fix; do not route production traffic to it again.
+var voteCRDTV2Enabled = true
+
+// envOnStructs is retained for any future flag that needs this exact
+// duplication pattern; it no longer determines voteCRDTV2Enabled.
 
 func envOnStructs(key string, def bool) bool {
 	v, ok := os.LookupEnv(key)
@@ -152,25 +167,22 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 // targetBlockHash is required - votes without matching block_hash are skipped.
 // The second return value maps peerID -> rejection_reason for peers that voted -1.
 //
-// Stage 4 (JMDN-CRDT-VOTE-MIGRATION-LLD.md §6): gated by the same
-// JMDN_VOTE_CRDT_V2 flag as the write side (Vote.VoteCRDTDualWrite) so this
-// stage stays revertible by a single flag flip, per the LLD's §10 build-order
-// table ("4 | readers -> TallyBlock | high | flag off"):
-//   - flag OFF (default today, since Stage 2's dual-write also defaults
-//     off): legacy peer-keyed read, UNCHANGED from before Stage 4 — reads
-//     listenerNode.CRDTLayer, decides via the seed-node-weighted
-//     voteaggregation.VoteAggregation. This remains the only path that runs
-//     in production until the fleet flips JMDN_VOTE_CRDT_V2 on.
-//   - flag ON: new block-keyed read via avcvotes.TallyBlock against
-//     listenerNode.VoteCRDTLayer, decided by the unweighted
-//     voteaggregation.MajorityDecision (Gap 2 — reputation weight must never
-//     multiply an already-cast vote) and preserving RejectionReason per peer
-//     from the typed VoteRecord instead of an untyped map (Gap 1).
+// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): voteCRDTV2Enabled
+// is now permanently true, so this always takes the block-keyed read via
+// avcvotes.TallyBlock against listenerNode.VoteCRDTLayer, decided by the
+// unweighted voteaggregation.MajorityDecision (Gap 2 — reputation weight
+// must never multiply an already-cast vote) and preserving RejectionReason
+// per peer from the typed VoteRecord instead of an untyped map (Gap 1).
 //
-// height is now a required parameter (it was not before Stage 4) because
-// TallyBlock needs it and every call site has it available; threaded
-// unconditionally on both the legacy and v2 paths so no call site carries
-// two different signatures depending on the flag.
+// The legacy peer-keyed read (listenerNode.CRDTLayer, the seed-node-weighted
+// voteaggregation.VoteAggregation) is no longer reachable from here — it has
+// no per-vote signature, and its CRDT write is keyed on an unauthenticated
+// payload field (D-26(a)). processVotesFromCRDT_legacy is kept in this file,
+// unreachable in production, only because legacy_vote_panic_test.go still
+// calls it directly to pin its malformed-input crash fix.
+//
+// height is a required parameter because TallyBlock needs it; every call
+// site already has it available.
 func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string, height uint64) (int8, map[string]string, *VoteCertificate, *avcvotes.VoteCertificate, error) {
 	if listenerNode == nil {
 		logger().Error(logger_ctx, "Listener node not initialized", nil,
@@ -542,11 +554,22 @@ func verifyTallySigTasksConcurrently(tasks []tallySigTask, chainID, height uint6
 }
 
 // processVotesFromCRDT_legacy is the pre-Stage-4 read path, byte-identical
-// in behavior to ProcessVotesFromCRDT before this stage. Kept verbatim (not
-// deleted) so JMDN_VOTE_CRDT_V2=off — the default — is a true no-op change,
-// per the LLD's revertibility requirement. Do not add Stage 4 concepts
-// (RejectionReason typing, MajorityDecision, TallyBlock) here; that would
-// defeat the point of keeping a flag-off path.
+// in behavior to ProcessVotesFromCRDT before that stage.
+//
+// STATICALLY UNREACHABLE from production code since the D-26(a)/D-51 cutover.
+// voteCRDTV2Enabled is hardcoded true (see its declaration), so
+// ProcessVotesFromCRDT always routes to processVotesFromCRDT_v2. This function
+// is retained only because legacy_vote_panic_test.go calls it directly, which
+// is what keeps the malformed-element fix below pinned.
+//
+// The revertibility this comment used to cite is GONE, not merely unexercised:
+// JMDN_VOTE_CRDT_V2 no longer exists anywhere in non-test code, so no env
+// override restores this path. Rolling back to it means rolling back the
+// binary and restarting the fleet. Do not re-introduce a flag branch here to
+// "make it revertible again" without reading the cutover's rollout note first
+// — half a fleet on each read path is the mixed-fleet hazard described there.
+// Do not add Stage 4 concepts (RejectionReason typing, MajorityDecision,
+// TallyBlock) here either; this is a frozen record of the old behaviour.
 func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, map[string]string, error) {
 	if listenerNode.CRDTLayer == nil {
 		logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
@@ -609,8 +632,12 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 				// that is neither float64 nor string. The element is
 				// peer-supplied via the CRDT, so one node gossiping a
 				// malformed vote crashed every legacy-path node that read it,
-				// and the legacy path is the CODE DEFAULT
-				// (JMDN_VOTE_CRDT_V2 unset).
+				// and the legacy path WAS the code default back when
+				// JMDN_VOTE_CRDT_V2 defaulted off. Since the D-26(a)/D-51
+				// cutover that flag is gone and this path is statically
+				// unreachable from production code, so this guard is now
+				// retained for the test that pins it (and for any future
+				// revert) rather than for a live read path.
 				logger().Error(logger_ctx, "Invalid vote value type", nil,
 					ion.String("vote_value_raw", fmt.Sprintf("%+q", fmt.Sprintf("%v", voteValueRaw))),
 					ion.String("vote_value_go_type", fmt.Sprintf("%T", voteValueRaw)),
@@ -692,16 +719,70 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 		weights = nil
 	}
 
-	// Filter weights to only include peers that voted; collect rejection reasons.
-	// When weights are unavailable (seed denied the read), use equal weight 1.0.
+	// D-26(b): when the seed denied the weight read, membership must still come
+	// from SOMEWHERE authenticated. It used to come from nowhere.
+	//
+	// THE DEFECT. The equal-weight fallback above set `weight := 1.0; exists :=
+	// true` for every key present in the CRDT, and `weights == nil` is the
+	// NORMAL case on a buddy (the seed enforces sequencer-only auth on the
+	// peer-list read — that is what the warning above is about). So on the
+	// default path any peer that could get an element into this node's vote
+	// CRDT was counted as a full-weight voter, committee member or not. Note
+	// this is distinct from D-26(a)/impersonation, which is about writing under
+	// ANOTHER peer's identity (addressed by 64f924e + phase 2); this limb is a
+	// non-member voting as ITSELF and is not touched by that work.
+	//
+	// THE FIX. Fall back to EQUAL WEIGHT, not to EQUAL WEIGHT FOR EVERYONE:
+	// admission comes from the same authenticated committee source the v2 path
+	// already uses (processVotesFromCRDT_v2 -> authorizedCommittee, wired at
+	// main.go:1542 on both JMDN_COMMITTEE_V2 settings). The seed's weight map
+	// stays authoritative whenever it IS available, so the working path is
+	// byte-identical to before.
+	//
+	// WHY THE FILTERED (blocklist-applied, capped) SET IS RIGHT HERE. This is
+	// an "should I COUNT this signer" decision, not a denominator, so D-36's
+	// rule points at eligibleMembers rather than FleetEligibleForEpoch — see
+	// the doc on messaging.FleetEligibleForEpoch. A buddy-local divergence here
+	// cannot inflate quorum either way: this tally is only this buddy's own
+	// conclusion, and the authoritative 2f+1 is the sequencer's
+	// VerifyCertificate over seated signatures.
+	//
+	// FAIL CLOSED, and it cannot strand a healthy node. If the committee source
+	// is unavailable this returns an error instead of admitting everyone, which
+	// matches processVotesFromCRDT_v2 (Utils.go:209-216) and VerifyCertificate.
+	// That is safe rather than merely principled: a node with no eligibility
+	// source already cannot reach this function at all — the mandatory
+	// certificate check in admitZKBlock (messaging.VerifyCertificate ->
+	// authenticatedCommittee) reads the SAME committeeEligibilityFn and fails
+	// closed, so such a node drops every block long before it tallies one. See
+	// the comment above the wiring at main.go:1877.
+	var authorizedForFallback map[string]string
+	if weights == nil {
+		var acErr error
+		authorizedForFallback, acErr = authorizedCommittee()
+		if acErr != nil {
+			logger().Error(logger_ctx, "Peer weights unavailable AND the authenticated committee could not be resolved — refusing to tally rather than counting every CRDT key as a full-weight voter (D-26b)", acErr,
+				ion.String("function", "Structs.ProcessVotesFromCRDT"))
+			return 0, nil, errors.New("weights unavailable and authorized committee unresolvable: " + acErr.Error())
+		}
+		logger().Info(logger_ctx, "Using equal weights restricted to the authenticated committee (D-26b)",
+			ion.Int("authorized_members", len(authorizedForFallback)),
+			ion.String("function", "Structs.ProcessVotesFromCRDT"))
+	}
+
+	// Filter to peers that voted AND are entitled to; collect rejection reasons.
+	// Weight source: the seed's map when available, else equal weight 1.0 over
+	// the authenticated committee resolved just above (never over all comers).
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
 	rejectionReasons := make(map[string]string)
 	for peerID, vote := range voteData {
 		weight := 1.0
-		exists := true
+		var exists bool
 		if weights != nil {
 			weight, exists = weights[peerID]
+		} else {
+			_, exists = authorizedForFallback[peerID]
 		}
 		if exists {
 			filteredVoteData[peerID] = vote.vote
@@ -716,16 +797,27 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 				ion.String("block_hash", vote.blockHash),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		} else {
-			logger().Debug(logger_ctx, "Peer not found in weights, skipping",
+			// Name the ACTUAL reason: with the seed's map present this is "not in
+			// weights"; without it, it is "not in the authenticated committee"
+			// (D-26b). Reporting the wrong one sends whoever reads this log to the
+			// seed to debug a committee-membership problem, or the reverse.
+			reason := "not present in the seed weight map"
+			if weights == nil {
+				reason = "not a member of the authenticated committee (equal-weight fallback)"
+			}
+			logger().Debug(logger_ctx, "Vote skipped: peer not entitled to vote",
 				ion.String("peer_id", peerID),
+				ion.String("reason", reason),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		}
 	}
 
 	if len(filteredVoteData) == 0 {
-		logger().Error(logger_ctx, "No votes found after filtering by weights", nil,
+		logger().Error(logger_ctx, "No votes remain after filtering to entitled voters", nil,
+			ion.Int("votes_before_filter", len(voteData)),
+			ion.Bool("used_seed_weights", weights != nil),
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("no votes found after filtering by weights")
+		return 0, nil, errors.New("no votes remain after filtering to entitled voters")
 	}
 
 	// Call votemodule.VoteAggregation with filtered maps
