@@ -45,6 +45,30 @@ type SyncStatus struct {
 	SequencerRoot []byte
 	GoodPeers     []PeerInfo
 	Message       string
+
+	// HeadAuthenticated reports whether SequencerHead came from a source this
+	// node can hold accountable — today, the seednode. FALSE for a reporter
+	// that infers the head from unauthenticated peer chatter.
+	//
+	// It exists because SequencerHead has two consumers with very different
+	// trust requirements, and one of them is on the consensus path:
+	//
+	//   - the propagation-lag filter in runCheckOpts only needs a rough "how
+	//     far behind might I be"; a wrong answer costs a needless catch-up.
+	//   - main.go's SetConsensusSyncGate feeds it to
+	//     MessagePassing.GateDecision, which ABSTAINS from voting once the gap
+	//     exceeds MaxConsensusLagBlocks (2). A wrong answer there removes this
+	//     node from quorum.
+	//
+	// Publishing an unauthenticated head to the second consumer would let a
+	// single peer claiming localHead+3 silently pull a validator out of
+	// consensus. So the head is still reported — the lag filter needs it — and
+	// this flag tells the gate not to act on it.
+	//
+	// Any new consumer making a SAFETY or PARTICIPATION decision from
+	// SequencerHead must check this flag. Consumers that only tune sync
+	// behaviour need not.
+	HeadAuthenticated bool
 }
 
 // PeerInfo is a stripped-down peer record sufficient for dialling.
@@ -105,9 +129,14 @@ func (a *seednodeAdapter) ReportBlockState(ctx context.Context, blockHead uint64
 	return &SyncStatus{
 		IsSynced:      st.IsSynced,
 		SequencerHead: st.SequencerHead,
-		SequencerRoot: st.SequencerRoot,
-		GoodPeers:     peers,
-		Message:       st.Message,
+		// The seednode is an accountable source: its head is signed-record
+		// backed and comes from one place, not from whichever peer answers
+		// highest. This is the only reporter allowed to vouch for the head, and
+		// therefore the only one whose head may drive the consensus vote gate.
+		HeadAuthenticated: true,
+		SequencerRoot:     st.SequencerRoot,
+		GoodPeers:         peers,
+		Message:           st.Message,
 	}, nil
 }
 
@@ -125,9 +154,13 @@ type Status struct {
 	LastCheckedAt time.Time `json:"last_checked_at"`
 	Error         string    `json:"error,omitempty"`
 	// Fix 3, 5: observable state for ops/alerting
-	ConsecutiveOutOfSync int           `json:"consecutive_out_of_sync"`
-	SeednodeUnreachable  bool          `json:"seednode_unreachable"`
-	CurrentInterval      time.Duration `json:"current_interval"`
+	ConsecutiveOutOfSync int  `json:"consecutive_out_of_sync"`
+	SeednodeUnreachable  bool `json:"seednode_unreachable"`
+	// HeadAuthenticated mirrors SyncStatus.HeadAuthenticated — see that field.
+	// Any consumer gating CONSENSUS PARTICIPATION on SequencerHead must require
+	// this; a peer-sampled head is not accountable and must not decide voting.
+	HeadAuthenticated bool          `json:"head_authenticated"`
+	CurrentInterval   time.Duration `json:"current_interval"`
 }
 
 // Monitor runs the periodic sync-check loop.
@@ -383,14 +416,15 @@ func (m *Monitor) runCheckOpts(ctx context.Context, guard bool) Status {
 	}
 
 	st := Status{
-		LocalHead:       head,
-		MerkleRoot:      hex.EncodeToString(root),
-		SequencerHead:   syncSt.SequencerHead,
-		SequencerRoot:   hex.EncodeToString(syncSt.SequencerRoot),
-		GoodPeers:       goodPeerIDs,
-		Message:         syncSt.Message,
-		LastCheckedAt:   time.Now(),
-		CurrentInterval: m.currentInterval,
+		LocalHead:         head,
+		MerkleRoot:        hex.EncodeToString(root),
+		SequencerHead:     syncSt.SequencerHead,
+		HeadAuthenticated: syncSt.HeadAuthenticated,
+		SequencerRoot:     hex.EncodeToString(syncSt.SequencerRoot),
+		GoodPeers:         goodPeerIDs,
+		Message:           syncSt.Message,
+		LastCheckedAt:     time.Now(),
+		CurrentInterval:   m.currentInterval,
 	}
 
 	if syncSt.IsSynced {
