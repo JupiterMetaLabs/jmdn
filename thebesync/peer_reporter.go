@@ -136,11 +136,42 @@ func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ 
 		goodPeers = append(goodPeers, syncmonitor.PeerInfo{PeerID: r.id.String(), Multiaddrs: multiaddrs})
 	}
 
+	// HeadAuthenticated is FALSE, and that is the load-bearing line here.
+	//
+	// `best` is the MAXIMUM height claimed by up to 8 sampled peers, over an
+	// unauthenticated wire, with no corroboration — one peer's answer sets it.
+	// That is fine for deciding "should I catch up?", which is all this reporter
+	// was built for, and NOT fine for deciding "should I vote?".
+	//
+	// The second question is real: main.go feeds SequencerHead to
+	// MessagePassing.SetConsensusSyncGate, and GateDecision ->
+	// ConsensusVoteEligible ABSTAINS once sequencerHead-localHead exceeds
+	// MaxConsensusLagBlocks, which is 2. That gate is consulted on the live vote
+	// path (ListenerHandler.go's handleVoteResultRequest) and is enforced by
+	// default (JMDN_ENFORCE_SYNC_GATE != "0"). Publishing `best` as an
+	// authenticated head would therefore let a SINGLE peer answering FetchHead
+	// with localHead+3 silently pull this node out of consensus — no stake, no
+	// committee seat, and a number small enough to look like ordinary lag. The
+	// seednode-backed reporter this one stands in for does not have that
+	// property: its head comes from one accountable source.
+	//
+	// The head is still REPORTED, because the monitor's propagation-lag filter
+	// needs it to tell a block-in-flight from a real divergence. Suppressing it
+	// (SequencerHead: 0) would disable that filter and turn every one-block lag
+	// into a catch-up. So the split is: publish the number, refuse to vouch for
+	// it, and let each consumer decide — sync tuning may use it, consensus
+	// participation may not.
+	//
+	// DO NOT set HeadAuthenticated true here without replacing `best` with a
+	// head that is either authenticated or corroborated by a quorum of peers. A
+	// bare maximum over unauthenticated samples cannot carry that claim.
 	return &syncmonitor.SyncStatus{
-		IsSynced:      blockHead >= best,
-		SequencerHead: best,
-		GoodPeers:     goodPeers,
-		Message: fmt.Sprintf("peer-sampled head (no seednode configured): best of %d/%d sampled peer(s) responded",
-			len(results), len(peers)),
+		IsSynced:          blockHead >= best,
+		SequencerHead:     best,
+		HeadAuthenticated: false,
+		GoodPeers:         goodPeers,
+		Message: fmt.Sprintf("peer-sampled head (no seednode configured): best of %d/%d sampled peer(s) responded, "+
+			"highest=%d local=%d — UNAUTHENTICATED, not eligible to drive the consensus vote gate",
+			len(results), len(peers), best, blockHead),
 	}, nil
 }

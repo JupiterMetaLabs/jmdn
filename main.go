@@ -1989,7 +1989,18 @@ func main() {
 			return MessagePassing.GateDecision(localTipKnown, tip, 0, false)
 		}
 		st := gateMonitor.GetStatus()
-		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
+		// st.HeadAuthenticated is REQUIRED here, not decorative. SequencerHead
+		// is ALSO produced by thebesync.PeerReporter on a seedless node, where
+		// it is the maximum height claimed by up to 8 unauthenticated peers
+		// with no corroboration. Acting on that would let a single peer
+		// answering FetchHead with tip+3 push this node past
+		// MaxConsensusLagBlocks and make it abstain — removing a validator from
+		// quorum for the cost of one lie, and a lie small enough to pass for
+		// ordinary propagation lag. Treating an unvouched head as UNKNOWN takes
+		// the documented fail-open path instead, which is the same posture this
+		// node already adopts during a seednode outage.
+		// See syncmonitor.SyncStatus.HeadAuthenticated.
+		headKnown := st.SequencerHead > 0 && st.HeadAuthenticated && !st.SeednodeUnreachable
 		return MessagePassing.GateDecision(localTipKnown, tip, st.SequencerHead, headKnown)
 	})
 

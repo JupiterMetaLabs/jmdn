@@ -80,9 +80,17 @@ func consensusVoteReady() bool {
 	if enforceSlotRecoveryGate && slotStoreReadyFn != nil && !slotStoreReadyFn() {
 		return false
 	}
-	// Default-off: when the gate is not explicitly enforced, always permit
-	// voting so a buddy that cannot self-assess sync state does not silently
-	// abstain and stall consensus.
+	// ⚠ This comment used to read "Default-off". It was WRONG and is corrected
+	// here because it is exactly the sentence that talks a reviewer out of
+	// checking: enforceConsensusSyncGate is
+	// `os.Getenv("JMDN_ENFORCE_SYNC_GATE") != "0"` (see its declaration), i.e.
+	// ON unless an operator explicitly disables it, which is also what that
+	// declaration's own comment says. Anything reasoning about what can reach
+	// the abstain path must start from default-ON.
+	//
+	// The escape hatch below is for a node an operator has deliberately opted
+	// out: permit voting rather than let a buddy that cannot self-assess sync
+	// state silently abstain and stall consensus.
 	if !enforceConsensusSyncGate {
 		return true
 	}
