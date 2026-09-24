@@ -96,3 +96,38 @@ func (c *Client) ListBuddyHeads(ctx context.Context) (map[string]uint64, error) 
 	}
 	return heads, nil
 }
+
+// ListBuddyMultiaddrs returns peer_id -> advertised multiaddrs from a signed
+// ListBuddy call, using the registered sequencer sign key (SetSequencerSignKey).
+//
+// The committee-v2 seat path uses it to dial drawn seats the local
+// NodeSelection router has not surfaced yet: the seated committee rotates over
+// the whole eligible set, but the router only returns peers this node is already
+// connected to. Without an address for the missing seats the sequencer never
+// dials them, never asks them to vote, and the certificate cannot reach quorum
+// over the seated committee. The seed already holds every registered peer's
+// advertised multiaddrs, so this reuses the same authenticated gRPC channel as
+// ListBuddyHeads to fetch them. Peers with no advertised multiaddr are omitted.
+// Returns an error when no sign key is registered (non-sequencer) or the RPC
+// fails; callers treat it as best-effort.
+func (c *Client) ListBuddyMultiaddrs(ctx context.Context) (map[string][]string, error) {
+	seqPriv := currentSequencerSignKey()
+	if seqPriv == nil {
+		return nil, fmt.Errorf("no sequencer sign key registered (SetSequencerSignKey not called)")
+	}
+	resp, err := c.ListBuddySigned(ctx, &peerpb.ListBuddyRequest{}, seqPriv)
+	if err != nil {
+		return nil, err
+	}
+	addrs := make(map[string][]string, len(resp.GetPeers()))
+	for _, p := range resp.GetPeers() {
+		pid := p.GetPeerId()
+		if pid == "" {
+			continue
+		}
+		if ma := p.GetMultiaddrs(); len(ma) > 0 {
+			addrs[pid] = ma
+		}
+	}
+	return addrs, nil
+}

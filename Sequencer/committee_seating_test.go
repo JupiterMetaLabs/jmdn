@@ -202,6 +202,115 @@ func TestOrderCandidatesBySeat_DuplicateCandidateConsumesOneSeat(t *testing.T) {
 	}
 }
 
+// seedAddrsFor builds a peer_id -> []multiaddr map as ListBuddyMultiaddrs would
+// return it, mirroring the deterministic candidatesFor addressing scheme.
+func seedAddrsFor(ids []peer.ID) map[string][]string {
+	out := make(map[string][]string, len(ids))
+	for i, pid := range ids {
+		out[pid.String()] = []string{
+			fmt.Sprintf("/ip4/10.90.1.%d/tcp/15000/p2p/%s", i+1, pid.String()),
+		}
+	}
+	return out
+}
+
+// The core of the fix: a seated peer the router never surfaced (absent from the
+// pool) is added from the seed address book so it can be dialed and asked to
+// vote. Existing candidates are untouched and kept in order.
+func TestAddMissingSeatCandidates_AddsAbsentSeatFromSeed(t *testing.T) {
+	ids := testPeers(t, 5)
+	// Pool holds only the first two peers (what the router surfaced).
+	cands := candidatesFor(t, ids[:2])
+	// The draw seats two of those plus two the pool never had.
+	dial := seatsFor([]peer.ID{ids[0], ids[3], ids[4]})
+	seed := seedAddrsFor(ids)
+
+	aug, added, unresolved := AddMissingSeatCandidates(cands, dial, seed)
+
+	if len(unresolved) != 0 {
+		t.Fatalf("expected all seats resolvable, got unresolved %v", unresolved)
+	}
+	if want := []string{ids[3].String(), ids[4].String()}; !reflect.DeepEqual(added, want) {
+		t.Fatalf("added mismatch:\n got %v\nwant %v", added, want)
+	}
+	// Original pool preserved at the head, in order; new seats appended.
+	wantOrder := []peer.ID{ids[0], ids[1], ids[3], ids[4]}
+	if got := peerIDs(aug); !reflect.DeepEqual(got, wantOrder) {
+		t.Fatalf("augmented order mismatch:\n got %v\nwant %v", got, wantOrder)
+	}
+	// After the union, seat-ordering must find every seat (none missing).
+	_, missing := OrderCandidatesBySeat(aug, dial)
+	if len(missing) != 0 {
+		t.Fatalf("after union no seat should be missing, got %v", missing)
+	}
+	// The added seats carry the seed address, not an empty one.
+	for _, c := range aug {
+		if c.PeerID == ids[3] || c.PeerID == ids[4] {
+			if c.Multiaddr == nil {
+				t.Fatalf("added seat %s has nil multiaddr", c.PeerID)
+			}
+		}
+	}
+}
+
+// A seat with no address at the seed (and an unparseable one) is reported as
+// unresolved rather than silently dropped, and is not added to the pool.
+func TestAddMissingSeatCandidates_UnresolvedWhenNoSeedAddr(t *testing.T) {
+	ids := testPeers(t, 4)
+	cands := candidatesFor(t, ids[:1]) // pool has only ids[0]
+	dial := seatsFor([]peer.ID{ids[0], ids[1], ids[2]})
+	// Seed knows ids[1] but NOT ids[2]; also feed an unparseable seat.
+	seed := map[string][]string{
+		ids[1].String(): {"/ip4/10.90.1.2/tcp/15000/p2p/" + ids[1].String()},
+	}
+	dial = append(dial, committee.Member{PeerID: "not-a-peer-id"})
+
+	aug, added, unresolved := AddMissingSeatCandidates(cands, dial, seed)
+
+	if want := []string{ids[1].String()}; !reflect.DeepEqual(added, want) {
+		t.Fatalf("added mismatch:\n got %v\nwant %v", added, want)
+	}
+	if want := []string{ids[2].String(), "not-a-peer-id"}; !reflect.DeepEqual(unresolved, want) {
+		t.Fatalf("unresolved mismatch:\n got %v\nwant %v", unresolved, want)
+	}
+	// ids[2] must NOT have been added.
+	for _, c := range aug {
+		if c.PeerID == ids[2] {
+			t.Fatalf("unresolved seat %s must not be added to the pool", ids[2])
+		}
+	}
+	if got, want := len(aug), 2; got != want { // ids[0] (orig) + ids[1] (added)
+		t.Fatalf("pool size: got %d, want %d", got, want)
+	}
+}
+
+// A seat already in the pool is never duplicated, and the empty-dial case is a
+// no-op that preserves the pool exactly.
+func TestAddMissingSeatCandidates_NoDuplicatesAndEmptyDialIsIdentity(t *testing.T) {
+	ids := testPeers(t, 3)
+	cands := candidatesFor(t, ids)
+	seed := seedAddrsFor(ids)
+
+	// Every seat is already present → nothing added, order unchanged.
+	aug, added, unresolved := AddMissingSeatCandidates(cands, seatsFor(ids), seed)
+	if len(added) != 0 || len(unresolved) != 0 {
+		t.Fatalf("expected no-op, got added=%v unresolved=%v", added, unresolved)
+	}
+	assertPermutation(t, aug, cands)
+	if got, want := peerIDs(aug), peerIDs(cands); !reflect.DeepEqual(got, want) {
+		t.Fatalf("order changed:\n got %v\nwant %v", got, want)
+	}
+
+	// Empty dial targets → identity.
+	aug2, added2, unresolved2 := AddMissingSeatCandidates(cands, nil, seed)
+	if len(added2) != 0 || len(unresolved2) != 0 {
+		t.Fatalf("empty dial should be no-op, got added=%v unresolved=%v", added2, unresolved2)
+	}
+	if got, want := peerIDs(aug2), peerIDs(cands); !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty dial changed order:\n got %v\nwant %v", got, want)
+	}
+}
+
 func TestReachableInCandidateOrder_FollowsCandidateOrder(t *testing.T) {
 	ids := testPeers(t, 5)
 	cands := candidatesFor(t, ids)

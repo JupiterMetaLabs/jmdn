@@ -38,6 +38,7 @@ package Sequencer
 
 import (
 	"sort"
+	"strings"
 
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
@@ -119,6 +120,83 @@ func OrderCandidatesBySeat(
 	}
 
 	return ordered, missingSeats
+}
+
+// firstParseableMultiaddr returns the first non-empty, well-formed multiaddr in
+// addrs, or (nil, false) when none parses. The seed advertises full multiaddrs
+// (…/p2p/<peer_id>), so the string is used as-is for dialing.
+func firstParseableMultiaddr(addrs []string) (multiaddr.Multiaddr, bool) {
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if m, err := multiaddr.NewMultiaddr(a); err == nil {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// AddMissingSeatCandidates augments the candidate pool with any seated dial
+// target that is absent from it, resolving the peer's address from seedAddrs
+// (peer_id -> advertised multiaddrs, e.g. from Client.ListBuddyMultiaddrs).
+//
+// WHY: under JMDN_COMMITTEE_V2 the seated committee is drawn from the WHOLE
+// eligible set (messaging.SelectCommittee), but the candidate pool comes from
+// the NodeSelection router, which only surfaces peers this node is already
+// connected to. When the draw seats a peer the router hasn't surfaced, that seat
+// has no local address: it is never dialed, never asked to vote, and — because
+// the verifier tallies quorum over the seated set — the certificate can never
+// form. OrderCandidatesBySeat only reorders; it cannot add a seat that isn't in
+// the pool. This adds it, so the seated committee is actually dialed. Downstream
+// connectedness/split still apply: a seat that is genuinely offline is dropped
+// from the wire list (and, per SetZKBlockData, still counts toward n), which is
+// the correct BFT reading. seatOrder puts these added seats at the head, so the
+// MaxMainPeers cap keeps the committee rather than the pool tail.
+//
+// dialTargets should already exclude self (messaging.DialTargetsForRound), so
+// the sequencer is never added to its own dial pool.
+//
+// Total and non-lossy for the existing pool: every input candidate is kept in
+// its original order; only new, previously-absent seats are appended. Returns
+// the augmented pool, the peer ids that were added, and the seated peer ids that
+// still could not be resolved (no address at the seed, or unparseable) — a
+// non-empty unresolved list is the thing to look at when quorum is short.
+func AddMissingSeatCandidates(
+	candidates []PubSubMessages.Buddy_PeerMultiaddr,
+	dialTargets []committee.Member,
+	seedAddrs map[string][]string,
+) (augmented []PubSubMessages.Buddy_PeerMultiaddr, added []string, unresolved []string) {
+	present := make(map[peer.ID]struct{}, len(candidates))
+	for _, c := range candidates {
+		present[c.PeerID] = struct{}{}
+	}
+
+	augmented = candidates
+	for _, m := range dialTargets {
+		pid, err := peer.Decode(m.PeerID)
+		if err != nil {
+			// An unparseable seat cannot be dialed; surface it, never panic.
+			unresolved = append(unresolved, m.PeerID)
+			continue
+		}
+		if _, ok := present[pid]; ok {
+			continue // already in the pool
+		}
+		maddr, ok := firstParseableMultiaddr(seedAddrs[m.PeerID])
+		if !ok {
+			unresolved = append(unresolved, m.PeerID)
+			continue
+		}
+		augmented = append(augmented, PubSubMessages.Buddy_PeerMultiaddr{
+			PeerID:    pid,
+			Multiaddr: maddr,
+		})
+		present[pid] = struct{}{}
+		added = append(added, m.PeerID)
+	}
+	return augmented, added, unresolved
 }
 
 // ReachableInCandidateOrder projects a map-shaped reachability result back onto

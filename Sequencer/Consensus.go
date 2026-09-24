@@ -237,6 +237,45 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 		// Selection is global and self-inclusive; only dialling excludes self.
 		dialTargets := messaging.DialTargetsForRound(seated, consensus.Host.ID().String())
+
+		// (Seat-address enrichment) The candidate pool above comes from the
+		// NodeSelection router, which only surfaces peers this node is already
+		// connected to. Under v2 the seated committee is drawn from the WHOLE
+		// eligible set, so the draw can seat peers the router never surfaced — they
+		// then have no local address, are never dialled, never asked to vote, and
+		// the certificate cannot reach quorum over the seated set (observed halt:
+		// "seated members have no known multiaddr and cannot be asked to vote").
+		// The seed already holds every registered peer's advertised multiaddrs, so
+		// resolve the missing seats from its signed ListBuddy address book and add
+		// them to the pool BEFORE seat-ordering. Best-effort: on any seed error we
+		// proceed with the pool we have and the missingSeats warning below still
+		// surfaces the gap. Peers added here are, by construction, drawn seats and
+		// therefore already ⊆ the pinned eligible set filtered above.
+		if sc, scErr := seednode.NewClient(settings.Get().Network.SeedNode); scErr != nil {
+			logger().Info(trace_ctx, "seat-address enrichment skipped: seed client init failed (best-effort)",
+				ion.String("error", scErr.Error()),
+				ion.String("function", "Consensus.Start.seatAddrs"))
+		} else {
+			addrCtx, addrCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
+			if seedAddrs, aerr := sc.ListBuddyMultiaddrs(addrCtx); aerr == nil {
+				var addedSeats, unresolvedSeats []string
+				candidates, addedSeats, unresolvedSeats = AddMissingSeatCandidates(candidates, dialTargets, seedAddrs)
+				logger().Info(trace_ctx, "seat-address enrichment: resolved missing seated peers from seed",
+					ion.Int64("block_number", int64(zkblock.BlockNumber)),
+					ion.Int("added", len(addedSeats)),
+					ion.Int("unresolved", len(unresolvedSeats)),
+					ion.String("added_peer_ids", strings.Join(addedSeats, ",")),
+					ion.String("unresolved_peer_ids", strings.Join(unresolvedSeats, ",")),
+					ion.String("function", "Consensus.Start.seatAddrs"))
+			} else {
+				logger().Info(trace_ctx, "seat-address enrichment failed (best-effort) — proceeding with current pool",
+					ion.String("error", aerr.Error()),
+					ion.String("function", "Consensus.Start.seatAddrs"))
+			}
+			addrCancel()
+			_ = sc.Close()
+		}
+
 		ordered, missingSeats := OrderCandidatesBySeat(candidates, dialTargets)
 		candidates = ordered
 		seatOrdered = true
