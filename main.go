@@ -1771,7 +1771,89 @@ func main() {
 	var syncMonitor *syncmonitor.Monitor
 	if cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
-			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
+			// Fallback fix: no seednode configured means the periodic
+			// syncmonitor.Monitor below (which needs a SeedReporter) never got
+			// built here, and before this branch nothing else periodic ran
+			// either — catch-up only fired REACTIVELY, from
+			// messaging.checkLinkage's height-gap detection on a NEWLY
+			// ARRIVED block. A node whose block delivery silently stalled
+			// (peers stopped forwarding, its own subscription died, a brief
+			// partition) had no path back, because the very mechanism meant
+			// to notice needed a block to arrive to run at all. Peer
+			// connectivity heartbeats (node/nodemanager.go) do not help
+			// either — they check the connection, never whether blocks are
+			// still flowing over it.
+			//
+			// thebesync.PeerReporter closes that gap by sampling connected
+			// peers directly for their head instead of a seednode, so this
+			// reuses the SAME Monitor and all of its existing hardening
+			// (jitter, propagation guard, consecutive threshold, adaptive
+			// interval, single-flight reconcile) — only the reporter differs.
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — using peer-sampled fallback (no seednode)")
+
+			reporter := thebesync.PeerReporter{Host: n.Host}
+			syncMonitor = syncmonitor.New(thebesync.ChainReporter{}, reporter, cfg.FastSync.SyncCheckInterval)
+
+			// Only wire reconciliation on non-sequencer nodes, exactly as the
+			// seednode-backed branch below does: the sequencer sets
+			// enable_catchup=false — it is authoritative and never catches up
+			// from peers.
+			if cfg.FastSync.EnableCatchup {
+				syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+					if len(peers) == 0 {
+						return fmt.Errorf("[ReconcileFunc-peer] peer sample returned no good peers")
+					}
+					for _, p := range peers {
+						if len(p.Multiaddrs) == 0 {
+							log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer has no multiaddrs, skipping")
+							continue
+						}
+						targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+						log.Info().
+							Str("peer", p.PeerID).
+							Str("addr", targetMultiaddr).
+							Msg("[ReconcileFunc-peer] attempting catchup (no seednode)")
+						if _, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr); err != nil {
+							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer failed, trying next")
+							continue
+						}
+						log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] catchup succeeded")
+						// Slot-restart recovery, fast-sync half — same reasoning
+						// as the seednode-backed branch below: bulk catch-up
+						// writes bypass the live commit hooks, so re-running
+						// recovery against the now-populated local tip is what
+						// actually seeds it.
+						if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
+							log.Error().Err(err).Msg("[ReconcileFunc-peer] slot recovery after catchup failed — this node remains blocked from voting/proposing")
+						}
+						return nil
+					}
+					return fmt.Errorf("[ReconcileFunc-peer] all %d sampled peer(s) failed catchup", len(peers))
+				})
+
+				// Same nudge the seednode-backed branch wires below: when the
+				// block-propagation linkage check detects a height gap, run an
+				// immediate check instead of waiting for the next periodic
+				// tick. Best-effort; the gap block is rejected regardless.
+				localMonitor := syncMonitor
+				messaging.SetCatchUpRequester(func(fromBlock uint64) {
+					if localMonitor == nil {
+						return
+					}
+					log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering peer-sampled catch-up (no seednode)")
+					go localMonitor.TriggerCheck(context.Background())
+				})
+			}
+
+			if err := syncMonitor.Start(ctx); err != nil {
+				log.Error().Err(err).Msg("[SyncMonitor] peer-sampled fallback failed to start — continuing without any periodic check")
+				syncMonitor = nil
+			} else {
+				log.Info().
+					Bool("catchup", cfg.FastSync.EnableCatchup).
+					Dur("interval", cfg.FastSync.SyncCheckInterval).
+					Msg("[SyncMonitor] started (peer-sampled fallback, no seednode)")
+			}
 		} else {
 			selfPeerID := n.Host.ID().String()
 			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
@@ -1907,7 +1989,18 @@ func main() {
 			return MessagePassing.GateDecision(localTipKnown, tip, 0, false)
 		}
 		st := gateMonitor.GetStatus()
-		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
+		// st.HeadAuthenticated is REQUIRED here, not decorative. SequencerHead
+		// is ALSO produced by thebesync.PeerReporter on a seedless node, where
+		// it is the maximum height claimed by up to 8 unauthenticated peers
+		// with no corroboration. Acting on that would let a single peer
+		// answering FetchHead with tip+3 push this node past
+		// MaxConsensusLagBlocks and make it abstain — removing a validator from
+		// quorum for the cost of one lie, and a lie small enough to pass for
+		// ordinary propagation lag. Treating an unvouched head as UNKNOWN takes
+		// the documented fail-open path instead, which is the same posture this
+		// node already adopts during a seednode outage.
+		// See syncmonitor.SyncStatus.HeadAuthenticated.
+		headKnown := st.SequencerHead > 0 && st.HeadAuthenticated && !st.SeednodeUnreachable
 		return MessagePassing.GateDecision(localTipKnown, tip, st.SequencerHead, headKnown)
 	})
 
