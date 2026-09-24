@@ -144,7 +144,32 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 			// diagnostic left. The goroutine itself still never crashes over
 			// this; only SealResult.Err changes.
 			if perr := messaging.PersistEpochEntropy(forEpoch); perr != nil {
-				err = fmt.Errorf("seal succeeded but persisting entropy failed (epoch will not survive a restart): %w", perr)
+				// Two different failures arrive here and only one is this
+				// seal's fault, so they are separated rather than both being
+				// reported as a failed seal.
+				//
+				// PersistEpochEntropy reads the PROCESS-GLOBAL beacon
+				// (messaging.SetBeaconSource). In production that is the same
+				// object this pipeline sealed into — beacon_install.go builds
+				// one sink and hands it to both beacon.New and SetBeaconSource
+				// — but nothing in the type system enforces that, and a
+				// pipeline constructed with its own sink will not match the
+				// global. s.pipeline.Ready asks OUR sink directly, so it
+				// answers "did this seal land" independently of global wiring.
+				switch {
+				case errors.Is(perr, messaging.ErrNoEntropyToPersist) && s.pipeline.Ready(forEpoch):
+					// Our sink holds it; the global beacon is a different
+					// object. Nothing was persisted, but the seal is sound —
+					// a wiring problem to surface, not a failed seal.
+					log.Warn().Uint64("epoch", forEpoch).Err(perr).
+						Msg("entropy: sealed entropy is in this pipeline's sink but not in the process-global " +
+							"beacon — the two are not the same object, so nothing was persisted. Check SetBeaconSource wiring")
+				default:
+					// Either neither beacon holds it (the publish genuinely did
+					// not land) or the KV write failed. Both mean this epoch
+					// will not survive a restart.
+					err = fmt.Errorf("seal succeeded but persisting entropy failed (epoch will not survive a restart): %w", perr)
+				}
 			}
 			if raw, merr := proof.MarshalBinary(); merr == nil {
 				_ = messaging.PersistVDFProof(forEpoch, raw)
