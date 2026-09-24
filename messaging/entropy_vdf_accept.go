@@ -215,7 +215,20 @@ func VerifyAndAcceptVDFProof(block *config.ZKBlock) error {
 	// Durability. The adopted value is now in the in-memory beacon; persist it
 	// so a restart does not lose an epoch that cannot be recomputed (the mix
 	// ages out). Non-fatal: a KV failure degrades restart recovery, it must not
-	// fail the block path.
+	// fail the block path — reviewed against D-58, which flagged this same
+	// discarded error. Deliberately NOT changed to fatal here, unlike
+	// vdf_sealer.go's seal path: this call is synchronous inside block
+	// acceptance, so failing it would turn a storage hiccup into a rejected
+	// block for the whole fleet. PersistEpochEntropy already logs a KV-write
+	// failure at ERROR with the epoch number internally, so the loss is not
+	// silent — it is simply not escalated to the block path, on purpose.
+	//
+	// Still discarded after PersistEpochEntropy grew the ErrNoEntropyToPersist
+	// sentinel, and the sentinel is the reason to keep discarding rather than a
+	// reason to revisit: on THIS path, being asked about an epoch the beacon
+	// does not hold is routine, not a fault. The sentinel exists for
+	// vdf_sealer.go, which can only reach that function for an epoch it just
+	// published, so absent there means the publish did not land.
 	_ = PersistEpochEntropy(declaredEpoch)
 
 	// Persist the PROOF too, so this node can serve this epoch to a peer that

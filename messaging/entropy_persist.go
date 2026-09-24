@@ -17,6 +17,7 @@ package messaging
 // here was either sealed locally or verified through Pipeline.Accept.
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/JupiterMetaLabs/avc/committee"
@@ -25,15 +26,44 @@ import (
 	"gossipnode/DB_OPs"
 )
 
+// ErrNoEntropyToPersist reports that the beacon does not hold this epoch, so
+// there was nothing verified to write.
+//
+// It exists because "nothing to persist" means opposite things at the two call
+// sites, and returning nil for both hid a real failure at one of them:
+//
+//   - entropy_vdf_accept.go adopts a peer's proof and is routinely called for
+//     epochs this node never published. Absent is expected there; that caller
+//     discards the return entirely.
+//   - Sequencer/vdf_sealer.go calls this ONLY inside `if err == nil` after a
+//     successful Seal, and Seal publishes the entropy into the sink as a side
+//     effect. So by construction the epoch MUST be in the beacon by then. If it
+//     is not, the publish silently did not land — and before this sentinel that
+//     surfaced as a nil return, i.e. a seal reporting success having written
+//     nothing.
+//
+// Callers that can legitimately ask about an epoch they do not hold should use
+// errors.Is on this and ignore it. Callers that can only reach this function
+// for an epoch they just published should treat it as a failure.
+//
+// NOTE ON THE MECHANISM, because the obvious reading is wrong:
+// committee.BeaconSource.EpochEntropy is a plain map lookup under an RLock —
+// activeBeacon() returns that concrete type, not an interface — so it performs
+// no I/O and has exactly one error path, ErrEntropyUnavailable ("this epoch is
+// not in the map"). There is no read-failure case to distinguish here; the
+// distinction that matters is which caller is asking.
+var ErrNoEntropyToPersist = errors.New("messaging: epoch not published locally — nothing verified to persist")
+
 // PersistEpochEntropy durably records the entropy this node holds for epoch.
 //
-// No-op when no beacon is installed (Stage 1) or the epoch is not published
-// locally — there is nothing verified to persist, and persisting anything else
-// would defeat the point.
+// No-op when no beacon is installed (Stage 1). Returns ErrNoEntropyToPersist
+// when a beacon exists but does not hold this epoch — see that sentinel for
+// why the two are not both nil.
 //
-// Errors are logged and returned but are NOT fatal to the caller: losing
-// durability for one epoch degrades restart recovery, while failing the block
-// path over a KV write would turn a storage hiccup into a consensus stall.
+// A KV write failure is logged and returned but is NOT fatal to the caller by
+// itself: losing durability for one epoch degrades restart recovery, while
+// failing the block path over a KV write would turn a storage hiccup into a
+// consensus stall. It is the caller's choice whether to escalate.
 func PersistEpochEntropy(epoch uint64) error {
 	beacon := activeBeacon()
 	if beacon == nil {
@@ -41,8 +71,7 @@ func PersistEpochEntropy(epoch uint64) error {
 	}
 	entropy, err := beacon.EpochEntropy(committee.EntropyEpoch(epoch))
 	if err != nil {
-		// Not published locally — nothing verified to persist.
-		return nil
+		return fmt.Errorf("%w (epoch %d): %w", ErrNoEntropyToPersist, epoch, err)
 	}
 	if err := DB_OPs.RecordBeaconEntropy(nil, epoch, entropy); err != nil {
 		log.Error().Err(err).Uint64("epoch", epoch).

@@ -144,6 +144,29 @@ func evictOldSealersLocked(touchedEpoch uint64) {
 	}
 	for e := range vdfSealers {
 		if e < cutoff {
+			// Cancel BEFORE dropping the handle. The map entry is the only
+			// reference to this sealer's context cancel func, so a bare delete
+			// leaves a still-running evaluation with nothing able to stop it.
+			//
+			// Usually academic — by the time an epoch falls `retain` behind the
+			// newest, a correctly-sized T finished long ago and the goroutine
+			// has already exited. It stops being academic in exactly the case
+			// D-39/D-54 describe: a node running a divergent or oversized T
+			// evaluates for far longer than the retention window, and D-46(a)
+			// notes T has no upper bound and Start uses WithCancel rather than
+			// WithTimeout. Evicting such a sealer without cancelling burns a
+			// core on a result no one can ever read — sealerFor refuses to
+			// resurrect anything below evictedBelow, and SealerResultFor
+			// returns not-ready once the entry is gone, so the work is
+			// unreachable by construction the moment we delete it.
+			//
+			// Safe to call under vdfSealersMu: Cancel takes the sealer's own
+			// mutex and invokes a context.CancelFunc, neither of which touches
+			// this map, and it does not wait for the goroutine to notice.
+			// Cancelling an already-finished sealer is a no-op.
+			if s := vdfSealers[e]; s != nil {
+				s.Cancel()
+			}
 			delete(vdfSealers, e)
 		}
 	}
