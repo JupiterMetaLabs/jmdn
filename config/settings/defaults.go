@@ -163,6 +163,7 @@ func DefaultConfig() NodeConfig {
 		Consensus: ConsensusSettings{
 			BlockBuddy:            nil,
 			SeedAuthorityBLSPub:   "",
+			SequencerPinnedPeerID: "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
 			CommitteeEpochSeconds: 3600,
 			// Selection-epoch length in BLOCKS (messaging.EpochForHeight).
 			//
