@@ -182,6 +182,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// authorization: the sequencer only picks signed, authorized peers. FAIL
 	// CLOSED — if the eligible set is unavailable while pinned, abort the round
 	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
+	//
+	// pinnedEligible keeps that same set for the seat-resolution step below, so a
+	// seat is only ever added to the pool if it is also in the signed set.
+	var pinnedEligible map[string]struct{}
 	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
 		// WarmupPeerIDs, not EligibleCommitteePeerIDs: under JMDN_COMMITTEE_V2 the
 		// seated committee rotates across the WHOLE uncapped pool every height, so
@@ -204,6 +208,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			ion.Int("eligible_set_size", len(eligible)),
 			ion.String("function", "Consensus.Start.committeeFilter"))
 		candidates = kept
+		pinnedEligible = eligible
 	}
 
 	// (Seat-order) The filter above deliberately keeps the WHOLE eligible pool,
@@ -237,6 +242,39 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 		// Selection is global and self-inclusive; only dialling excludes self.
 		dialTargets := messaging.DialTargetsForRound(seated, consensus.Host.ID().String())
+
+		// (Seat-resolve) The pool above is NodeSelection's reputation-filtered
+		// list; the seats are not reputation-filtered. A seat the weight band
+		// dropped has no multiaddr here and could never be asked to vote, while
+		// it still counts toward n - the missing_seats:7 / dialable:0 halt. Look
+		// such seats up in the seed's ListBuddy address book and add them, so
+		// every seat is dialled. Best-effort: on a seed error nothing is added
+		// and the round proceeds as before. See committee_seat_resolve.go.
+		if len(MissingSeatIDs(candidates, dialTargets)) > 0 {
+			bookCtx, bookCancel := context.WithTimeout(trace_ctx, 3*time.Second)
+			book, bookErr := seatAddressBook(bookCtx)
+			bookCancel()
+			if bookErr != nil {
+				logger().Warn(trace_ctx, "Committee-source: seat address book unavailable; missing seats stay undialled",
+					ion.Int64("block_number", int64(zkblock.BlockNumber)),
+					ion.String("error", bookErr.Error()),
+					ion.String("function", "Consensus.Start.seatResolve"))
+			} else {
+				var res SeatResolution
+				candidates, res = ResolveMissingSeats(candidates, dialTargets, book, pinnedEligible)
+				logger().Info(trace_ctx, "Committee-source: resolved seated peers missing from the candidate pool",
+					ion.Int64("block_number", int64(zkblock.BlockNumber)),
+					ion.Int("address_book_size", len(book)),
+					ion.Int("added", len(res.Added)),
+					ion.String("added_peer_ids", strings.Join(res.Added, ",")),
+					ion.Int("no_address", len(res.NoAddress)),
+					ion.String("no_address_peer_ids", strings.Join(res.NoAddress, ",")),
+					ion.Int("unauthorized", len(res.Unauthorized)),
+					ion.String("unauthorized_peer_ids", strings.Join(res.Unauthorized, ",")),
+					ion.String("function", "Consensus.Start.seatResolve"))
+			}
+		}
+
 		ordered, missingSeats := OrderCandidatesBySeat(candidates, dialTargets)
 		candidates = ordered
 		seatOrdered = true
@@ -1606,21 +1644,41 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			messaging.RecordCommitCertificate(consensus.ZKBlockData.GetZKBlock().BlockNumber, blsResults)
 		}
 
-		// (Reputation, OBSERVE-ONLY) Classify each committee member's behavior
-		// this round and log the score deltas. This is a future-SELECTION
-		// signal only: it never feeds the 2f+1 tally, never blocks a vote, and
-		// never touches the seed. A MainPeer with no collected response is
-		// classified Absent; dissent against the outcome carries zero delta by
-		// design (see internal/reputation). Kill switch:
-		// JMDN_REPUTATION_OBSERVE=0.
+		// (Reputation) Classify each committee member's behavior this round and
+		// log the score deltas. This is a future-SELECTION signal: it never
+		// feeds the 2f+1 tally and never blocks a vote. It is NOT inert,
+		// though: the sequencer pushes these scores to the seed as selection
+		// weights (reputation_seed_push.go), and NodeSelection drops peers whose
+		// weight leaves the band - so who gets classified here decides who can
+		// be a candidate later. A classified peer with no collected response is
+		// Absent; dissent against the outcome carries zero delta by design (see
+		// internal/reputation). Kill switch: JMDN_REPUTATION_OBSERVE=0.
 		if reputation.Enabled {
 			votes := make(map[string]bool, len(blsResults))
 			for _, r := range blsResults {
 				votes[r.PeerID] = r.Agree
 			}
-			committee := make([]string, 0, len(consensus.PeerList.MainPeers))
-			for _, p := range consensus.PeerList.MainPeers {
-				committee = append(committee, p.String())
+			var committee []string
+			if messaging.CommitteeV2Enabled {
+				// Under v2, MainPeers can hold unseated peers that were never
+				// put on the block's buddy list and so were never asked to
+				// vote. Classify only the peers that were asked; see
+				// reputation_committee.go for the false-Absent feedback loop
+				// this prevents.
+				committee = ReputationCommittee(consensus.PeerList.MainPeers, consensus.ZKBlockData.GetBuddies())
+				if excluded := len(consensus.PeerList.MainPeers) - len(committee); excluded > 0 {
+					logger().Info(processCtx, "Reputation: not classifying main peers that were not on the block's buddy list",
+						ion.Int64("block_number", int64(consensus.ZKBlockData.GetZKBlock().BlockNumber)),
+						ion.Int("main_peers", len(consensus.PeerList.MainPeers)),
+						ion.Int("classified", len(committee)),
+						ion.Int("excluded", excluded),
+						ion.String("function", "Consensus.ProcessVoteCollection.reputation"))
+				}
+			} else {
+				committee = make([]string, 0, len(consensus.PeerList.MainPeers))
+				for _, p := range consensus.PeerList.MainPeers {
+					committee = append(committee, p.String())
+				}
 			}
 			events := reputation.ObserveRound(
 				consensus.ZKBlockData.GetZKBlock().BlockNumber,
