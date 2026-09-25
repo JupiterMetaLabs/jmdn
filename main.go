@@ -1290,6 +1290,13 @@ func main() {
 		// then drains them.
 		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
 
+		// Wire the outbox purge hooks (D-858). The block-store-failure rollback in
+		// BlockProcessing samples MaxID before StoreZKBlock and, on failure, deletes
+		// everything enqueued past it, so a rolled-back block's tx/snapshot projection
+		// can never be drained to SQL later.
+		DB_OPs.SetOutboxMaxIDFn(outbox.MaxID)
+		DB_OPs.SetOutboxPurgeAfterFn(outbox.DeleteAfter)
+
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this

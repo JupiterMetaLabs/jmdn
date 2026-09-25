@@ -78,13 +78,19 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 		return false, fmt.Errorf("thebesync apply: block %d missing required certificate (post-activation block cannot be legacy)", block.BlockNumber)
 	}
 
-	// 4. Apply -> store -> advance tip. Process BEFORE store (F-train ordering) so a
-	//    failed apply never persists the block, mirroring ProcessBlockLocally.
-	if perr := BlockProcessing.ProcessBlockTransactions(ctx, block, nil); perr != nil {
-		return hasCert, fmt.Errorf("thebesync apply: block %d process txs: %w", block.BlockNumber, perr)
-	}
-	if serr := DB_OPs.StoreZKBlock(nil, block); serr != nil {
-		return hasCert, fmt.Errorf("thebesync apply: block %d store: %w", block.BlockNumber, serr)
+	// 4. Apply + store atomically (D-858), then verify/repair projection. Process
+	//    BEFORE store (F-train ordering). A HARD store failure now rolls back the
+	//    applied prefix (balances, tx_nonce, tx_count_sent, fee/coinbase/zkvm
+	//    credits, per-tx markers) via ProcessBlockTransactionsAndStore, so a block
+	//    that fails to persist leaves NO state change, mirroring the live path and
+	//    closing the block-858 store-after-apply gap on the sync path too. A SOFT
+	//    partial projection (StoreZKBlock returns nil but a tx row was enqueued to
+	//    the outbox) is NOT a rollback case — the block row is durably stored — and
+	//    is repaired inline below (deliverable E).
+	if perr := BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
+		return DB_OPs.StoreZKBlock(nil, block)
+	}); perr != nil {
+		return hasCert, fmt.Errorf("thebesync apply: block %d process+store: %w", block.BlockNumber, perr)
 	}
 	// B (D-65): guard against a PARTIALLY-projected store. StoreZKBlock returns nil
 	// even when a transaction projection fails and is enqueued to the outbox

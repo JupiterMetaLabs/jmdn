@@ -78,6 +78,10 @@ const (
         UPDATE thebe_outbox
         SET attempts = 0, next_retry_at = ?
         WHERE attempts >= ?`
+
+	sqlMaxID = `SELECT COALESCE(MAX(id), 0) FROM thebe_outbox`
+
+	sqlDeleteAfter = `DELETE FROM thebe_outbox WHERE id > ?`
 )
 
 type sqliteOutboxStore struct {
@@ -219,6 +223,38 @@ func (s *sqliteOutboxStore) RequeueExhausted(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("outbox: requeue exhausted rows: %w", err)
 	}
 	return int(n), nil
+}
+
+// MaxID returns the highest entry id currently in the table, or 0 when empty.
+// Used as the high-water mark the D-858 store-failure rollback samples before a
+// store so it can DeleteAfter exactly what that store enqueued.
+// Time: O(1) — MAX over the integer PK.
+func (s *sqliteOutboxStore) MaxID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, sqlMaxID).Scan(&id); err != nil {
+		return 0, fmt.Errorf("outbox: max id: %w", err)
+	}
+	return id, nil
+}
+
+// DeleteAfter removes every entry with id > sinceID and returns the count removed.
+// A sinceID < 0 is treated as "unknown high-water mark" and deletes NOTHING — it
+// must never be a delete-all, since the rollback caller passes an unknown mark as a
+// negative sentinel.
+// Time: O(rows deleted) — range delete on the integer PK.
+func (s *sqliteOutboxStore) DeleteAfter(ctx context.Context, sinceID int64) (int64, error) {
+	if sinceID < 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, sqlDeleteAfter, sinceID)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: delete after id=%d: %w", sinceID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("outbox: delete after rows: %w", err)
+	}
+	return n, nil
 }
 
 // ExponentialBackoff returns the next retry time for a given attempt count.

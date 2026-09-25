@@ -257,8 +257,30 @@ func affectedAccountsForBlock(block *config.ZKBlock) map[common.Address]bool {
 }
 
 // ProcessBlockTransactions processes all transactions in a block atomically
-// If any transaction fails, all are rolled back
+// If any transaction fails, all are rolled back. It does NOT persist the block —
+// the caller stores it afterward. Prefer ProcessBlockTransactionsAndStore for the
+// live/receive/sync paths so a store failure is rolled back atomically (D-858).
 func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
+	return processBlockTransactions(logger_ctx, block, accountsClient, nil)
+}
+
+// ProcessBlockTransactionsAndStore applies the block and, on success, persists it
+// via store() BEFORE the block-processed marker is written. If store() fails after
+// the transactions were applied, the ENTIRE block is rolled back — balances,
+// tx_nonce, tx_count_sent, coinbase/zkvm/fee-recipient credits, and the per-tx
+// markers — with the same fail-closed machinery as a state-fingerprint mismatch,
+// and any projection the failed store enqueued to the outbox is dropped. This is
+// the guard for the block-858 duplicate-height incident, where a second candidate's
+// transactions (value + deterministic fee split) were applied and then StoreZKBlock
+// failed on uq_txn_block_index (23505); the old caller returned without rolling
+// back, advancing the sender's nonce/tx_count_sent and the reward credits on the
+// sequencer ONLY, causing fleet-wide STATE DIVERGENCE recoverable only by
+// re-seeding validators. store may be nil (apply-only, legacy behavior).
+func ProcessBlockTransactionsAndStore(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection, store func() error) error {
+	return processBlockTransactions(logger_ctx, block, accountsClient, store)
+}
+
+func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection, store func() error) error {
 	// Serialize concurrent applies of the SAME block so it is applied exactly
 	// once no matter how many copies arrive (multi-transport delivery, re-flood,
 	// or live delivery racing catch-up). Held across the already-processed check
@@ -645,6 +667,46 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			}
 			rollbackApplied()
 			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
+		}
+	}
+
+	// D-858 store seam: persist the block INSIDE the apply scope, AFTER the
+	// state-fingerprint check and BEFORE the block-processed marker, so a store
+	// failure reuses the SAME fail-closed rollback (rollbackApplied) as a
+	// fingerprint mismatch. Ordering is load-bearing: storing before the marker
+	// means a store failure leaves NO marker and NO applied state (rollbackApplied
+	// revokes the per-tx markers and restores balances / tx_nonce / tx_count_sent /
+	// coinbase / zkvm / fee-recipient credits), and a re-delivery re-verifies from a
+	// clean state — exactly the D-67 discipline extended to the store step. This is
+	// the block-858 fix: a second duplicate-height candidate whose txs applied and
+	// then failed StoreZKBlock (uq_txn_block_index 23505) is now fully reverted
+	// instead of leaving the sequencer's account state advanced past the fleet.
+	if store != nil {
+		// Any tx/snapshot projection the failed store enqueues to the outbox must
+		// not survive the rollback, or the worker could land the rolled-back block's
+		// rows later. Record the outbox high-water mark first; drop everything
+		// enqueued past it on failure. Best-effort: no-op when the hooks are unwired.
+		outboxHigh := DB_OPs.OutboxMaxID()
+		if serr := store(); serr != nil {
+			span.RecordError(serr)
+			span.SetAttributes(attribute.String("status", "store_failed_rollback"))
+			logger().Error(span_ctx, "STORE FAILED after apply — rolling back applied prefix (fail closed, no marker written)",
+				serr,
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			rollbackApplied()
+			if dropped := DB_OPs.PurgeOutboxAfter(outboxHigh); dropped > 0 {
+				logger().Warn(span_ctx, "dropped outbox entries enqueued by the failed store (rolled-back block)",
+					ion.Int64("dropped", dropped),
+					ion.Int64("block_number", int64(block.BlockNumber)),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+			}
+			return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", block.BlockNumber, serr)
 		}
 	}
 

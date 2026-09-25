@@ -30,6 +30,7 @@ package BlockProcessing_test
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -268,6 +269,95 @@ func TestApplyGate_Determinism(t *testing.T) {
 		}
 	}
 	t.Logf("PASS: store B independently reproduced A's state for %d blocks (no divergence)", len(blocks))
+}
+
+// TestStoreFailureRollback (D-858): a block whose transactions apply successfully
+// but whose STORE then fails must leave NO state change — every affected account
+// back at its pre-block snapshot, no per-tx marker, no block-processed marker.
+// This is the block-858 regression: a second duplicate-height candidate's txs were
+// applied (value + fee split) and then StoreZKBlock failed on uq_txn_block_index;
+// the old code returned without rolling back, advancing the sender's nonce and the
+// reward credits on the sequencer only. ProcessBlockTransactionsAndStore now reuses
+// the fingerprint-mismatch rollback for the store-failure path.
+func TestStoreFailureRollback(t *testing.T) {
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+
+	// A value transfer acctA -> acctB (nonce 0). makeBlock sets Coinbase=acctA and
+	// ZKVM=acctB, so the fee split also credits both — the full affected set is
+	// {acctA, acctB}, exactly the accounts a store-failure rollback must restore.
+	sender, recipient := acctA, acctB
+	transfer := callTx(sender, recipient, 0, nil, big.NewInt(5e17))
+	blk := makeBlock(t, 1, common.Hash{}, []config.Transaction{transfer})
+
+	// Snapshot every affected account BEFORE applying.
+	type snap struct {
+		bal   string
+		nonce uint64
+		count uint64
+	}
+	pre := map[common.Address]snap{}
+	for _, a := range []common.Address{sender, recipient} {
+		d, err := DB_OPs.GetAccount(nil, a)
+		if err != nil {
+			t.Fatalf("pre GetAccount(%s): %v", a.Hex(), err)
+		}
+		pre[a] = snap{d.Balance, d.TxNonce, d.TxCountSent}
+	}
+
+	// Apply + store, with a store callback that deterministically fails — simulating
+	// the uq_txn_block_index (23505) failure of a duplicate-height candidate.
+	forced := errors.New("forced store failure (uq_txn_block_index 23505 simulated)")
+	err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return forced
+	})
+	if err == nil {
+		t.Fatal("expected store-failure error, got nil (block was applied without rollback — the D-858 bug)")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "store failed after apply") {
+		t.Fatalf("expected a store-failure rollback error, got: %v", err)
+	}
+
+	// Every affected account must equal its pre-block snapshot.
+	for _, a := range []common.Address{sender, recipient} {
+		d, gerr := DB_OPs.GetAccount(nil, a)
+		if gerr != nil {
+			t.Fatalf("post GetAccount(%s): %v", a.Hex(), gerr)
+		}
+		want := pre[a]
+		if d.Balance != want.bal || d.TxNonce != want.nonce || d.TxCountSent != want.count {
+			t.Fatalf("account %s NOT rolled back after store failure: got {bal=%s nonce=%d count=%d} want {bal=%s nonce=%d count=%d}",
+				a.Hex(), d.Balance, d.TxNonce, d.TxCountSent, want.bal, want.nonce, want.count)
+		}
+	}
+
+	// The per-tx processed marker must be revoked (not applied).
+	applied, ferr := DB_OPs.FilterProcessedTxMarkers([]string{transfer.Hash.String()})
+	if ferr != nil {
+		t.Fatalf("FilterProcessedTxMarkers: %v", ferr)
+	}
+	if applied[transfer.Hash.String()] {
+		t.Fatal("per-tx processed marker survived the store-failure rollback (replay would skip a rolled-back tx)")
+	}
+
+	// The block-processed marker must NOT have been written (store failed before it).
+	blkApplied, merr := DB_OPs.IsMarkerApplied(nil, DB_OPs.BlockProcessedKey(blk.BlockHash.Hex()))
+	if merr != nil {
+		t.Fatalf("IsMarkerApplied(block): %v", merr)
+	}
+	if blkApplied {
+		t.Fatal("block-processed marker was written despite the store failure")
+	}
+
+	// A subsequent clean apply+store of the SAME block must now succeed — proving the
+	// rollback left a clean state that re-verifies deterministically.
+	if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return nil
+	}); err != nil {
+		t.Fatalf("clean re-apply after rollback failed: %v", err)
+	}
+	t.Logf("PASS: store failure rolled back all affected accounts and markers; clean re-apply succeeded")
 }
 
 // TestApplyGate_HaltOnDivergence: a store whose state is perturbed after genesis
