@@ -48,3 +48,44 @@ func TestRoundLedger_DefaultIsSharedWithTimeoutSigner(t *testing.T) {
 		t.Fatalf("MessagePassing must use roundlock.Default in production")
 	}
 }
+
+// TestUnlockBlockResultRound_FreesTheRoundAfterAFailedSign is F-3's regression
+// test at this call site: handleVoteResultRequest reserves the round via
+// lockBlockResultRound BEFORE it actually BLS-signs, so a signing failure
+// AFTER a successful lock must not leave the round permanently claimed - see
+// unlockBlockResultRound's doc comment.
+func TestUnlockBlockResultRound_FreesTheRoundAfterAFailedSign(t *testing.T) {
+	l := withFreshRoundLedger(t)
+
+	if err := lockBlockResultRound(848, 0); err != nil {
+		t.Fatalf("first reservation must succeed: %v", err)
+	}
+
+	// Simulate what handleVoteResultRequest now does on the BLS.SignMessage*
+	// error path: the reservation is released because no signature was
+	// actually produced.
+	unlockBlockResultRound(848, 0)
+
+	if _, signed := l.Signed(roundlock.Round{Height: 848, Period: 0}); signed {
+		t.Fatalf("round must be completely unlocked after unlockBlockResultRound")
+	}
+	if ok, _ := l.TryLock(roundlock.Round{Height: 848, Period: 0}, roundlock.Timeout); !ok {
+		t.Fatalf("fixed: a timeout vote must now be signable, since no block signature was ever actually produced")
+	}
+}
+
+// TestUnlockBlockResultRound_DoesNotClearAGenuineTimeoutLock guards against
+// unlockBlockResultRound (called only on OUR OWN failed sign, always with
+// side=Block) accidentally clearing a legitimate Timeout reservation that
+// happens to share the same round - Release is a strict compare-and-delete.
+func TestUnlockBlockResultRound_DoesNotClearAGenuineTimeoutLock(t *testing.T) {
+	l := withFreshRoundLedger(t)
+	l.TryLock(roundlock.Round{Height: 5, Period: 0}, roundlock.Timeout)
+
+	unlockBlockResultRound(5, 0) // this node never held the Block side here
+
+	side, signed := l.Signed(roundlock.Round{Height: 5, Period: 0})
+	if !signed || side != roundlock.Timeout {
+		t.Fatalf("a real Timeout reservation must survive an unrelated unlockBlockResultRound call, got signed=%v side=%v", signed, side)
+	}
+}

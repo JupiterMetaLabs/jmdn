@@ -235,7 +235,8 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 
 	// Mutual exclusion (§7.1b) through the shared per-round ledger, the same
 	// one the buddy vote-result signer consults - see internal/roundlock.
-	if ok, taken := roundlock.Default.TryLock(roundlock.Round{Height: height, Period: failedPeriod}, roundlock.Timeout); !ok {
+	timeoutRound := roundlock.Round{Height: height, Period: failedPeriod}
+	if ok, taken := roundlock.Default.TryLock(timeoutRound, roundlock.Timeout); !ok {
 		log.Warn().Uint64("height", height).Uint64("period", failedPeriod).Str("already_signed", taken.String()).
 			Msg("timeout flow: this node already signed the other side of this round, refusing to sign a timeout vote (§7.1b)")
 		return
@@ -243,6 +244,14 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 
 	priv, err := timeoutRequestBLSKey() // BLS_Signer.LocalBLSKeypair in production
 	if err != nil {
+		// F-3: TryLock above already reserved this round as Timeout-signed on
+		// INTENT. No vote was actually produced, so release it - otherwise
+		// this node can never sign a BLOCK result for the round either
+		// (roundlock refuses the other side based on the reservation, not on
+		// an actual signature), stranding it from both certificates for the
+		// rest of this process's life. See roundlock.Ledger.Release's doc
+		// comment.
+		roundlock.Default.Release(timeoutRound, roundlock.Timeout)
 		log.Warn().Err(err).Uint64("height", height).
 			Msg("timeout flow: could not load local BLS keypair, cannot sign timeout vote")
 		return
@@ -250,6 +259,9 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 
 	vote, err := SignTimeoutVote(priv, voterID, BLS_Signer.DomainChainID(), height, period)
 	if err != nil {
+		// F-3: same as above - release the reservation this attempt did not
+		// use.
+		roundlock.Default.Release(timeoutRound, roundlock.Timeout)
 		log.Warn().Err(err).Uint64("height", height).Uint64("period", period).
 			Msg("timeout flow: failed to sign timeout vote")
 		return

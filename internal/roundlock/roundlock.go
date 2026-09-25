@@ -108,6 +108,50 @@ func (l *Ledger) Signed(r Round) (Side, bool) {
 	return s, ok
 }
 
+// Release undoes a lock this node itself acquired via TryLock(r, side) but
+// did not follow through on: TryLock said it was free to sign side for r, and
+// the signing attempt that followed - the actual BLS/identity-key sign call -
+// then failed (a key-load error, a signing error, or any other reason no
+// valid signature was actually produced) rather than a decision made by this
+// package.
+//
+// F-3 ("lock-then-fail stranding"): without this, TryLock's reservation is
+// permanent for the process's life. A round whose intended side failed to
+// sign is stranded - this node can never sign the OTHER side for it either,
+// because TryLock refuses based on the side that was merely ATTEMPTED, never
+// actually signed. That means the node contributes to NEITHER the block
+// certificate NOR the timeout certificate for that round, for as long as the
+// process runs: a liveness defect, and specifically the kind that gets harder
+// to reach quorum on the more nodes it happens to, with no error anywhere
+// that names the cause (the round just looks perpetually one vote short).
+//
+// This does not weaken the safety property TryLock exists to enforce. Release
+// only reverses a reservation THIS caller itself just took and never used; it
+// can never let the OTHER side in once a real signature actually shipped,
+// because a caller that succeeded has no reason to call Release, and the
+// package's own callers (round_lock.go, messaging/timeout_gossip.go,
+// messaging/timeout_request.go) only call it on their own sign-attempt's
+// error path - see each call site's comment.
+//
+// Only clears the entry when it still holds EXACTLY (r, side) - i.e. nothing
+// has changed what is recorded for r since this caller's own TryLock call.
+// In practice the map only ever transitions from absent to one side and never
+// from one side to the other (TryLock's ok=false branch never mutates it), so
+// this is a belt-and-suspenders check against a caller bug (releasing the
+// wrong side, or releasing twice) rather than protection against a real race.
+//
+// Callers MUST NOT call Release once a signature has actually been produced
+// or broadcast - only when the attempt that followed TryLock genuinely failed
+// to produce one. Calling it after a successful sign would re-open the round
+// to the other side and defeat the whole package.
+func (l *Ledger) Release(r Round, side Side) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if prev, exists := l.signed[r]; exists && prev == side {
+		delete(l.signed, r)
+	}
+}
+
 func (l *Ledger) pruneLocked() {
 	if l.maxHeight <= retainHeights {
 		return

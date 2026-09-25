@@ -511,3 +511,129 @@ func TestMaybeStartTimeoutFlow_RespectsTheRoundLock(t *testing.T) {
 		t.Fatalf("the sequencer must not sign a timeout vote for a round it signed the block side of")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// F-3 - "lock-then-fail stranding": TryLock's success reserves a side BEFORE
+// the actual sign attempt runs. If the sign attempt then fails, that
+// reservation must be released, or this node can never sign the OTHER side
+// for the round either, for the rest of the process's life. These tests
+// drive the two real production call sites that sign a timeout vote
+// (handleTimeoutRequestBroadcast and MaybeStartTimeoutFlow) through both of
+// their failure branches (key load, and the sign call itself) and confirm
+// the round is left fully unlocked, not stranded on the Timeout side.
+// ---------------------------------------------------------------------------
+
+func TestHandleTimeoutRequest_KeyLoadFailureReleasesTheLock(t *testing.T) {
+	const height = 910401
+	seqPriv, seqID := libp2pIdentity(t)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	prevWiring, prevPin, prevKey := TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey
+	t.Cleanup(func() {
+		TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey = prevWiring, prevPin, prevKey
+	})
+	TimeoutCertWiringEnabled = true
+	timeoutRequestPin = func() string { return seqID }
+	timeoutRequestBLSKey = func() ([]byte, error) { return nil, errors.New("simulated: local BLS key unavailable") }
+
+	handleTimeoutRequestBroadcast(h, BroadcastMessageStruct{
+		Type: timeoutRequestBroadcastType,
+		Data: string(signedRequestJSON(t, seqPriv, seqID, height, 0)),
+	})
+
+	r := roundlock.Round{Height: height, Period: 0}
+	if _, signed := roundlock.Default.Signed(r); signed {
+		t.Fatalf("F-3: a key-load failure after decideTimeoutRequest's TryLock must release the round, not strand it")
+	}
+	if ok, _ := roundlock.Default.TryLock(r, roundlock.Block); !ok {
+		t.Fatalf("fixed: a block result for this round must now be signable")
+	}
+}
+
+func TestHandleTimeoutRequest_SignFailureReleasesTheLock(t *testing.T) {
+	const height = 910402
+	seqPriv, seqID := libp2pIdentity(t)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	prevWiring, prevPin, prevKey := TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey
+	t.Cleanup(func() {
+		TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey = prevWiring, prevPin, prevKey
+	})
+	TimeoutCertWiringEnabled = true
+	timeoutRequestPin = func() string { return seqID }
+	// Key "load" succeeds but the bytes are not a valid BLS key, so
+	// SignTimeoutVote's own signing call is what fails here, not the load -
+	// the other of the two failure branches at this call site.
+	timeoutRequestBLSKey = func() ([]byte, error) { return []byte("not-a-valid-bls-private-key"), nil }
+
+	handleTimeoutRequestBroadcast(h, BroadcastMessageStruct{
+		Type: timeoutRequestBroadcastType,
+		Data: string(signedRequestJSON(t, seqPriv, seqID, height, 0)),
+	})
+
+	r := roundlock.Round{Height: height, Period: 0}
+	if _, signed := roundlock.Default.Signed(r); signed {
+		t.Fatalf("F-3: a sign failure after decideTimeoutRequest's TryLock must release the round, not strand it")
+	}
+	if ok, _ := roundlock.Default.TryLock(r, roundlock.Block); !ok {
+		t.Fatalf("fixed: a block result for this round must now be signable")
+	}
+}
+
+func TestMaybeStartTimeoutFlow_KeyLoadFailureReleasesTheLock(t *testing.T) {
+	const height = uint64(910403)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	defer h.Close()
+	prevWiring, prevKey := TimeoutCertWiringEnabled, timeoutRequestBLSKey
+	t.Cleanup(func() { TimeoutCertWiringEnabled, timeoutRequestBLSKey = prevWiring, prevKey })
+	TimeoutCertWiringEnabled = true
+	timeoutRequestBLSKey = func() ([]byte, error) { return nil, errors.New("simulated: local BLS key unavailable") }
+
+	MaybeStartTimeoutFlow(h, height, nil)
+
+	failedPeriod := DefaultPeriodStore.PeriodFor(height)
+	r := roundlock.Round{Height: height, Period: failedPeriod}
+	if _, signed := roundlock.Default.Signed(r); signed {
+		t.Fatalf("F-3: a key-load failure after MaybeStartTimeoutFlow's TryLock must release the round, not strand it")
+	}
+	if ok, _ := roundlock.Default.TryLock(r, roundlock.Block); !ok {
+		t.Fatalf("fixed: a block result for this round must now be signable")
+	}
+}
+
+func TestMaybeStartTimeoutFlow_SignFailureReleasesTheLock(t *testing.T) {
+	const height = uint64(910404)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	defer h.Close()
+	prevWiring, prevKey := TimeoutCertWiringEnabled, timeoutRequestBLSKey
+	t.Cleanup(func() { TimeoutCertWiringEnabled, timeoutRequestBLSKey = prevWiring, prevKey })
+	TimeoutCertWiringEnabled = true
+	// Key "load" succeeds but the bytes are not a valid BLS key, so
+	// SignTimeoutVote's own signing call is what fails, not the load.
+	timeoutRequestBLSKey = func() ([]byte, error) { return []byte("not-a-valid-bls-private-key"), nil }
+
+	MaybeStartTimeoutFlow(h, height, nil)
+
+	failedPeriod := DefaultPeriodStore.PeriodFor(height)
+	r := roundlock.Round{Height: height, Period: failedPeriod}
+	if _, signed := roundlock.Default.Signed(r); signed {
+		t.Fatalf("F-3: a sign failure after MaybeStartTimeoutFlow's TryLock must release the round, not strand it")
+	}
+	if ok, _ := roundlock.Default.TryLock(r, roundlock.Block); !ok {
+		t.Fatalf("fixed: a block result for this round must now be signable")
+	}
+}

@@ -268,12 +268,23 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 
 	priv, err := timeoutRequestBLSKey()
 	if err != nil {
+		// F-3: decideTimeoutRequest returning actSign means its own TryLock
+		// call already reserved this round as Timeout-signed on INTENT. No
+		// vote was actually produced, so release it - otherwise this node can
+		// never sign a BLOCK result for the round either (roundlock refuses
+		// the other side based on the reservation, not on an actual
+		// signature), stranding it from both certificates for the rest of
+		// this process's life. See roundlock.Ledger.Release's doc comment.
+		roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
 		log.Warn().Err(err).Uint64("height", req.Height).
 			Msg("timeout request: no local BLS key, cannot sign a timeout vote")
 		return
 	}
 	vote, err := SignTimeoutVote(priv, h.ID().String(), BLS_Signer.DomainChainID(), req.Height, req.Period+1)
 	if err != nil {
+		// F-3: same as above - release the reservation this attempt did not
+		// use.
+		roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
 		log.Warn().Err(err).Uint64("height", req.Height).Msg("timeout request: failed to sign timeout vote")
 		return
 	}

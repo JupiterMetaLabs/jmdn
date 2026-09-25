@@ -1820,10 +1820,25 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}
 	if err != nil || !status {
+		// F-3: lockBlockResultRound above already reserved this round as
+		// Block-signed on INTENT, before this signing attempt ran. No valid
+		// signature was actually produced, so release that reservation now -
+		// otherwise this node can never sign a timeout vote for the round
+		// either (roundlock refuses the other side based on the reservation,
+		// not on an actual signature), stranding it from both certificates
+		// for the rest of this process's life. See
+		// unlockBlockResultRound's doc comment (round_lock.go).
+		if targetBlockHash != "" {
+			unlockBlockResultRound(targetBlockNumber, targetPeriod)
+		}
+		errMsg := "unknown error"
+		if err != nil {
+			errMsg = err.Error()
+		}
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))
 		logger().Warn(voteResultSpanCtx, "Failed to create BLS signature for BFT result",
-			ion.String("error", err.Error()),
+			ion.String("error", errMsg),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
