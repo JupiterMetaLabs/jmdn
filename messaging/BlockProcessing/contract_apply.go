@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -230,8 +231,32 @@ func applyContractTx(
 		}
 		var logsJSON []byte
 		if res.Success && len(res.Logs) > 0 {
+			// Stamp block/tx context onto the raw EVM logs. The StateDB only fills
+			// address/topics/data; without this every receipt log carried zeroed
+			// blockHash / transactionHash / logIndex and clients could not key
+			// events. logIndex is BLOCK-wide (geth semantics), so it continues
+			// from the previous contract tx in the same block.
+			first := nextLogIndex(blockHash, uint(len(res.Logs)))
+			for i, l := range res.Logs {
+				if l == nil {
+					continue
+				}
+				l.BlockNumber = blockNumber
+				l.BlockHash = blockHash
+				l.TxHash = tx.Hash
+				l.TxIndex = uint(txIndex)
+				l.Index = first + uint(i)
+			}
 			if b, mErr := json.Marshal(res.Logs); mErr == nil {
 				logsJSON = b
+			}
+			// Index the logs for eth_getLogs (KV log store) and fan out to
+			// eth_subscribe("logs") listeners. Best-effort like the receipt row:
+			// the block is already committed, a derived-index failure must not
+			// fail it — eth_getTransactionReceipt still serves the logs.
+			if wErr := DB_OPs.GlobalLogWriter.Write(res.Logs); wErr != nil {
+				logger().Warn(span_ctx, "persist event logs failed",
+					ion.String("tx", tx.Hash.Hex()), ion.String("err", wErr.Error()))
 			}
 		}
 		revertReason := ""
@@ -266,4 +291,31 @@ func applyContractTx(
 		ion.String("function", "BlockProcessing.applyContractTx"),
 	)
 	return nil
+}
+
+// ── block-wide log index ─────────────────────────────────────────────────────
+//
+// eth_getTransactionReceipt.logs[].logIndex and eth_getLogs are defined as the
+// log's position within the BLOCK, not the tx. Block application is sequential
+// (under LockStateApply) and txs are applied in block order, so a single
+// counter keyed by block hash is enough: it resets when a new block starts.
+
+var logIdx struct {
+	mu    sync.Mutex
+	block common.Hash
+	next  uint
+}
+
+// nextLogIndex reserves n consecutive block-wide log indices for a tx in
+// blockHash and returns the first one.
+func nextLogIndex(blockHash common.Hash, n uint) uint {
+	logIdx.mu.Lock()
+	defer logIdx.mu.Unlock()
+	if logIdx.block != blockHash {
+		logIdx.block = blockHash
+		logIdx.next = 0
+	}
+	first := logIdx.next
+	logIdx.next += n
+	return first
 }

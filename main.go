@@ -44,6 +44,7 @@ import (
 	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/contractDB"
+	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DB_OPs/txindex"
@@ -977,6 +978,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// D-858 finding 4 (#154 empty-pin liveness trap): fail hard at boot — on every
+	// node, not only in production posture — when committee-v2 is enabled but the
+	// sequencer authority pin is empty, which would silently wedge finalization
+	// (every seated validator refuses the sequencer, WARN-only). See
+	// messaging.ValidateCommitteeV2Pin. No-op with the flag off (default).
+	if err := messaging.ValidateCommitteeV2Pin(messaging.CommitteeV2Enabled, cfg.Consensus.SeedAuthorityBLSPub); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
 	log.Info().
 		Bool("enabled", cfg.Thebe.Enabled).
 		Str("kv_path", cfg.Thebe.KVPath).
@@ -1250,6 +1261,12 @@ func main() {
 					return len(code) > 0
 				},
 			)
+			// Give the RPC read path (eth_call / eth_estimateGas via
+			// contractDB.InitializeStateDB) the SAME ledger balance source as the
+			// apply path. Without this it read balances from the DID service, which
+			// has no record for contract addresses → address(this).balance == 0 in
+			// every simulation (see SetSharedAccountSource).
+			contractDB.SetSharedAccountSource(DB_OPs.ContractAccountSource{})
 			// P4: fold contract state into the P2.5 fingerprint so the
 			// halt-on-divergence check covers contract storage, not just accounts.
 			kvStore := cas.KV()
@@ -1283,12 +1300,22 @@ func main() {
 		// then drains them.
 		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
 
+		// Wire the outbox purge hooks (D-858). The block-store-failure rollback in
+		// BlockProcessing samples MaxID before StoreZKBlock and, on failure, deletes
+		// everything enqueued past it, so a rolled-back block's tx/snapshot projection
+		// can never be drained to SQL later.
+		DB_OPs.SetOutboxMaxIDFn(outbox.MaxID)
+		DB_OPs.SetOutboxPurgeAfterFn(outbox.DeleteAfter)
+
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
 		// before the first GetConnection is sufficient.
 		reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
-		thebeHandleBackend := backend.New(gw, reader, nil)
+		// EVM event logs: KV-backed store so eth_getLogs works (it returned
+		// "LogWriter not configured" while this was nil) and so the apply path
+		// can index logs at commit time (BlockProcessing.applyContractTx).
+		thebeHandleBackend := backend.New(gw, reader, logstore.New(db.KV))
 		config.SetGlobalHandleFactory(func() (io.Closer, error) {
 			return backend.NewComposite(thebeHandleBackend, nil), nil
 		})

@@ -415,30 +415,29 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 				PrefetchMissingContracts(ctx, h, msg.Block.Transactions)
 			}
 
-			// Process all transactions in the block atomically with rollback capability.
-			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, nil); err != nil {
-				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
-					ion.String("block_hash", msg.Block.BlockHash.Hex()))
-				return fmt.Errorf("block processing failed - not storing block: %w", err)
-			}
-
-			broadcastLogger().Info(ctx, "All transactions processed successfully - storing block",
-				ion.String("block_hash", msg.Block.BlockHash.Hex()))
-
 			// Persist the committee certificate that already passed
 			// verifyBlockCertificate (fail-closed 2f+1) so it survives past this
 			// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
-			// ThebeSync). Advisory field; does not affect BlockHash.
+			// ThebeSync). Advisory field; does not affect BlockHash. Set BEFORE
+			// apply+store so the stored block carries it.
 			if cert := msg.Data["bls_results"]; cert != "" {
 				msg.Block.CommitteeCertificate = cert
 			}
 
-			// Store the validated and processed block in main DB
-			if err := DB_OPs.StoreZKBlock(nil, msg.Block); err != nil {
-				broadcastLogger().Error(ctx, "Failed to store block in database", err,
+			// Apply + store atomically (D-858): store runs after the fingerprint
+			// check and before the block-processed marker; a store failure rolls back
+			// the full applied prefix and drops the outbox projection, so a block that
+			// is not durably stored leaves no state change on this validator either.
+			if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), msg.Block, nil, func() error {
+				return DB_OPs.StoreZKBlock(nil, msg.Block)
+			}); err != nil {
+				broadcastLogger().Error(ctx, "Block apply+store failed - block not applied (rolled back)", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
-				return fmt.Errorf("failed to store block in database: %w", err)
+				return fmt.Errorf("block apply+store failed: %w", err)
 			}
+
+			broadcastLogger().Info(ctx, "All transactions processed and block stored",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 
 			// Full block stored + processed → advance the tip marker.
 			// Monotonic: a replayed/out-of-order block can never regress it.

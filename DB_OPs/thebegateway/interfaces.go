@@ -126,4 +126,13 @@ type OutboxStore interface {
 	// snapshot FK parent, requeuing makes the worker drain those entries. Returns
 	// the number of entries requeued.
 	RequeueExhausted(ctx context.Context) (int, error)
+
+	// MaxID returns the current highest entry id (0 when the table is empty).
+	// DeleteAfter removes every entry with id > sinceID and returns the count
+	// removed. Together they let the D-858 store-failure rollback drop exactly the
+	// projection a FAILED StoreZKBlock enqueued: the caller samples MaxID before the
+	// store and, on failure, DeleteAfter(that id) so the worker can never land the
+	// rolled-back block's rows later. DeleteAfter(sinceID < 0) is a no-op.
+	MaxID(ctx context.Context) (int64, error)
+	DeleteAfter(ctx context.Context, sinceID int64) (int64, error)
 }

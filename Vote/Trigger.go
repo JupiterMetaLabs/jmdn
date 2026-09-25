@@ -12,9 +12,11 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/consensus/adapters"
+	"gossipnode/internal/votecheck"
 
 	"time"
 
@@ -24,6 +26,7 @@ import (
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -70,6 +73,30 @@ func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
 	return string(jsonData)
 }
 
+// checkVoteChainPosition reads this node's local tip (and its hash) and decides,
+// via the pure votecheck.ExtendsTip predicate, whether zkBlock extends it. It
+// returns a non-nil error — the vote-rejection reason — when the block is already
+// committed, leaves a gap, or does not link to the local tip. Fail-closed: a tip
+// read failure returns an error so the node abstains rather than voting blind.
+func checkVoteChainPosition(ctx context.Context, zkBlock *config.ZKBlock) error {
+	tip, terr := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if terr != nil {
+		return fmt.Errorf("vote position: cannot read local tip (fail closed): %w", terr)
+	}
+	var tipHash common.Hash
+	if tip > 0 {
+		parent, perr := DB_OPs.GetZKBlockByNumber(nil, tip)
+		if perr != nil {
+			return fmt.Errorf("vote position: cannot read local tip block %d (fail closed): %w", tip, perr)
+		}
+		tipHash = parent.BlockHash
+	}
+	if err := votecheck.ExtendsTip(zkBlock.BlockNumber, zkBlock.PrevHash, tip, tipHash); err != nil {
+		return fmt.Errorf("vote position: %w", err)
+	}
+	return nil
+}
+
 func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
@@ -111,6 +138,19 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// explicitly opted in via config (Features.AvcValidation.Enabled=true AND
 	// Network.Environment=="testnet"). See consensus/adapters/shadow.go.
 	status, err = adapters.EvaluateShadow(spanCtx, settings.Get(), zkBlock, status, err)
+
+	// D-858 item 3: chain-position guard. A tx/hash-valid block must ALSO extend this
+	// node's local tip to be voted for — otherwise a validator at tip N votes ACCEPT
+	// for a second candidate at N (block-858) or for N+2 while missing N+1
+	// (2026-09-24). Only applied when base validation passed, so a genuinely invalid
+	// block keeps its original rejection reason. Fail-closed: a tip read error
+	// abstains (rejects) rather than voting blind.
+	if status && err == nil {
+		if posErr := checkVoteChainPosition(spanCtx, zkBlock); posErr != nil {
+			status = false
+			err = posErr
+		}
+	}
 
 	if !status || err != nil {
 		// VOTE REJECTED (-1)
