@@ -20,6 +20,7 @@ import (
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging/BlockProcessing"
 	GROHelper "gossipnode/messaging/common"
 	"gossipnode/metrics"
@@ -725,6 +726,13 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.Int("bls_results_count", len(blsResults)))
+
+	// D-858 item 2: this is the sequencer's consensus terminal for the height —
+	// release the ingress in-flight claim (Block/Server.go) on ANY outcome (commit or
+	// failure), so the next height, or a legitimate retry of a failed height, is
+	// admitted promptly rather than waiting for the proposalguard TTL. No-op on nodes
+	// that never claimed (validators reach state via blockPropagation, not here).
+	defer proposalguard.Default.Release(block.BlockNumber)
 
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
