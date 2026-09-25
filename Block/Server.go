@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -595,8 +596,18 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// CodeQL go/incorrect-integer-conversion (alerts #3-#7): block.BlockNumber
+	// is uint64, populated straight from the submitted request body
+	// (c.ShouldBindJSON above) with no upper bound, and every log/span call
+	// in this function narrows it to int64 unchecked. Clamp once here and
+	// reuse below instead of repeating the check at each of the six sites.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 		attribute.Int("tx_count", len(block.Transactions)),
 		attribute.String("block_status", block.Status),
@@ -644,7 +655,7 @@ func processZKBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "consensus_fields_attach_failed"))
 		logger().Error(spanCtx, "Refusing to propose — consensus-field attach failed (reason in error: slot recovery, reward source, VDF proof, or committee snapshot)",
 			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
 			ion.String("function", "BlockServer.processZKBlock"))
@@ -668,7 +679,7 @@ func processZKBlock(c *gin.Context) {
 		span.SetAttributes(attribute.Float64("duration", duration))
 		logger().Error(spanCtx, "Failed to enrich block with account nonces — block rejected",
 			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
@@ -679,7 +690,7 @@ func processZKBlock(c *gin.Context) {
 	}
 
 	logger().Info(spanCtx, "Block validated, starting consensus process",
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)),
 		ion.Int("account_nonces", len(block.AccountNonces)),
@@ -715,7 +726,7 @@ func processZKBlock(c *gin.Context) {
 		span.SetAttributes(attribute.Float64("duration", duration))
 		logger().Error(spanCtx, "Failed to start consensus process",
 			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Float64("consensus_duration", consensusDuration),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -744,7 +755,7 @@ func processZKBlock(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 	logger().Info(spanCtx, "Block processed successfully",
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)),
 		ion.Float64("consensus_duration", consensusDuration),
