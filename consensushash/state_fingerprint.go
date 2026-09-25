@@ -80,6 +80,32 @@ type ContractLeaf struct {
 
 func normAddr(a string) string { return strings.ToLower(strings.TrimSpace(a)) }
 
+// isEmptyAccount reports whether a plain account is EIP-161 "empty": zero balance,
+// zero tx nonce, and zero sent-tx count (plain accounts carry no code, so there is
+// no code term). Such an account is treated as ABSENT and contributes nothing to
+// the fingerprint — mirroring go-ethereum, where an empty account is pruned from
+// the state trie and does not affect the state root.
+//
+// WHY THIS MATTERS (consensus-relevant): the block-apply path can leave a
+// zero-balance account row behind when a block fails the fingerprint gate and is
+// rolled back (the recipient of a failed transfer is created, then restored to
+// balance 0 rather than removed, because the canonical KV log is append-only and
+// has no delete). Folding that empty stub made a node's post-rollback state
+// fingerprint diverge from a clean apply that never created it — a false
+// divergence that halts the node. Skipping empty accounts makes the fingerprint
+// depend only on accounts that actually hold value or have transacted, so an
+// empty stub is indistinguishable from absence and cannot cause divergence.
+//
+// This changes the fingerprint definition, which is folded into the block-identity
+// state-root term — so it is a consensus change and MUST roll out fleet-wide
+// together. It is backward-compatible in practice only if no COMMITTED block's
+// state contains an empty account (a committed transfer always credits a non-zero
+// balance); verify before deploy.
+func (a AccountLeaf) isEmptyAccount() bool {
+	bal := strings.TrimSpace(a.Balance)
+	return (bal == "" || bal == "0") && a.TxNonce == 0 && a.TxCountSent == 0
+}
+
 // StateFingerprintV1 computes the canonical fingerprint over the FULL state:
 // every account leaf (sorted by normalized address) then every contract leaf
 // (sorted by normalized address), under the domain tag. It is a pure function of
@@ -142,6 +168,14 @@ func (f *StateFingerprinterV1) writeU64(v uint64) {
 // FoldAccount folds one plain-account record. Balance "" is normalized to "0" and
 // the address is lowercased so the digest is independent of checksum casing.
 func (f *StateFingerprinterV1) FoldAccount(a AccountLeaf) {
+	// EIP-161: an empty account (zero balance, zero nonce, zero sent-count) is
+	// equivalent to a non-existent one and contributes NOTHING to the fingerprint.
+	// This is the single skip point shared by the batch (StateFingerprintV1) and
+	// streaming (ComputeAccountStateFingerprintV1) paths, so both agree exactly.
+	// See isEmptyAccount for the consensus rationale and rollout constraints.
+	if a.isEmptyAccount() {
+		return
+	}
 	bal := a.Balance
 	if bal == "" {
 		bal = "0"

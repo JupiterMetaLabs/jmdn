@@ -69,12 +69,35 @@ func TestStateFingerprintV1_FieldsBind(t *testing.T) {
 }
 
 // Balance "" and "0" must be the SAME (both mean zero balance), or two nodes that
-// write a zero balance differently would falsely diverge.
+// write a zero balance differently would falsely diverge. Uses a non-empty account
+// (tx_nonce=1) so the leaf is actually folded — an all-zero account is now skipped
+// (see TestStateFingerprintV1_EmptyAccountSkipped).
 func TestStateFingerprintV1_EmptyBalanceEqualsZero(t *testing.T) {
-	a := StateFingerprintV1([]AccountLeaf{acct(0, "", 0, 0)}, nil)
-	b := StateFingerprintV1([]AccountLeaf{acct(0, "0", 0, 0)}, nil)
+	a := StateFingerprintV1([]AccountLeaf{acct(0, "", 1, 0)}, nil)
+	b := StateFingerprintV1([]AccountLeaf{acct(0, "0", 1, 0)}, nil)
 	if a != b {
 		t.Fatal(`balance "" and "0" produced different fingerprints`)
+	}
+}
+
+// EIP-161: an empty account (zero balance, nonce, sent-count) is equivalent to
+// absence — it must contribute NOTHING, so folding it equals folding nothing.
+func TestStateFingerprintV1_EmptyAccountSkipped(t *testing.T) {
+	empty := StateFingerprintV1([]AccountLeaf{acct(0, "0", 0, 0), acct(1, "", 0, 0)}, nil)
+	none := StateFingerprintV1(nil, nil)
+	if empty != none {
+		t.Fatal("empty accounts changed the fingerprint (EIP-161 skip not applied)")
+	}
+}
+
+// The rollback-stub scenario: adding an empty account to a populated set must not
+// change the fingerprint, so a balance-0 account left behind by a rolled-back block
+// cannot make a node diverge from one that never created it.
+func TestStateFingerprintV1_EmptyStubDoesNotDiverge(t *testing.T) {
+	base := []AccountLeaf{acct(0, "100", 1, 1), acct(1, "5", 2, 0)}
+	withStub := append(append([]AccountLeaf(nil), base...), acct(7, "0", 0, 0))
+	if StateFingerprintV1(base, nil) != StateFingerprintV1(withStub, nil) {
+		t.Fatal("an empty (rollback-stub) account changed the fingerprint")
 	}
 }
 
@@ -91,7 +114,9 @@ func TestStateFingerprintV1_AddressCaseInsensitive(t *testing.T) {
 // account leaf must not hash the same as a single contract leaf, even with the
 // same address, because of the record type tag + distinct field layout.
 func TestStateFingerprintV1_SectionsSeparated(t *testing.T) {
-	onlyAcct := StateFingerprintV1([]AccountLeaf{acct(0, "0", 0, 0)}, nil)
+	// Non-empty account (balance "1") so the leaf is actually folded — an all-zero
+	// account is now skipped (EIP-161), which would make this test trivially pass.
+	onlyAcct := StateFingerprintV1([]AccountLeaf{acct(0, "1", 0, 0)}, nil)
 	onlyCtr := StateFingerprintV1(nil, []ContractLeaf{ctr(0, 0, 0, 0)})
 	if onlyAcct == onlyCtr {
 		t.Fatal("an account leaf and a contract leaf collide (missing section tag)")
