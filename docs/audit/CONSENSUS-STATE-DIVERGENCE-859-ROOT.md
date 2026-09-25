@@ -202,3 +202,65 @@ The fix corrects forward behavior; it does not un-poison existing state.
   first-attempt divergent one, and a 2-node reproduction of the catch-up-late scenario.
 - The intra-block-ordering complication (why a naive trigger drop breaks coinbase/zkvm crediting):
   **confirmed** from the constant-`blockTimestamp` writes + strict `<` gate + per-tx coinbase credit.
+
+---
+
+## 10. IMPLEMENTED (determinism core of Option 1) — `fix/evm-rpc-parity-v3base`
+
+Rather than the full `last_block` column + block-atomic restructure (large, cross-package, and
+unbuildable in the dev sandbox), the **determinism root** is fixed with a contained, two-edit change
+that keeps the existing `updated_at` plumbing (which the apply path already writes as a block-derived
+value) and only removes its non-determinism:
+
+1. **`DB_OPs/thebeprofile/schema.go`** (+ mirrored in `DB_OPs/thebegateway/migrations/000001_init_schema.up.sql`):
+   `fn_accounts_set_updated_at` is now a **safety net only** — it stamps `NOW()` **only when the
+   caller left `updated_at` unset** (`NULL`/epoch). A block-derived timestamp is preserved untouched,
+   so `updated_at` is deterministic across nodes for every consensus write. Applied to existing DBs
+   automatically on restart (the profile re-runs `CREATE OR REPLACE FUNCTION`).
+2. **`DB_OPs/thebeprofile/apply_account.go`**: the LWW gate is `WHERE accounts.updated_at <=
+   EXCLUDED.updated_at` (was `<`). `<=` is required because within a block the coinbase/zkvm are
+   written once per tx with the SAME block timestamp; `<` dropped all but the first (under-crediting
+   fees). `<=` lets same-block and same-second-block writes land in order; stale older blocks are
+   still rejected; true replays are still marker-guarded upstream.
+
+Net effect: two nodes applying the same block compute the same `updated_at` and make the same
+keep/reject decisions → no wall-clock dependence → the 859 class of divergence cannot recur.
+
+Writer-audit result (why removing the clobber is safe): the consensus apply path
+(`Processing.go` `addToRecipient`/`deductFromSender`/new-account, `contract_apply.go`) writes
+`updated_at = blockTimestamp`. The only wall-clock account writer is `backend.UpdateAccountBalance`
+(`time.Now()`), used by genesis/seed only — one-time, early, and `<=`-compatible. The conditional
+trigger still covers any writer that leaves `updated_at` unset.
+
+**Not implemented (optional future hardening, unchanged from §4/§5):** the `last_block` column and
+full block-atomic apply. They are cleaner (self-documenting key; self-healing recovery; also kills
+the rollback-stub class) but require the large struct/converter threading + a build/2-node loop.
+The committed change fixes the determinism root; the rollback-stub remains benign under `<=` (a
+re-applied block overwrites a stub) once state is un-poisoned.
+
+### 10.1 Recovery (the committed fix does NOT self-heal poisoned nodes)
+
+The 30 followers currently hold `updated_at = wall-clock NOW()` (e.g. 18:00 UTC) on existing
+accounts, which is **newer than block 859's embedded timestamp**, so even after this fix a re-apply
+of 859 is still gated out (`18:00 <= 09:xx` is false). One-time reset per validator, in order:
+
+1. Build + **2-node gate** (§7) on the host; deploy the new binary fleet-wide and restart (the
+   `CREATE OR REPLACE` updates the trigger; the `<=` gate ships in the binary).
+2. On each stuck validator, reset the poisoned key to a sentinel **after** the epoch but **before**
+   any real block time, so the conditional trigger preserves it and the gate then admits 859+:
+   ```sql
+   UPDATE accounts SET updated_at = timestamptz '2001-01-01 00:00:00+00';
+   ```
+   (A value `<= to_timestamp(0)` would be re-stamped to `NOW()` by the safety-net trigger — use a
+   real post-epoch sentinel like above.) Alternatively, full resync the validator.
+3. Let the validator re-apply 859→tip; confirm no `STATE DIVERGENCE` and heads advance.
+4. Sequencer: no rebuild needed for this fix specifically — its state was always correct (its writes
+   landed); once followers admit 859 with matching fingerprints they converge to the sequencer.
+
+### 10.2 Status
+
+- gofmt-clean; **UNTESTED-FOR-COMPILE / UNTESTED-FOR-BEHAVIOR** in the dev sandbox (private ThebeDB
+  module). Host gate: `CGO_ENABLED=1 go build ./... && go test ./messaging/BlockProcessing/ ./DB_OPs/...`
+  plus the §7 2-node gate (multi-tx coinbase crediting + catch-up-late reproduction) BEFORE any
+  fleet deploy.
+- Consensus-relevant (changes the account LWW semantics) → deploy fleet-wide together.

@@ -43,7 +43,17 @@ ON CONFLICT (address) DO UPDATE SET
     metadata      = EXCLUDED.metadata,
     -- did_address intentionally excluded: immutable after account creation
     updated_at    = EXCLUDED.updated_at
-WHERE accounts.updated_at < EXCLUDED.updated_at`
+-- LWW gate on the block-derived updated_at. MUST be <= (not <): within one block
+-- the coinbase/zkvm (and any address touched by multiple txs) are written once per
+-- tx, all carrying the SAME block timestamp, so a strict < would drop every write
+-- after the first and under-credit fees. <= lets same-block writes land in tx
+-- order (each reads the prior committed value and writes the cumulative absolute
+-- balance), and lets two blocks sharing a wall-second both apply. Stale re-delivery
+-- of an OLDER block is still rejected (its earlier timestamp is not >= the stored
+-- one), and true same-block replay is guarded upstream by the block-processed and
+-- per-tx markers. Requires updated_at to be deterministic/block-derived (see the
+-- fn_accounts_set_updated_at safety-net trigger in schema.go).
+WHERE accounts.updated_at <= EXCLUDED.updated_at`
 
 func applyAccount(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
 	var r thebegateway.AccountRecord
