@@ -15,10 +15,11 @@ import (
 	pb "gossipnode/Block/proto"
 	"gossipnode/DB_OPs"
 	"gossipnode/Sequencer"
-	"gossipnode/explorer/lifecycle"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/config/settings"
+	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -91,6 +92,42 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		return nil, status.Errorf(codes.InvalidArgument, "block has not been verified by ZKVM")
 	}
 
+	// D-858 item 2: duplicate-height ingress guard on the gRPC path (the transport the
+	// orchestrator prefers — so this, not just the HTTP handler, is the production
+	// ingress that must be guarded). Reject fail-closed with codes.AlreadyExists (the
+	// gRPC analogue of HTTP 409) when the height is already committed or already in
+	// flight, so a second candidate for a height can never enter consensus. See
+	// internal/proposalguard and the HTTP twin in processZKBlock.
+	if tip, terr := DB_OPs.GetLatestBlockNumber(ctx, nil); terr != nil {
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: refusing proposal — committed-tip read failed (fail closed)", terr,
+				ion.Uint64("block_number", block.BlockNumber))
+		}
+		return nil, status.Errorf(codes.Unavailable, "cannot read committed tip: %v", terr)
+	} else if block.BlockNumber <= tip {
+		if s.logger != nil {
+			s.logger.Warn(ctx, "gRPC: rejecting proposal for an already-committed height (duplicate/stale)",
+				ion.Uint64("block_number", block.BlockNumber), ion.Uint64("committed_tip", tip))
+		}
+		return nil, status.Errorf(codes.AlreadyExists, "height %d already committed (tip %d): height_already_committed", block.BlockNumber, tip)
+	}
+	if !proposalguard.Default.Claim(block.BlockNumber) {
+		if s.logger != nil {
+			s.logger.Warn(ctx, "gRPC: rejecting proposal for a height already in consensus (in-flight)",
+				ion.Uint64("block_number", block.BlockNumber))
+		}
+		return nil, status.Errorf(codes.AlreadyExists, "height %d already in consensus: height_in_flight", block.BlockNumber)
+	}
+	// Release on any early return before consensus is handed to its async flow; once
+	// consensus.Start succeeds the terminal (ProcessBlockLocally) owns the release,
+	// with proposalguard's TTL as backstop.
+	consensusHandedOff := false
+	defer func() {
+		if !consensusHandedOff {
+			proposalguard.Default.Release(block.BlockNumber)
+		}
+	}()
+
 	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
 	// attachment point — set Slot/Period from jmdn's own live tracking and
 	// compute the separate ConsensusHash that binds them. BlockHash is NOT
@@ -149,6 +186,10 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		}
 		return nil, status.Errorf(codes.Internal, "failed to start consensus process: %v", err)
 	}
+
+	// Consensus now runs async; its terminal (ProcessBlockLocally) owns the in-flight
+	// claim release. Suppress the defer's early-return release.
+	consensusHandedOff = true
 
 	// Log transactions
 	for _, tx := range block.Transactions {
@@ -278,18 +319,18 @@ func (s *BlockServer) convertProtoToZKBlock(pbBlock *pb.ZKBlock) (*config.ZKBloc
 	}
 
 	block := &config.ZKBlock{
-		StarkProof:   pbBlock.StarkProof,
-		Commitment:   pbBlock.Commitment,
-		ProofHash:    pbBlock.ProofHash,
-		Status:       pbBlock.Status,
-		TxnsRoot:     pbBlock.TxnsRoot,
-		Transactions: txs,
-		Timestamp:    pbBlock.Timestamp,
-		ExtraData:    pbBlock.ExtraData,
-		StateRoot:    common.BytesToHash(pbBlock.StateRoot),
-		LogsBloom:    pbBlock.LogsBloom,
-		PrevHash:     common.BytesToHash(pbBlock.PrevHash),
-		BlockHash:    common.BytesToHash(pbBlock.BlockHash),
+		StarkProof:          pbBlock.StarkProof,
+		Commitment:          pbBlock.Commitment,
+		ProofHash:           pbBlock.ProofHash,
+		Status:              pbBlock.Status,
+		TxnsRoot:            pbBlock.TxnsRoot,
+		Transactions:        txs,
+		Timestamp:           pbBlock.Timestamp,
+		ExtraData:           pbBlock.ExtraData,
+		StateRoot:           common.BytesToHash(pbBlock.StateRoot),
+		LogsBloom:           pbBlock.LogsBloom,
+		PrevHash:            common.BytesToHash(pbBlock.PrevHash),
+		BlockHash:           common.BytesToHash(pbBlock.BlockHash),
 		GasLimit:            pbBlock.GasLimit,
 		GasUsed:             pbBlock.GasUsed,
 		BlockNumber:         pbBlock.BlockNumber,
