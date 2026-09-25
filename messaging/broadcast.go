@@ -162,6 +162,11 @@ func HandleBroadcastStream(stream network.Stream) {
 	if msg.Type == timeoutVoteBroadcastType {
 		handleTimeoutVoteBroadcast(getHostInstance(), msg)
 	}
+	// Fix 3: the sequencer's signed "round failed" request, on which every
+	// eligible node signs its own timeout vote (timeout_request.go).
+	if msg.Type == timeoutRequestBroadcastType {
+		handleTimeoutRequestBroadcast(getHostInstance(), msg)
+	}
 	if msg.Type == timeoutCertBroadcastType {
 		handleTimeoutCertificateBroadcast(getHostInstance(), msg)
 	}

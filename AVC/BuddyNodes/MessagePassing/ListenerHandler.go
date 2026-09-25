@@ -1570,6 +1570,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var targetBlockHash string
 	var targetBlockNumber uint64
 	var targetConsensusHash string
+	// targetPeriod is the round (Period) of the LOCALLY known block, used by
+	// the per-round signing lock below (fix 3, internal/roundlock).
+	var targetPeriod uint64
 	var voteResultReq struct {
 		BlockHash     string `json:"block_hash"`
 		BlockNumber   uint64 `json:"block_number"`   // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
@@ -1673,6 +1676,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 		targetBlockNumber = localNumber
 		targetConsensusHash = localConsensusHash
+		targetPeriod = localCM.ZKBlock.Period
 	}
 
 	// Ensure buddy nodes are populated from the cached consensus message
@@ -1790,6 +1794,29 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// disabled or the block hash is unavailable.
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
+	// Fix 3 / §7.1b mutual exclusion: never sign a block result for a round
+	// this node has already declared timed out (and, via the same ledger,
+	// never sign a timeout for a round it has signed a block result for).
+	// A block certificate (seated 2f+1) and a timeout certificate (pool 2/3)
+	// are quorums over different sets, so this per-node refusal is what stops
+	// both existing for one round. See internal/roundlock.
+	roundReservedHere := false
+	if targetBlockHash != "" {
+		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod)
+		if err != nil {
+			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for a round this node already timed out",
+				ion.Uint64("block_number", targetBlockNumber),
+				ion.Uint64("period", targetPeriod),
+				ion.String("error", err.Error()),
+				ion.String("function", "MessagePassing.handleVoteResultRequest"))
+			writeRawError(s, `{"error":"round timed out: this node signed a timeout vote for this round","vote_result":0}`, config.Delimiter)
+			return
+		}
+		// F-9: only a reservation THIS call created may be released below. A
+		// re-entry (a retried vote-result request) rides an earlier attempt
+		// that may already have shipped a signature.
+		roundReservedHere = fresh
+	}
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
 		// v4 when the request carried a ConsensusHash (binds the consensus fields),
 		// else v3. Verify sites try v4 then fall back to v3, so a buddy that got no
@@ -1799,10 +1826,25 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}
 	if err != nil || !status {
+		// F-3: lockBlockResultRound above already reserved this round as
+		// Block-signed on INTENT, before this signing attempt ran. No valid
+		// signature was actually produced, so release that reservation now -
+		// otherwise this node can never sign a timeout vote for the round
+		// either (roundlock refuses the other side based on the reservation,
+		// not on an actual signature), stranding it from both certificates
+		// for the rest of this process's life. See
+		// unlockBlockResultRound's doc comment (round_lock.go).
+		if roundReservedHere {
+			unlockBlockResultRound(targetBlockNumber, targetPeriod)
+		}
+		errMsg := "unknown error"
+		if err != nil {
+			errMsg = err.Error()
+		}
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))
 		logger().Warn(voteResultSpanCtx, "Failed to create BLS signature for BFT result",
-			ion.String("error", err.Error()),
+			ion.String("error", errMsg),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
