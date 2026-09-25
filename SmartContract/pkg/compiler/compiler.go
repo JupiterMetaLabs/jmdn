@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gossipnode/helper"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -42,28 +41,52 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 		return nil, fmt.Errorf("failed to read source file: %w", err)
 	}
 
-	// Create a standard JSON input
+	// Create a standard JSON input.
+	//
+	// CodeQL go/unsafe-quoting (alert #17): this used to be a fmt.Sprintf
+	// template with sourceFileName spliced into a hand-written "%s" — a
+	// filename containing a double quote (sourceFileName is
+	// filepath.Base(sourcePath), which callers pass through from
+	// user-supplied contract source paths) would break out of the JSON
+	// string and inject arbitrary keys into the standard-json input handed
+	// to solc. Build the input as a struct and let encoding/json do the
+	// escaping instead of hand-constructing quoted JSON.
 	sourceFileName := filepath.Base(sourcePath)
-	standardJSONInput := fmt.Sprintf(`{
-        "language": "Solidity",
-        "sources": {
-            "%s": {
-                "content": %s
-            }
-        },
-        "settings": {
-            "outputSelection": {
-                "*": {
-                    "*": ["abi", "evm.bytecode", "evm.deployedBytecode"]
-                }
-            },
-            "optimizer": {
-                "enabled": true,
-                "runs": 200
-            },
-            "evmVersion": "shanghai"
-        }
-    }`, sourceFileName, string(helper.ToJSON(string(sourceCode))))
+	type solcSource struct {
+		Content string `json:"content"`
+	}
+	type solcSettings struct {
+		OutputSelection map[string]map[string][]string `json:"outputSelection"`
+		Optimizer       struct {
+			Enabled bool `json:"enabled"`
+			Runs    int  `json:"runs"`
+		} `json:"optimizer"`
+		EVMVersion string `json:"evmVersion"`
+	}
+	type solcStandardInput struct {
+		Language string                `json:"language"`
+		Sources  map[string]solcSource `json:"sources"`
+		Settings solcSettings          `json:"settings"`
+	}
+
+	input := solcStandardInput{
+		Language: "Solidity",
+		Sources: map[string]solcSource{
+			sourceFileName: {Content: string(sourceCode)},
+		},
+	}
+	input.Settings.OutputSelection = map[string]map[string][]string{
+		"*": {"*": {"abi", "evm.bytecode", "evm.deployedBytecode"}},
+	}
+	input.Settings.Optimizer.Enabled = true
+	input.Settings.Optimizer.Runs = 200
+	input.Settings.EVMVersion = "shanghai"
+
+	standardJSONInputBytes, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal solc standard-json input: %w", err)
+	}
+	standardJSONInput := string(standardJSONInputBytes)
 
 	// Create a temporary file for the JSON input
 	inputFile, err := ioutil.TempFile("", "solc-input-*.json")

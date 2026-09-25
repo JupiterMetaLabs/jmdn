@@ -33,6 +33,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -475,6 +476,17 @@ func (r *thebeReader) GetTransactionsByAddressInRange(ctx context.Context, addre
 // the given L2 block number, or sql.ErrNoRows-wrapped error when the block
 // has not yet been committed to L1. Uses the GIN index on block_numbers.
 func (r *thebeReader) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*L1FinalityRecord, error) {
+	// CodeQL go/incorrect-integer-conversion (alert #15): blockNumber is
+	// uint64 but the query parameter below narrows it to int64 with no bound
+	// check. A value above MaxInt64 would silently wrap negative and query
+	// the wrong row instead of erroring — this is the single sink every
+	// caller (Block/Server.go's HTTP param, explorer/utils.go's
+	// ConvertStringToUint64, main.go's JMDN_REPROJECT_RANGE parse — all via
+	// strconv.ParseUint) eventually reaches, so guarding here protects all
+	// of them at once.
+	if blockNumber > math.MaxInt64 {
+		return nil, fmt.Errorf("GetL1FinalityForBlock: block number %d exceeds int64 range", blockNumber)
+	}
 	var rec L1FinalityRecord
 	var nums pq.Int64Array
 	row := r.db.QueryRowContext(ctx, sqlGetL1FinalityForBlock, int64(blockNumber))
