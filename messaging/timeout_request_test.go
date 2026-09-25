@@ -1,9 +1,11 @@
 package messaging
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -457,6 +460,7 @@ func TestEnsurePeriodForBlock_FetchesMissingCertificate(t *testing.T) {
 	prevWiring, prevRejoin := TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled
 	t.Cleanup(func() { TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled = prevWiring, prevRejoin })
 	TimeoutCertRejoinEnabled = false
+	t.Cleanup(resetPeriodCatchUpLimiterForTest())
 
 	block := &config.ZKBlock{BlockNumber: height, Period: 1}
 
@@ -470,6 +474,140 @@ func TestEnsurePeriodForBlock_FetchesMissingCertificate(t *testing.T) {
 	ensurePeriodForBlock(client, block)
 	if got := DefaultPeriodStore.PeriodFor(height); got != 1 {
 		t.Fatalf("wiring on: the missing certificate must be fetched and adopted, period = %d, want 1", got)
+	}
+}
+
+// TestEnsurePeriodForBlock_CooldownSkipsARepeatedCallForTheSameHeight is F-1's
+// (2026-09-25 audit) decisive regression test: the primary defense is the
+// per-height cooldown, not the jump bound (see periodCatchUpCooldown's doc
+// comment) — so what must be proven is that a SECOND call for a height
+// already attempted within the cooldown window does no network work at all,
+// however many times or ways it's repeated.
+func TestEnsurePeriodForBlock_CooldownSkipsARepeatedCallForTheSameHeight(t *testing.T) {
+	const height = uint64(910501) // disjoint from every other test file's heights
+	kps := newKeypairs(t, 4)
+	setTestEligibility(t, map[string]string{
+		kps[0].id: hexPub(kps[0]), kps[1].id: hexPub(kps[1]),
+		kps[2].id: hexPub(kps[2]), kps[3].id: hexPub(kps[3]),
+	})
+	cert := buildCertificate(t, kps, height, 1)
+
+	var hits int32
+	server, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	defer server.Close()
+	server.SetStreamHandler(config.TimeoutCertRejoinProtocol, func(s network.Stream) {
+		atomic.AddInt32(&hits, 1)
+		defer s.Close()
+		_, _ = bufio.NewReader(s).ReadString('\n')
+		payload, _ := json.Marshal(TimeoutCertRejoinResponse{Found: true, Cert: *cert})
+		payload = append(payload, '\n')
+		_, _ = s.Write(payload)
+	})
+	client, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	defer client.Close()
+	client.Peerstore().AddAddrs(server.ID(), server.Addrs(), time.Hour)
+	if err := client.Connect(t.Context(), peer.AddrInfo{ID: server.ID(), Addrs: server.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	savedStore := DefaultPeriodStore
+	DefaultPeriodStore = NewPeriodStore()
+	t.Cleanup(func() { DefaultPeriodStore = savedStore })
+
+	prevWiring, prevRejoin := TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled
+	t.Cleanup(func() { TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled = prevWiring, prevRejoin })
+	TimeoutCertWiringEnabled = true
+	TimeoutCertRejoinEnabled = true
+	t.Cleanup(resetPeriodCatchUpLimiterForTest())
+
+	block := &config.ZKBlock{BlockNumber: height, Period: 1}
+	ensurePeriodForBlock(client, block)
+	// Repeated immediately, well inside periodCatchUpCooldown (10s) — must be
+	// a no-op: no second stream, no second network attempt.
+	ensurePeriodForBlock(client, block)
+
+	if got := DefaultPeriodStore.PeriodFor(height); got != 1 {
+		t.Fatalf("first call must fetch and adopt the certificate, period = %d, want 1", got)
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Fatalf("cooldown must collapse the repeated call into exactly one network attempt, got %d", n)
+	}
+}
+
+// TestEnsurePeriodForBlock_LocalPlusOneReachesTheLimiter guards against the
+// regression that shipped in an earlier draft of this fix: a claim of
+// exactly local+1 — the realistic attack AND the realistic honest
+// single-step catch-up — must reach periodCatchUpLimiter and actually
+// attempt a fetch, not be silently absorbed by periodCatchUpMaxJump (which
+// is deliberately generous — see its doc comment — precisely so it never
+// intercepts this case).
+func TestEnsurePeriodForBlock_LocalPlusOneReachesTheLimiter(t *testing.T) {
+	const height = uint64(910502)
+	kps := newKeypairs(t, 4)
+	setTestEligibility(t, map[string]string{
+		kps[0].id: hexPub(kps[0]), kps[1].id: hexPub(kps[1]),
+		kps[2].id: hexPub(kps[2]), kps[3].id: hexPub(kps[3]),
+	})
+	cert := buildCertificate(t, kps, height, 1) // local starts at 0 → claim of 1 is exactly local+1
+
+	server, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	defer server.Close()
+	serveTimeoutCert(server, TimeoutCertRejoinResponse{Found: true, Cert: *cert})
+	client, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	defer client.Close()
+	client.Peerstore().AddAddrs(server.ID(), server.Addrs(), time.Hour)
+	if err := client.Connect(t.Context(), peer.AddrInfo{ID: server.ID(), Addrs: server.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	savedStore := DefaultPeriodStore
+	DefaultPeriodStore = NewPeriodStore()
+	t.Cleanup(func() { DefaultPeriodStore = savedStore })
+
+	prevWiring, prevRejoin := TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled
+	t.Cleanup(func() { TimeoutCertWiringEnabled, TimeoutCertRejoinEnabled = prevWiring, prevRejoin })
+	TimeoutCertWiringEnabled = true
+	TimeoutCertRejoinEnabled = true
+	t.Cleanup(resetPeriodCatchUpLimiterForTest())
+
+	ensurePeriodForBlock(client, &config.ZKBlock{BlockNumber: height, Period: 1})
+	if got := DefaultPeriodStore.PeriodFor(height); got != 1 {
+		t.Fatalf("a local+1 claim must reach the limiter and fetch the certificate, period = %d, want 1", got)
+	}
+}
+
+// TestPeriodCatchUpLimiter_RetentionPrunesOldHeights is a direct unit test
+// (no network) proving periodCatchUpLimiter's memory stays bounded
+// regardless of how many distinct heights are ever claimed against it — the
+// same guarantee internal/roundlock.Ledger gives, by the same mechanism.
+func TestPeriodCatchUpLimiter_RetentionPrunesOldHeights(t *testing.T) {
+	l := newPeriodCatchUpLimiter()
+	const n = periodCatchUpRetainHeights + 1000
+	for h := uint64(1); h <= n; h++ {
+		if !l.allow(h) {
+			t.Fatalf("height %d: a never-before-seen height must always be allowed", h)
+		}
+	}
+	l.mu.Lock()
+	size := len(l.lastTry)
+	l.mu.Unlock()
+	if uint64(size) > periodCatchUpRetainHeights+1 {
+		t.Fatalf("periodCatchUpLimiter did not prune: map holds %d entries after %d distinct heights, want <= %d",
+			size, n, periodCatchUpRetainHeights+1)
 	}
 }
 

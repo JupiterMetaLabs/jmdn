@@ -40,10 +40,11 @@ import (
 var TimeoutCertRejoinEnabled = os.Getenv("JMDN_TIMEOUT_CERT_REJOIN") == "1"
 
 // timeoutCertRejoinTimeout bounds one request end-to-end (dial + write +
-// read). Short: a rejoining node asks several peers (see
-// RequestLatestTimeoutCertificateFromPeers below), so one slow/unresponsive
-// peer must not stall the others.
-const timeoutCertRejoinTimeout = 5 * time.Second
+// read). Peers are queried in PARALLEL (see
+// RequestLatestTimeoutCertificateFromPeers), so this is also the effective
+// worst-case wall-clock time for one full catch-up attempt (F-1, 2026-09-25
+// audit) - no longer multiplied by the number of peers asked.
+const timeoutCertRejoinTimeout = 2 * time.Second
 
 // timeoutRejoinActive reports whether the catch-up RPC is live. Fix 3: it is
 // also live whenever JMDN_TIMEOUT_CERT_WIRING is on. Once certificates can
@@ -189,38 +190,73 @@ func requestLatestTimeoutCertificate(ctx context.Context, h host.Host, p peer.ID
 // "nobody has a certificate for this height" is the expected steady state
 // for the overwhelming majority of heights (most rounds never time out).
 func RequestLatestTimeoutCertificateFromPeers(h host.Host, peers []peer.ID, height uint64) (uint64, bool, error) {
-	if !timeoutRejoinActive() {
+	if !timeoutRejoinActive() || len(peers) == 0 {
 		return 0, false, nil
 	}
-	var lastErr error
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutCertRejoinTimeout)
+	defer cancel()
+
+	type outcome struct {
+		period uint64
+		ok     bool
+		err    error
+	}
+	// Buffered so a goroutine whose result arrives after we've already
+	// returned (deadline hit, or an earlier peer already won) never blocks
+	// trying to send — no goroutine leak.
+	results := make(chan outcome, len(peers))
+
 	for _, p := range peers {
-		ctx, cancel := context.WithTimeout(context.Background(), timeoutCertRejoinTimeout)
-		cert, found, err := requestLatestTimeoutCertificate(ctx, h, p, height)
-		cancel()
-		if err != nil {
-			lastErr = err
-			log.Warn().Err(err).Str("peer", p.String()).Uint64("height", height).
-				Msg("timeout rejoin: request failed, trying next peer")
-			continue
+		p := p
+		go func() {
+			cert, found, err := requestLatestTimeoutCertificate(ctx, h, p, height)
+			if err != nil {
+				log.Warn().Err(err).Str("peer", p.String()).Uint64("height", height).
+					Msg("timeout rejoin: request failed")
+				results <- outcome{err: err}
+				return
+			}
+			if !found {
+				results <- outcome{}
+				return
+			}
+			newPeriod, accepted, err := AcceptIncomingTimeoutCertificate(cert)
+			if err != nil {
+				log.Warn().Err(err).Str("peer", p.String()).Uint64("height", height).
+					Msg("timeout rejoin: peer's certificate failed verification — rejected")
+				results <- outcome{err: err}
+				return
+			}
+			if !accepted {
+				// Verified but did not advance anything (e.g. we already hold
+				// an equal-or-newer period for this height) — not an error.
+				results <- outcome{}
+				return
+			}
+			results <- outcome{period: newPeriod, ok: true}
+		}()
+	}
+
+	var lastErr error
+	for i := 0; i < len(peers); i++ {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				lastErr = r.err
+				continue
+			}
+			if r.ok {
+				log.Info().Uint64("height", height).Uint64("new_period", r.period).
+					Msg("timeout rejoin: adopted a verified certificate from a peer")
+				return r.period, true, nil
+			}
+		case <-ctx.Done():
+			if lastErr != nil {
+				return 0, false, fmt.Errorf("timeout rejoin: no peer produced a usable certificate for height %d before the deadline (last error: %w)", height, lastErr)
+			}
+			return 0, false, nil
 		}
-		if !found {
-			continue
-		}
-		newPeriod, accepted, err := AcceptIncomingTimeoutCertificate(cert)
-		if err != nil {
-			log.Warn().Err(err).Str("peer", p.String()).Uint64("height", height).
-				Msg("timeout rejoin: peer's certificate failed verification — rejected, trying next peer")
-			continue
-		}
-		if !accepted {
-			// Verified but did not advance anything (e.g. we already hold an
-			// equal-or-newer period for this height) — not an error, just
-			// nothing to do.
-			continue
-		}
-		log.Info().Str("peer", p.String()).Uint64("height", height).Uint64("new_period", newPeriod).
-			Msg("timeout rejoin: adopted a verified certificate from a peer")
-		return newPeriod, true, nil
 	}
 	if lastErr != nil {
 		return 0, false, fmt.Errorf("timeout rejoin: no peer produced a usable certificate for height %d (last error: %w)", height, lastErr)

@@ -47,7 +47,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
@@ -58,6 +62,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 )
 
 // TimeoutRequestDomain separates a TimeoutRequest's signed bytes from every
@@ -305,10 +310,120 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 	broadcastTimeoutVote(h, vote)
 }
 
-// periodCatchUpMaxPeers bounds how many peers a node asks for a missing
-// certificate before verifying a block (each ask is bounded by
-// timeoutCertRejoinTimeout), so the admission path cannot stall for long.
+// periodCatchUpMaxPeers bounds how many peers ONE catch-up attempt asks.
+// Peers are queried in parallel (see timeout_rejoin.go), so this bounds
+// fan-out per attempt, not wall-clock time.
 const periodCatchUpMaxPeers = 3
+
+// periodCatchUpCooldown is the PRIMARY mitigation for F-1 (2026-09-25 audit,
+// PR #159/#158 review): it bounds how often this node will attempt a network
+// catch-up for the SAME height, no matter how many blocks or relays repeat
+// the claim, or how many distinct (still-plausible) periods they claim for
+// it. b.Period is unauthenticated at this call site (see ensurePeriodForBlock's
+// comment) - but b.BlockNumber is not: checkLinkage (consensus_hardening.go),
+// which runs before this ever executes and defaults on
+// (JMDN_ENFORCE_BLOCK_LINKAGE=true), fail-closed-rejects any block whose
+// BlockNumber isn't exactly this node's local tip+1. So the exploitable
+// height at any moment is a single, slowly-advancing value, not an
+// attacker's free choice - a per-height cooldown is a direct match for that
+// surface, not a coarse approximation of one.
+const periodCatchUpCooldown = 10 * time.Second
+
+// periodCatchUpRetainHeights bounds periodCatchUpLimiter's memory the same
+// way internal/roundlock.Ledger bounds its own - see that package's doc
+// comment for the reasoning; it applies identically here.
+const periodCatchUpRetainHeights = 1024
+
+// periodCatchUpMaxJump is a defense-in-depth sanity bound ONLY. It exists to
+// reject obviously-impossible claims (e.g. a forged near-max-uint64 Period)
+// for free, before any other work. It is NOT the primary defense: the
+// realistic attack claims exactly local+1, far below any sane bound placed
+// here - periodCatchUpCooldown above is the real defense. Kept generous
+// rather than tight (e.g. "5") because a genuinely stalled height can
+// legitimately accumulate many periods - that is the exact case #159's
+// pool-wide timeout voting exists to resolve - and a tight bound would
+// strand an honestly-lagging node's own catch-up.
+const periodCatchUpMaxJump = 100_000
+
+// periodCatchUpLimiter rate-limits ensurePeriodForBlock's network fetches
+// per height. Same shape as internal/roundlock.Ledger: mutex-guarded map,
+// pruned by height so memory stays bounded regardless of how long the node
+// runs or how many heights are ever claimed against it.
+type periodCatchUpLimiter struct {
+	mu        sync.Mutex
+	lastTry   map[uint64]time.Time
+	maxHeight uint64
+}
+
+func newPeriodCatchUpLimiter() *periodCatchUpLimiter {
+	return &periodCatchUpLimiter{lastTry: make(map[uint64]time.Time)}
+}
+
+// defaultPeriodCatchUpLimiter is the process-wide limiter ensurePeriodForBlock
+// uses. Package-level, process-lifetime state - resetPeriodCatchUpLimiterForTest
+// below exists specifically so tests can isolate it, matching how this file's
+// other package-level state (DefaultPeriodStore, TimeoutCertWiringEnabled,
+// TimeoutCertRejoinEnabled) is already saved/restored per-test.
+var defaultPeriodCatchUpLimiter = newPeriodCatchUpLimiter()
+
+// resetPeriodCatchUpLimiterForTest replaces defaultPeriodCatchUpLimiter with a
+// fresh, empty one and returns a restore function for t.Cleanup. Exists so a
+// test's call(s) to ensurePeriodForBlock are never rate-limited by another
+// test's prior use of the same height - without this, two tests (or two
+// calls in one test) that reuse a height value across the same `go test`
+// process would silently and non-deterministically interfere with each
+// other via this shared limiter.
+func resetPeriodCatchUpLimiterForTest() (restore func()) {
+	prev := defaultPeriodCatchUpLimiter
+	defaultPeriodCatchUpLimiter = newPeriodCatchUpLimiter()
+	return func() { defaultPeriodCatchUpLimiter = prev }
+}
+
+// allow reports whether a catch-up attempt for height may proceed now, and
+// if so records it so a call for the same height within the cooldown is
+// refused without doing any network work.
+func (l *periodCatchUpLimiter) allow(height uint64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if last, ok := l.lastTry[height]; ok && time.Since(last) < periodCatchUpCooldown {
+		return false
+	}
+	l.lastTry[height] = time.Now()
+	if height > l.maxHeight {
+		l.maxHeight = height
+		if l.maxHeight > periodCatchUpRetainHeights {
+			floor := l.maxHeight - periodCatchUpRetainHeights
+			for h := range l.lastTry {
+				if h < floor {
+					delete(l.lastTry, h)
+				}
+			}
+		}
+	}
+	return true
+}
+
+// periodCatchUpGroup collapses concurrent ensurePeriodForBlock calls for the
+// SAME height (several blocks/relays landing at once) into one outbound
+// fetch, so a burst of duplicates costs one network round, not N.
+var periodCatchUpGroup singleflight.Group
+
+// randomPeers returns up to n peers chosen uniformly at random from h's
+// currently connected peers. h.Network().Peers() has no defined order, so
+// always taking its first n (the previous behaviour) could pick the same
+// unresponsive peers on every call; randomizing spreads that risk instead of
+// concentrating repeated catch-up load on whichever peers happen to sort
+// first.
+func randomPeers(h host.Host, n int) []peer.ID {
+	peers := h.Network().Peers()
+	if len(peers) <= n {
+		return peers
+	}
+	shuffled := make([]peer.ID, len(peers))
+	copy(shuffled, peers)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	return shuffled[:n]
+}
 
 // ensurePeriodForBlock fetches a missing TimeoutCertificate when b claims a
 // later Period for its height than this node has accepted.
@@ -321,6 +436,24 @@ const periodCatchUpMaxPeers = 3
 // (AcceptIncomingTimeoutCertificate), so a peer cannot push this node to a
 // period that was never certified; b.Period is only the hint to go and look.
 //
+// Runs BEFORE certificate verification (see verifyBlockCertificate), on
+// purpose - a node that hasn't caught up can't verify a cert built against a
+// period it doesn't hold, so this can't be moved after verification. That
+// means b.Period is, by construction, an UNAUTHENTICATED hint at this point;
+// F-1 (2026-09-25 audit) is about bounding the cost of that hint being a
+// lie:
+//   - periodCatchUpMaxJump rejects impossible values for free (cheap, not
+//     the real defense - see its own comment);
+//   - defaultPeriodCatchUpLimiter caps this node to one network attempt per
+//     height per periodCatchUpCooldown, however many times/ways it's claimed
+//     (the real defense, and see periodCatchUpCooldown's comment for why a
+//     per-height cooldown matches this attack surface specifically);
+//   - periodCatchUpGroup collapses concurrent callers for the same height;
+//   - RequestLatestTimeoutCertificateFromPeers (timeout_rejoin.go) now
+//     queries its peers in parallel, bounding one attempt's wall-clock time
+//     to timeoutCertRejoinTimeout regardless of peer count, instead of that
+//     timeout multiplied by peer count.
+//
 // No-op when the wiring is off, or when this node is already at or past the
 // block's period.
 func ensurePeriodForBlock(h host.Host, b *config.ZKBlock) {
@@ -328,15 +461,29 @@ func ensurePeriodForBlock(h host.Host, b *config.ZKBlock) {
 		return
 	}
 	height, claimed := b.BlockNumber, b.Period
-	if claimed <= DefaultPeriodStore.PeriodFor(height) {
+	local := DefaultPeriodStore.PeriodFor(height)
+	if claimed <= local {
 		return
 	}
-	peers := h.Network().Peers()
-	if len(peers) > periodCatchUpMaxPeers {
-		peers = peers[:periodCatchUpMaxPeers]
+	if claimed-local > periodCatchUpMaxJump {
+		log.Warn().Uint64("height", height).Uint64("claimed_period", claimed).
+			Uint64("local_period", local).
+			Msg("period catch-up: implausible period jump, ignoring without a network call")
+		return
 	}
-	newPeriod, adopted, err := RequestLatestTimeoutCertificateFromPeers(h, peers, height)
-	log.Info().Uint64("height", height).Uint64("claimed_period", claimed).
-		Uint64("new_period", newPeriod).Bool("adopted", adopted).Err(err).
-		Msg("period catch-up: block claims a later period than this node holds")
+	if !defaultPeriodCatchUpLimiter.allow(height) {
+		log.Debug().Uint64("height", height).Uint64("claimed_period", claimed).
+			Msg("period catch-up: cooldown active for this height, skipping network call")
+		return
+	}
+
+	key := strconv.FormatUint(height, 10)
+	_, _, _ = periodCatchUpGroup.Do(key, func() (interface{}, error) {
+		peers := randomPeers(h, periodCatchUpMaxPeers)
+		newPeriod, adopted, err := RequestLatestTimeoutCertificateFromPeers(h, peers, height)
+		log.Info().Uint64("height", height).Uint64("claimed_period", claimed).
+			Uint64("new_period", newPeriod).Bool("adopted", adopted).Err(err).
+			Msg("period catch-up: block claims a later period than this node holds")
+		return nil, nil
+	})
 }
