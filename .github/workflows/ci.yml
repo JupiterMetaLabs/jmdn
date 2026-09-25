@@ -21,6 +21,8 @@ jobs:
   quality-gate:
     name: Quality Gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -128,6 +130,8 @@ jobs:
   security:
     name: Security
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # go-ethereum needs cgo; keep it on so package loading (govulncheck/gosec)
     # matches the real build (see Makefile: CGO_ENABLED=1).
     env:
