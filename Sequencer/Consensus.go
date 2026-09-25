@@ -187,12 +187,19 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// seat is only ever added to the pool if it is also in the signed set.
 	var pinnedEligible map[string]struct{}
 	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
-		// WarmupPeerIDs, not EligibleCommitteePeerIDs: under JMDN_COMMITTEE_V2 the
-		// seated committee rotates across the WHOLE uncapped pool every height, so
-		// the sequencer must be connected to all of it, not to the capped prefix it
-		// used to seat. With the flag off this returns the capped set exactly as
-		// before.
-		eligible, eligErr := messaging.WarmupPeerIDs()
+		// WarmupPeerIDsForEpoch, not EligibleCommitteePeerIDs: under
+		// JMDN_COMMITTEE_V2 the seated committee rotates across the WHOLE
+		// uncapped pool every height, so the sequencer must be connected to
+		// all of it, not to the capped prefix it used to seat. With the flag
+		// off this returns the capped set exactly as before.
+		//
+		// F-7: pinned to THIS round's SelectionPeriod (the same clock
+		// committeeSnapshotFor draws the seated committee from), not the old
+		// unconditionally-live WarmupPeerIDs() - see that function's doc
+		// comment for why the two must never diverge once
+		// consensus.require_pinned_committee is on.
+		eligible, eligErr := messaging.WarmupPeerIDsForEpoch(
+			messaging.SelectionPeriod(messaging.EpochForHeight(zkblock.BlockNumber)))
 		if eligErr != nil {
 			return fmt.Errorf("CONSENSUSERROR.WARMUP: pinned committee eligibility unavailable (fail-closed): %w", eligErr)
 		}

@@ -604,11 +604,12 @@ func SetBeaconSource(b *committee.BeaconSource) { beaconSource = b }
 
 func activeBeacon() *committee.BeaconSource { return beaconSource }
 
-// WarmupPeerIDs returns the peers the sequencer must have a live connection to
-// before a round can reach quorum.
+// WarmupPeerIDsForEpoch returns the peers the sequencer must have a live
+// connection to before a round can reach quorum, PINNED to epoch (the round's
+// SelectionPeriod).
 //
-// This is NOT the committee. It is the connectivity pool the committee is drawn
-// from, and under v2 the two are deliberately different sizes.
+// This is NOT the committee. It is the connectivity pool the committee is
+// drawn from, and under v2 the two are deliberately different sizes.
 //
 // WHY IT CANNOT JUST BE EligibleCommitteePeerIDs: that returns the CAPPED set -
 // the k alphabetically-first peers. Under v2 the seated committee is drawn from
@@ -618,13 +619,31 @@ func activeBeacon() *committee.BeaconSource { return beaconSource }
 // certificate would sit below threshold: a halt, produced by a warmup that
 // looked correct.
 //
+// F-7: THIS MUST STAY POOL-IDENTICAL TO committeeSnapshotFor. Both used to
+// call eligibleMembersUncapped() (the live view), and stayed identical only
+// because pinnedEligibleForEpoch's pinned branch is not reachable yet (W1's
+// prerequisite - see its own doc comment). The moment
+// consensus.require_pinned_committee flips on, committeeSnapshotFor draws the
+// SEATED committee from the epoch-FROZEN snapshot while this function, called
+// unconditionally live, would keep authorizing warmup/candidate membership
+// against the CURRENT pool. A peer seated from the frozen snapshot but since
+// dropped from the live pool would then be unreachable AND unauthorized to be
+// added back by any seat-resolution step that gates on this function's return
+// value - reopening, one layer up, the exact seat/candidate pool mismatch such
+// a step would exist to close. Routing through pinnedEligibleForEpoch(epoch)
+// instead closes it: with pinning off this is byte-identical to the old
+// always-live call (pinnedEligibleForEpoch's own unpinned branch ignores epoch
+// and reads the live source, same as before); with pinning on, it resolves the
+// SAME frozen snapshot committeeSnapshotFor uses for this epoch, so the two
+// pools cannot diverge again.
+//
 // With v2 off this returns exactly what it returned before - the capped set -
 // so the warmup path is unchanged until the flag flips.
-func WarmupPeerIDs() (map[string]struct{}, error) {
+func WarmupPeerIDsForEpoch(epoch SelectionPeriod) (map[string]struct{}, error) {
 	if !CommitteeV2Enabled {
 		return EligibleCommitteePeerIDs()
 	}
-	pool, err := eligibleMembersUncapped()
+	pool, err := pinnedEligibleForEpoch(uint64(epoch))
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +652,20 @@ func WarmupPeerIDs() (map[string]struct{}, error) {
 		set[pid] = struct{}{}
 	}
 	return set, nil
+}
+
+// WarmupPeerIDs is WarmupPeerIDsForEpoch(0) - the always-live view (epoch 0
+// under the unpinned branch is never actually consulted; see
+// pinnedEligibleForEpoch). Kept for callers with no round context yet.
+//
+// Once consensus.require_pinned_committee is on, epoch 0 is a REAL, distinct
+// selection epoch (see pinnedEligibleForEpoch's own note on
+// committee_epoch_blocks == 0), so this is NOT a safe stand-in for a caller's
+// actual round epoch under pinning - a caller that knows its epoch (e.g.
+// Consensus.Start, via messaging.EpochForHeight(zkblock.BlockNumber)) MUST
+// call WarmupPeerIDsForEpoch directly, which is what F-7 changed it to do.
+func WarmupPeerIDs() (map[string]struct{}, error) {
+	return WarmupPeerIDsForEpoch(0)
 }
 
 // SeatedPeerIDs returns the seated committee for a round as a lookup set.
