@@ -978,6 +978,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// D-858 finding 4 (#154 empty-pin liveness trap): fail hard at boot — on every
+	// node, not only in production posture — when committee-v2 is enabled but the
+	// sequencer authority pin is empty, which would silently wedge finalization
+	// (every seated validator refuses the sequencer, WARN-only). See
+	// messaging.ValidateCommitteeV2Pin. No-op with the flag off (default).
+	if err := messaging.ValidateCommitteeV2Pin(messaging.CommitteeV2Enabled, cfg.Consensus.SeedAuthorityBLSPub); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
 	log.Info().
 		Bool("enabled", cfg.Thebe.Enabled).
 		Str("kv_path", cfg.Thebe.KVPath).

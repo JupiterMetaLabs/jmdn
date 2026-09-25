@@ -73,6 +73,21 @@ A definitive (non-landing) submit failure also releases the marker. `cmd/orchest
 `processor.go`, `service.go`. Test: `cmd/orchestrator/proposal_tracker_test.go` (passes in-sandbox;
 `go build ./...` + `go vet` clean).
 
+### Finding 4 — empty vote-requester pin under committee-v2 silently wedges finalization (`jmdn`)
+Separate defect, same incident window, recorded here for the handover. `#154` (CON-03, the
+vote-requester authz gate) authorizes the sequencer's vote requests against
+`consensus.seed_authority_bls_pub`, which **defaults to `""`** (`config/settings/defaults.go`). On any
+fleet that enabled `JMDN_COMMITTEE_V2` without pinning the key, **every seated validator fail-closes and
+refuses the sequencer** — silently, at WARN level, on the validators only — so no block ever finalizes.
+`JMDN_COMMITTEE_V2` always implies a pinned sequencer authority key; there is no valid committee-v2
+configuration with an empty pin.
+
+Fix: `main.go` now **fails hard at boot** (not a warning, and on every node, not only in production
+posture) when `messaging.CommitteeV2Enabled` and `SeedAuthorityBLSPub` is empty — placed beside the
+existing SEC-03 consensus-posture refusals. With the flag off (default) it is a no-op. This converts a
+silent fleet-wide liveness stall into a loud, un-missable boot refusal with the exact remediation.
+Confidence 90% (logic verified + `main.go` gofmt-clean; not compiled in-sandbox — private modules).
+
 ## Confidence and interaction
 
 - **Item 1** — closes the corruption mechanism itself (state advancing without a durable block). Even if
