@@ -151,6 +151,19 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 			}
 			if len(cr.Logs) > 0 {
 				logs = cr.Logs
+				// Receipts persisted before the apply path stamped block/tx context
+				// carry zeroed blockHash/txHash/logIndex. Fill them here so old
+				// blocks read the same as new ones; logIndex falls back to the
+				// receipt-local position (block-wide index is unknown for them).
+				for i := range logs {
+					if logs[i].TxHash == (common.Hash{}) {
+						logs[i].TxHash = tx.Hash
+						logs[i].BlockHash = block.BlockHash
+						logs[i].BlockNumber = block.BlockNumber
+						logs[i].TxIndex = txIndex
+						logs[i].LogIndex = uint64(i)
+					}
+				}
 			}
 		}
 		rcancel()
