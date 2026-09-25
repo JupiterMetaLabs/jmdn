@@ -560,10 +560,43 @@ func SetSharedDIDClient(client pbdid.DIDServiceClient) {
 	sharedDIDClient = client
 }
 
+// sharedAccountSrc is the process-wide local-ledger balance/nonce source
+// (DB_OPs.ContractAccountSource) — the SAME authority the consensus apply path
+// uses (EVM-A16). When set, request-scoped StateDBs built by InitializeStateDB
+// (eth_call, eth_estimateGas, tracers) read balances from the committed ledger
+// instead of the DID gRPC service.
+//
+// Why this matters: the DID service only knows EOA/DID accounts. A CONTRACT
+// address has no DID document, so loadAccountFromDID returned balance 0 for
+// every contract on the read path. address(this).balance / SELFBALANCE / BALANCE
+// inside eth_call were therefore always 0 for contracts, and eth_estimateGas
+// reverted on any require(address(this).balance >= x) — while the same tx
+// succeeded when applied in a block (ledger-backed). Observed on JMDT testnet
+// with JMDTVault.release(): "insufficient locked balance" in estimation only.
+var sharedAccountSrc AccountReader
+
+// SetSharedAccountSource stores the process-wide ledger account source used by
+// InitializeStateDB. Must be called once at startup (cmd/main.go), alongside
+// evmexec.Register, so the RPC read path and the apply path agree on balances.
+func SetSharedAccountSource(src AccountReader) {
+	sharedAccountSrc = src
+}
+
 // InitializeStateDB creates a new StateDB instance for EVM execution.
 // It reuses the process-wide singletons where available and falls back to
 // env-var-configured connections for standalone / test use.
+//
+// Balance/nonce authority, in order of preference:
+//  1. sharedAccountSrc (local committed ledger — identical to the apply path)
+//  2. DID gRPC client (legacy; EOAs only, contracts read as balance 0)
 func InitializeStateDB() (StateDB, error) {
+	if sharedAccountSrc != nil {
+		if sharedStateRepo == nil {
+			return nil, fmt.Errorf("contractDB: StateRepository not initialised (Thebe repository is required)")
+		}
+		return NewContractDBWithAccountSource(sharedAccountSrc, sharedStateRepo), nil
+	}
+
 	// Resolve DID client
 	var didClient pbdid.DIDServiceClient
 	if sharedDIDClient != nil {

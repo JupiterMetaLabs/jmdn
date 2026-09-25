@@ -1250,6 +1250,12 @@ func main() {
 					return len(code) > 0
 				},
 			)
+			// Give the RPC read path (eth_call / eth_estimateGas via
+			// contractDB.InitializeStateDB) the SAME ledger balance source as the
+			// apply path. Without this it read balances from the DID service, which
+			// has no record for contract addresses → address(this).balance == 0 in
+			// every simulation (see SetSharedAccountSource).
+			contractDB.SetSharedAccountSource(DB_OPs.ContractAccountSource{})
 			// P4: fold contract state into the P2.5 fingerprint so the
 			// halt-on-divergence check covers contract storage, not just accounts.
 			kvStore := cas.KV()
