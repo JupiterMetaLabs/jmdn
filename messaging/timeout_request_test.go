@@ -56,7 +56,11 @@ func TestTimeoutRequest_VerifiesOnlyAgainstThePinnedSequencer(t *testing.T) {
 	}
 }
 
-func TestTimeoutRequest_TamperAndReplayAreRejected(t *testing.T) {
+// Despite the old name, this test only covers cross-height/period/chain
+// tampering. True same-round replay (F-2) is covered by
+// TestDecideTimeoutRequest's "timeout already signed" case and
+// TestHandleTimeoutRequest_ReplayDoesNotReSign below.
+func TestTimeoutRequest_TamperAcrossRoundsIsRejected(t *testing.T) {
 	seqPriv, seqID := libp2pIdentity(t)
 	chain := BLS_Signer.DomainChainID()
 	req, _ := SignTimeoutRequest(seqPriv, seqID, chain, 910002, 3)
@@ -103,7 +107,10 @@ func TestDecideTimeoutRequest(t *testing.T) {
 		{"ahead: missing the certificate for this period", "node", 1, 0, actIgnoreAhead},
 		{"already signed a block result for the round", "node", 2, roundlock.Block, actRefuseBlockSig},
 		{"current round, nothing signed: sign", "node", 2, 0, actSign},
-		{"current round, timeout already signed: sign again (idempotent)", "node", 2, roundlock.Timeout, actSign},
+		// F-2: a replayed request (re-wrapped under a fresh broadcast envelope
+		// ID so it evades the broadcast layer's seen-message dedup - see
+		// actAlreadySigned's doc comment) must NOT be re-signed.
+		{"current round, timeout already signed: do not re-sign (F-2 replay guard)", "node", 2, roundlock.Timeout, actAlreadySigned},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,6 +286,63 @@ func TestHandleTimeoutRequest_RefusesAfterBlockResult(t *testing.T) {
 	seqPriv, seqID := libp2pIdentity(t)
 	if votes := driveHandler(t, signedRequestJSON(t, seqPriv, seqID, height, 0), seqID, true, height, 1); len(votes) != 0 {
 		t.Fatalf("a node that signed a block result for the round must not sign a timeout vote for it")
+	}
+}
+
+// TestHandleTimeoutRequest_ReplayDoesNotReSign (F-2, closes A-1): the
+// broadcast envelope's ID/Timestamp are not covered by TimeoutRequest.Sig
+// (CanonicalTimeoutRequestMessage signs only chain/height/period), so a
+// relay can re-wrap an already-delivered, validly-signed request under a
+// fresh envelope and evade the broadcast layer's isMessageSeen dedup
+// entirely. Before the actAlreadySigned fix, decideTimeoutRequest's own gate
+// (TryLock) was idempotent by design for a repeated same-side call - a
+// deliberate accommodation for a retried vote-result - so a replayed request
+// fell all the way through to actSign and produced a fresh BLS signature and
+// a fresh broadcast on every delivery. This drives the REAL handler with the
+// identical signed payload twice and asserts exactly one vote is produced.
+func TestHandleTimeoutRequest_ReplayDoesNotReSign(t *testing.T) {
+	const height = 910105
+	seqPriv, seqID := libp2pIdentity(t)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	prevWiring, prevPin, prevKey := TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey
+	t.Cleanup(func() {
+		TimeoutCertWiringEnabled, timeoutRequestPin, timeoutRequestBLSKey = prevWiring, prevPin, prevKey
+	})
+	TimeoutCertWiringEnabled = true
+	timeoutRequestPin = func() string { return seqID }
+	blsPriv := newKeypairs(t, 1)[0].priv
+	timeoutRequestBLSKey = func() ([]byte, error) { return blsPriv, nil }
+
+	msgData := signedRequestJSON(t, seqPriv, seqID, height, 0)
+	countMine := func() int {
+		defaultTimeoutVoteCollector.mu.Lock()
+		defer defaultTimeoutVoteCollector.mu.Unlock()
+		n := 0
+		for _, v := range defaultTimeoutVoteCollector.votes[timeoutRoundKey{height, 1}] {
+			if v.VoterID == h.ID().String() {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Delivery 1 (the original broadcast): must sign.
+	handleTimeoutRequestBroadcast(h, BroadcastMessageStruct{Type: timeoutRequestBroadcastType, Data: string(msgData)})
+	if n := countMine(); n != 1 {
+		t.Fatalf("first delivery: want 1 own vote, got %d", n)
+	}
+
+	// Delivery 2: the identical signed request delivered again, simulating a
+	// relay that regenerated the envelope ID/Timestamp to evade dedup. Must
+	// NOT sign again.
+	handleTimeoutRequestBroadcast(h, BroadcastMessageStruct{Type: timeoutRequestBroadcastType, Data: string(msgData)})
+	if n := countMine(); n != 1 {
+		t.Fatalf("replayed delivery: want still 1 own vote (no re-sign), got %d", n)
 	}
 }
 

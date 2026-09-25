@@ -130,6 +130,17 @@ const (
 	actIgnoreStale    // request is for a period this node has already moved past
 	actIgnoreAhead    // request is for a period this node has not reached (missing a certificate)
 	actRefuseBlockSig // this node already signed a block result for the round
+	// actAlreadySigned: this node already signed its OWN timeout vote for this
+	// round. (F-2) msg.ID/Timestamp on the broadcast envelope are not covered
+	// by TimeoutRequest.Sig (only chain/height/period are signed), so a relay
+	// can re-wrap an already-seen, validly-signed request under a fresh
+	// envelope and evade the broadcast layer's isMessageSeen dedup. Before
+	// this case existed, decideTimeoutRequest fell through to TryLock, which
+	// is intentionally idempotent for the SAME side (so a retried vote-result
+	// request is not refused) - so a replayed request re-signed and
+	// re-broadcast every time it arrived. This case is checked first so a
+	// replay is a no-op instead.
+	actAlreadySigned
 )
 
 func (a timeoutRequestAction) String() string {
@@ -144,6 +155,8 @@ func (a timeoutRequestAction) String() string {
 		return "ignore_ahead_period"
 	case actRefuseBlockSig:
 		return "refuse_already_signed_block"
+	case actAlreadySigned:
+		return "already_signed_timeout"
 	default:
 		return "unknown"
 	}
@@ -162,7 +175,18 @@ func decideTimeoutRequest(req TimeoutRequest, selfID, pinned string, localPeriod
 	if req.Period > localPeriod {
 		return actIgnoreAhead
 	}
-	if ok, _ := ledger.TryLock(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout); !ok {
+	r := roundlock.Round{Height: req.Height, Period: req.Period}
+	// F-2 replay guard: check what THIS node already signed for the round
+	// before touching TryLock. TryLock is deliberately idempotent for a
+	// repeated SAME-side call (a retried vote-result must not be refused),
+	// so it cannot itself distinguish "first request" from "Nth replay" - the
+	// caller has to. A prior Block signature still falls through to TryLock
+	// below, which correctly refuses it (actRefuseBlockSig); only a prior
+	// Timeout signature short-circuits here.
+	if side, signed := ledger.Signed(r); signed && side == roundlock.Timeout {
+		return actAlreadySigned
+	}
+	if ok, _ := ledger.TryLock(r, roundlock.Timeout); !ok {
 		return actRefuseBlockSig
 	}
 	return actSign
@@ -255,7 +279,18 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 	}
 	log.Info().Uint64("height", req.Height).Uint64("period", req.Period+1).
 		Msg("timeout request: verified; signed and broadcasting this node's timeout vote")
-	recordAndMaybeCertify(h, vote, nil)
+	// F-5: this node cannot know who cast block votes for the round it is
+	// timing out - blockVoters is produced by the SEQUENCER's state machine
+	// (Sequencer/consensus_statemachine.go), and this handler runs on every
+	// pool node, not just the sequencer. That is an information limit, not an
+	// oversight: passing nil here means tryCertify's §7.1b layer-2
+	// equivocation exclusion does not run on this path (it only ever ran on
+	// the pre-fix sequencer-only signer, which always had blockVoters). The
+	// remaining defense is layer 1, roundlock's honest self-restraint - which
+	// does not catch a Byzantine node that signs both sides deliberately. See
+	// the review's F-5 for the severity discussion; not closed by this PR.
+	var blockVotersUnknown map[string]bool // intentionally nil - see comment above
+	recordAndMaybeCertify(h, vote, blockVotersUnknown)
 	broadcastTimeoutVote(h, vote)
 }
 

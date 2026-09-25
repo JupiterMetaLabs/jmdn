@@ -96,6 +96,15 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	}
 	block.Slot = messaging.LiveSlotFor(block.BlockNumber)
 	block.Period = messaging.DefaultPeriodStore.PeriodFor(block.BlockNumber)
+	// F-6 / messaging.checkConsensusBinding: that check rejects a block whose
+	// Period is nonzero with a still-zero ConsensusHash - the invariant this
+	// function must uphold is that EVERY early return between here and the
+	// ConsensusHash assignment below reaches a caller that refuses to
+	// propose (Block/Server.go, Block/grpc_server.go both do). A future
+	// early return that logs-and-continues instead, or a new caller that
+	// does not treat a non-nil error as fatal, would ship a block every
+	// other node now rejects. checkConsensusBinding is not itself gated by
+	// any rollout flag.
 	block.RandaoReveals = messaging.RevealsForBlock(block.Slot)
 	// B1 (Architecture §4.2a, §10 decision 10) — attach the PREVIOUS block's
 	// commit certificate when this block's parent sits in the epoch's fallback
