@@ -23,7 +23,10 @@ type memKV struct{ m map[string][]byte }
 func newMemKV() *memKV { return &memKV{m: map[string][]byte{}} }
 
 func (k *memKV) Get(key []byte) ([]byte, error) { return k.m[string(key)], nil }
-func (k *memKV) PutDerived(key, val []byte) error { k.m[string(key)] = append([]byte(nil), val...); return nil }
+func (k *memKV) PutDerived(key, val []byte) error {
+	k.m[string(key)] = append([]byte(nil), val...)
+	return nil
+}
 func (k *memKV) ScanPrefix(prefix []byte, fn func(kk, v []byte) error) error {
 	keys := make([]string, 0, len(k.m))
 	for s := range k.m {
