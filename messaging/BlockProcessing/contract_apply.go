@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -275,8 +276,18 @@ func applyContractTx(
 			CreatedAt:       time.Unix(blockTimestamp, 0).UTC(),
 		}
 		if rErr := DB_OPs.WriteContractReceipt(accountsClient, rec); rErr != nil {
-			logger().Warn(span_ctx, "persist contract receipt failed",
-				ion.String("tx", tx.Hash.Hex()), ion.String("err", rErr.Error()))
+			// The block row is stored only AFTER all txs are applied (broadcast.go:
+			// "process transactions BEFORE storing the block"), so this write's
+			// FK on blocks fails on the first attempt by construction and lands
+			// via the outbox once StoreZKBlock has run. That is expected; only an
+			// error that was NOT enqueued is worth a warning.
+			if strings.Contains(rErr.Error(), "enqueued to outbox") {
+				logger().Info(span_ctx, "contract receipt deferred to outbox (block row not yet stored)",
+					ion.String("tx", tx.Hash.Hex()))
+			} else {
+				logger().Warn(span_ctx, "persist contract receipt failed",
+					ion.String("tx", tx.Hash.Hex()), ion.String("err", rErr.Error()))
+			}
 		}
 	}
 
