@@ -43,6 +43,7 @@ package Sequencer
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
@@ -174,10 +175,78 @@ func firstUsableAddr(pid peer.ID, addrs []string) (multiaddr.Multiaddr, bool) {
 // fetchSeatAddressBook.
 var seatAddressBook = fetchSeatAddressBook
 
+// seedClientDialer creates the seed gRPC client used by fetchSeatAddressBook.
+// A package variable (like seatAddressBook above) purely so tests can count
+// or fake dial calls without a live network; production always uses
+// seednode.NewClient.
+var seedClientDialer = seednode.NewClient
+
+// F-8 / A-11 (pure optimization, no behaviour change): fetchSeatAddressBook
+// used to call seednode.NewClient - a fresh grpc.Dial + TLS handshake - and
+// Close it again on every single call, i.e. every round that has a missing
+// seat. That is needless churn on the consensus critical path (this call sits
+// behind a 3s timeout inside a 45s round budget, Consensus.go:254/2111) for a
+// connection that grpc.ClientConn is explicitly designed to have dialled once
+// and reused: it is safe for concurrent RPCs and reconnects internally on
+// transient failures (see google.golang.org/grpc's own docs on ClientConn
+// lifecycle). So this now dials once and keeps the client for the life of the
+// process, only redialling if the configured seed URL itself changes (a
+// config reload/rotation, not a per-round event).
+var (
+	seatAddressBookClientMu  sync.Mutex
+	seatAddressBookClient    *seednode.Client
+	seatAddressBookClientURL string
+)
+
+// seatAddressBookClientFor returns the cached seed client for addr, dialling
+// (and caching) a new one only on the first call or after addr changes from
+// what is currently cached. Safe for concurrent callers.
+func seatAddressBookClientFor(addr string) (*seednode.Client, error) {
+	seatAddressBookClientMu.Lock()
+	defer seatAddressBookClientMu.Unlock()
+
+	if seatAddressBookClient != nil && seatAddressBookClientURL == addr {
+		return seatAddressBookClient, nil
+	}
+	if seatAddressBookClient != nil {
+		// The seed URL changed under us (config reload) - close the old
+		// connection rather than leaking it, then dial the new one.
+		_ = seatAddressBookClient.Close()
+		seatAddressBookClient = nil
+		seatAddressBookClientURL = ""
+	}
+
+	sc, err := seedClientDialer(addr)
+	if err != nil {
+		return nil, err
+	}
+	seatAddressBookClient = sc
+	seatAddressBookClientURL = addr
+	return sc, nil
+}
+
+// resetSeatAddressBookClient closes and forgets any cached seed client.
+// Tests use it to get a clean cache between cases; production code has no
+// reason to call it (a URL change is handled automatically by
+// seatAddressBookClientFor).
+func resetSeatAddressBookClient() {
+	seatAddressBookClientMu.Lock()
+	defer seatAddressBookClientMu.Unlock()
+	if seatAddressBookClient != nil {
+		_ = seatAddressBookClient.Close()
+	}
+	seatAddressBookClient = nil
+	seatAddressBookClientURL = ""
+}
+
 // fetchSeatAddressBook calls the seed's ListBuddy - the same RPC, and the same
 // automatic sequencer authentication (seednode.Client.ListBuddy), that the
 // warmup NodeSelection path and the buddy-head enrichment already use. It
 // returns every record, before any selection-band filtering.
+//
+// The gRPC client itself is cached across calls (see seatAddressBookClientFor
+// above); this function no longer dials or closes a connection on every
+// invocation, only on the first one (or after a seed URL change).
 func fetchSeatAddressBook(ctx context.Context) (map[string][]string, error) {
 	if !settings.IsLoaded() {
 		return nil, fmt.Errorf("settings not loaded")
@@ -186,11 +255,10 @@ func fetchSeatAddressBook(ctx context.Context) (map[string][]string, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("no seednode URL configured")
 	}
-	sc, err := seednode.NewClient(addr)
+	sc, err := seatAddressBookClientFor(addr)
 	if err != nil {
 		return nil, fmt.Errorf("seed client init: %w", err)
 	}
-	defer func() { _ = sc.Close() }()
 
 	resp, err := sc.ListBuddy(ctx, &peerpb.ListBuddyRequest{})
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -202,6 +203,49 @@ func TestResolveMissingSeats_DuplicateSeatAddedOnce(t *testing.T) {
 
 	if len(res.Added) != 1 || len(out) != 2 {
 		t.Fatalf("duplicate seat must be added once: %+v, len(out)=%d", res, len(out))
+	}
+}
+
+// TestSeatAddressBookClientFor_CachesAndRedialsOnURLChange is the A-11/F-8
+// regression test: the seed gRPC client must be dialled once and reused
+// across rounds, not rebuilt on every call, and must only redial when the
+// configured seed URL actually changes.
+func TestSeatAddressBookClientFor_CachesAndRedialsOnURLChange(t *testing.T) {
+	resetSeatAddressBookClient()
+	defer resetSeatAddressBookClient()
+
+	dials := 0
+	orig := seedClientDialer
+	seedClientDialer = func(addr string) (*seednode.Client, error) {
+		dials++
+		return orig(addr)
+	}
+	defer func() { seedClientDialer = orig }()
+
+	c1, err := seatAddressBookClientFor("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("seatAddressBookClientFor: %v", err)
+	}
+	c2, err := seatAddressBookClientFor("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("seatAddressBookClientFor (2nd call, same URL): %v", err)
+	}
+	if dials != 1 {
+		t.Fatalf("dials = %d, want 1 (same URL must reuse the cached client, not redial)", dials)
+	}
+	if c1 != c2 {
+		t.Fatalf("seatAddressBookClientFor returned a different instance for an unchanged URL")
+	}
+
+	c3, err := seatAddressBookClientFor("127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("seatAddressBookClientFor (new URL): %v", err)
+	}
+	if dials != 2 {
+		t.Fatalf("dials = %d, want 2 (a seed URL change must redial)", dials)
+	}
+	if c3 == c2 {
+		t.Fatalf("expected a new client instance after the seed URL changed")
 	}
 }
 
