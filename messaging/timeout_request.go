@@ -170,15 +170,15 @@ func (a timeoutRequestAction) String() string {
 // decideTimeoutRequest is the pure decision for a VERIFIED request. It locks
 // the round in ledger only when the answer is actSign, so a refusal leaves the
 // node free to sign a block result for the round later.
-func decideTimeoutRequest(req TimeoutRequest, selfID, pinned string, localPeriod uint64, ledger *roundlock.Ledger) timeoutRequestAction {
+func decideTimeoutRequest(req TimeoutRequest, selfID, pinned string, localPeriod uint64, ledger *roundlock.Ledger) (timeoutRequestAction, bool) {
 	if selfID != "" && selfID == strings.TrimSpace(pinned) {
-		return actIgnoreSelf // the sequencer signs its own vote in MaybeStartTimeoutFlow
+		return actIgnoreSelf, false // the sequencer signs its own vote in MaybeStartTimeoutFlow
 	}
 	if req.Period < localPeriod {
-		return actIgnoreStale
+		return actIgnoreStale, false
 	}
 	if req.Period > localPeriod {
-		return actIgnoreAhead
+		return actIgnoreAhead, false
 	}
 	r := roundlock.Round{Height: req.Height, Period: req.Period}
 	// F-2 replay guard: check what THIS node already signed for the round
@@ -189,12 +189,17 @@ func decideTimeoutRequest(req TimeoutRequest, selfID, pinned string, localPeriod
 	// below, which correctly refuses it (actRefuseBlockSig); only a prior
 	// Timeout signature short-circuits here.
 	if side, signed := ledger.Signed(r); signed && side == roundlock.Timeout {
-		return actAlreadySigned
+		return actAlreadySigned, false
 	}
-	if ok, _ := ledger.TryLock(r, roundlock.Timeout); !ok {
-		return actRefuseBlockSig
+	ok, _, fresh := ledger.TryLockFresh(r, roundlock.Timeout)
+	if !ok {
+		return actRefuseBlockSig, false
 	}
-	return actSign
+	// F-9: the Signed() check above and this TryLockFresh are two separate
+	// acquisitions, so a concurrent request for the same round can take the
+	// reservation in between. fresh distinguishes "this call reserved it" from
+	// "somebody else did"; only the former may release on a sign failure.
+	return actSign, fresh
 }
 
 // timeoutRequestPin and timeoutRequestBLSKey are the handler's two external
@@ -263,7 +268,7 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 	}
 
 	localPeriod := DefaultPeriodStore.PeriodFor(req.Height)
-	action := decideTimeoutRequest(req, h.ID().String(), pinned, localPeriod, roundlock.Default)
+	action, freshTimeoutLock := decideTimeoutRequest(req, h.ID().String(), pinned, localPeriod, roundlock.Default)
 	if action != actSign {
 		log.Info().Uint64("height", req.Height).Uint64("period", req.Period).
 			Uint64("local_period", localPeriod).Str("action", action.String()).
@@ -280,7 +285,9 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		// the other side based on the reservation, not on an actual
 		// signature), stranding it from both certificates for the rest of
 		// this process's life. See roundlock.Ledger.Release's doc comment.
-		roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", req.Height).
 			Msg("timeout request: no local BLS key, cannot sign a timeout vote")
 		return
@@ -289,7 +296,9 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 	if err != nil {
 		// F-3: same as above - release the reservation this attempt did not
 		// use.
-		roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(roundlock.Round{Height: req.Height, Period: req.Period}, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", req.Height).Msg("timeout request: failed to sign timeout vote")
 		return
 	}

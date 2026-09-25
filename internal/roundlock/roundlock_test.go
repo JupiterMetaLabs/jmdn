@@ -287,3 +287,76 @@ func TestRelease_ConcurrentOppositeSideAfterRelease_ExactlyOneWins(t *testing.T)
 		}
 	}
 }
+
+// --- F-9: release-after-success must not re-open the other side ---
+
+// TestTryLockFresh_ReportsFreshOnlyForTheCreatingCall pins the distinction the
+// whole F-9 guard rests on.
+func TestTryLockFresh_ReportsFreshOnlyForTheCreatingCall(t *testing.T) {
+	l := NewLedger()
+	r := Round{Height: 920001, Period: 0}
+
+	if ok, _, fresh := l.TryLockFresh(r, Block); !ok || !fresh {
+		t.Fatalf("first acquire: ok=%v fresh=%v, want true/true", ok, fresh)
+	}
+	if ok, _, fresh := l.TryLockFresh(r, Block); !ok || fresh {
+		t.Fatalf("re-entry: ok=%v fresh=%v, want true/false", ok, fresh)
+	}
+	if ok, taken, fresh := l.TryLockFresh(r, Timeout); ok || fresh || taken != Block {
+		t.Fatalf("other side: ok=%v taken=%s fresh=%v, want false/block/false", ok, taken, fresh)
+	}
+}
+
+// TestF9_GuardedReleaseKeepsTheRoundClosedAfterASuccessfulSign is the
+// regression test for F-9.
+//
+// A retried vote-result request re-enters TryLock (idempotent for the same
+// side) and may then fail to sign. Releasing on that re-entry would clear the
+// reservation standing behind the signature the FIRST attempt already shipped,
+// letting this node also sign a timeout for the round - both sides, one node,
+// one round. Guarding the release on fresh is what prevents it.
+//
+// Revert TryLockFresh's fresh result (or drop the guard at any call site) and
+// this test fails.
+func TestF9_GuardedReleaseKeepsTheRoundClosedAfterASuccessfulSign(t *testing.T) {
+	l := NewLedger()
+	r := Round{Height: 920002, Period: 0}
+
+	// 1. First vote-result request reserves the round.
+	_, _, fresh1 := l.TryLockFresh(r, Block)
+	// 2. Its BLS sign SUCCEEDS: a real block signature ships and counts toward
+	//    the certificate. Nothing to call - the reservation simply stands.
+	_ = fresh1
+
+	// 3. A RETRIED vote-result request for the same round re-enters.
+	_, _, fresh2 := l.TryLockFresh(r, Block)
+	// 4. THIS attempt's sign fails. The production failure path releases only
+	//    when its own lock was fresh.
+	if fresh2 {
+		l.Release(r, Block)
+	}
+
+	// 5. The node must still be unable to sign the other side.
+	if ok, taken := l.TryLock(r, Timeout); ok {
+		t.Fatalf("F-9: timeout admitted for a round already block-signed (taken=%s) - "+
+			"a retried-and-failed attempt released another attempt's reservation", taken)
+	}
+}
+
+// TestF9_FreshReleaseStillFreesAStrandedRound keeps F-3 working: a round whose
+// ONLY attempt failed to sign must still be released, or the node is stranded
+// from both certificates for the life of the process.
+func TestF9_FreshReleaseStillFreesAStrandedRound(t *testing.T) {
+	l := NewLedger()
+	r := Round{Height: 920003, Period: 0}
+
+	_, _, fresh := l.TryLockFresh(r, Block)
+	if !fresh {
+		t.Fatal("setup: first acquire must be fresh")
+	}
+	l.Release(r, Block) // the one and only attempt failed to sign
+
+	if ok, _ := l.TryLock(r, Timeout); !ok {
+		t.Fatal("F-3 regression: a round whose only sign attempt failed must be free")
+	}
+}

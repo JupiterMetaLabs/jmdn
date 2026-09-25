@@ -87,17 +87,46 @@ var Default = NewLedger()
 // same side already), and ok=false with the side already taken when the
 // OTHER side was signed first - the caller must then refuse to sign.
 func (l *Ledger) TryLock(r Round, side Side) (ok bool, taken Side) {
+	o, t, _ := l.TryLockFresh(r, side)
+	return o, t
+}
+
+// TryLockFresh is TryLock, additionally reporting whether THIS call created the
+// reservation.
+//
+// Only a caller that got fresh=true may Release on its own failure path. A
+// re-entry (fresh=false) is riding a reservation an EARLIER attempt took, and
+// that earlier attempt may already have produced and shipped a signature -
+// TryLock is deliberately idempotent for the same side, so a retried
+// vote-result request is not refused. Releasing on a re-entry would therefore
+// clear a reservation that a real signature is standing behind, re-opening the
+// round to the OTHER side and defeating the mutual exclusion this package
+// exists to enforce.
+//
+// The failure mode this guards, in order:
+//
+//  1. vote-result for round r -> TryLock fresh -> ledger r->Block
+//  2. BLS sign SUCCEEDS       -> the block signature ships and counts
+//  3. RETRIED vote-result     -> TryLock re-entry, ok=true
+//  4. that BLS sign FAILS     -> failure path releases
+//  5. Release(r, Block)       -> side matches -> DELETE
+//  6. round r unlocked        -> this node may now also sign a TIMEOUT for r
+//
+// Step 6 is both sides of one round signed by one node. Release's own
+// compare-and-delete cannot catch it because the side matches; only knowing
+// that step 3 was a re-entry can.
+func (l *Ledger) TryLockFresh(r Round, side Side) (ok bool, taken Side, fresh bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if prev, exists := l.signed[r]; exists {
-		return prev == side, prev
+		return prev == side, prev, false
 	}
 	l.signed[r] = side
 	if r.Height > l.maxHeight {
 		l.maxHeight = r.Height
 		l.pruneLocked()
 	}
-	return true, side
+	return true, side, true
 }
 
 // Signed reports which side, if any, this node has signed for r.
@@ -125,13 +154,14 @@ func (l *Ledger) Signed(r Round) (Side, bool) {
 // to reach quorum on the more nodes it happens to, with no error anywhere
 // that names the cause (the round just looks perpetually one vote short).
 //
-// This does not weaken the safety property TryLock exists to enforce. Release
-// only reverses a reservation THIS caller itself just took and never used; it
-// can never let the OTHER side in once a real signature actually shipped,
-// because a caller that succeeded has no reason to call Release, and the
-// package's own callers (round_lock.go, messaging/timeout_gossip.go,
-// messaging/timeout_request.go) only call it on their own sign-attempt's
-// error path - see each call site's comment.
+// SAFETY PRECONDITION: the caller MUST have obtained fresh=true from
+// TryLockFresh for this exact (r, side). Release is safe ONLY then. Calling it
+// after an idempotent re-entry (fresh=false) clears a reservation an earlier
+// attempt took, which may already have shipped a real signature - that re-opens
+// the round to the other side and defeats this package. The compare-and-delete
+// below does NOT catch that case, because the side matches. Every caller
+// (round_lock.go, messaging/timeout_gossip.go, messaging/timeout_request.go)
+// therefore guards its release on fresh.
 //
 // Only clears the entry when it still holds EXACTLY (r, side) - i.e. nothing
 // has changed what is recorded for r since this caller's own TryLock call.

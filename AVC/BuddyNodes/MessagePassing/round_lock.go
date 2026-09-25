@@ -17,18 +17,25 @@ var roundLedger = roundlock.Default
 // not sign - when this node has already signed a timeout vote for that round.
 // Re-signing a block result for the same round (a retried request) is allowed.
 //
-// A caller whose lockBlockResultRound succeeds but whose BLS signing attempt
-// then FAILS must call unlockBlockResultRound below - see its comment (F-3).
-func lockBlockResultRound(height, period uint64) error {
-	ok, taken := roundLedger.TryLock(roundlock.Round{Height: height, Period: period}, roundlock.Block)
+// It returns fresh=true only when THIS call created the reservation. A caller
+// whose signing attempt then FAILS must call unlockBlockResultRound below ONLY
+// when fresh is true - on a re-entry an earlier attempt owns the reservation
+// and may already have shipped a signature (F-9). See TryLockFresh.
+func lockBlockResultRound(height, period uint64) (fresh bool, err error) {
+	ok, taken, fresh := roundLedger.TryLockFresh(roundlock.Round{Height: height, Period: period}, roundlock.Block)
 	if !ok {
-		return fmt.Errorf("round (height %d, period %d) already signed as %s", height, period, taken)
+		return false, fmt.Errorf("round (height %d, period %d) already signed as %s", height, period, taken)
 	}
-	return nil
+	return fresh, nil
 }
 
 // unlockBlockResultRound reverses a lockBlockResultRound reservation that was
 // not followed by an actual signature - F-3 ("lock-then-fail stranding").
+//
+// CALL ONLY WHEN lockBlockResultRound RETURNED fresh=true. On a re-entry the
+// reservation belongs to an earlier attempt that may already have shipped a
+// signature; releasing it would let this node also sign a timeout for the same
+// round (F-9).
 //
 // lockBlockResultRound marks the round Block-signed the moment it succeeds,
 // before the caller has actually produced a BLS signature. If the sign that

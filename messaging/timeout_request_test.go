@@ -122,7 +122,7 @@ func TestDecideTimeoutRequest(t *testing.T) {
 			if tc.pre != 0 {
 				l.TryLock(r, tc.pre)
 			}
-			if got := decideTimeoutRequest(req, tc.self, seq, tc.local, l); got != tc.want {
+			if got, _ := decideTimeoutRequest(req, tc.self, seq, tc.local, l); got != tc.want {
 				t.Fatalf("got %s, want %s", got, tc.want)
 			}
 		})
@@ -132,7 +132,7 @@ func TestDecideTimeoutRequest(t *testing.T) {
 func TestDecideTimeoutRequest_SigningLocksOutALaterBlockResult(t *testing.T) {
 	l := roundlock.NewLedger()
 	req := TimeoutRequest{Height: 910005, Period: 0}
-	if got := decideTimeoutRequest(req, "node", "seq", 0, l); got != actSign {
+	if got, _ := decideTimeoutRequest(req, "node", "seq", 0, l); got != actSign {
 		t.Fatalf("want sign, got %s", got)
 	}
 	if ok, _ := l.TryLock(roundlock.Round{Height: 910005, Period: 0}, roundlock.Block); ok {
@@ -145,7 +145,7 @@ func TestDecideTimeoutRequest_RefusalDoesNotLockTheRound(t *testing.T) {
 	// to sign a block result for the round.
 	l := roundlock.NewLedger()
 	req := TimeoutRequest{Height: 910006, Period: 1}
-	if got := decideTimeoutRequest(req, "node", "seq", 0, l); got != actIgnoreAhead {
+	if got, _ := decideTimeoutRequest(req, "node", "seq", 0, l); got != actIgnoreAhead {
 		t.Fatalf("want ignore_ahead, got %s", got)
 	}
 	if _, signed := l.Signed(roundlock.Round{Height: 910006, Period: 1}); signed {

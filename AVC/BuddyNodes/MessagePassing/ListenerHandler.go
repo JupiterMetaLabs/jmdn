@@ -1800,8 +1800,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// A block certificate (seated 2f+1) and a timeout certificate (pool 2/3)
 	// are quorums over different sets, so this per-node refusal is what stops
 	// both existing for one round. See internal/roundlock.
+	roundReservedHere := false
 	if targetBlockHash != "" {
-		if err := lockBlockResultRound(targetBlockNumber, targetPeriod); err != nil {
+		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod)
+		if err != nil {
 			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for a round this node already timed out",
 				ion.Uint64("block_number", targetBlockNumber),
 				ion.Uint64("period", targetPeriod),
@@ -1810,6 +1812,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			writeRawError(s, `{"error":"round timed out: this node signed a timeout vote for this round","vote_result":0}`, config.Delimiter)
 			return
 		}
+		// F-9: only a reservation THIS call created may be released below. A
+		// re-entry (a retried vote-result request) rides an earlier attempt
+		// that may already have shipped a signature.
+		roundReservedHere = fresh
 	}
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
 		// v4 when the request carried a ConsensusHash (binds the consensus fields),
@@ -1828,7 +1834,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		// not on an actual signature), stranding it from both certificates
 		// for the rest of this process's life. See
 		// unlockBlockResultRound's doc comment (round_lock.go).
-		if targetBlockHash != "" {
+		if roundReservedHere {
 			unlockBlockResultRound(targetBlockNumber, targetPeriod)
 		}
 		errMsg := "unknown error"

@@ -97,8 +97,8 @@ type timeoutVoteCollector struct {
 	mu        sync.Mutex
 	votes     map[timeoutRoundKey][]TimeoutVote
 	seen      map[timeoutRoundKey]map[string]bool
-	certified map[timeoutRoundKey]bool          // this node already built/accepted a cert for this round
-	certs     map[uint64]TimeoutCertificate      // latest accepted certificate per height
+	certified map[timeoutRoundKey]bool      // this node already built/accepted a cert for this round
+	certs     map[uint64]TimeoutCertificate // latest accepted certificate per height
 }
 
 var defaultTimeoutVoteCollector = &timeoutVoteCollector{
@@ -236,7 +236,8 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 	// Mutual exclusion (§7.1b) through the shared per-round ledger, the same
 	// one the buddy vote-result signer consults - see internal/roundlock.
 	timeoutRound := roundlock.Round{Height: height, Period: failedPeriod}
-	if ok, taken := roundlock.Default.TryLock(timeoutRound, roundlock.Timeout); !ok {
+	ok, taken, freshTimeoutLock := roundlock.Default.TryLockFresh(timeoutRound, roundlock.Timeout)
+	if !ok {
 		log.Warn().Uint64("height", height).Uint64("period", failedPeriod).Str("already_signed", taken.String()).
 			Msg("timeout flow: this node already signed the other side of this round, refusing to sign a timeout vote (§7.1b)")
 		return
@@ -251,7 +252,9 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 		// an actual signature), stranding it from both certificates for the
 		// rest of this process's life. See roundlock.Ledger.Release's doc
 		// comment.
-		roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", height).
 			Msg("timeout flow: could not load local BLS keypair, cannot sign timeout vote")
 		return
@@ -261,7 +264,9 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 	if err != nil {
 		// F-3: same as above - release the reservation this attempt did not
 		// use.
-		roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", height).Uint64("period", period).
 			Msg("timeout flow: failed to sign timeout vote")
 		return
