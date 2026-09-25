@@ -504,10 +504,19 @@ func (s *ExplorerServer) listTransactions_inBlock(c *gin.Context) {
 		Transactions = append(Transactions, &tx)
 	}
 
+	// CodeQL go/incorrect-integer-conversion (alert #10): blockNumberInt is
+	// uint64 (ConvertStringToUint64, via strconv.ParseUint) and is narrowed
+	// to int64 here only for the trace attribute — the real DB read above
+	// already used the uint64 value unmodified. Clamp instead of erroring:
+	// the request already succeeded, this only feeds telemetry.
+	blockNumberAttr := int64(blockNumberInt)
+	if blockNumberInt > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
 		attribute.Int("transactions_count", len(Transactions)),
-		attribute.Int64("block_number", int64(blockNumberInt)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
