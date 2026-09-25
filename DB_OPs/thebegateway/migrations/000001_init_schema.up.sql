@@ -41,11 +41,17 @@ CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
 CREATE INDEX IF NOT EXISTS idx_accounts_did_address
     ON accounts(did_address);
 
--- Auto-update updated_at on every row change.
+-- Safety-net only: fill updated_at with NOW() ONLY when the caller left it unset
+-- (epoch/zero). A block-derived updated_at from the consensus apply path is
+-- preserved, so the LWW gate stays deterministic across nodes. Kept in sync with
+-- DB_OPs/thebeprofile/schema.go (the startup-applied source of truth). See
+-- docs/audit/CONSENSUS-STATE-DIVERGENCE-859-ROOT.md.
 CREATE OR REPLACE FUNCTION fn_accounts_set_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.updated_at = NOW();
+    IF NEW.updated_at IS NULL OR NEW.updated_at <= to_timestamp(0) THEN
+        NEW.updated_at = NOW();
+    END IF;
     RETURN NEW;
 END;
 $$;
