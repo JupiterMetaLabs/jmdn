@@ -44,6 +44,7 @@ import (
 	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/contractDB"
+	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DB_OPs/txindex"
@@ -1250,6 +1251,12 @@ func main() {
 					return len(code) > 0
 				},
 			)
+			// Give the RPC read path (eth_call / eth_estimateGas via
+			// contractDB.InitializeStateDB) the SAME ledger balance source as the
+			// apply path. Without this it read balances from the DID service, which
+			// has no record for contract addresses → address(this).balance == 0 in
+			// every simulation (see SetSharedAccountSource).
+			contractDB.SetSharedAccountSource(DB_OPs.ContractAccountSource{})
 			// P4: fold contract state into the P2.5 fingerprint so the
 			// halt-on-divergence check covers contract storage, not just accounts.
 			kvStore := cas.KV()
@@ -1288,7 +1295,10 @@ func main() {
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
 		// before the first GetConnection is sufficient.
 		reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
-		thebeHandleBackend := backend.New(gw, reader, nil)
+		// EVM event logs: KV-backed store so eth_getLogs works (it returned
+		// "LogWriter not configured" while this was nil) and so the apply path
+		// can index logs at commit time (BlockProcessing.applyContractTx).
+		thebeHandleBackend := backend.New(gw, reader, logstore.New(db.KV))
 		config.SetGlobalHandleFactory(func() (io.Closer, error) {
 			return backend.NewComposite(thebeHandleBackend, nil), nil
 		})

@@ -614,6 +614,35 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
+			// DIAGNOSTIC (state-divergence localization): the fingerprint delta from
+			// the parent block can ONLY come from accounts this block touched, so log
+			// each affected account's post-apply consensus leaf (the exact fields the
+			// fingerprint folds) BEFORE rollback reverts them. Diffing these lines
+			// against the producer's values for the same block pinpoints the single
+			// divergent account/field. Runs only on the halt path (rare, terminal), so
+			// it adds no steady-state cost. affectedAccounts was computed above from
+			// this block's senders/receivers/coinbase/zkvm/fee-recipients.
+			for addr := range affectedAccounts {
+				if adoc, aerr := DB_OPs.GetAccount(accountsClient, addr); aerr == nil && adoc != nil {
+					logger().Error(span_ctx, "STATE DIVERGENCE affected-account leaf (pre-rollback)",
+						fmt.Errorf("divergence leaf dump"),
+						ion.Int64("block_number", int64(block.BlockNumber)),
+						ion.String("address", addr.Hex()),
+						ion.String("balance_wei", adoc.Balance),
+						ion.Uint64("tx_nonce", adoc.TxNonce),
+						ion.Uint64("tx_count_sent", adoc.TxCountSent),
+						ion.Uint64("art_nonce", adoc.Nonce),
+						ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+					)
+				} else {
+					logger().Error(span_ctx, "STATE DIVERGENCE affected-account leaf (pre-rollback): account absent/unreadable",
+						fmt.Errorf("divergence leaf dump"),
+						ion.Int64("block_number", int64(block.BlockNumber)),
+						ion.String("address", addr.Hex()),
+						ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+					)
+				}
+			}
 			rollbackApplied()
 			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
 		}

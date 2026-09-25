@@ -850,7 +850,9 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	if !isCreate {
 		contractAddr = common.FromHex(msg.To)
 	}
-	resp, err := s.scClient.EstimateGas(opCtx, caller, contractAddr, msg.Data)
+	// Forward value: payable calls (e.g. vault.deposit{value: x}) must be
+	// estimated with the value they will carry, or msg.value checks revert.
+	resp, err := s.scClient.EstimateGas(opCtx, caller, contractAddr, msg.Data, msg.Value)
 	if err != nil {
 		return 0, fmt.Errorf("gas estimation failed: %w", err)
 	}
