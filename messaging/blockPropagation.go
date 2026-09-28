@@ -766,6 +766,11 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
 	// byte-identical to the previous VerifyCertificate call. The round context
 	// comes from the block, never the clock - see RoundContextForBlock.
+	// Fix 3: if the block claims a later Period than this node holds, fetch
+	// the certificate that advanced it before building the round context -
+	// otherwise a node that missed the certificate gossip fails closed on
+	// every block of the new period. Re-verified; no-op when wiring is off.
+	ensurePeriodForBlock(getHostInstance(), msg.Block)
 	rc, rcErr := RoundContextForBlock(msg.Block)
 	if rcErr != nil {
 		// Fail closed - most likely this node hasn't processed the

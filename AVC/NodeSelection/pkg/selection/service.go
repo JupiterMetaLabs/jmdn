@@ -98,9 +98,20 @@ func GetBuddyNodesWithNodes(
 
 	// logger().Info(context.Background(), "🔍 Filtering %d nodes for eligibility", len(nodes))
 
-	// 1. Filter eligible nodes
+	// 1. Filter eligible nodes, with the D-59 reputation fail-safe.
+	//
+	// This MUST be FilterEligibleOrActive, not FilterEligible: returning
+	// ErrNoPeersAvailable here on an empty band exits before
+	// SelectMultipleBuddies (which has the fail-safe) ever runs, so a fleet
+	// whose weights all fell below the floor still halted the chain - the
+	// 2026-09-17 incident. Self and inactive peers stay excluded either way.
 	filterConfig := DefaultFilterConfig()
-	eligible := FilterEligible(nodeID, nodes, filterConfig)
+	eligible, usedFallback := FilterEligibleOrActive(nodeID, nodes, filterConfig)
+	if usedFallback {
+		logger().Warn(context.Background(), "selection: candidate pool built from the D-59 fail-safe (every active peer's weight is outside the selection band)",
+			ion.Int("candidates", len(eligible)),
+			ion.Int("total_nodes", len(nodes)))
+	}
 
 	if len(eligible) == 0 {
 		return nil, ErrNoPeersAvailable

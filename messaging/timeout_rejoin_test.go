@@ -259,6 +259,64 @@ func TestRequestLatestTimeoutCertificateFromPeers_TriesNextPeerOnFailure(t *test
 	}
 }
 
+// TestRequestLatestTimeoutCertificateFromPeers_ParallelBoundsLatencyNotMultipliedByPeerCount
+// is F-1's (2026-09-25 audit) latency regression test: peers are queried in
+// PARALLEL, so one attempt against N unresponsive peers must take roughly
+// timeoutCertRejoinTimeout total, not N*timeoutCertRejoinTimeout (the
+// original sequential defect). Three peers each hold their stream open
+// without ever responding, forcing every one of them all the way to its own
+// deadline.
+func TestRequestLatestTimeoutCertificateFromPeers_ParallelBoundsLatencyNotMultipliedByPeerCount(t *testing.T) {
+	withTimeoutCertRejoinEnabled(t)
+	const height = uint64(900501) // disjoint from this file's other heights
+
+	client, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("libp2p.New client: %v", err)
+	}
+	defer client.Close()
+
+	var peers []peer.ID
+	const peerCount = 3
+	for i := 0; i < peerCount; i++ {
+		s, err := libp2p.New()
+		if err != nil {
+			t.Fatalf("libp2p.New server %d: %v", i, err)
+		}
+		defer s.Close()
+		s.SetStreamHandler(config.TimeoutCertRejoinProtocol, func(stream network.Stream) {
+			defer stream.Close()
+			_, _ = bufio.NewReader(stream).ReadString('\n')
+			// Never respond — the client's own per-stream deadline
+			// (timeoutCertRejoinTimeout, set in requestLatestTimeoutCertificate)
+			// is what ends this, not anything the server does.
+			time.Sleep(10 * time.Second)
+		})
+		client.Peerstore().AddAddrs(s.ID(), s.Addrs(), time.Hour)
+		if err := client.Connect(t.Context(), peer.AddrInfo{ID: s.ID(), Addrs: s.Addrs()}); err != nil {
+			t.Fatalf("connect server %d: %v", i, err)
+		}
+		peers = append(peers, s.ID())
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	start := time.Now()
+	_, accepted, err := RequestLatestTimeoutCertificateFromPeers(client, peers, height)
+	elapsed := time.Since(start)
+
+	if accepted {
+		t.Fatalf("no peer ever responds; expected accepted=false")
+	}
+	_ = err // an error (all peers timed out) or nil (ctx.Done with no error) are both acceptable here
+	// Generous upper bound: well under peerCount*timeoutCertRejoinTimeout
+	// (6s) and close to one timeoutCertRejoinTimeout (2s) — proves the
+	// peers were queried concurrently, not one after another.
+	if want := time.Duration(peerCount) * timeoutCertRejoinTimeout; elapsed >= want {
+		t.Fatalf("took %v, which is not less than sequential worst case %v (%d peers * %v) — looks sequential, not parallel",
+			elapsed, want, peerCount, timeoutCertRejoinTimeout)
+	}
+}
+
 // mustSignTimeoutVote is a small local convenience so the "unverifiable
 // certificate" test doesn't need to spell out the domain plumbing inline.
 func mustSignTimeoutVote(t *testing.T, kp keypair, height, period uint64) TimeoutVote {

@@ -1012,6 +1012,22 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 		return nil
 	}
 
+	// SECURITY (Ibnu76): only the pinned sequencer may stamp L1 finality. msg.Sender
+	// is the gossipsub StrictSign-authenticated originator, so a non-sequencer peer's
+	// forged commit is dropped here instead of poisoning the block record.
+	if proceed, enforced := l1finality.AuthorizeGossipSender(msg.Sender.String()); !proceed {
+		logger().Warn(logger_ctx, "Dropping L1 commit: authenticated sender is not the pinned sequencer (unauthorized forgery)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	} else if !enforced {
+		logger().Warn(logger_ctx, "Applying L1 commit WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+	}
+
 	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
 	defer cancel()
 
@@ -1061,6 +1077,21 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		logger().Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 		return nil
+	}
+
+	// SECURITY (Ibnu76): only the pinned sequencer may stamp L1 finality — one forged
+	// range message could otherwise poison up to MaxRangeSpan blocks.
+	if proceed, enforced := l1finality.AuthorizeGossipSender(msg.Sender.String()); !proceed {
+		logger().Warn(logger_ctx, "Dropping L1 commit range: authenticated sender is not the pinned sequencer (unauthorized forgery)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return nil
+	} else if !enforced {
+		logger().Warn(logger_ctx, "Applying L1 commit range WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+			ion.String("sender", msg.Sender.String()),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 	}
 
 	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)

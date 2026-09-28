@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 
+	"gossipnode/config/settings"
+
 	"github.com/JupiterMetaLabs/avc/committee"
 )
 
@@ -336,4 +338,139 @@ func TestV2RefusesLegacySource(t *testing.T) {
 	if _, err := VerifyCertificateForRound(nil, "0xab", "", 1000, round(1000, 0)); !errors.Is(err, ErrLegacySourceUnderV2) {
 		t.Fatalf("certificate path err = %v, want ErrLegacySourceUnderV2", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// F-7 - the warmup/authorization pool must track the SAME pinned epoch the
+// committee draw uses, or a seat/candidate pool mismatch is reopened one
+// layer up (this branch has no seat-resolution step yet, but the underlying
+// mismatch between WarmupPeerIDs' live pool and committeeSnapshotFor's
+// epoch-pinned pool is the same defect regardless).
+// ---------------------------------------------------------------------------
+
+// wirePinnedEligibility installs a source that distinguishes the LIVE pool
+// (pinned=false, any epoch) from a FROZEN per-epoch snapshot (pinned=true):
+// only pinnedEpoch's pinned view also carries extraPeer, simulating a peer
+// that was eligible when that epoch's snapshot was frozen but has since left
+// the live buddy set. Every other (epoch, pinned) combination returns the
+// same base n-peer pool.
+func wirePinnedEligibility(t *testing.T, n int, pinnedEpoch uint64, extraPeer string) {
+	t.Helper()
+	SetCommitteeEligibilitySource(func(epoch uint64, pinned bool) (map[string]string, error) {
+		out := make(map[string]string, n+1)
+		for i := 0; i < n; i++ {
+			out[fmt.Sprintf("peer-%02d", i)] = fmt.Sprintf("%064x", i)
+		}
+		if pinned && epoch == pinnedEpoch {
+			out[extraPeer] = fmt.Sprintf("%064x", n)
+		}
+		return out, nil
+	})
+	t.Cleanup(func() {
+		SetCommitteeEligibilitySource(defaultTestEligibility)
+		beaconSource = nil
+	})
+}
+
+// TestF7_WarmupTracksThePinnedDrawPool is the regression test for F-7.
+//
+// Once consensus.require_pinned_committee is on, committeeSnapshotFor draws
+// the seated committee from the epoch-FROZEN snapshot. WarmupPeerIDsForEpoch
+// must resolve the SAME snapshot for the SAME epoch - not the live pool - or
+// a peer seated from the frozen snapshot is never authorized to be warmed up
+// (Consensus.Start's committeeFilter), even though it is genuinely seated and
+// its vote is needed for quorum.
+func TestF7_WarmupTracksThePinnedDrawPool(t *testing.T) {
+	const pinnedEpoch = 42
+	const extraPeer = "peer-pinned-only"
+	wirePinnedEligibility(t, 20, pinnedEpoch, extraPeer)
+	enableV2(t)
+
+	cfg := settings.Get()
+	prevPinned := cfg.Consensus.RequirePinnedCommittee
+	cfg.Consensus.RequirePinnedCommittee = true
+	t.Cleanup(func() { cfg.Consensus.RequirePinnedCommittee = prevPinned })
+
+	rc := round(pinnedEpoch, 0)
+	rc.SelectionPeriod = SelectionPeriod(pinnedEpoch)
+
+	// Precondition: the pinned draw pool for this epoch really does include
+	// the pinned-only peer, and the round actually seats it.
+	seated, err := selectN(rc, 21)
+	if err != nil {
+		t.Fatalf("selectN: %v", err)
+	}
+	seatedHasExtra := false
+	for _, m := range seated {
+		if m.PeerID == extraPeer {
+			seatedHasExtra = true
+		}
+	}
+	if !seatedHasExtra {
+		t.Fatalf("precondition failed: epoch %d's pinned snapshot should seat %s", pinnedEpoch, extraPeer)
+	}
+
+	// Reproduce the OLD WarmupPeerIDs semantics exactly: eligibleMembersUncapped
+	// is pinned=false, epoch ignored - the live pool, unconditionally, which is
+	// precisely what the pre-fix code called regardless of the round's actual
+	// epoch. It must NOT contain the pinned-only peer, proving the defect this
+	// commit closes actually exists under these settings.
+	oldWarmup, err := eligibleMembersUncapped()
+	if err != nil {
+		t.Fatalf("eligibleMembersUncapped: %v", err)
+	}
+	if _, ok := oldWarmup[extraPeer]; ok {
+		t.Fatalf("precondition failed: the live pool should NOT contain the pinned-only peer")
+	}
+	t.Logf("F-7 reproduced: the live pool omits %s even though epoch %d's draw seats it", extraPeer, pinnedEpoch)
+
+	// The fix: WarmupPeerIDsForEpoch, pinned to the SAME epoch the draw used,
+	// must authorize every seated peer, including the pinned-only one.
+	warm, err := WarmupPeerIDsForEpoch(rc.SelectionPeriod)
+	if err != nil {
+		t.Fatalf("WarmupPeerIDsForEpoch: %v", err)
+	}
+	for _, m := range seated {
+		if _, ok := warm[m.PeerID]; !ok {
+			t.Fatalf("epoch %d seats %s, which WarmupPeerIDsForEpoch(%d) never authorized - the F-7 mismatch",
+				pinnedEpoch, m.PeerID, rc.SelectionPeriod)
+		}
+	}
+	t.Logf("fixed: WarmupPeerIDsForEpoch(%d) authorizes all %d seated peers, including %s",
+		rc.SelectionPeriod, len(seated), extraPeer)
+}
+
+// TestF7_WarmupIsUnaffectedWithPinningOff pins the no-op guarantee: with
+// consensus.require_pinned_committee at its default (false), WarmupPeerIDs()
+// and WarmupPeerIDsForEpoch(anyEpoch) must return the identical live set -
+// this commit changes nothing about today's behaviour, only what happens once
+// W1 activates.
+func TestF7_WarmupIsUnaffectedWithPinningOff(t *testing.T) {
+	wireEligibility(t, 20)
+	enableV2(t)
+
+	// require_pinned_committee defaults false; confirm rather than assume.
+	if requirePinnedCommittee() {
+		t.Fatal("precondition: require_pinned_committee must default to false")
+	}
+
+	base, err := WarmupPeerIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, epoch := range []SelectionPeriod{0, 1, 42, 9999} {
+		got, err := WarmupPeerIDsForEpoch(epoch)
+		if err != nil {
+			t.Fatalf("epoch %d: %v", epoch, err)
+		}
+		if len(got) != len(base) {
+			t.Fatalf("epoch %d: got %d peers, want %d (pinning is off, epoch must not matter)", epoch, len(got), len(base))
+		}
+		for pid := range base {
+			if _, ok := got[pid]; !ok {
+				t.Fatalf("epoch %d: missing %s that the unpinned view has", epoch, pid)
+			}
+		}
+	}
+	t.Log("with pinning off, every epoch resolves to the identical live pool - unchanged")
 }

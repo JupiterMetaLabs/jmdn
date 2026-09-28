@@ -698,6 +698,18 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 // exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
 func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	if (b.ConsensusHash == common.Hash{}) {
+		// Fix 3: Period selects the committee seed, and ConsensusHash is the
+		// only thing binding it. A zero ConsensusHash skips the binding check,
+		// so while Period was always 0 this was harmless - but once timeout
+		// certificates advance Period, a relay could zero ConsensusHash and
+		// rewrite Period to claim a committee that never held quorum. The
+		// proposer always sets ConsensusHash (Block/consensus_fields.go), so
+		// an honest block with Period > 0 always carries one.
+		if b.Period != 0 {
+			return reject("consensus_hash_missing",
+				"block %s: Period %d is set but ConsensusHash is empty (period would be unbound)",
+				b.BlockHash.Hex(), b.Period)
+		}
 		return nil
 	}
 	want := Security.RecomputeBlockHashWithConsensusFields(b)

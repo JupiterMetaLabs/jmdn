@@ -62,6 +62,7 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
+	"gossipnode/internal/roundlock"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog/log"
@@ -96,8 +97,8 @@ type timeoutVoteCollector struct {
 	mu        sync.Mutex
 	votes     map[timeoutRoundKey][]TimeoutVote
 	seen      map[timeoutRoundKey]map[string]bool
-	certified map[timeoutRoundKey]bool          // this node already built/accepted a cert for this round
-	certs     map[uint64]TimeoutCertificate      // latest accepted certificate per height
+	certified map[timeoutRoundKey]bool      // this node already built/accepted a cert for this round
+	certs     map[uint64]TimeoutCertificate // latest accepted certificate per height
 }
 
 var defaultTimeoutVoteCollector = &timeoutVoteCollector{
@@ -222,10 +223,38 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 		return
 	}
 
-	period := DefaultPeriodStore.PeriodFor(height) + 1
+	failedPeriod := DefaultPeriodStore.PeriodFor(height)
+	period := failedPeriod + 1
 
-	priv, _, err := BLS_Signer.LocalBLSKeypair()
+	// Fix 3: ask the whole pool to sign. Without this the sequencer was the
+	// only signer and the pool-wide quorum (2/3 of every eligible peer) could
+	// never be reached. Sent regardless of whether this node can sign its own
+	// vote below - receivers verify it against the pinned sequencer id and
+	// sign their own. See timeout_request.go.
+	defer broadcastTimeoutRequest(h, height, failedPeriod)
+
+	// Mutual exclusion (§7.1b) through the shared per-round ledger, the same
+	// one the buddy vote-result signer consults - see internal/roundlock.
+	timeoutRound := roundlock.Round{Height: height, Period: failedPeriod}
+	ok, taken, freshTimeoutLock := roundlock.Default.TryLockFresh(timeoutRound, roundlock.Timeout)
+	if !ok {
+		log.Warn().Uint64("height", height).Uint64("period", failedPeriod).Str("already_signed", taken.String()).
+			Msg("timeout flow: this node already signed the other side of this round, refusing to sign a timeout vote (§7.1b)")
+		return
+	}
+
+	priv, err := timeoutRequestBLSKey() // BLS_Signer.LocalBLSKeypair in production
 	if err != nil {
+		// F-3: TryLock above already reserved this round as Timeout-signed on
+		// INTENT. No vote was actually produced, so release it - otherwise
+		// this node can never sign a BLOCK result for the round either
+		// (roundlock refuses the other side based on the reservation, not on
+		// an actual signature), stranding it from both certificates for the
+		// rest of this process's life. See roundlock.Ledger.Release's doc
+		// comment.
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", height).
 			Msg("timeout flow: could not load local BLS keypair, cannot sign timeout vote")
 		return
@@ -233,6 +262,11 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 
 	vote, err := SignTimeoutVote(priv, voterID, BLS_Signer.DomainChainID(), height, period)
 	if err != nil {
+		// F-3: same as above - release the reservation this attempt did not
+		// use.
+		if freshTimeoutLock { // F-9: never release a re-entry's reservation
+			roundlock.Default.Release(timeoutRound, roundlock.Timeout)
+		}
 		log.Warn().Err(err).Uint64("height", height).Uint64("period", period).
 			Msg("timeout flow: failed to sign timeout vote")
 		return

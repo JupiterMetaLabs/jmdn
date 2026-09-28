@@ -93,13 +93,13 @@ const (
 	sqlGetTransaction = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
                type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
-               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s
+               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id
         FROM transactions WHERE tx_hash = $1`
 
 	sqlGetLatestTxsByAddr = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
                type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
-               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s
+               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id
         FROM transactions
         WHERE from_addr = $1 OR to_addr = $1
         ORDER BY block_number DESC, tx_index DESC
@@ -108,7 +108,7 @@ const (
 	sqlGetTxsByAddrInRange = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
                type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
-               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s
+               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id
         FROM transactions
         WHERE (from_addr = $1 OR to_addr = $1)
           AND block_number >= $2 AND block_number <= $3
@@ -203,14 +203,14 @@ const (
 	sqlGetTxsByBlock = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
                type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
-               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s
+               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id
         FROM transactions WHERE block_number = $1
         ORDER BY tx_index ASC`
 
 	sqlGetTxsPaginated = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
                type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
-               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s
+               gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id
         FROM transactions
         ORDER BY block_number DESC, tx_index DESC
         LIMIT $1 OFFSET $2`
@@ -378,6 +378,7 @@ func (r *thebeReader) GetAccount(ctx context.Context, address string) (*AccountR
 func (r *thebeReader) scanTx(s scanner, rec *TransactionRecord) error {
 	var (
 		toAddrNull     sql.NullString
+		chainIDNull    sql.NullString
 		accessListJSON []byte
 	)
 	err := s.Scan(
@@ -399,12 +400,16 @@ func (r *thebeReader) scanTx(s scanner, rec *TransactionRecord) error {
 		&rec.SigV,
 		&rec.SigR,
 		&rec.SigS,
+		&chainIDNull, // P10: chain_id (nullable — "" for pre-change rows / legacy)
 	)
 	if err != nil {
 		return err
 	}
 	if toAddrNull.Valid {
 		rec.ToAddr = &toAddrNull.String
+	}
+	if chainIDNull.Valid {
+		rec.ChainID = chainIDNull.String
 	}
 	_ = json.Unmarshal(accessListJSON, &rec.AccessList)
 	return nil
