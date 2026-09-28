@@ -153,6 +153,17 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 			Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS exceeds the max representable time.Duration — clamping")
 		pushSeconds = maxPushSeconds
 	}
+	// The upper-bound clamp above only guards NewTicker against overflow.
+	// envUint64 returns 0 for an explicit "0" (only unset/unparseable fall
+	// back to the 300s default), and time.NewTicker panics on a
+	// non-positive duration — unrecovered, inside this bare goroutine, so
+	// it would kill the process. An operator setting 0 plainly means
+	// "disable this", so treat it the same as the nil-seedClient case
+	// above rather than substituting the default behind their back.
+	if pushSeconds == 0 {
+		log.Info().Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS=0 — reputation push disabled")
+		return
+	}
 	interval := time.Duration(pushSeconds) * time.Second
 
 	go func() {
