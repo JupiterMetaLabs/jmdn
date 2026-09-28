@@ -208,6 +208,18 @@ func applyContractTx(
 			return fail("contract tx %s: commit contract state: %w", tx.Hash.Hex(), cErr)
 		}
 	}
+	// D-858 review B2 + B2-a: flag the block whenever a contract tx SUCCEEDED, not
+	// only when CommitState ran. A successful tx credits res.BalanceChanges (arbitrary
+	// third parties) and, on deploy, res.ContractAddress (above) — both gated on
+	// res.Success ALONE and both OUTSIDE affectedAccountsForBlock. So the store-failure
+	// rollback is incomplete for ANY successful contract tx, even one that wrote no
+	// storage (nil CommitState). Gating the flag on res.Success (not CommitState != nil)
+	// closes the "Success with nil CommitState" hole that would otherwise let the
+	// original B2 defect return silently. A reverted tx (res.Success == false) moves no
+	// value and pays gas only — fully covered by affectedAccountsForBlock — so no flag.
+	if res.Success {
+		markContractStateCommitted(blockHash)
+	}
 
 	// 8. Commit: accounts + tx_processed marker via the atomic primitive.
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
