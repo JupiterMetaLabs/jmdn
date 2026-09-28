@@ -180,6 +180,11 @@ func toTransactionRecord(tx *config.Transaction, blockNumber uint64, txIndex int
 	if tx.MaxPriorityFee != nil {
 		rec.MaxPriorityFeeWei = tx.MaxPriorityFee.String()
 	}
+	// P10: persist the tx chain id (decimal). Typed txs carry it explicitly and it
+	// is not derivable from sig_v, so dropping it broke round-trip hash recompute.
+	if tx.ChainID != nil {
+		rec.ChainID = tx.ChainID.String()
+	}
 
 	// Record the fee actually charged to the sender at ingest time.
 	// Canonical math: config.GasFee (gasLimit × effective price). Readers
