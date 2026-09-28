@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"time"
 
@@ -189,6 +190,15 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 	doc, err := s.handler.HandleGetDID(req.Did)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	// CodeQL go/incorrect-integer-conversion: doc.Nonce is uint64 (sourced via
+	// strconv.ParseUint in DB_OPs/backend/account.go's toStoreAccount) but the
+	// wire type (CLI/proto/Connection.proto: "int64 nonce = 5") is a fixed
+	// int64 - changing the wire type would break existing gRPC clients, so
+	// bound-check before the narrowing conversion instead, rather than let a
+	// value above MaxInt64 silently wrap negative.
+	if doc.Nonce > math.MaxInt64 {
+		return nil, status.Errorf(codes.Internal, "nonce %d for DID %q exceeds int64 range", doc.Nonce, doc.DIDAddress)
 	}
 	return &pb.DIDDocument{
 		Did:       doc.DIDAddress,
