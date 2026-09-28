@@ -209,3 +209,50 @@ func TestReputationSeedPusher_ImmediateTriggerFiresAfterDebounce(t *testing.T) {
 		t.Fatalf("burst of 5 triggers should coalesce to 1 push, got %d", got)
 	}
 }
+
+// f3d0c28 fixed startReputationSeedPusher to treat
+// JMDN_REPUTATION_PUSH_INTERVAL_SECONDS=0 as "disabled" (log + return before
+// the ticker starts) rather than handing 0 to time.NewTicker, which panics
+// on a non-positive duration. This locks that guard down: without it, a
+// refactor could silently reintroduce time.NewTicker(0) and this test
+// would catch it, either via the panic itself or via the pusher (wrongly)
+// running and calling PushReputationWeights.
+func TestStartReputationSeedPusher_ZeroIntervalDisablesPusher(t *testing.T) {
+	t.Setenv("JMDN_REPUTATION_PUSH_INTERVAL_SECONDS", "0")
+
+	// reputationPusherRunning is a package-level global the background
+	// worker goroutine sets. Save/restore around this test the same way
+	// TestTriggerImmediateReputationPush_SafeBeforePusherStarts does, so a
+	// leftover value from another test (or this one) can't leak into a
+	// neighbor.
+	origRunning := reputationPusherRunning.Load()
+	reputationPusherRunning.Store(false)
+	defer reputationPusherRunning.Store(origRunning)
+
+	var called atomic.Bool
+	fake := &fakeReputationPusher{fn: func(context.Context, map[string]float64) (int, []error) {
+		// Recorded, not t.Fatal'd, here: if the guard regresses and the
+		// worker goroutine actually starts, this closure runs on THAT
+		// goroutine, not the test goroutine — calling t.Fatal off the test
+		// goroutine panics the testing package itself instead of failing
+		// cleanly.
+		called.Store(true)
+		return 0, nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startReputationSeedPusher(ctx, fake) // must not panic, must not start the background worker
+
+	// No event to poll for on this negative path (a wrongly-started worker
+	// only calls back on its own ticker) — a short fixed sleep is the
+	// established pattern in this file for a "nothing happened" assertion.
+	time.Sleep(100 * time.Millisecond)
+	if reputationPusherRunning.Load() {
+		t.Error("reputationPusherRunning must stay false when JMDN_REPUTATION_PUSH_INTERVAL_SECONDS=0")
+	}
+	if called.Load() {
+		t.Error("PushReputationWeights must never be called when the pusher is disabled via a 0-second interval")
+	}
+}
