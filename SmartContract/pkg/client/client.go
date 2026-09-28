@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/SmartContract/proto"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"google.golang.org/grpc"
@@ -119,17 +120,23 @@ func (c *Client) CallContract(ctx context.Context, caller []byte, contractAddr [
 // WITHOUT committing (same read-only path CallContract uses) and returns the
 // executor's estimate = EXECUTION gas + the router's 20% buffer. The 21000
 // intrinsic base is NOT included; the caller adds it. An empty contractAddr means
-// contract creation.
-func (c *Client) EstimateGas(ctx context.Context, caller []byte, contractAddr []byte, input []byte) (*proto.EstimateGasResponse, error) {
+// contract creation. value is the native amount the tx would carry (nil = 0);
+// it MUST be forwarded so payable functions estimate correctly — the old
+// hard-coded "0x0" made every `require(msg.value > 0)` revert in estimation.
+func (c *Client) EstimateGas(ctx context.Context, caller []byte, contractAddr []byte, input []byte, value *big.Int) (*proto.EstimateGasResponse, error) {
 	ca := ""
 	if len(contractAddr) > 0 {
 		ca = hexutil.Encode(contractAddr)
+	}
+	v := "0x0"
+	if value != nil && value.Sign() > 0 {
+		v = hexutil.EncodeBig(value)
 	}
 	return c.remote.EstimateGas(ctx, &proto.EstimateGasRequest{
 		Caller:          hexutil.Encode(caller),
 		ContractAddress: ca,
 		Input:           hexutil.Encode(input),
-		Value:           "0x0",
+		Value:           v,
 	})
 }
 

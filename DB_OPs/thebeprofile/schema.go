@@ -69,11 +69,25 @@ CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
 CREATE INDEX IF NOT EXISTS idx_accounts_did_address
     ON accounts(did_address);
 
--- Auto-update updated_at on every row change.
+-- updated_at is the LWW ordering key for the account upsert (apply_account.go:
+-- WHERE accounts.updated_at <= EXCLUDED.updated_at). The consensus apply path
+-- writes a DETERMINISTIC, block-derived updated_at (= block timestamp) so every
+-- node computes the same value for the same block. This trigger must therefore
+-- NOT clobber a caller-provided timestamp with wall-clock NOW() — doing so made
+-- updated_at node-local, which made the LWW gate reject a block's account updates
+-- on nodes that applied the block later than its embedded timestamp, causing
+-- fleet-wide P2.5 state-divergence halts (see
+-- docs/audit/CONSENSUS-STATE-DIVERGENCE-859-ROOT.md).
+--
+-- It remains a SAFETY NET only: a writer that leaves updated_at unset (epoch/zero)
+-- still gets NOW(), so no lazy writer regresses. A real, block-derived timestamp
+-- (any value after the unix epoch) is preserved untouched.
 CREATE OR REPLACE FUNCTION fn_accounts_set_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.updated_at = NOW();
+    IF NEW.updated_at IS NULL OR NEW.updated_at <= to_timestamp(0) THEN
+        NEW.updated_at = NOW();
+    END IF;
     RETURN NEW;
 END;
 $$;
