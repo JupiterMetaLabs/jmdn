@@ -806,10 +806,18 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("block_number", int64(blockNumber)))
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged in processZKBlock (alerts #3-#7), just not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(blockNumber)
+	if blockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
+	span.SetAttributes(attribute.Int64("block_number", blockNumberAttr))
 
 	logger().Info(spanCtx, "Getting block by number",
-		ion.Int64("block_number", int64(blockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", BLOCKTOPIC),
@@ -826,7 +834,7 @@ func getBlockByNumber(c *gin.Context) {
 		span.SetAttributes(attribute.Float64("duration", duration))
 		logger().Error(spanCtx, "Block not found",
 			err,
-			ion.Int64("block_number", int64(blockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
@@ -838,7 +846,7 @@ func getBlockByNumber(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 	logger().Info(spanCtx, "Block lookup by number successful",
-		ion.Int64("block_number", int64(blockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -891,11 +899,18 @@ func getBlockByHash(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same class as alerts #3-#7,
+	// unflagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 	logger().Info(spanCtx, "Block lookup by hash successful",
 		ion.String("block_hash", blockHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
@@ -972,8 +987,15 @@ func getTransactionInfo(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same class as alerts #3-#7,
+	// unflagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 	)
 
@@ -981,7 +1003,7 @@ func getTransactionInfo(c *gin.Context) {
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 	logger().Info(spanCtx, "Transaction info retrieved successfully",
 		ion.String("tx_hash", txHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),

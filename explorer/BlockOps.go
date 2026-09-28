@@ -78,10 +78,17 @@ func (s *ExplorerServer) getBlockByNumber(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
 		attribute.String("block_hash", block.BlockHash.Hex()),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
@@ -125,9 +132,16 @@ func (s *ExplorerServer) getBlock(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
@@ -343,9 +357,16 @@ func (s *ExplorerServer) getLatestBlock(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 	)
 	duration := time.Since(startTime).Seconds()
