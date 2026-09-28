@@ -98,15 +98,15 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 	}
 
 	blk := &config.ZKBlock{
-		BlockNumber:  r.BlockNumber,
-		BlockHash:    common.HexToHash(r.BlockHash),
-		PrevHash:     common.HexToHash(r.ParentHash),
-		Timestamp:    r.Timestamp.Unix(),
-		TxnsRoot:     r.TxsRoot,
-		StateRoot:    common.HexToHash(r.StateRoot),
-		LogsBloom:    r.LogsBloom,
-		CoinbaseAddr: coinbase,
-		ZKVMAddr:     zkvm,
+		BlockNumber:          r.BlockNumber,
+		BlockHash:            common.HexToHash(r.BlockHash),
+		PrevHash:             common.HexToHash(r.ParentHash),
+		Timestamp:            r.Timestamp.Unix(),
+		TxnsRoot:             r.TxsRoot,
+		StateRoot:            common.HexToHash(r.StateRoot),
+		LogsBloom:            r.LogsBloom,
+		CoinbaseAddr:         coinbase,
+		ZKVMAddr:             zkvm,
 		GasLimit:             r.GasLimit,
 		GasUsed:              r.GasUsed,
 		ExtraData:            extraData,
@@ -300,6 +300,14 @@ func txRecordToTransaction(r *thebegateway.TransactionRecord) *config.Transactio
 	if r.MaxPriorityFeeWei != "" && r.MaxPriorityFeeWei != "0" {
 		if p, ok := new(big.Int).SetString(r.MaxPriorityFeeWei, 10); ok {
 			tx.MaxPriorityFee = p
+		}
+	}
+	// P10: restore the persisted chain id so a re-read block recomputes the same
+	// block/consensus hash (merkle hashBlock folds tx.ChainID). Absent ("" on rows
+	// stored before this column existed, or legacy txs) leaves tx.ChainID nil.
+	if r.ChainID != "" {
+		if c, ok := new(big.Int).SetString(r.ChainID, 10); ok {
+			tx.ChainID = c
 		}
 	}
 
