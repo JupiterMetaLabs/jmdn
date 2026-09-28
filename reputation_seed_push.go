@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -134,7 +135,36 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 			log.Info().Str("path", path).Msg("[ReputationPush] restored persisted reputation store")
 		}
 	}
-	interval := time.Duration(reputationPushIntervalSeconds()) * time.Second
+	// CodeQL go/incorrect-integer-conversion (alert #16): reputationPushIntervalSeconds
+	// returns a uint64 (envUint64, via strconv.ParseUint) with no upper bound,
+	// and time.Duration is int64 under the hood. An operator-set
+	// JMDN_REPUTATION_PUSH_INTERVAL_SECONDS large enough would silently wrap
+	// negative on the narrowing conversion below, or overflow once multiplied
+	// by time.Second — and time.NewTicker panics on a non-positive duration,
+	// so this is a real self-DoS via misconfiguration, not just cosmetic.
+	// Clamp to the largest value that survives both the conversion and the
+	// *time.Second multiply.
+	pushSeconds := reputationPushIntervalSeconds()
+	const maxPushSeconds = uint64(math.MaxInt64 / int64(time.Second))
+	if pushSeconds > maxPushSeconds {
+		log.Warn().
+			Uint64("configured_seconds", pushSeconds).
+			Uint64("clamped_seconds", maxPushSeconds).
+			Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS exceeds the max representable time.Duration — clamping")
+		pushSeconds = maxPushSeconds
+	}
+	// The upper-bound clamp above only guards NewTicker against overflow.
+	// envUint64 returns 0 for an explicit "0" (only unset/unparseable fall
+	// back to the 300s default), and time.NewTicker panics on a
+	// non-positive duration — unrecovered, inside this bare goroutine, so
+	// it would kill the process. An operator setting 0 plainly means
+	// "disable this", so treat it the same as the nil-seedClient case
+	// above rather than substituting the default behind their back.
+	if pushSeconds == 0 {
+		log.Info().Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS=0 — reputation push disabled")
+		return
+	}
+	interval := time.Duration(pushSeconds) * time.Second
 
 	go func() {
 		reputationPusherRunning.Store(true)
