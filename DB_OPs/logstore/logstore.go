@@ -45,6 +45,16 @@ type KV interface {
 	ScanPrefix(prefix []byte, fn func(k, v []byte) error) error
 }
 
+// S4 (review): eth_getLogs DoS bounds. maxLogBlockSpan caps how many blocks an
+// address-less query may cover, and maxLogResults caps how many logs any query may
+// return, so an unauthenticated {fromBlock:earliest,toBlock:latest} request can
+// neither walk unbounded history nor accumulate an unbounded response. Chosen to
+// match common public-RPC provider limits (10k blocks / 10k logs per query).
+const (
+	maxLogBlockSpan = 10_000
+	maxLogResults   = 10_000
+)
+
 const (
 	primaryPrefix = "evmlog:b:"
 	addressPrefix = "evmlog:a:"
@@ -52,6 +62,20 @@ const (
 
 // errStop is returned from a scan callback to end the scan early (past ToBlock).
 var errStop = errors.New("logstore: stop scan")
+
+// errTooMany is returned from a scan callback when the result set exceeds
+// maxLogResults. GetLogs converts it into a caller-facing error so the RPC layer
+// returns a "query returned more than N results" style failure instead of
+// buffering an unbounded slice.
+var errTooMany = errors.New("logstore: result cap exceeded")
+
+// ErrQueryUnbounded is returned when an address-less eth_getLogs query does not
+// carry a bounded [fromBlock, toBlock] range within maxLogBlockSpan. Such a query
+// would force a full-history scan, so it is rejected up front.
+var ErrQueryUnbounded = fmt.Errorf("logstore: address-less eth_getLogs requires a bounded block range of at most %d blocks", maxLogBlockSpan)
+
+// ErrTooManyResults is the caller-facing form of errTooMany.
+var ErrTooManyResults = fmt.Errorf("logstore: eth_getLogs matched more than %d logs; narrow the range or add filters", maxLogResults)
 
 // Store implements backend.LogWriter over a KV.
 type Store struct {
@@ -145,10 +169,16 @@ func (s *Store) GetLogs(_ context.Context, filter store.LogFilter) ([]*ethtypes.
 		}
 		seen[string(pk)] = struct{}{}
 		out = append(out, &l)
+		if len(out) > maxLogResults {
+			return errTooMany
+		}
 		return nil
 	}
 
 	if len(filter.Addresses) > 0 {
+		// Address path: one prefix scan per address. The address index is already
+		// bounded to the logs of one contract, so a from-zero walk is acceptable;
+		// the result cap still guards against a hot contract with millions of logs.
 		for _, addr := range filter.Addresses {
 			prefix := []byte(addressPrefix + strings.ToLower(addr.Hex()) + ":")
 			err := s.kv.ScanPrefix(prefix, func(k, pk []byte) error {
@@ -169,27 +199,39 @@ func (s *Store) GetLogs(_ context.Context, filter store.LogFilter) ([]*ethtypes.
 				}
 				return collect(pk, raw)
 			})
+			if errors.Is(err, errTooMany) {
+				return nil, ErrTooManyResults
+			}
 			if err != nil && !errors.Is(err, errStop) {
 				return nil, err
 			}
 		}
 	} else {
-		err := s.kv.ScanPrefix([]byte(primaryPrefix), func(k, raw []byte) error {
-			b, ok := blockOfKey(k)
-			if !ok {
-				return nil
+		// Address-less path: there is no per-contract index to bound the scan, so
+		// the old code did ScanPrefix(primaryPrefix) — a walk of ALL logs from block
+		// 0, the eth_getLogs DoS (S4). Require an explicit bounded range and seek
+		// per block using the zero-padded key schema, so the scan touches only the
+		// requested [FromBlock, ToBlock] window and never earlier history.
+		if filter.ToBlock == 0 || filter.ToBlock < filter.FromBlock {
+			return nil, ErrQueryUnbounded
+		}
+		if filter.ToBlock-filter.FromBlock+1 > maxLogBlockSpan {
+			return nil, ErrQueryUnbounded
+		}
+		for b := filter.FromBlock; b <= filter.ToBlock; b++ {
+			blockPrefix := []byte(fmt.Sprintf("%s%020d:", primaryPrefix, b))
+			err := s.kv.ScanPrefix(blockPrefix, func(k, raw []byte) error {
+				return collect(k, raw)
+			})
+			if errors.Is(err, errTooMany) {
+				return nil, ErrTooManyResults
 			}
-			in, past := inRange(b)
-			if past {
-				return errStop
+			if err != nil {
+				return nil, err
 			}
-			if !in {
-				return nil
+			if b == filter.ToBlock {
+				break // avoid uint64 overflow when ToBlock == math.MaxUint64
 			}
-			return collect(k, raw)
-		})
-		if err != nil && !errors.Is(err, errStop) {
-			return nil, err
 		}
 	}
 
