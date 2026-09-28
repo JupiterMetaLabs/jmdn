@@ -882,7 +882,15 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		return fmt.Errorf("handleL1CommitRange: db connection: %w", err)
 	}
 
-	updated, skipped := l1finality.ApplyRange(conn, p)
+	updated, skipped, applyErr := l1finality.ApplyRange(conn, p)
+	if applyErr != nil {
+		// S3: a regressing (replay/rollback) range from gossip is dropped fail-closed.
+		logger().Error(logger_ctx, "L1 range finality rejected from gossip", applyErr,
+			ion.Int64("start_block", int64(p.StartBlock)),
+			ion.Int64("end_block", int64(p.EndBlock)),
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
+		return fmt.Errorf("handleL1CommitRange: apply: %w", applyErr)
+	}
 
 	logger().Info(logger_ctx, "L1 range finality applied from gossip",
 		ion.Int64("start_block", int64(p.StartBlock)),
