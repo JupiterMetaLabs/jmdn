@@ -3,6 +3,7 @@ package logstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sort"
 	"testing"
 
@@ -95,7 +96,13 @@ func TestGetLogs_ByAddressAndRange(t *testing.T) {
 
 func TestGetLogs_NoAddress_NoUpperBound(t *testing.T) {
 	s := seed(t)
-	got, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 858})
+	// S4: an address-less query with no upper bound (ToBlock == 0) would force a
+	// full-history scan, so it is now rejected up front rather than served.
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 858}); !errors.Is(err, ErrQueryUnbounded) {
+		t.Fatalf("address-less unbounded query must return ErrQueryUnbounded, got %v", err)
+	}
+	// Bounding the range makes the same query valid and returns 858, 900, 1000.
+	got, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 858, ToBlock: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,18 +113,26 @@ func TestGetLogs_NoAddress_NoUpperBound(t *testing.T) {
 
 func TestGetLogs_Topics(t *testing.T) {
 	s := seed(t)
+	// S4: address-less topic queries must carry a bounded range. Seeded blocks span
+	// 857..1000, so [857,1000] covers them all while staying within maxLogBlockSpan.
+	rng := func(topics [][]common.Hash) store.LogFilter {
+		return store.LogFilter{FromBlock: 857, ToBlock: 1000, Topics: topics}
+	}
 	// topic0 == B  → 857/1 and 1000/0
-	got, _ := s.GetLogs(context.Background(), store.LogFilter{Topics: [][]common.Hash{{topicB}}})
+	got, err := s.GetLogs(context.Background(), rng([][]common.Hash{{topicB}}))
+	if err != nil {
+		t.Fatalf("topic0=B: %v", err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("topic0=B: want 2, got %d", len(got))
 	}
 	// topic0 wildcard, topic1 == B → only 900/0
-	got, _ = s.GetLogs(context.Background(), store.LogFilter{Topics: [][]common.Hash{{}, {topicB}}})
+	got, _ = s.GetLogs(context.Background(), rng([][]common.Hash{{}, {topicB}}))
 	if len(got) != 1 || got[0].BlockNumber != 900 {
 		t.Fatalf("topic1=B: want [900], got %+v", got)
 	}
 	// OR within a position
-	got, _ = s.GetLogs(context.Background(), store.LogFilter{Topics: [][]common.Hash{{topicA, topicB}}})
+	got, _ = s.GetLogs(context.Background(), rng([][]common.Hash{{topicA, topicB}}))
 	if len(got) != 5 {
 		t.Fatalf("topic0 in {A,B}: want 5, got %d", len(got))
 	}
