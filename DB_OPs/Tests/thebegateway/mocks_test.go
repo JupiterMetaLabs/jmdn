@@ -167,6 +167,21 @@ func (m *spyOutbox) RequeueExhausted(_ context.Context) (int, error) {
 	return m.requeued, m.requeueErr
 }
 
+func (m *spyOutbox) MaxID(_ context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return int64(len(m.nextEntries)), nil
+}
+
+func (m *spyOutbox) DeleteAfter(_ context.Context, sinceID int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sinceID < 0 {
+		return 0, nil
+	}
+	return 0, nil
+}
+
 func (m *spyOutbox) ackCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

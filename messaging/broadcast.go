@@ -16,10 +16,11 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Vote"
-	"gossipnode/explorer/lifecycle"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging/BlockProcessing"
 	GROHelper "gossipnode/messaging/common"
 	"gossipnode/metrics"
@@ -726,6 +727,13 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.Int("bls_results_count", len(blsResults)))
 
+	// D-858 item 2: this is the sequencer's consensus terminal for the height —
+	// release the ingress in-flight claim (Block/Server.go) on ANY outcome (commit or
+	// failure), so the next height, or a legitimate retry of a failed height, is
+	// admitted promptly rather than waiting for the proposalguard TTL. No-op on nodes
+	// that never claimed (validators reach state via blockPropagation, not here).
+	defer proposalguard.Default.Release(block.BlockNumber)
+
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
 	if len(blsResults) > 0 {
@@ -786,24 +794,12 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
 	}
 
-	// Process transactions BEFORE storing the block (F-train ordering) —
-	// if tx processing fails, the block is never persisted, keeping account
-	// state consistent. Per-tx markers make replays exactly-once.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, nil); err != nil {
-		broadcastLogger().Error(context.Background(), "Block transaction processing failed - not storing block", err,
-			ion.String("block_hash", block.BlockHash.Hex()))
-		// Explorer lifecycle: FAILED — applied consensus but tx processing failed.
-		lifecycle.MarkFailed(block.BlockNumber, "block transaction processing failed")
-		return fmt.Errorf("failed to process block transactions: %w", err)
-	}
-
 	// Persist the committee certificate that was just verified above (2f+1
 	// fail-closed) so it survives past the in-memory blsResults and is
 	// re-verifiable on sync (P-cert / ThebeSync). Advisory field; does not affect
-	// BlockHash. Best-effort marshal — a marshal error must not block a validated
-	// block from being stored.
+	// BlockHash/ConsensusHash/StateFingerprint. Set BEFORE apply+store below so the
+	// stored block carries it. Best-effort marshal — a marshal error must not block
+	// a validated block from being stored.
 	if len(blsResults) > 0 {
 		if certJSON, mErr := json.Marshal(blsResults); mErr == nil {
 			block.CommitteeCertificate = string(certJSON)
@@ -814,12 +810,26 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		}
 	}
 
-	// Store block only after transactions have been successfully applied.
-	if err := DB_OPs.StoreZKBlock(nil, block); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to store block in database after transaction processing", err,
+	// Apply transactions and store the block in ONE fail-closed step (D-858).
+	// ProcessBlockTransactionsAndStore stores the block AFTER the state-fingerprint
+	// check and BEFORE the block-processed marker; if StoreZKBlock fails, it rolls
+	// back the full applied prefix (balances, tx_nonce, tx_count_sent, fee/coinbase/
+	// zkvm credits, per-tx markers) and drops the outbox projection — so a block that
+	// is not durably stored leaves NO state change. This is the block-858 fix: the
+	// old code applied a second duplicate-height candidate's txs and then returned on
+	// a StoreZKBlock uq_txn_block_index failure WITHOUT rolling back, advancing the
+	// sequencer's account state past the fleet and forcing a validator re-seed.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
+		return DB_OPs.StoreZKBlock(nil, block)
+	}); err != nil {
+		broadcastLogger().Error(context.Background(), "Block apply+store failed - block not applied (rolled back, withheld from peers)", err,
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Uint64("block_number", block.BlockNumber))
-		return fmt.Errorf("failed to store block in database: %w", err)
+		// Explorer lifecycle: FAILED — either tx processing or the durable store failed.
+		lifecycle.MarkFailed(block.BlockNumber, "block apply or store failed")
+		return fmt.Errorf("failed to process/store block: %w", err)
 	}
 
 	// Explorer lifecycle: SUCCESS — block stored + applied. The status endpoint's
