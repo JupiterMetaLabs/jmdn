@@ -83,27 +83,30 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//    applied prefix (balances, tx_nonce, tx_count_sent, fee/coinbase/zkvm
 	//    credits, per-tx markers) via ProcessBlockTransactionsAndStore, so a block
 	//    that fails to persist leaves NO state change, mirroring the live path and
-	//    closing the block-858 store-after-apply gap on the sync path too. A SOFT
-	//    partial projection (StoreZKBlock returns nil but a tx row was enqueued to
-	//    the outbox) is NOT a rollback case — the block row is durably stored — and
-	//    is repaired inline below (deliverable E).
+	//    closing the block-858 store-after-apply gap on the sync path too. The
+	//    verify-and-repair pass below is a cheap defensive integrity check, not a
+	//    workaround for a silent-nil store (deliverable E).
 	if perr := BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
 		return DB_OPs.StoreZKBlock(nil, block)
 	}); perr != nil {
 		return hasCert, fmt.Errorf("thebesync apply: block %d process+store: %w", block.BlockNumber, perr)
 	}
-	// B (D-65): guard against a PARTIALLY-projected store. StoreZKBlock returns nil
-	// even when a transaction projection fails and is enqueued to the outbox
-	// (best-effort), so "no error" is NOT proof the block fully landed.
+	// B (D-65): defensive check against a PARTIALLY-projected store.
 	//
-	// A plain refusal here does NOT help: the block ROW is already written and the
-	// local tip is MAX(block_number) (Applier.LocalTip → GetLatestBlockNumber), so
-	// returning an error would not hold the head back — block N would just be
-	// skipped with its transactions missing. So REPAIR inline instead: the
-	// in-memory `block` still carries every transaction, and its snapshot FK parent
-	// now exists (the StoreZKBlock above wrote it), so a second StoreZKBlock lands
-	// the tx rows. Re-verify, and fail only if it is STILL partial — now a loud,
-	// localized projection fault rather than a silent gap.
+	// NOTE (corrected post-C6): StoreZKBlock does NOT return nil on a projection
+	// failure. ThebeDB.Append is a SYNCHRONOUS 2PC — KV is prepared, the SQL
+	// projection (Profile.Apply INSERT) is committed, then KV is committed; a
+	// projection failure returns the error BEFORE the KV commit, and the gateway
+	// enqueues the outbox AND returns that error (never nil). So each of the
+	// separate Appends inside StoreZKBlock (block, snapshot, zkproof, per-tx)
+	// surfaces its own projection fault, and the `perr` branch above already
+	// catches them. (The earlier comment here claimed the opposite; that was stale.)
+	//
+	// This block is therefore belt-and-suspenders: it re-reads the stored block and,
+	// only if the SQL tx count is short of the in-memory block, retries the store
+	// once and then fails loudly. It is cheap (one indexed read on the happy path)
+	// and localizes any residual partial-projection fault instead of letting a gap
+	// ride forward, so it is kept even though the 2PC store makes it rarely-taken.
 	if len(block.Transactions) > 0 {
 		stored, rerr := DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
 		if rerr != nil {
