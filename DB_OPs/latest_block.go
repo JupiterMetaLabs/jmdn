@@ -118,12 +118,29 @@ func GetLatestDataCompleteBlock() (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("GetLatestDataCompleteBlock: %w", err)
 	}
-	if raw == nil {
-		return 0, nil // marker unset (fresh node) — no data-complete tip yet
+	var marker uint64
+	if raw != nil {
+		v, perr := strconv.ParseUint(string(raw), 10, 64)
+		if perr != nil {
+			return 0, fmt.Errorf("GetLatestDataCompleteBlock: parse marker %q: %w", string(raw), perr)
+		}
+		marker = v
 	}
-	v, perr := strconv.ParseUint(string(raw), 10, 64)
-	if perr != nil {
-		return 0, fmt.Errorf("GetLatestDataCompleteBlock: parse marker %q: %w", string(raw), perr)
+
+	// D-858 review B4: the latest_block marker write is NON-FATAL
+	// (UpdateLatestBlockMonotonic failures are logged and swallowed on all apply
+	// paths), so the marker can transiently LAG the truly-applied state. With the
+	// zero-tolerance vote gate that would falsely reject the next height as
+	// non-contiguous until reconcile heals it. The applied-anchor
+	// (AdvanceAppliedAnchorContiguous) is a second, independent "highest contiguously
+	// applied block" signal; take the MAX of the two so a lagging marker cannot cause
+	// a false reject. This is a tighter lower bound, NOT a tolerance window — it never
+	// admits a height ABOVE the applied tip, so the gap guard (reject N != tip+1 /
+	// N <= tip) is preserved and the 844-without-843 class stays closed. A missing
+	// anchor (never seeded) contributes 0.
+	tip := marker
+	if anchor, ok, aerr := GetAppliedAnchor(nil); aerr == nil && ok && anchor > tip {
+		tip = anchor
 	}
-	return v, nil
+	return tip, nil
 }
