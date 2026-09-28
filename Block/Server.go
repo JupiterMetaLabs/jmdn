@@ -1065,7 +1065,16 @@ func getLatestBlock(c *gin.Context) {
 	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(spanCtx, nil)
+	// D-858 review B7: this endpoint MUST report the data-complete tip, not
+	// MAX(block_number). The orchestrator polls /api/latest-block to compute the next
+	// height (see internal/proposalguard header), and the three D-858 gates now read
+	// GetLatestDataCompleteBlock. After a store failure at height N the skeleton
+	// blocks row advances MAX to N while the data-complete marker holds N-1; returning
+	// MAX here would make the orchestrator propose N+1 (skipping the failed N) and
+	// every validator reject it as non-contiguous — the exact divergence this PR
+	// fixes. Reading the data-complete tip keeps all four readers in agreement and
+	// also avoids serving a skeleton (txless) block body below.
+	latestBlockNumber, err := DB_OPs.GetLatestDataCompleteBlock()
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))

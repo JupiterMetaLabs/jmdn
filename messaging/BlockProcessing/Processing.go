@@ -70,6 +70,26 @@ func clearContractStateCommitted(blockHash common.Hash) {
 	contractStateCommittedMu.Unlock()
 }
 
+// decideStoreFailure implements the D-858 B2 rule for a store failure that occurs
+// AFTER the block's transactions were applied. rollbackState / rollbackApplied can
+// only restore ACCOUNT docs; if the block committed contract STORAGE (applyContractTx
+// step 7.5 calls res.CommitState() durably, with no undo), an accounts-only rollback
+// would revert balances while leaving storage mutated — a silent divergence worse than
+// not rolling back. So:
+//   - contract-bearing block (didCommitContractState) → REFUSE the incomplete rollback
+//     and fail closed; rollbackApplied is NOT called. Returns (refusal error, false).
+//   - non-contract block → rollbackApplied() fully reverts it. Returns (rollback error, true).
+//
+// Extracted from ProcessBlockTransactionsAndStore so the decision is unit-testable
+// without a live DB (review B8). The bool is whether a rollback was performed.
+func decideStoreFailure(blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func()) (error, bool) {
+	if didCommitContractState(blockHash) {
+		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", blockNumber, serr), false
+	}
+	rollbackApplied()
+	return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", blockNumber, serr), true
+}
+
 // txStage accumulates one transaction's account mutations in memory so they can
 // commit in a SINGLE accountsdb ExecAll together with the tx_processed marker.
 // Keeping balances and the marker in one commit means either the whole tx
@@ -726,15 +746,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		// block-scoped purge is a possible future refinement.
 		if serr := store(); serr != nil {
 			span.RecordError(serr)
-			// D-858 review B2: rollbackState / rollbackApplied can only restore ACCOUNT
-			// docs. If this block committed contract state (applyContractTx step 7.5
-			// calls res.CommitState() durably, and there is NO undo for contract
-			// STORAGE), an accounts-only rollback would revert balances while leaving
-			// storage mutated — silent divergence, worse than not rolling back. So for a
-			// contract-bearing block we refuse the (necessarily incomplete) rollback and
-			// fail closed loudly: the node does not silently half-revert; it must resync
-			// from the canonical chain (P2.5 fingerprint on the next block halts it too).
-			if didCommitContractState(block.BlockHash) {
+			// D-858 review B2: the rollback-vs-refuse decision lives in decideStoreFailure
+			// (below) so it can be unit-tested without a live DB (review B8). It returns
+			// whether a rollback was actually performed so the two distinct operator
+			// signals below stay accurate.
+			err, rolledBack := decideStoreFailure(block.BlockHash, block.BlockNumber, serr, rollbackApplied)
+			if !rolledBack {
 				span.SetAttributes(attribute.String("status", "store_failed_contract_no_rollback"))
 				logger().Error(span_ctx, "STORE FAILED after committing contract state — REFUSING incomplete rollback (contract storage has no undo); failing closed. This node may be diverged and MUST resync from the canonical chain.",
 					serr,
@@ -744,12 +761,8 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					ion.String("topic", TOPIC),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 				)
-				return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", block.BlockNumber, serr)
+				return err
 			}
-			// Non-contract block: rollbackApplied fully covers it (accounts, tx_nonce,
-			// tx_count_sent, coinbase/zkvm/fee-recipient credits, per-tx markers), so a
-			// store failure leaves NO applied state and NO marker — the block-858
-			// duplicate-height fix (that incident was a plain transfer).
 			span.SetAttributes(attribute.String("status", "store_failed_rollback"))
 			logger().Error(span_ctx, "STORE FAILED after apply — rolling back applied prefix (fail closed, no marker written)",
 				serr,
@@ -759,8 +772,7 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
-			rollbackApplied()
-			return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", block.BlockNumber, serr)
+			return err
 		}
 	}
 
