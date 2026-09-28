@@ -35,7 +35,16 @@ const (
 
 // MaxOutboxAttempts is the ceiling for OutboxStore retry loops.
 // Entries at or above this count are not retried and left for operator inspection.
-const MaxOutboxAttempts = 3
+//
+// 12 attempts with ExponentialBackoff (1,2,4,…,256 s, then capped at 5 min) gives
+// ~21 minutes of retries. The previous value (3 → ~7 s total) was too short for
+// the apply-path ordering: contract receipts are written while the block is
+// still being applied and StoreZKBlock runs only afterwards, so the first
+// contract_receipts write ALWAYS fails fk_contract_receipt_block and depends on
+// the outbox. Any block that took >7 s to finish applying after the contract tx
+// (observed: a 24-tx block on JMDT testnet) lost its receipts permanently.
+// Keep in sync with the literal in sqlCreateOutboxIndex (outbox_store.go).
+const MaxOutboxAttempts = 12
 
 // AccountRecord maps to the `accounts` SQL table.
 // Mirrors DB_OPs.Account fields without importing that package.
