@@ -16,7 +16,6 @@ import (
 
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
-	"gossipnode/explorer/lifecycle"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -24,6 +23,8 @@ import (
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/l1finality"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
@@ -621,6 +622,56 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// D-858 item 2: duplicate-height ingress guard. The block-858 incident admitted
+	// a SECOND candidate for a height while the first was still in consensus (the
+	// orchestrator recomputed tip+1 because /api/latest-block still showed the old
+	// tip). Reject fail-closed, BEFORE any consensus work, when:
+	//   (a) the height is already committed (<= tip), or
+	//   (b) a consensus round for this height is already in flight (proposalguard).
+	// The 409 + reason is a DISTINCT, non-retryable signal the orchestrator treats as
+	// "already proposed" (item 4). proposalguard is claimed here and released on the
+	// consensus terminal (ProcessBlockLocally), with a TTL backstop for a dead round.
+	if tip, terr := DB_OPs.GetLatestDataCompleteBlock(); terr != nil {
+		span.RecordError(terr)
+		span.SetAttributes(attribute.String("status", "tip_read_failed"))
+		logger().Error(spanCtx, "Refusing proposal — committed-tip read failed (fail closed)", terr,
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "cannot read committed tip", "reason": "tip_unavailable"})
+		return
+	} else if block.BlockNumber <= tip {
+		span.SetAttributes(attribute.String("status", "duplicate_height_committed"))
+		logger().Warn(spanCtx, "Rejecting proposal for an already-committed height (duplicate/stale)",
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("committed_tip", int64(tip)),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  fmt.Sprintf("height %d already committed (tip %d)", block.BlockNumber, tip),
+			"reason": "height_already_committed",
+		})
+		return
+	}
+	if !proposalguard.Default.Claim(block.BlockNumber) {
+		span.SetAttributes(attribute.String("status", "duplicate_height_inflight"))
+		logger().Warn(spanCtx, "Rejecting proposal for a height already in consensus (in-flight)",
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  fmt.Sprintf("height %d already in consensus", block.BlockNumber),
+			"reason": "height_in_flight",
+		})
+		return
+	}
+	// Release the in-flight claim on ANY early return before consensus is handed to
+	// its async flow; once consensus.Start succeeds, the consensus terminal
+	// (ProcessBlockLocally) owns the release, with proposalguard's TTL as backstop.
+	consensusHandedOff := false
+	defer func() {
+		if !consensusHandedOff {
+			proposalguard.Default.Release(block.BlockNumber)
+		}
+	}()
+
 	// Account-nonce enrichment (EnrichBlockAccountNonces) now runs AFTER
 	// attachAVCConsensusFields below, not here: attach populates block.FeeRecipients
 	// (buddy reward-split recipients), and enrichment must see them so a never-funded
@@ -727,6 +778,10 @@ func processZKBlock(c *gin.Context) {
 		})
 		return
 	}
+
+	// Consensus is now running in its async flow; its terminal (ProcessBlockLocally)
+	// owns the in-flight claim release. Suppress the defer's early-return release.
+	consensusHandedOff = true
 
 	consensusDuration := time.Since(consensusStartTime).Seconds()
 	span.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
@@ -1010,7 +1065,16 @@ func getLatestBlock(c *gin.Context) {
 	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(spanCtx, nil)
+	// D-858 review B7: this endpoint MUST report the data-complete tip, not
+	// MAX(block_number). The orchestrator polls /api/latest-block to compute the next
+	// height (see internal/proposalguard header), and the three D-858 gates now read
+	// GetLatestDataCompleteBlock. After a store failure at height N the skeleton
+	// blocks row advances MAX to N while the data-complete marker holds N-1; returning
+	// MAX here would make the orchestrator propose N+1 (skipping the failed N) and
+	// every validator reject it as non-contiguous — the exact divergence this PR
+	// fixes. Reading the data-complete tip keeps all four readers in agreement and
+	// also avoids serving a skeleton (txless) block body below.
+	latestBlockNumber, err := DB_OPs.GetLatestDataCompleteBlock()
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))
