@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     sig_v                BIGINT        NOT NULL,
     sig_r                CHAR(66)      NOT NULL,
     sig_s                CHAR(66)      NOT NULL,
+    chain_id             VARCHAR(30),                 -- P10: decimal chain id; NULL/empty for pre-EIP-155 legacy
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_txn_snapshot
@@ -184,6 +185,13 @@ CREATE INDEX IF NOT EXISTS idx_txn_to_addr
 -- SELECT ... WHERE from_addr=$1 OR to_addr=$1 ORDER BY block_number DESC, tx_index DESC LIMIT N
 CREATE INDEX IF NOT EXISTS idx_txn_from_block_desc
     ON transactions(from_addr, block_number DESC, tx_index DESC);
+
+-- P10 (review): chain_id was never persisted, so a stored typed transaction lost
+-- its ChainID and a re-read block could not recompute its own block/consensus hash
+-- (merkle hashBlock folds tx.ChainID). Additive + idempotent: ADD COLUMN IF NOT
+-- EXISTS leaves every existing row untouched (NULL chain_id), so pre-change block
+-- rows round-trip byte-identically; only newly-stored txs carry the value.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS chain_id VARCHAR(30);
 
 CREATE INDEX IF NOT EXISTS idx_txn_to_block_desc
     ON transactions(to_addr, block_number DESC, tx_index DESC)

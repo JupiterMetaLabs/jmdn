@@ -91,6 +91,12 @@ type TransactionRecord struct {
 	SigV              uint64         `json:"sig_v"`                // BIGINT — int16 overflows for chainID > 16383 (EIP-155)
 	SigR              string         `json:"sig_r"`                // CHAR(66)
 	SigS              string         `json:"sig_s"`                // CHAR(66)
+	// ChainID is the transaction's chain id (P10 / review). Typed (type-1/2)
+	// transactions carry it explicitly and it is NOT derivable from sig_v, so a
+	// stored block that dropped it could not recompute its own block/consensus hash
+	// (merkle hashBlock folds tx.ChainID). Persisted as a decimal string; "" when a
+	// tx carried none (legacy pre-EIP-155). Stored in the nullable chain_id column.
+	ChainID string `json:"chain_id"` // VARCHAR(30) nullable — decimal chain id
 }
 
 // SnapshotRecord maps to the `snapshots` SQL table.
