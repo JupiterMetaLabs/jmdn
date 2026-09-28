@@ -10,10 +10,41 @@ package l1finality
 
 import (
 	"fmt"
+	"strings"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
+	"gossipnode/internal/l1auth"
 )
+
+// AuthorizeGossipSender decides whether an L1-commit / L1-commit-range gossip
+// message may be applied, based on the transport-authenticated sender.
+//
+// SECURITY (Ibnu76 report): the L1-commit gossip topic is public and, before this,
+// had no publisher check beyond a self-echo guard, so any mesh peer could forge a
+// permanent, fingerprint-invisible L1-finality flag on up to MaxRangeSpan blocks.
+// The trusted publisher is the fleet's single pinned sequencer
+// (config.Consensus.SequencerPinnedPeerID — the same authenticated identity the
+// vote-result-requester gate uses). authenticatedSender MUST be the gossipsub
+// StrictSign-authenticated identity (msg.Sender == libp2p GetFrom), never the
+// self-declared payload field.
+//
+// Returns:
+//   - proceed=false            → drop the message (authenticated sender is not the
+//     pinned sequencer; a forgery).
+//   - proceed=true, enforced=false → no sequencer pinned (legacy/pre-rollout);
+//     the caller MUST log a loud WARN and then apply. Production posture already
+//     requires SequencerPinnedPeerID (production_posture.go), so this branch cannot
+//     ship to mainnet — the block-858 finding-4 empty-pin lesson.
+//   - proceed=true, enforced=true  → sender is the pinned sequencer; apply.
+func AuthorizeGossipSender(authenticatedSender string) (proceed, enforced bool) {
+	pin := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID)
+	if !l1auth.Enforced(pin) {
+		return true, false
+	}
+	return l1auth.IsSequencer(authenticatedSender, pin), true
+}
 
 // MaxRangeSpan caps how many blocks a single l1-commit-range request/message
 // may cover. Without this, a malformed or oversized range (e.g. spanning

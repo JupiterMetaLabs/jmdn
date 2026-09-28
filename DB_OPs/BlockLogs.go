@@ -44,6 +44,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 			Topics:      topics,
 			Data:        l.Data,
 			BlockNumber: l.BlockNumber,
+			BlockHash:   l.BlockHash.Bytes(),
 			TxHash:      l.TxHash.Bytes(),
 			TxIndex:     uint64(l.TxIndex),
 			LogIndex:    uint64(l.Index),
