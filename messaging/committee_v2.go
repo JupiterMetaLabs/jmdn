@@ -62,6 +62,29 @@ import (
 // across the whole fleet together. See the rollout note above.
 var CommitteeV2Enabled = envOn("JMDN_COMMITTEE_V2", false)
 
+// ValidateCommitteeV2Pin is the boot-time guard for the block-858 finding-4
+// empty-pin liveness trap. Under committee-v2 the vote-requester authz gate
+// (CON-03) authorizes the sequencer's vote requests against the pinned seed
+// authority BLS public key; that field defaults to "" (config/settings), so a
+// fleet that enables committee-v2 without pinning it has every seated validator
+// fail-closed and refuse the sequencer — silently, WARN-only, on the validators —
+// and nothing finalizes. committee-v2 ALWAYS implies a pinned sequencer key, so
+// this is never a valid configuration.
+//
+// Returns nil when committee-v2 is off (default — no-op) or the pin is non-empty;
+// otherwise a boot-refusal error. main() calls this and exits non-zero, converting
+// a silent fleet-wide stall into a loud boot failure. Pure and side-effect-free so
+// it is unit-testable without the consensus stack.
+func ValidateCommitteeV2Pin(committeeV2Enabled bool, seedAuthorityBLSPub string) error {
+	if committeeV2Enabled && strings.TrimSpace(seedAuthorityBLSPub) == "" {
+		return fmt.Errorf("JMDN_COMMITTEE_V2 is enabled but consensus.seed_authority_bls_pub is empty — " +
+			"every seated validator would fail-closed and refuse the sequencer's vote requests " +
+			"(silently, WARN-only), so no block can finalize; pin the seed authority BLS public key " +
+			"fleet-wide before enabling committee-v2, or disable JMDN_COMMITTEE_V2")
+	}
+	return nil
+}
+
 // UniformSelectionWeight is the weight given to every member.
 //
 // The signed snapshot (seednode/committee/contracts.go:106) carries peer_id and

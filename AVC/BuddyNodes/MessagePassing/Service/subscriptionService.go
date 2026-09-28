@@ -1104,7 +1104,15 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		return err
 	}
 
-	updated, skipped := l1finality.ApplyRange(conn, payload)
+	updated, skipped, applyErr := l1finality.ApplyRange(conn, payload)
+	if applyErr != nil {
+		// S3: a regressing (replay/rollback) range from a peer broadcast is dropped fail-closed.
+		logger().Error(logger_ctx, "L1 range finality rejected from peer broadcast", applyErr,
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return applyErr
+	}
 
 	logger().Info(logger_ctx, "L1 range finality applied from peer broadcast",
 		ion.Int64("start_block", int64(payload.StartBlock)),

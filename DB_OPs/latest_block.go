@@ -94,3 +94,53 @@ func UpdateLatestBlockMonotonic(blockNumber uint64) (uint64, bool, error) {
 	}
 	return next, true, nil
 }
+
+// GetLatestDataCompleteBlock returns the DATA-COMPLETE tip: the latest_block
+// marker, which is advanced ONLY after a block's full apply+store succeeds
+// (UpdateLatestBlockMonotonic). It returns 0 when the marker is unset (fresh node).
+//
+// D-858 (review B1): this is DELIBERATELY different from GetLatestBlockNumber, which
+// reads SQL MAX(block_number). StoreZKBlock is a non-atomic chain of gateway writes
+// (block → snapshot → [zkproof] → transactions); a WriteTransaction projection
+// failure (the uq_txn_block_index 858 trigger) leaves the `blocks` row already
+// committed, so MAX(block_number) advances to a height whose state was rolled back
+// and never applied. The duplicate-height ingress gates and the vote chain-position
+// gate MUST read the data-complete marker, not MAX — otherwise a skeleton row from a
+// failed store makes them treat a never-applied height as committed: the ingress
+// gates then reject re-proposal of that height PERMANENTLY (no TTL), and the vote
+// gate links N+1 against a block nobody applied.
+func GetLatestDataCompleteBlock() (uint64, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return 0, fmt.Errorf("GetLatestDataCompleteBlock: %w", err)
+	}
+	raw, err := h.GetSyncKV(LatestBlockMarkerKey)
+	if err != nil {
+		return 0, fmt.Errorf("GetLatestDataCompleteBlock: %w", err)
+	}
+	var marker uint64
+	if raw != nil {
+		v, perr := strconv.ParseUint(string(raw), 10, 64)
+		if perr != nil {
+			return 0, fmt.Errorf("GetLatestDataCompleteBlock: parse marker %q: %w", string(raw), perr)
+		}
+		marker = v
+	}
+
+	// D-858 review B4: the latest_block marker write is NON-FATAL
+	// (UpdateLatestBlockMonotonic failures are logged and swallowed on all apply
+	// paths), so the marker can transiently LAG the truly-applied state. With the
+	// zero-tolerance vote gate that would falsely reject the next height as
+	// non-contiguous until reconcile heals it. The applied-anchor
+	// (AdvanceAppliedAnchorContiguous) is a second, independent "highest contiguously
+	// applied block" signal; take the MAX of the two so a lagging marker cannot cause
+	// a false reject. This is a tighter lower bound, NOT a tolerance window — it never
+	// admits a height ABOVE the applied tip, so the gap guard (reject N != tip+1 /
+	// N <= tip) is preserved and the 844-without-843 class stays closed. A missing
+	// anchor (never seeded) contributes 0.
+	tip := marker
+	if anchor, ok, aerr := GetAppliedAnchor(nil); aerr == nil && ok && anchor > tip {
+		tip = anchor
+	}
+	return tip, nil
+}
