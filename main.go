@@ -978,6 +978,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// D-858 finding 4 (#154 empty-pin liveness trap): fail hard at boot — on every
+	// node, not only in production posture — when committee-v2 is enabled but the
+	// sequencer authority pin is empty, which would silently wedge finalization
+	// (every seated validator refuses the sequencer, WARN-only). See
+	// messaging.ValidateCommitteeV2Pin. No-op with the flag off (default).
+	if err := messaging.ValidateCommitteeV2Pin(messaging.CommitteeV2Enabled, cfg.Consensus.SeedAuthorityBLSPub); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
 	log.Info().
 		Bool("enabled", cfg.Thebe.Enabled).
 		Str("kv_path", cfg.Thebe.KVPath).
@@ -1289,6 +1299,13 @@ func main() {
 		// their retries, so reproject resets those exhausted entries and this worker
 		// then drains them.
 		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
+
+		// Wire the outbox purge hooks (D-858). The block-store-failure rollback in
+		// BlockProcessing samples MaxID before StoreZKBlock and, on failure, deletes
+		// everything enqueued past it, so a rolled-back block's tx/snapshot projection
+		// can never be drained to SQL later.
+		DB_OPs.SetOutboxMaxIDFn(outbox.MaxID)
+		DB_OPs.SetOutboxPurgeAfterFn(outbox.DeleteAfter)
 
 		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway

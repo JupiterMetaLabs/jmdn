@@ -9,6 +9,7 @@
 package l1finality
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -51,6 +52,16 @@ func AuthorizeGossipSender(authenticatedSender string) (proceed, enforced bool) 
 // billions of blocks) would drive an unbounded sequential DB read/write loop
 // per request.
 const MaxRangeSpan = 10_000
+
+// ErrL1Regression is returned when an L1 commit would move an L2 block's
+// recorded L1 anchor BACKWARD (a strictly smaller l1_block_number than what is
+// already stored). L1 finality is monotonic: once block N is anchored at L1
+// height H, it can be re-confirmed at H or a later L1 height (an L1 reorg may
+// legitimately re-commit at a higher height), but never rolled back to an
+// earlier one. Replaying a stale commit to lower the anchor — or spoofing one —
+// is the attack this rejects. Equal heights are allowed (idempotent gossip
+// replay); this is a fail-closed guard applied before any write.
+var ErrL1Regression = errors.New("l1finality: commit regresses recorded l1_block_number (replay/rollback rejected)")
 
 // CommitPayload is the body/message for a single-block L1 commit.
 type CommitPayload struct {
@@ -99,38 +110,72 @@ func ApplyCommit(conn *config.PooledConnection, p CommitPayload) (found bool, er
 	if _, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber); err != nil {
 		return false, nil // block not synced locally yet — non-fatal
 	}
+	// S3: monotonicity — reject a commit that would move this block's L1 anchor
+	// backward. The block exists locally, so found=true even when we reject.
+	if err := checkMonotonic(p.BlockNumber, p.L1BlockNumber); err != nil {
+		return true, err
+	}
 	if err := DB_OPs.StoreL1CommitRange(p.L1TxHash, p.L1BlockNumber, p.BlockNumber, p.BlockNumber); err != nil {
 		return true, fmt.Errorf("store l1 commit for block %d: %w", p.BlockNumber, err)
 	}
 	return true, nil
 }
 
+// checkMonotonic returns ErrL1Regression if block already has a recorded L1
+// anchor strictly greater than newL1. An unrecorded block (0, nil) or an equal
+// height passes. A read error is surfaced (fail-closed): we do not overwrite an
+// anchor we could not verify.
+func checkMonotonic(blockNumber, newL1 uint64) error {
+	_, existL1, err := DB_OPs.GetL1CommitForBlock(blockNumber)
+	if err != nil {
+		return fmt.Errorf("l1finality: read existing anchor for block %d: %w", blockNumber, err)
+	}
+	if isL1Regression(existL1, newL1) {
+		return fmt.Errorf("%w: block %d recorded at l1 height %d, refusing downgrade to %d",
+			ErrL1Regression, blockNumber, existL1, newL1)
+	}
+	return nil
+}
+
+// isL1Regression is the pure monotonicity decision: a new anchor regresses only
+// when it is strictly below the recorded one. An unrecorded block (existL1 == 0)
+// and an equal height (idempotent replay) both pass. Kept separate so the
+// invariant is unit-testable without a live DB.
+func isL1Regression(existL1, newL1 uint64) bool { return existL1 > newL1 }
+
 // ApplyRange applies the same L1 tx hash/block number across every block in
 // [StartBlock, EndBlock], skipping (not failing on) any block not found
 // locally — a peer may not have synced that far yet. Callers must call
 // p.Validate() first; ApplyRange itself does not re-check MaxRangeSpan.
-func ApplyRange(conn *config.PooledConnection, p RangePayload) (updated, skipped int) {
+func ApplyRange(conn *config.PooledConnection, p RangePayload) (updated, skipped int, err error) {
 	// Determine which blocks in the range exist locally — the l1_finality row
 	// covers exactly those; blocks synced later hydrate from the same row, so
 	// a skipped block self-heals on the next ApplyRange gossip replay.
 	var present []uint64
 	for blockNum := p.StartBlock; blockNum <= p.EndBlock; blockNum++ {
-		if _, err := DB_OPs.GetZKBlockByNumber(conn, blockNum); err != nil {
+		if _, gerr := DB_OPs.GetZKBlockByNumber(conn, blockNum); gerr != nil {
 			skipped++
 			continue
+		}
+		// S3: monotonicity — a single StoreL1CommitRange writes one record for the
+		// whole range at one L1 height, so if ANY present block already carries a
+		// strictly-higher anchor, applying this range would roll it back. Reject the
+		// whole range fail-closed rather than partially/silently regress.
+		if merr := checkMonotonic(blockNum, p.L1BlockNumber); merr != nil {
+			return 0, skipped, merr
 		}
 		present = append(present, blockNum)
 	}
 	if len(present) == 0 {
-		return 0, skipped
+		return 0, skipped, nil
 	}
 	// One append-only l1_finality record for the whole confirmed range —
 	// StoreL1CommitRange records every block in [start, end]; reads join on
 	// block_numbers containment, so blocks missing locally today are covered
 	// the moment they sync.
-	if err := DB_OPs.StoreL1CommitRange(p.L1TxHash, p.L1BlockNumber, p.StartBlock, p.EndBlock); err != nil {
-		return 0, skipped + len(present)
+	if serr := DB_OPs.StoreL1CommitRange(p.L1TxHash, p.L1BlockNumber, p.StartBlock, p.EndBlock); serr != nil {
+		return 0, skipped + len(present), fmt.Errorf("store l1 commit range [%d..%d]: %w", p.StartBlock, p.EndBlock, serr)
 	}
 	updated = len(present)
-	return updated, skipped
+	return updated, skipped, nil
 }
