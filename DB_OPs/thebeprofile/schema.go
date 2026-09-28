@@ -69,11 +69,25 @@ CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
 CREATE INDEX IF NOT EXISTS idx_accounts_did_address
     ON accounts(did_address);
 
--- Auto-update updated_at on every row change.
+-- updated_at is the LWW ordering key for the account upsert (apply_account.go:
+-- WHERE accounts.updated_at <= EXCLUDED.updated_at). The consensus apply path
+-- writes a DETERMINISTIC, block-derived updated_at (= block timestamp) so every
+-- node computes the same value for the same block. This trigger must therefore
+-- NOT clobber a caller-provided timestamp with wall-clock NOW() — doing so made
+-- updated_at node-local, which made the LWW gate reject a block's account updates
+-- on nodes that applied the block later than its embedded timestamp, causing
+-- fleet-wide P2.5 state-divergence halts (see
+-- docs/audit/CONSENSUS-STATE-DIVERGENCE-859-ROOT.md).
+--
+-- It remains a SAFETY NET only: a writer that leaves updated_at unset (epoch/zero)
+-- still gets NOW(), so no lazy writer regresses. A real, block-derived timestamp
+-- (any value after the unix epoch) is preserved untouched.
 CREATE OR REPLACE FUNCTION fn_accounts_set_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.updated_at = NOW();
+    IF NEW.updated_at IS NULL OR NEW.updated_at <= to_timestamp(0) THEN
+        NEW.updated_at = NOW();
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -163,6 +177,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     sig_v                BIGINT        NOT NULL,
     sig_r                CHAR(66)      NOT NULL,
     sig_s                CHAR(66)      NOT NULL,
+    chain_id             VARCHAR(30),                 -- P10: decimal chain id; NULL/empty for pre-EIP-155 legacy
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_txn_snapshot
@@ -184,6 +199,13 @@ CREATE INDEX IF NOT EXISTS idx_txn_to_addr
 -- SELECT ... WHERE from_addr=$1 OR to_addr=$1 ORDER BY block_number DESC, tx_index DESC LIMIT N
 CREATE INDEX IF NOT EXISTS idx_txn_from_block_desc
     ON transactions(from_addr, block_number DESC, tx_index DESC);
+
+-- P10 (review): chain_id was never persisted, so a stored typed transaction lost
+-- its ChainID and a re-read block could not recompute its own block/consensus hash
+-- (merkle hashBlock folds tx.ChainID). Additive + idempotent: ADD COLUMN IF NOT
+-- EXISTS leaves every existing row untouched (NULL chain_id), so pre-change block
+-- rows round-trip byte-identically; only newly-stored txs carry the value.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS chain_id VARCHAR(30);
 
 CREATE INDEX IF NOT EXISTS idx_txn_to_block_desc
     ON transactions(to_addr, block_number DESC, tx_index DESC)

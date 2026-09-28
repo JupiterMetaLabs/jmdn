@@ -509,6 +509,13 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
+		// Resolve block tags ("latest", "earliest", "pending") and the EIP-234
+		// blockHash form to concrete numbers; toFilterQuery leaves them nil.
+		if err := resolveFilterRange(ctx, handler.service, req.Params[0], q); err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
 		logs, err := handler.service.GetLogs(ctx, *q)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -735,12 +742,14 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 		if to, ok := callObj["to"].(string); ok {
 			msg.To = to
 		}
-		if data, ok := callObj["data"].(string); ok {
-			if strings.HasPrefix(data, "0x") {
-				msg.Data, _ = hex.DecodeString(data[2:])
-			} else {
-				msg.Data, _ = hex.DecodeString(data)
-			}
+		// Calldata may arrive as "data" (legacy) or "input" (EIP-1474 wording;
+		// go-ethereum ≥ 1.13 ethclient, viem and ethers v6 send ONLY "input").
+		// Reading just "data" made those clients hit the contract's fallback()
+		// with empty calldata and revert. Use "input" when present, else "data".
+		if data, ok := callObj["input"].(string); ok && data != "" {
+			msg.Data, _ = hex.DecodeString(strings.TrimPrefix(data, "0x"))
+		} else if data, ok := callObj["data"].(string); ok {
+			msg.Data, _ = hex.DecodeString(strings.TrimPrefix(data, "0x"))
 		}
 		if value, ok := callObj["value"].(string); ok {
 			if strings.HasPrefix(value, "0x") {
@@ -783,6 +792,45 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 	return Types.CallMsg{}, errors.New("invalid call object")
 }
 
+// resolveFilterRange fills FromBlock/ToBlock for eth_getLogs from the raw
+// filter object: hex numbers are already parsed by toFilterQuery; this resolves
+// the tag forms ("latest", "pending", "earliest") and the mutually exclusive
+// EIP-234 "blockHash" form (from == to == that block). Defaults: fromBlock
+// "latest", toBlock "latest" — same as geth.
+func resolveFilterRange(ctx context.Context, be Service.Service, raw any, q *Types.FilterQuery) error {
+	obj, _ := raw.(map[string]any)
+	if bh, ok := obj["blockHash"].(string); ok && bh != "" {
+		blk, err := be.BlockByHash(ctx, bh, false)
+		if err != nil || blk == nil || blk.Header == nil {
+			return fmt.Errorf("blockHash %s not found", bh)
+		}
+		n := new(big.Int).SetUint64(blk.Header.Number)
+		q.FromBlock, q.ToBlock = n, new(big.Int).Set(n)
+		return nil
+	}
+	resolve := func(v any, cur *big.Int) (*big.Int, error) {
+		if cur != nil {
+			return cur, nil // hex already parsed
+		}
+		tag, _ := v.(string)
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "earliest":
+			return big.NewInt(0), nil
+		case "", "latest", "pending", "safe", "finalized": // BFT-final: all the same head
+			return be.BlockNumber(ctx)
+		}
+		return nil, fmt.Errorf("unsupported block tag %q", tag)
+	}
+	var err error
+	if q.FromBlock, err = resolve(obj["fromBlock"], q.FromBlock); err != nil {
+		return err
+	}
+	if q.ToBlock, err = resolve(obj["toBlock"], q.ToBlock); err != nil {
+		return err
+	}
+	return nil
+}
+
 func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	// Parse filter object from JSON-RPC params
 	if filterObj, ok := p.(map[string]any); ok {
@@ -802,26 +850,35 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 				query.ToBlock = bigToBlock
 			}
 		}
-		if addresses, ok := filterObj["address"].([]any); ok {
-			query.Addresses = make([]string, len(addresses))
-			for i, addr := range addresses {
-				if addrStr, ok := addr.(string); ok {
-					query.Addresses[i] = addrStr
+		// "address" is a single string in most client libraries (ethers, viem,
+		// go-ethereum FilterQuery with one address) and an array otherwise.
+		switch a := filterObj["address"].(type) {
+		case string:
+			if a != "" {
+				query.Addresses = []string{a}
+			}
+		case []any:
+			for _, addr := range a {
+				if addrStr, ok := addr.(string); ok && addrStr != "" {
+					query.Addresses = append(query.Addresses, addrStr)
 				}
 			}
 		}
+		// "topics" rows: string, array of strings, or null (wildcard → empty row).
 		if topics, ok := filterObj["topics"].([]any); ok {
 			query.Topics = make([][]string, len(topics))
 			for i, topic := range topics {
-				if topicArr, ok := topic.([]any); ok {
-					query.Topics[i] = make([]string, len(topicArr))
-					for j, t := range topicArr {
-						if topicStr, ok := t.(string); ok {
-							query.Topics[i][j] = topicStr
+				switch t := topic.(type) {
+				case []any:
+					for _, tt := range t {
+						if topicStr, ok := tt.(string); ok {
+							query.Topics[i] = append(query.Topics[i], topicStr)
 						}
 					}
-				} else if topicStr, ok := topic.(string); ok {
-					query.Topics[i] = []string{topicStr}
+				case string:
+					query.Topics[i] = []string{t}
+				default: // nil → wildcard
+					query.Topics[i] = nil
 				}
 			}
 		}
