@@ -44,13 +44,18 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	// Create a standard JSON input.
 	//
 	// CodeQL go/unsafe-quoting (alert #17): this used to be a fmt.Sprintf
-	// template with sourceFileName spliced into a hand-written "%s" — a
-	// filename containing a double quote (sourceFileName is
-	// filepath.Base(sourcePath), which callers pass through from
-	// user-supplied contract source paths) would break out of the JSON
-	// string and inject arbitrary keys into the standard-json input handed
-	// to solc. Build the input as a struct and let encoding/json do the
-	// escaping instead of hand-constructing quoted JSON.
+	// template with sourceFileName spliced into a hand-written "%s" with no
+	// escaping — a filename containing a double quote would break out of
+	// the JSON string and inject arbitrary keys into the standard-json
+	// input handed to solc. Not reachable today: CompileSolidity's only
+	// caller (SmartContract/internal/router/handlers.go's CompileContract)
+	// derives sourcePath from os.CreateTemp, not from any caller-supplied
+	// name — sourceFileName can't carry a quote in practice right now.
+	// Fixed anyway, by building the input as a struct and letting
+	// encoding/json do the escaping instead of hand-constructing quoted
+	// JSON: it removes the injection class outright rather than relying on
+	// every future caller of this exported function continuing to only
+	// pass a generated temp-file path.
 	sourceFileName := filepath.Base(sourcePath)
 	type solcSource struct {
 		Content string `json:"content"`
