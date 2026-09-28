@@ -1176,10 +1176,15 @@ func receiveL1Commit(c *gin.Context) {
 
 	found, err := l1finality.ApplyCommit(conn, payload)
 	if err != nil {
+		// S3: a regressing (replay/rollback) commit is rejected fail-closed.
+		status := http.StatusInternalServerError
+		if errors.Is(err, l1finality.ErrL1Regression) {
+			status = http.StatusConflict
+		}
 		logger().Error(spanCtx, "Failed to update block with L1 finality", err,
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "BlockServer.receiveL1Commit"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
+		c.JSON(status, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
 		return
 	}
 	if !found {
@@ -1279,7 +1284,20 @@ func receiveL1CommitRange(c *gin.Context) {
 		return
 	}
 
-	updated, skipped := l1finality.ApplyRange(conn, payload)
+	updated, skipped, applyErr := l1finality.ApplyRange(conn, payload)
+	if applyErr != nil {
+		// S3: a regressing (replay/rollback) range is rejected fail-closed.
+		status := http.StatusInternalServerError
+		if errors.Is(applyErr, l1finality.ErrL1Regression) {
+			status = http.StatusConflict
+		}
+		logger().Error(spanCtx, "L1 range finality rejected", applyErr,
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(status, gin.H{"error": applyErr.Error()})
+		return
+	}
 
 	logger().Info(spanCtx, "L1 range finality stored",
 		ion.Int64("start_block", int64(payload.StartBlock)),
