@@ -51,10 +51,13 @@ const (
             created_at    INTEGER NOT NULL DEFAULT 0
         )`
 
+	// v2: the WHERE literal must equal MaxOutboxAttempts. Renamed (not altered)
+	// because CREATE INDEX IF NOT EXISTS never rebuilds an existing index; the
+	// old idx_outbox_next_retry (attempts < 3) is simply unused from now on.
 	sqlCreateOutboxIndex = `
-        CREATE INDEX IF NOT EXISTS idx_outbox_next_retry
+        CREATE INDEX IF NOT EXISTS idx_outbox_next_retry_v2
             ON thebe_outbox(next_retry_at ASC)
-            WHERE attempts < 3`
+            WHERE attempts < 12`
 
 	sqlEnqueue = `
         INSERT INTO thebe_outbox (namespace, method, payload, attempts, next_retry_at, created_at)
@@ -223,7 +226,7 @@ func (s *sqliteOutboxStore) RequeueExhausted(ctx context.Context) (int, error) {
 
 // ExponentialBackoff returns the next retry time for a given attempt count.
 // Formula: min(2^attempts seconds, 5 minutes)
-// attempts=0 → 1s, attempts=1 → 2s, attempts=2 → 4s (capped at MaxOutboxAttempts=3)
+// attempts=0 → 1s, 1 → 2s, 2 → 4s … 8 → 256s, then 5 min (MaxOutboxAttempts=12 ≈ 21 min total)
 // Time: O(1)
 func ExponentialBackoff(attempts int) time.Time {
 	delay := min(time.Duration(1<<uint(attempts))*time.Second, 5*time.Minute)
