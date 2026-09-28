@@ -206,6 +206,10 @@ func applyContractTx(
 		if _, cErr := res.CommitState(); cErr != nil {
 			return fail("contract tx %s: commit contract state: %w", tx.Hash.Hex(), cErr)
 		}
+		// D-858 review B2: contract STORAGE is now durably committed and has no undo.
+		// Flag the block so a later store failure refuses an accounts-only rollback
+		// (which would revert balances but leave storage mutated → silent divergence).
+		markContractStateCommitted(blockHash)
 	}
 
 	// 8. Commit: accounts + tx_processed marker via the atomic primitive.

@@ -98,7 +98,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	// gRPC analogue of HTTP 409) when the height is already committed or already in
 	// flight, so a second candidate for a height can never enter consensus. See
 	// internal/proposalguard and the HTTP twin in processZKBlock.
-	if tip, terr := DB_OPs.GetLatestBlockNumber(ctx, nil); terr != nil {
+	if tip, terr := DB_OPs.GetLatestDataCompleteBlock(); terr != nil {
 		if s.logger != nil {
 			s.logger.Error(ctx, "gRPC: refusing proposal — committed-tip read failed (fail closed)", terr,
 				ion.Uint64("block_number", block.BlockNumber))

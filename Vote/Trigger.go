@@ -78,8 +78,11 @@ func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
 // returns a non-nil error — the vote-rejection reason — when the block is already
 // committed, leaves a gap, or does not link to the local tip. Fail-closed: a tip
 // read failure returns an error so the node abstains rather than voting blind.
-func checkVoteChainPosition(ctx context.Context, zkBlock *config.ZKBlock) error {
-	tip, terr := DB_OPs.GetLatestBlockNumber(ctx, nil)
+func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
+	// D-858 (review B1): read the DATA-COMPLETE marker, NOT SQL MAX(block_number).
+	// A skeleton `blocks` row from a failed store advances MAX but not this marker,
+	// so MAX would make a node link/reject against a height it never applied.
+	tip, terr := DB_OPs.GetLatestDataCompleteBlock()
 	if terr != nil {
 		return fmt.Errorf("vote position: cannot read local tip (fail closed): %w", terr)
 	}
@@ -146,7 +149,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// block keeps its original rejection reason. Fail-closed: a tip read error
 	// abstains (rejects) rather than voting blind.
 	if status && err == nil {
-		if posErr := checkVoteChainPosition(spanCtx, zkBlock); posErr != nil {
+		if posErr := checkVoteChainPosition(zkBlock); posErr != nil {
 			status = false
 			err = posErr
 		}

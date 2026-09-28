@@ -41,6 +41,35 @@ type AccountSnapshot struct {
 	UpdatedAt   int64
 }
 
+// contractStateCommitted tracks, per block hash, whether applyContractTx durably
+// committed contract STORAGE (res.CommitState, contract_apply.go step 7.5) during
+// this block's apply. It is set under the per-block apply lock and cleared when
+// ProcessBlockTransactions returns. The store-failure path reads it to decide
+// whether a rollback can be complete: contract storage has no undo, so an
+// accounts-only rollback of a contract block would silently diverge (review B2).
+var (
+	contractStateCommittedMu sync.Mutex
+	contractStateCommitted   = make(map[common.Hash]bool)
+)
+
+func markContractStateCommitted(blockHash common.Hash) {
+	contractStateCommittedMu.Lock()
+	contractStateCommitted[blockHash] = true
+	contractStateCommittedMu.Unlock()
+}
+
+func didCommitContractState(blockHash common.Hash) bool {
+	contractStateCommittedMu.Lock()
+	defer contractStateCommittedMu.Unlock()
+	return contractStateCommitted[blockHash]
+}
+
+func clearContractStateCommitted(blockHash common.Hash) {
+	contractStateCommittedMu.Lock()
+	delete(contractStateCommitted, blockHash)
+	contractStateCommittedMu.Unlock()
+}
+
 // txStage accumulates one transaction's account mutations in memory so they can
 // commit in a SINGLE accountsdb ExecAll together with the tx_processed marker.
 // Keeping balances and the marker in one commit means either the whole tx
@@ -288,6 +317,11 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// the committed block marker and returns without re-crediting balances.
 	releaseBlockLock := acquireBlockApplyLock(block.BlockHash.Hex())
 	defer releaseBlockLock()
+
+	// Clear the per-block contract-state-committed flag on exit (review B2). Set by
+	// applyContractTx when it durably commits contract storage; read by the
+	// store-failure path to refuse an incomplete (accounts-only) rollback.
+	defer clearContractStateCommitted(block.BlockHash)
 
 	// Record trace span and close it
 	span_ctx, span := logger().Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
@@ -682,13 +716,40 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// then failed StoreZKBlock (uq_txn_block_index 23505) is now fully reverted
 	// instead of leaving the sequencer's account state advanced past the fleet.
 	if store != nil {
-		// Any tx/snapshot projection the failed store enqueues to the outbox must
-		// not survive the rollback, or the worker could land the rolled-back block's
-		// rows later. Record the outbox high-water mark first; drop everything
-		// enqueued past it on failure. Best-effort: no-op when the hooks are unwired.
-		outboxHigh := DB_OPs.OutboxMaxID()
+		// NOTE (review S1): an earlier version sampled OutboxMaxID() here and
+		// PurgeOutboxAfter() on failure to drop the projection the failed store
+		// enqueued. That was removed: the apply lock is per-block-hash, so two blocks
+		// can apply concurrently, and an unscoped "DELETE id > sampled" would
+		// collaterally delete a CONCURRENT writer's just-enqueued entries. The dropped
+		// entry is harmless without the purge — it retries against the same permanent
+		// uq_txn_block_index conflict, exhausts its attempts, and is skipped. A
+		// block-scoped purge is a possible future refinement.
 		if serr := store(); serr != nil {
 			span.RecordError(serr)
+			// D-858 review B2: rollbackState / rollbackApplied can only restore ACCOUNT
+			// docs. If this block committed contract state (applyContractTx step 7.5
+			// calls res.CommitState() durably, and there is NO undo for contract
+			// STORAGE), an accounts-only rollback would revert balances while leaving
+			// storage mutated — silent divergence, worse than not rolling back. So for a
+			// contract-bearing block we refuse the (necessarily incomplete) rollback and
+			// fail closed loudly: the node does not silently half-revert; it must resync
+			// from the canonical chain (P2.5 fingerprint on the next block halts it too).
+			if didCommitContractState(block.BlockHash) {
+				span.SetAttributes(attribute.String("status", "store_failed_contract_no_rollback"))
+				logger().Error(span_ctx, "STORE FAILED after committing contract state — REFUSING incomplete rollback (contract storage has no undo); failing closed. This node may be diverged and MUST resync from the canonical chain.",
+					serr,
+					ion.String("block_hash", block.BlockHash.Hex()),
+					ion.Int64("block_number", int64(block.BlockNumber)),
+					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+					ion.String("topic", TOPIC),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+				return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", block.BlockNumber, serr)
+			}
+			// Non-contract block: rollbackApplied fully covers it (accounts, tx_nonce,
+			// tx_count_sent, coinbase/zkvm/fee-recipient credits, per-tx markers), so a
+			// store failure leaves NO applied state and NO marker — the block-858
+			// duplicate-height fix (that incident was a plain transfer).
 			span.SetAttributes(attribute.String("status", "store_failed_rollback"))
 			logger().Error(span_ctx, "STORE FAILED after apply — rolling back applied prefix (fail closed, no marker written)",
 				serr,
@@ -699,13 +760,6 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
 			rollbackApplied()
-			if dropped := DB_OPs.PurgeOutboxAfter(outboxHigh); dropped > 0 {
-				logger().Warn(span_ctx, "dropped outbox entries enqueued by the failed store (rolled-back block)",
-					ion.Int64("dropped", dropped),
-					ion.Int64("block_number", int64(block.BlockNumber)),
-					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-				)
-			}
 			return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", block.BlockNumber, serr)
 		}
 	}

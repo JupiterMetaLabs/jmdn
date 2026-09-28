@@ -631,7 +631,7 @@ func processZKBlock(c *gin.Context) {
 	// The 409 + reason is a DISTINCT, non-retryable signal the orchestrator treats as
 	// "already proposed" (item 4). proposalguard is claimed here and released on the
 	// consensus terminal (ProcessBlockLocally), with a TTL backstop for a dead round.
-	if tip, terr := DB_OPs.GetLatestBlockNumber(spanCtx, nil); terr != nil {
+	if tip, terr := DB_OPs.GetLatestDataCompleteBlock(); terr != nil {
 		span.RecordError(terr)
 		span.SetAttributes(attribute.String("status", "tip_read_failed"))
 		logger().Error(spanCtx, "Refusing proposal — committed-tip read failed (fail closed)", terr,

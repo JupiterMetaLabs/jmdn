@@ -360,6 +360,33 @@ func TestStoreFailureRollback(t *testing.T) {
 	t.Logf("PASS: store failure rolled back all affected accounts and markers; clean re-apply succeeded")
 }
 
+// TestStoreFailureRollback_ContractRefusesRollback (review B2): a store failure on a
+// block that committed CONTRACT STATE must NOT perform an accounts-only rollback
+// (contract storage has no undo, so a partial rollback would silently diverge). The
+// apply must fail closed with the "refusing incomplete rollback" error instead.
+func TestStoreFailureRollback_ContractRefusesRollback(t *testing.T) {
+	code := deployBytecode(t) // skips if APPLYGATE_DEPLOY_BYTECODE unset
+
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+
+	deployer := acctA
+	blk := makeBlock(t, 1, common.Hash{}, []config.Transaction{deployTx(deployer, 0, code)})
+
+	forced := errors.New("forced store failure (uq_txn_block_index 23505 simulated)")
+	err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return forced
+	})
+	if err == nil {
+		t.Fatal("expected a store-failure error on a contract block, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "refusing incomplete rollback") {
+		t.Fatalf("contract-block store failure must fail closed WITHOUT an accounts-only rollback; got: %v", err)
+	}
+	t.Logf("PASS: contract-block store failure refused the incomplete rollback and failed closed: %v", err)
+}
+
 // TestApplyGate_HaltOnDivergence: a store whose state is perturbed after genesis
 // must HALT when applying a block whose fingerprint was stamped from clean state.
 func TestApplyGate_HaltOnDivergence(t *testing.T) {
