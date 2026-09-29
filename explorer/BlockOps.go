@@ -529,10 +529,14 @@ func (s *ExplorerServer) listTransactions_inBlock(c *gin.Context) {
 	// uint64 (ConvertStringToUint64, via strconv.ParseUint) and is narrowed
 	// to int64 here only for the trace attribute — the real DB read above
 	// already used the uint64 value unmodified. Clamp instead of erroring:
-	// the request already succeeded, this only feeds telemetry.
-	blockNumberAttr := int64(blockNumberInt)
+	// the request already succeeded, this only feeds telemetry. Gate the
+	// conversion itself behind the bound check (rather than converting then
+	// overwriting) so the check actually guards it.
+	var blockNumberAttr int64
 	if blockNumberInt > math.MaxInt64 {
 		blockNumberAttr = math.MaxInt64
+	} else {
+		blockNumberAttr = int64(blockNumberInt)
 	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
