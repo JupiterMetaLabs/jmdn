@@ -651,10 +651,20 @@ func processZKBlock(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "cannot read committed tip", "reason": "tip_unavailable"})
 		return
 	} else if block.BlockNumber <= tip {
+		// CodeQL go/incorrect-integer-conversion: tip (uint64, from
+		// GetLatestDataCompleteBlock) narrowed to int64 unchecked for a log
+		// field. Gate the conversion itself behind the bound check rather
+		// than converting then overwriting, so the check actually guards it.
+		var tipAttr int64
+		if tip > math.MaxInt64 {
+			tipAttr = math.MaxInt64
+		} else {
+			tipAttr = int64(tip)
+		}
 		span.SetAttributes(attribute.String("status", "duplicate_height_committed"))
 		logger().Warn(spanCtx, "Rejecting proposal for an already-committed height (duplicate/stale)",
 			ion.Int64("block_number", int64(block.BlockNumber)),
-			ion.Int64("committed_tip", int64(tip)),
+			ion.Int64("committed_tip", tipAttr),
 			ion.String("function", "BlockServer.processZKBlock"))
 		c.JSON(http.StatusConflict, gin.H{
 			"error":  fmt.Sprintf("height %d already committed (tip %d)", block.BlockNumber, tip),
@@ -862,11 +872,15 @@ func getBlockByNumber(c *gin.Context) {
 	}
 
 	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
-	// narrowing CodeQL flagged in processZKBlock (alerts #3-#7), just not
-	// itself flagged here — telemetry-only, so clamp rather than error.
-	blockNumberAttr := int64(blockNumber)
+	// narrowing CodeQL flagged in processZKBlock (alerts #3-#7) —
+	// telemetry-only, so clamp rather than error. The convert-then-overwrite
+	// shape used here originally still left the conversion itself unguarded
+	// as far as CodeQL's analysis is concerned; gate it behind the check.
+	var blockNumberAttr int64
 	if blockNumber > math.MaxInt64 {
 		blockNumberAttr = math.MaxInt64
+	} else {
+		blockNumberAttr = int64(blockNumber)
 	}
 
 	span.SetAttributes(attribute.Int64("block_number", blockNumberAttr))
@@ -1136,7 +1150,18 @@ func getLatestBlock(c *gin.Context) {
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("latest_block_number", int64(latestBlockNumber)))
+	// CodeQL go/incorrect-integer-conversion: latestBlockNumber (uint64, from
+	// GetLatestDataCompleteBlock) narrowed to int64 unchecked at 3 log/span
+	// sites below — telemetry-only. Gate the conversion behind the bound
+	// check once and reuse, instead of repeating an unguarded cast per site.
+	var latestBlockNumberAttr int64
+	if latestBlockNumber > math.MaxInt64 {
+		latestBlockNumberAttr = math.MaxInt64
+	} else {
+		latestBlockNumberAttr = int64(latestBlockNumber)
+	}
+
+	span.SetAttributes(attribute.Int64("latest_block_number", latestBlockNumberAttr))
 
 	block, err := DB_OPs.GetZKBlockByNumber(nil, latestBlockNumber)
 	if err != nil {
@@ -1146,7 +1171,7 @@ func getLatestBlock(c *gin.Context) {
 		span.SetAttributes(attribute.Float64("duration", duration))
 		logger().Error(spanCtx, "Failed to get latest block data",
 			err,
-			ion.Int64("latest_block_number", int64(latestBlockNumber)),
+			ion.Int64("latest_block_number", latestBlockNumberAttr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
@@ -1158,7 +1183,7 @@ func getLatestBlock(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 	logger().Info(spanCtx, "Latest block lookup successful",
-		ion.Int64("latest_block_number", int64(latestBlockNumber)),
+		ion.Int64("latest_block_number", latestBlockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
