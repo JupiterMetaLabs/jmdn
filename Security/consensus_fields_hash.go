@@ -97,6 +97,44 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	if block == nil {
 		return common.Hash{}
 	}
+	return consensusFieldsDigest(block, txContentConcat(block.Transactions))
+}
+
+// RecomputeConsensusHashFromTxHashes is RecomputeBlockHashWithConsensusFields
+// with the transaction component built from each transaction's carried tx.Hash
+// instead of re-deriving it from the transaction contents.
+//
+// Why it exists: a block read back from ThebeDB does not carry every field the
+// contents hash needs - txRecordToTransaction restores neither ChainID nor
+// AccessList (the tx table has no chain-id column), so every type-1/type-2
+// transaction re-hashes differently and the contents-based recompute of a
+// stored or ThebeSync-served block never matches its ConsensusHash. tx.Hash
+// (the tx_hash column) does survive.
+//
+// Why it is sound: for every committed block tx.Hash IS the contents hash. The
+// live receive path enforces both BlockHash == H(tx.Hash...) (checkBodyBinding)
+// and BlockHash == H(contentsHash...) (Security.CheckBlockHash), which together
+// force per-transaction equality; ThebeSync re-checks BlockHash == H(tx.Hash...),
+// and the committee's v4 vote covers BlockHash. So on an honest block this equals
+// RecomputeBlockHashWithConsensusFields, and a rewritten tx.Hash breaks BlockHash.
+// Use it only together with that BlockHash check (W1 committee-anchor binding).
+func RecomputeConsensusHashFromTxHashes(block *config.ZKBlock) common.Hash {
+	if block == nil {
+		return common.Hash{}
+	}
+	var txPart []byte
+	if len(block.Transactions) > 0 {
+		txPart = make([]byte, 0, len(block.Transactions)*32)
+		for i := range block.Transactions {
+			txPart = append(txPart, block.Transactions[i].Hash.Bytes()...)
+		}
+	}
+	return consensusFieldsDigest(block, txPart)
+}
+
+// consensusFieldsDigest is the shared preimage; txPart is the concatenated
+// 32-byte per-transaction hashes (nil for no transactions).
+func consensusFieldsDigest(block *config.ZKBlock, txPart []byte) common.Hash {
 
 	var buf bytes.Buffer
 	// Bind the block's POSITION in the chain FIRST. PrevHash is what actually
@@ -140,7 +178,7 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 	// CommitteeSnapshotHash above. Adding it is a coordinated fleet cutover (see
 	// this file's header); it rides the Stage-2 enablement restart.
 	committee.WriteField(&buf, []byte(block.VdfParamsDigest))
-	committee.WriteField(&buf, txContentConcat(block.Transactions))
+	committee.WriteField(&buf, txPart)
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))
 }

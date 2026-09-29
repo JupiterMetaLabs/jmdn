@@ -261,6 +261,22 @@ type ConsensusSettings struct {
 	// Default false = today's behaviour, unchanged.
 	RequirePinnedCommittee bool `mapstructure:"require_pinned_committee" yaml:"require_pinned_committee"`
 
+	// CommitteeAnchorActivationHeight turns on the CHAIN-ANCHORED committee pool
+	// (W1 fix, messaging/committee_anchor.go). From this height on, every block
+	// whose number is a multiple of committee_epoch_blocks carries the seed's
+	// signed committee snapshot, bound by CommitteeSnapshotHash (itself covered
+	// by ConsensusHash); every block of the NEXT selection period draws its
+	// committee from that snapshot. The pool then comes from the chain, not from
+	// whenever a node happened to ask the seed, so every node - sequencer,
+	// buddies, validators, a node syncing later - derives the same committee.
+	//
+	// A FLEET-AGREED consensus parameter: every node must carry the same value,
+	// set in one coordinated upgrade, to a height the chain has not reached yet.
+	// Rounded up to a multiple of committee_epoch_blocks. 0 (the default) = off,
+	// today's behaviour unchanged. Requires committee_epoch_blocks > 0 and
+	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR off (the older, unwired hash-only anchor).
+	CommitteeAnchorActivationHeight uint64 `mapstructure:"committee_anchor_activation_height" yaml:"committee_anchor_activation_height"`
+
 	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
 	// committee snapshot when the seed is unreachable.
 	//

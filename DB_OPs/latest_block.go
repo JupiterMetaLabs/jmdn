@@ -20,9 +20,34 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 var latestBlockMu sync.Mutex
+
+// cachedTip mirrors the data-complete tip marker in memory (0 = not yet known
+// in this process). Updated on every read and advance through
+// UpdateLatestBlockMonotonic. Read lock-free by CachedCommittedTip for hot
+// paths (committee pool resolution) that must not touch the DB per call.
+var cachedTip atomic.Uint64
+
+// CachedCommittedTip returns this process's last known data-complete tip and
+// whether one is known yet. It never touches the DB; callers that get
+// known=false may fall back to GetLatestBlockNumber once.
+func CachedCommittedTip() (tip uint64, known bool) {
+	v := cachedTip.Load()
+	return v, v != 0
+}
+
+// noteTip raises cachedTip monotonically.
+func noteTip(v uint64) {
+	for {
+		cur := cachedTip.Load()
+		if v <= cur || cachedTip.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
 
 // onAdvance, guarded by latestBlockMu, is fired (under the lock) whenever the
 // marker actually advances — i.e. this node just committed a new block's state
@@ -79,6 +104,7 @@ func UpdateLatestBlockMonotonic(blockNumber uint64) (uint64, bool, error) {
 		}
 	}
 
+	noteTip(current)
 	next, moved := nextLatestBlock(current, blockNumber)
 	if !moved {
 		return current, false, nil
@@ -86,6 +112,7 @@ func UpdateLatestBlockMonotonic(blockNumber uint64) (uint64, bool, error) {
 	if err := h.PutSyncKV(LatestBlockMarkerKey, []byte(strconv.FormatUint(next, 10))); err != nil {
 		return current, false, fmt.Errorf("latest_block write: %w", err)
 	}
+	noteTip(next)
 	// Marker advanced: a new block's state is committed. Fire the (non-blocking)
 	// advance hook so the node can push its fresh head to the seednode now rather
 	// than at the next periodic tick. Held under latestBlockMu by contract.

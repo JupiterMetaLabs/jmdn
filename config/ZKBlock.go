@@ -191,6 +191,16 @@ type ZKBlock struct {
 	// the pool) — only the hash. The body is served off-chain; see the TODO.
 	CommitteeSnapshotHash []byte `json:"committee_snapshot_hash,omitempty"`
 
+	// CommitteeSnapshotAnchor is the seed-signed committee snapshot (JSON of
+	// seednode/committee.CommitteeSnapshot) carried ONLY on committee-anchor
+	// blocks (messaging/committee_anchor.go, W1). It defines the eligible pool
+	// for the NEXT selection period. Not itself part of the ConsensusHash
+	// preimage: CommitteeSnapshotHash (which is) is its digest, and receivers
+	// reject a body that does not hash to it or does not carry a valid seed
+	// authority signature. Empty on every other block and whenever
+	// consensus.committee_anchor_activation_height is 0.
+	CommitteeSnapshotAnchor string `json:"committee_snapshot_anchor,omitempty"`
+
 	// ConsensusHash is the M2b consensus-fields digest
 	// (Security.RecomputeBlockHashWithConsensusFields): a hash over the six AVC
 	// consensus fields (Slot/Period/RandaoReveals/VdfProof/SeedEpoch/
