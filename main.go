@@ -2232,25 +2232,27 @@ func main() {
 		// committee, both of which need the committee sources wired above; and
 		// the beacon was installed (and rehydrated from disk) earlier. Always
 		// disarms the decision gate armed next to slot recovery.
+		entropyLog := mainLogger()
 		var entropyTipHeight uint64
 		entropyTip, entropyTipErr := slotStoreRecoveryGetTip()
 		entropyHaveTip := entropyTipErr == nil && entropyTip != nil
 		if entropyHaveTip {
 			entropyTipHeight = entropyTip.BlockNumber
-		} else if entropyTipErr != nil && !errors.Is(entropyTipErr, messaging.ErrNoCommittedBlock) {
-			log.Error().Err(entropyTipErr).Msg("entropy recovery: cannot read the committed tip — skipping replay")
+		} else if entropyTipErr != nil && !errors.Is(entropyTipErr, messaging.ErrNoCommittedBlock) && entropyLog != nil {
+			entropyLog.Error(context.Background(), "entropy recovery: cannot read the committed tip — skipping replay", entropyTipErr)
 		}
 		rep, rerr := messaging.RunEntropyStartupRecovery(beaconInstalled, entropyTipHeight, entropyHaveTip,
 			func(height uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, height) })
-		if rerr != nil {
-			log.Error().Err(rerr).Msg("entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies")
-		} else if rep.Blocks > 0 {
-			log.Info().Uint64("tip_height", rep.TipHeight).Uint64("tip_slot", rep.TipSlot).
-				Uint64("from_height", rep.FromHeight).Uint64("from_epoch", rep.FromEpoch).Uint64("tip_epoch", rep.TipEpoch).
-				Int("blocks", rep.Blocks).Int("mixes_restored", rep.MixesRestored).
-				Bool("sealing_resumed", rep.Resumed).Uint64("resumed_epoch", rep.ResumedEpoch).
-				Msg("entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks")
-			fmt.Printf("✅ entropy state recovered (%d blocks, epochs %d..%d)\n", rep.Blocks, rep.FromEpoch, rep.TipEpoch)
+		if entropyLog != nil {
+			if rerr != nil {
+				entropyLog.Error(context.Background(), "entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies", rerr)
+			} else if rep.Blocks > 0 {
+				entropyLog.Info(context.Background(), "entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks",
+					ion.Uint64("tip_height", rep.TipHeight), ion.Uint64("tip_slot", rep.TipSlot),
+					ion.Uint64("from_height", rep.FromHeight), ion.Uint64("from_epoch", rep.FromEpoch), ion.Uint64("tip_epoch", rep.TipEpoch),
+					ion.Int("blocks", rep.Blocks), ion.Int("mixes_restored", rep.MixesRestored),
+					ion.Bool("sealing_resumed", rep.Resumed), ion.Uint64("resumed_epoch", rep.ResumedEpoch))
+			}
 		}
 	}
 
