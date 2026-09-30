@@ -22,6 +22,7 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/messaging"
 	"gossipnode/seednode"
+	seedcommittee "gossipnode/seednode/committee"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -211,6 +212,24 @@ func WireCommitteeSources(host host.Host) bool {
 
 	messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
 	messaging.SetRewardAddressSource(sc.RewardAddresses(pinned, cfg.Consensus.CommitteeEpochSeconds))
+	// W1: where this proposer gets the seed's CURRENT signed snapshot to carry
+	// on committee-anchor blocks. messaging.BuildCommitteeAnchor verifies it
+	// against the pinned authority before use.
+	messaging.SetCommitteeAnchorSource(func(ctx context.Context) (*seedcommittee.CommitteeSnapshot, error) {
+		return sc.FetchCommitteeSnapshot(ctx, 0)
+	})
+	if messaging.CommitteeAnchoringEnabled() {
+		// Start-up check, off the start-up path: surfaces a wrong pinned seed
+		// authority or an unreachable seed long before the first anchor height.
+		go func() {
+			if epoch, n, perr := messaging.PreflightCommitteeAnchorSource(); perr != nil {
+				logger().Error(context.Background(), "committee anchor preflight FAILED - fix before the chain reaches consensus.committee_anchor_activation_height", perr)
+			} else {
+				logger().Info(context.Background(), "committee anchor preflight OK: seed snapshot verifies against the pinned authority",
+					ion.Uint64("seed_epoch", epoch), ion.Int("members", n))
+			}
+		}()
+	}
 	return true
 }
 

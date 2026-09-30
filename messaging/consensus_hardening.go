@@ -212,6 +212,32 @@ func FleetEligibleForEpoch(epoch uint64, pinned bool) (map[string]string, error)
 // eligibleMembersForEpochFiltered is the shared core. Split out so the filtered
 // and unfiltered views cannot drift apart in anything except the blocklist step.
 func eligibleMembersForEpochFiltered(epoch uint64, pinned bool, applyBlocklist bool) (map[string]string, error) {
+	// W1: once the pool is chain-anchored (committee_anchor.go), every
+	// resolution comes from the chain - the requested selection period when
+	// pinned, otherwise the period of the next height to be decided. Errors
+	// are returned as-is: an anchored period with no provable pool fails
+	// closed and must never fall back to the live seed read below.
+	if CommitteeAnchoringEnabled() {
+		var pool map[string]string
+		var handled bool
+		var err error
+		if pinned {
+			pool, handled, err = anchoredPoolForPeriod(epoch, applyBlocklist)
+		} else {
+			pool, handled, err = anchoredPoolForCurrent(applyBlocklist)
+		}
+		if handled {
+			return pool, err
+		}
+	}
+	return eligibleMembersFromSource(epoch, pinned, applyBlocklist)
+}
+
+// eligibleMembersFromSource is the pre-W1 resolution: read the eligibility
+// source (the seed) and apply the blocklist. Used directly only where a
+// deterministic chain-derived pool does not exist yet (the entropy committee's
+// transition epoch) - see committee_anchor.go.
+func eligibleMembersFromSource(epoch uint64, pinned bool, applyBlocklist bool) (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -439,6 +465,10 @@ type CertificateResult struct {
 // Legacy (JMDN_COMMITTEE_V2 off) path only — the v2 verifier derives n from the
 // seed-ranked selected committee (committee_v2.go) instead.
 func authenticatedCommittee() (map[string]string, error) {
+	// W1: fleet-agreed pool (no blocklist) from the chain once anchored.
+	if pool, handled, err := anchoredPoolForCurrent(false); handled {
+		return pool, err
+	}
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()

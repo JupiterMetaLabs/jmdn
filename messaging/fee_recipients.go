@@ -224,12 +224,30 @@ func FeeRecipientsEqual(a, b []config.FeeRecipient) bool {
 // recipients from the given signers using the shared parent-state balance
 // reader. Callers MUST have checked rewardSplitEnabled() first. FAIL CLOSED on a
 // missing reward source, a balance-read error, or an invalid bound address.
-func ExpectedFeeRecipients(signers []config.CertSigner) ([]config.FeeRecipient, error) {
-	rewardMap, err := rewardAddressesForBlock()
+func ExpectedFeeRecipients(height uint64, signers []config.CertSigner) ([]config.FeeRecipient, error) {
+	rewardMap, err := rewardAddressesForHeight(height)
 	if err != nil {
 		return nil, err
 	}
 	return DeriveFeeRecipients(signers, rewardMap, parentStateBalanceOf)
+}
+
+// rewardAddressesForHeight is the reward-address map for the split carried by
+// block height, which pays the certifiers of block height-1. W1: once that
+// block's selection period is chain-anchored, the addresses come from the same
+// anchored snapshot its committee was drawn from - so the builder (R4) and every
+// validator (R5) derive the identical split no matter when they ask the seed.
+// Otherwise the pre-W1 live source.
+func rewardAddressesForHeight(height uint64) (map[string]string, error) {
+	if height > 0 {
+		if m, handled, err := AnchoredRewardAddressesForHeight(height - 1); handled {
+			if err != nil {
+				return nil, fmt.Errorf("reward-address source: %w", err)
+			}
+			return m, nil
+		}
+	}
+	return rewardAddressesForBlock()
 }
 
 // PrevBlockCertSigners returns the YES-voters of block prevNumber's committee
@@ -290,7 +308,7 @@ func checkFeeRecipients(b *config.ZKBlock) *blockRejection {
 		return reject("feerecipients_prevcert",
 			"block %s: cannot read previous block's certifiers (fail closed): %v", b.BlockHash.Hex(), serr)
 	}
-	expected, err := ExpectedFeeRecipients(signers)
+	expected, err := ExpectedFeeRecipients(b.BlockNumber, signers)
 	if err != nil {
 		return reject("feerecipients_underivable",
 			"block %s: cannot derive expected fee recipients (fail closed): %v", b.BlockHash.Hex(), err)

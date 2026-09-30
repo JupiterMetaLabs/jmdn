@@ -150,7 +150,16 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 	// the LIVE eligible set, never pinned. Inert difference from
 	// committeeSnapshotFor today (pinning is globally off, so both
 	// resolve identically), but structurally correct once pinning is not.
-	eligible, err := eligibleMembersUncapped()
+	//
+	// W1: once the pool is chain-anchored, the entropy committee's pool is the
+	// snapshot of the newest anchor block at or before this epoch's freeze
+	// cutoff slot (entropyAnchoredPool) - deterministic from the chain, so
+	// every node seats the same entropy committee. Before any anchor precedes
+	// the cutoff (the activation transition) it keeps the pre-W1 source read.
+	eligible, handled, err := entropyAnchoredPool(uint64(epoch))
+	if !handled {
+		eligible, err = eligibleMembersFromSource(0, false, true)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("messaging: eligible pool for entropy committee epoch %d: %w", epoch, err)
 	}

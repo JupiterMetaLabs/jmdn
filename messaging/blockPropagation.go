@@ -577,6 +577,14 @@ func admitZKBlock(ctx context.Context, msg config.BlockMessage, messageID string
 	if rej := validateRemoteBlock(ctx, msg); rej != nil {
 		return rej // rejected block does NOT occupy the dedup cache
 	}
+	// W1: an admitted anchor block fixes the next selection period's pool.
+	// The block is already fully validated; a failure here is local (e.g. the
+	// DB write) and is logged, not a rejection - the pool is still held in
+	// memory and is re-derivable from the stored block.
+	if err := RecordCommitteeAnchor(msg.Block); err != nil {
+		broadcastLogger().Error(context.Background(), "committee anchor: could not record the pool defined by an admitted anchor block", err,
+			ion.Uint64("block_number", msg.Block.BlockNumber))
+	}
 	markMessageProcessed(messageID)
 	return nil
 }
@@ -703,6 +711,14 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	// signatures verify against a confirmed-honest ConsensusHash. Zero value
 	// (pre-v4 block) is skipped; v4 verification then falls back to v3.
 	if rej := checkConsensusBinding(b); rej != nil {
+		return rej
+	}
+
+	// (Committee anchor, W1) An anchor block must carry a seed-signed snapshot
+	// that hashes to its CommitteeSnapshotHash (bound by ConsensusHash just
+	// above) and never moves the membership epoch backwards; any other block
+	// must carry none. See committee_anchor.go.
+	if rej := checkCommitteeAnchor(b); rej != nil {
 		return rej
 	}
 

@@ -218,7 +218,7 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		return 0, nil, nil, nil, errors.New("vote CRDT layer not initialized")
 	}
 
-	authorized, err := authorizedCommittee()
+	authorized, err := authorizedCommitteeFor(height)
 	if err != nil {
 		logger().Error(logger_ctx, "Failed to resolve authorized committee (v2 path)", err,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))

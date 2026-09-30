@@ -56,6 +56,12 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 			block.BlockNumber, block.PrevHash.Hex(), prevHash.Hex())
 	}
 
+	// 2b. Committee anchor (W1): same rule as the live receive path - an anchor
+	//     block must carry a seed-signed snapshot bound by CommitteeSnapshotHash.
+	if aerr := messaging.ValidateCommitteeAnchor(block); aerr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, aerr)
+	}
+
 	// 3. Certificate (hybrid trust). A persisted committee certificate is verified
 	//    through the single shared verifier (2f+1, fail-closed). A cert-less block
 	//    is accepted only while still in the legacy prefix (requireCert=false); once
@@ -130,6 +136,11 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	// failure is non-fatal — the block is already durably stored. Matches
 	// ProcessBlockLocally's non-fatal treatment.
 	_, _, _ = DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber)
+
+	// W1: a synced anchor block fixes the next selection period's pool here too.
+	// Non-fatal for the same reason as the marker: the block is stored, and the
+	// pool is re-derivable from it (messaging.anchoredRecord).
+	_ = messaging.RecordCommitteeAnchor(block)
 
 	// 5. Entropy side effects — the sync-path twin of ProcessBlockLocally's
 	//    ApplyBlockEntropyEffects.

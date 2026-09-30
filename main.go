@@ -72,6 +72,7 @@ import (
 	"gossipnode/node"
 	"gossipnode/profiler"
 	"gossipnode/seednode"
+	seedcommittee "gossipnode/seednode/committee"
 	"gossipnode/thebesync"
 
 	ion "github.com/JupiterMetaLabs/ion"
@@ -977,6 +978,11 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	// W1: chain-anchored committee pool preconditions (committee_anchor.go).
+	if err := messaging.ValidateCommitteeAnchorConfig(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 
 	// D-858 finding 4 (#154 empty-pin liveness trap): fail hard at boot — on every
 	// node, not only in production posture — when committee-v2 is enabled but the
@@ -1612,6 +1618,10 @@ func main() {
 	// certification stop resolving membership from two independent sources.
 	// Rollback is turning the flag off; see messaging/authorized_committee_tally.go.
 	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommitteeForTally)
+	// W1: per-height tally source - the chain-anchored pool of the tallied
+	// block's selection period once anchoring is active; otherwise identical
+	// to the line above.
+	Structs.SetAuthorizedCommitteeForHeightFn(messaging.AuthorizedCommitteeForTallyAtHeight)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
@@ -2118,6 +2128,25 @@ func main() {
 			messaging.SetCommitteeEligibilitySource(elFn)
 			messaging.SetRewardAddressSource(rewardFn)
 			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
+
+			// W1 (committee anchor): the seed's current signed snapshot, for the
+			// proposer to carry on anchor blocks and for every node's start-up
+			// preflight. Previously wired only in Sequencer.WireCommitteeSources,
+			// which a pinned sequencer reaches lazily (NewConsensus) - after its
+			// first attachAVCConsensusFields - and buddies never reach.
+			messaging.SetCommitteeAnchorSource(func(ctx context.Context) (*seedcommittee.CommitteeSnapshot, error) {
+				return elCli.FetchCommitteeSnapshot(ctx, 0)
+			})
+			if messaging.CommitteeAnchoringEnabled() {
+				go func() {
+					if epoch, members, perr := messaging.PreflightCommitteeAnchorSource(); perr != nil {
+						log.Error().Err(perr).Msg("committee anchor preflight FAILED - fix before the chain reaches consensus.committee_anchor_activation_height")
+					} else {
+						log.Info().Uint64("seed_epoch", epoch).Int("members", members).
+							Msg("committee anchor preflight OK: seed snapshot verifies against the pinned authority")
+					}
+				}()
+			}
 		}
 	} else if !cfg.FastSync.EnableCatchup {
 		// SEQUENCER (enable_catchup=false, so the branch above is skipped). Wire

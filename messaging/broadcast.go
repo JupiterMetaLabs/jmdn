@@ -840,6 +840,12 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// Full block stored + processed → advance the tip marker.
 	// Monotonic: a replayed/out-of-order block can never regress it.
 	// StoreZKBlock no longer writes the marker itself (skeleton safety).
+	// W1: the sequencer's own committed anchor block fixes the next selection
+	// period's pool on this node too (receivers record it in admitZKBlock).
+	if aerr := RecordCommitteeAnchor(block); aerr != nil {
+		broadcastLogger().Error(context.Background(), "committee anchor: could not record the pool defined by this anchor block", aerr,
+			ion.Uint64("block_number", block.BlockNumber))
+	}
 	if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber); err != nil {
 		broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
 			ion.String("error", err.Error()),

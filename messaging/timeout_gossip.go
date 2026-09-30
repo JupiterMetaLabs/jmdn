@@ -170,6 +170,18 @@ func LatestTimeoutCertificateFor(height uint64) (TimeoutCertificate, bool) {
 // to reach consensus in the first place). The epoch is derived exactly the
 // way the block-vote committee already is elsewhere in this package.
 func timeoutVotingPool(height uint64) (poolSize int, pubKeys map[string][]byte, err error) {
+	// W1: the stuck height's own chain-anchored pool, so every node sizes the
+	// timeout quorum identically.
+	if pool, handled, aerr := AnchoredPoolForHeight(height, true); handled {
+		if aerr != nil {
+			return 0, nil, fmt.Errorf("timeout voting pool: %w", aerr)
+		}
+		pubKeys = make(map[string][]byte, len(pool))
+		for pid, hexKey := range pool {
+			pubKeys[pid] = blsKeyBytes(hexKey)
+		}
+		return len(pool), pubKeys, nil
+	}
 	epoch := EpochForSlot(LiveSlotFor(height))
 	eligible, err := eligibleMembersUncappedForEpoch(epoch, false)
 	if err != nil {
