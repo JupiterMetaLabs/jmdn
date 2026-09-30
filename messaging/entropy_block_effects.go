@@ -27,6 +27,9 @@ import "gossipnode/config"
 //  4. VerifyAndAcceptVDFProof — LAST, so it can use a mix step 3 may have just
 //     produced.
 func ApplyBlockEntropyEffects(block *config.ZKBlock) {
+	// Committed-slot high-water mark (entropy_slot_watermark.go): lets the
+	// entropy committee's pool check that its freeze cutoff is final.
+	noteCommittedSlot(block.Slot)
 	foldBlockDeclaredReveals(block)
 	VerifyAndRecordPrevCert(block)
 	maybeFinaliseCompletedEpochs(block)
@@ -61,6 +64,7 @@ func ApplyBlockEntropyEffects(block *config.ZKBlock) {
 // adopt a proof it cannot independently verify — and it resolves once the node
 // is live and finalising its own epochs.
 func RecordSyncedBlockEntropy(block *config.ZKBlock) {
+	noteCommittedSlot(block.Slot)
 	foldBlockDeclaredReveals(block)
 	VerifyAndRecordPrevCert(block)
 	_ = VerifyAndAcceptVDFProof(block)

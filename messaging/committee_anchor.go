@@ -478,12 +478,34 @@ func entropyAnchoredPool(epoch uint64) (map[string]string, bool, error) {
 		cutoff = epoch*N - SnapshotFreezeLookahead
 	}
 	firstPeriod := firstCommitteeAnchorHeight()/epochLengthBlocks() + 1
+	// Finality: the answer is "the newest anchor at or before the cutoff", so
+	// it is only final once no block can still be committed at a slot <= the
+	// cutoff. Before that a newer qualifying anchor may still arrive, and the
+	// entropy accumulator caches the expected set it is built with. Callers on
+	// the block path (fold, decide) and the reveal pusher (live slot inside
+	// the reveal window) are always past this point; only an early, off-path
+	// query can hit it, and it fails closed instead of guessing.
+	tip := committedTipFn()
+	if next := nextPossibleSlotFn(tip); next <= cutoff {
+		return nil, true, fmt.Errorf("%w: entropy epoch %d cutoff slot %d, next committable slot %d",
+			ErrEntropyPoolNotFinal, epoch, cutoff, next)
+	}
 	period := currentPoolPeriod() + 1
 	for i := 0; i < entropyAnchorSearchLimit && period >= firstPeriod; i++ {
 		rec, err := anchoredRecord(period)
 		if err == nil && rec != nil && rec.AnchorSlot <= cutoff {
-			pool, perr := poolFromSnapshot(&rec.Snapshot, true)
+			// Fleet pool, NO local blocklist: this pool defines who is EXPECTED
+			// to reveal. A node that removed a blocklisted member would expect
+			// one reveal fewer, finalise "mixed" where its peers finalise
+			// "fallback" (or the reverse), and seal a different ENTROPY.
+			pool, perr := poolFromSnapshot(&rec.Snapshot, false)
 			return pool, true, perr
+		}
+		// A period whose anchor block this node HAS committed must resolve.
+		// Skipping it would silently pick an older anchor on this node only.
+		if err != nil && (period-1)*epochLengthBlocks() <= tip {
+			return nil, true, fmt.Errorf("entropy epoch %d: anchor for period %d (height %d) is committed but unreadable: %w",
+				epoch, period, (period-1)*epochLengthBlocks(), err)
 		}
 		if period == firstPeriod {
 			break
