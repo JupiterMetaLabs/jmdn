@@ -35,3 +35,23 @@ func authorizedCommittee() (map[string]string, error) {
 	}
 	return authorizedCommitteeFn()
 }
+
+// authorizedCommitteeForHeightFn, when installed, resolves the authorized set
+// for the block being tallied (W1: the chain-anchored pool of that height's
+// selection period, messaging.AuthorizedCommitteeForTallyAtHeight). Unset, the
+// tally keeps the height-less source above. Same injection pattern and reason.
+var authorizedCommitteeForHeightFn func(height uint64) (map[string]string, error)
+
+// SetAuthorizedCommitteeForHeightFn wires the per-height committee source.
+func SetAuthorizedCommitteeForHeightFn(fn func(height uint64) (map[string]string, error)) {
+	authorizedCommitteeForHeightFn = fn
+}
+
+// authorizedCommitteeFor resolves the authorized set for height, preferring the
+// per-height source when installed. Same fail-closed contract.
+func authorizedCommitteeFor(height uint64) (map[string]string, error) {
+	if authorizedCommitteeForHeightFn != nil {
+		return authorizedCommitteeForHeightFn(height)
+	}
+	return authorizedCommittee()
+}

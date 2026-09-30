@@ -436,6 +436,12 @@ var ErrCommitteeNotPinned = errors.New(
 // snapshot. Setting a real epoch length is a prerequisite for this to mean
 // anything, and is itself a coordinated fleet-wide change.
 func pinnedEligibleForEpoch(epoch uint64) (map[string]string, error) {
+	// W1 fix: once this selection period's pool is chain-anchored
+	// (committee_anchor.go), it comes from the anchor block - identical on
+	// every node, at any time - regardless of require_pinned_committee.
+	if pool, handled, err := anchoredPoolForPeriod(epoch, true); handled {
+		return pool, err
+	}
 	if !requirePinnedCommittee() {
 		// UNPINNED — current behaviour, preserved exactly. The pool is whatever
 		// the source considers current; the epoch argument is not consulted.
@@ -489,6 +495,13 @@ func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 // config. See FleetEligibleForEpoch for the full reasoning and the CON-12
 // precedent in VerifyCertificate.
 func fleetCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
+	// W1: the fleet-agreed (no blocklist) anchored pool for this period.
+	if pool, handled, err := anchoredPoolForPeriod(epoch, false); handled {
+		if err != nil {
+			return committee.Snapshot{}, err
+		}
+		return snapshotFromEligible(epoch, pool), nil
+	}
 	var eligible map[string]string
 	var err error
 	if requirePinnedCommittee() {

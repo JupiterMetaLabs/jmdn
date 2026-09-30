@@ -55,3 +55,17 @@ func AuthorizedCommitteeForTally() (map[string]string, error) {
 	// V2 PATH - the pool SelectCommittee seats from.
 	return eligibleMembersUncapped()
 }
+
+// AuthorizedCommitteeForTallyAtHeight is AuthorizedCommitteeForTally for the
+// block being tallied at height (wired via Structs.SetAuthorizedCommitteeForHeightFn).
+// W1: once that height's selection period is chain-anchored, the buddy weighs
+// votes against the same anchored pool the sequencer seats from - not whatever
+// the seed returned when this buddy asked. Otherwise unchanged.
+func AuthorizedCommitteeForTallyAtHeight(height uint64) (map[string]string, error) {
+	if CommitteeV2Enabled {
+		if pool, handled, err := AnchoredPoolForHeight(height, true); handled {
+			return pool, err
+		}
+	}
+	return AuthorizedCommitteeForTally()
+}

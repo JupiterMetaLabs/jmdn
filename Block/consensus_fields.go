@@ -140,7 +140,7 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		if serr != nil {
 			return fmt.Errorf("attachAVCConsensusFields: reading prev-block certifiers for block %d: %w", block.BlockNumber, serr)
 		}
-		recipients, err := messaging.ExpectedFeeRecipients(signers)
+		recipients, err := messaging.ExpectedFeeRecipients(block.BlockNumber, signers)
 		if err != nil {
 			return fmt.Errorf("attachAVCConsensusFields: deriving fee recipients for block %d: %w", block.BlockNumber, err)
 		}
@@ -156,7 +156,20 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// every block of the epoch once frozen, not just one boundary block, so
 	// a rejoining node can recover it from whichever block it happens to sync
 	// to first, not one specific block that might be missed.
-	if h, ok := messaging.FrozenCommitteeSnapshotHashFor(epoch); ok {
+	//
+	// W1 (messaging/committee_anchor.go): once the chain-anchored pool is
+	// configured, CommitteeSnapshotHash means something stricter - it is set
+	// ONLY on anchor heights, together with the seed-signed snapshot body that
+	// defines the next selection period's pool. The older hash-only anchor
+	// above is refused at startup when this is on (ValidateCommitteeAnchorConfig).
+	if messaging.CommitteeAnchoringEnabled() {
+		body, hash, aerr := messaging.BuildCommitteeAnchor(block.BlockNumber)
+		if aerr != nil {
+			return fmt.Errorf("attachAVCConsensusFields: committee anchor for block %d: %w", block.BlockNumber, aerr)
+		}
+		block.CommitteeSnapshotAnchor = body
+		block.CommitteeSnapshotHash = hash
+	} else if h, ok := messaging.FrozenCommitteeSnapshotHashFor(epoch); ok {
 		block.CommitteeSnapshotHash = h[:]
 	}
 
