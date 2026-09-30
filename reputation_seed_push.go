@@ -146,14 +146,6 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 	// *time.Second multiply.
 	pushSeconds := reputationPushIntervalSeconds()
 	const maxPushSeconds = uint64(math.MaxInt64 / int64(time.Second))
-	if pushSeconds > maxPushSeconds {
-		log.Warn().
-			Uint64("configured_seconds", pushSeconds).
-			Uint64("clamped_seconds", maxPushSeconds).
-			Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS exceeds the max representable time.Duration — clamping")
-		pushSeconds = maxPushSeconds
-	}
-	// The upper-bound clamp above only guards NewTicker against overflow.
 	// envUint64 returns 0 for an explicit "0" (only unset/unparseable fall
 	// back to the 300s default), and time.NewTicker panics on a
 	// non-positive duration — unrecovered, inside this bare goroutine, so
@@ -164,7 +156,19 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 		log.Info().Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS=0 — reputation push disabled")
 		return
 	}
-	interval := time.Duration(pushSeconds) * time.Second
+	// Gate the *time.Second conversion itself behind the bound check (rather
+	// than clamping pushSeconds and converting after) so the check actually
+	// guards the conversion CodeQL is tracking.
+	var interval time.Duration
+	if pushSeconds > maxPushSeconds {
+		log.Warn().
+			Uint64("configured_seconds", pushSeconds).
+			Uint64("clamped_seconds", maxPushSeconds).
+			Msg("[ReputationPush] JMDN_REPUTATION_PUSH_INTERVAL_SECONDS exceeds the max representable time.Duration — clamping")
+		interval = time.Duration(maxPushSeconds) * time.Second
+	} else {
+		interval = time.Duration(pushSeconds) * time.Second
+	}
 
 	go func() {
 		reputationPusherRunning.Store(true)
