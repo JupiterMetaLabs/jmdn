@@ -197,8 +197,11 @@ type ZKBlock struct {
 	// for the NEXT selection period. Not itself part of the ConsensusHash
 	// preimage: CommitteeSnapshotHash (which is) is its digest, and receivers
 	// reject a body that does not hash to it or does not carry a valid seed
-	// authority signature. Empty on every other block and whenever
-	// consensus.committee_anchor_activation_height is 0.
+	// authority signature. Note that the anchor is only bound when
+	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR is also enabled (enabling it changes the
+	// ConsensusHash preimage, requiring a coordinated fleet restart). Empty on
+	// every other block and whenever consensus.committee_anchor_activation_height
+	// is 0.
 	CommitteeSnapshotAnchor string `json:"committee_snapshot_anchor,omitempty"`
 
 	// ConsensusHash is the M2b consensus-fields digest

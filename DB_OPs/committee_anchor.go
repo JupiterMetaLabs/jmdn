@@ -3,9 +3,10 @@ package DB_OPs
 // Durable store for chain-anchored committee pools (W1,
 // messaging/committee_anchor.go). One record per selection period: the
 // verified, seed-signed snapshot that the anchor block of the PREVIOUS period
-// carried. Same sync-KV and first-writer-wins discipline as the equivocation
-// store (equivocation.go): a period's pool is fixed by the chain and must
-// never be rewritten.
+// carried. Same sync-KV discipline as the equivocation store
+// (equivocation.go): a period's pool is fixed by the chain and must
+// never be rewritten. Skips the write when a record already exists; callers
+// must serialize, this is not atomic.
 
 import (
 	"fmt"
@@ -40,7 +41,8 @@ func GetCommitteeAnchor(conn *config.PooledConnection, period uint64) (raw []byt
 }
 
 // PutCommitteeAnchorIfAbsent stores raw for period unless a record already
-// exists (first writer wins; a read error fails closed). conn may be nil.
+// exists (skips write when record exists; callers must serialize, not atomic;
+// a read error fails closed). conn may be nil.
 func PutCommitteeAnchorIfAbsent(conn *config.PooledConnection, period uint64, raw []byte) error {
 	h, err := getHandle(conn)
 	if err != nil {

@@ -111,13 +111,18 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 // stored or ThebeSync-served block never matches its ConsensusHash. tx.Hash
 // (the tx_hash column) does survive.
 //
-// Why it is sound: for every committed block tx.Hash IS the contents hash. The
-// live receive path enforces both BlockHash == H(tx.Hash...) (checkBodyBinding)
-// and BlockHash == H(contentsHash...) (Security.CheckBlockHash), which together
-// force per-transaction equality; ThebeSync re-checks BlockHash == H(tx.Hash...),
-// and the committee's v4 vote covers BlockHash. So on an honest block this equals
-// RecomputeBlockHashWithConsensusFields, and a rewritten tx.Hash breaks BlockHash.
-// Use it only together with that BlockHash check (W1 committee-anchor binding).
+// Why it is sound: for every committed block tx.Hash IS the contents hash.
+// Preconditions, both of which the caller must hold:
+// (1) the block passed the live receive path with EnforceBodyBinding on — that
+// flag gates BOTH checkBodyBinding (BlockHash == H(tx.Hash...)) and
+// Security.CheckBlockHash (BlockHash == H(contentsHash...)), which together
+// force per-transaction equality;
+// (2) the block was NOT acquired via ThebeSync alone — thebesync/apply.go
+// re-checks only BlockHash == H(tx.Hash...), never the contents side, so
+// equality is inherited there from live validation, not verified locally.
+// On an honest block satisfying these, this equals RecomputeBlockHashWithConsensusFields,
+// and a rewritten tx.Hash breaks BlockHash. Use it only together with that BlockHash
+// check (W1 committee-anchor binding).
 func RecomputeConsensusHashFromTxHashes(block *config.ZKBlock) common.Hash {
 	if block == nil {
 		return common.Hash{}
