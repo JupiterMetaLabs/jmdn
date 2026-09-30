@@ -27,6 +27,7 @@ import (
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
@@ -1024,18 +1025,11 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		},
 	}
 
-	// Send the ZK proof whenever the block carries ANY proof data, not only when
-	// ProofHash is set. proof_hash was Espresso-derived and is empty for
-	// Auspex-produced blocks (the orchestrator omits it since Espresso was
-	// retired), so gating on ProofHash alone dropped the StarkProof + Commitment
-	// for every block from other backends: synced nodes stored blocks with no
-	// proof, catchup.go:blockNeedsDataSync (len(StarkProof)==0) re-fetched them on
-	// every pass, and — because StarkProof and Commitment are folded into
-	// internal/merkle/hashBlock (the SyncMonitor leaf reported to the seednode) —
-	// a proof-holding node and a proof-less synced node computed DIFFERENT
-	// fingerprints for the same chain. Widening the gate is backend-agnostic and
-	// lets one catch-up pass backfill and reconverge existing blocks.
-	if b.ProofHash != "" || len(b.StarkProof) > 0 || len(b.Commitment) > 0 {
+	// Attach the ZK proof whenever the block carries ANY proof data, not only when
+	// ProofHash is set — shared gate (config.HasZKProof) with the peer-serving
+	// converter so the two never drift. This is the PoTS WAL-dump path; the fix that
+	// matters for syncing peers is the same gate in DB_OPs/Nodeinfo.convertZKBlockToNonHeaders.
+	if config.HasZKProof(b.ProofHash, b.StarkProof, b.Commitment) {
 		nh.ZkProof = &blockpb.ZKProof{
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,

@@ -57,7 +57,13 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		},
 	}
 
-	if b.ProofHash != "" {
+	// Serve the ZK proof to syncing peers whenever the block carries ANY proof
+	// data, not only when proof_hash is set. This is the peer-serving DataSync path
+	// (GetBlockNonHeaders/Range → the FastSync library answers peers here); gating on
+	// ProofHash alone dropped Auspex proofs (proof_hash is empty for Auspex blocks),
+	// so synced nodes stored proofless blocks, re-fetched them forever, and diverged
+	// in the seednode Merkle fingerprint. Shared gate with the WAL-dump converter.
+	if config.HasZKProof(b.ProofHash, b.StarkProof, b.Commitment) {
 		nh.ZkProof = &blockpb.ZKProof{
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,
