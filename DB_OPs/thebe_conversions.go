@@ -359,7 +359,11 @@ func zkProofRecordToZKBlock(z *thebegateway.ZKProofRecord, block *config.ZKBlock
 	if z == nil || block == nil {
 		return
 	}
-	block.ProofHash = z.ProofHash
+	// Canonicalize on read: CHAR(66) blank-pads, so the one row stored with '' before
+	// the fix reads back as 66 spaces (a "non-empty" ProofHash). CanonicalProofHash trims
+	// it and derives keccak256(StarkProof), so every node serves — and folds into the
+	// seednode fingerprint (internal/merkle.hashBlock) — the same value.
+	block.ProofHash = thebegateway.CanonicalProofHash(z.ProofHash, z.StarkProof)
 	block.StarkProof = z.StarkProof
 	if len(z.Commitment) > 0 && len(z.Commitment)%4 == 0 {
 		block.Commitment = make([]uint32, len(z.Commitment)/4)

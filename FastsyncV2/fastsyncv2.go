@@ -27,6 +27,7 @@ import (
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
@@ -1024,7 +1025,11 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		},
 	}
 
-	if b.ProofHash != "" {
+	// Attach the ZK proof whenever the block carries ANY proof data, not only when
+	// ProofHash is set — shared gate (config.HasZKProof) with the peer-serving
+	// converter so the two never drift. This is the PoTS WAL-dump path; the fix that
+	// matters for syncing peers is the same gate in DB_OPs/Nodeinfo.convertZKBlockToNonHeaders.
+	if config.HasZKProof(b.ProofHash, b.StarkProof, b.Commitment) {
 		nh.ZkProof = &blockpb.ZKProof{
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,

@@ -188,9 +188,15 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 
 	// ── Phase 3: DataSync ─────────────────────────────────────────────────
 	// Scan local blocks to find which ones are missing NonHeaders data.
-	// StarkProof is written ONLY by DataSync (thebe_data_writer.go) — absent or
-	// empty means the block needs DataSync regardless of whether HeaderSync ran.
-	// Blocks written only by PubSub/HeaderSync will have StarkProof==nil.
+	// StarkProof is attached by DataSync (thebe_data_writer.go) and is ALSO carried
+	// end-to-end by the live/PubSub path (the full ZKBlock, StarkProof included, is
+	// JSON-serialized in config.BlockMessage — messaging/broadcast.go — and stored
+	// whole by StoreZKBlock). So a live-received block DOES have the proof, provided
+	// the broadcaster had it. StarkProof is absent only for HeaderSync SKELETON
+	// blocks (the header writer carries no proof) or when the SOURCE block itself had
+	// none (e.g. a proof that was never produced, or a proofless block re-broadcast).
+	// Empty StarkProof therefore means "needs DataSync" regardless of how the block
+	// arrived — the check below stays len(StarkProof)==0.
 	log.Printf("[CatchUpSync] phase 3: scanning for data-missing blocks [%d..%d]", fromBlock, remoteTip)
 
 	dataMissingTag, err := fs.buildDataMissingTag(fromBlock, remoteTip)
@@ -425,8 +431,10 @@ const catchUpBatchSize = 500
 // NonHeaders data and must be (re-)fetched via DataSync.
 //
 // Two conditions trigger a re-fetch:
-//  1. StarkProof is empty — DataSync has never written ZK proof data for this
-//     block. StarkProof is set ONLY by DataSync (thebe_data_writer.go).
+//  1. StarkProof is empty — no proof data is present for this block. DataSync
+//     attaches it (thebe_data_writer.go) and the live/PubSub path also carries it
+//     (full-block JSON), so an empty proof means neither delivered one — either a
+//     HeaderSync skeleton or a proofless source — and DataSync must (re-)fetch it.
 //  2. GasUsed > 0 but Transactions is empty — the block consumed gas so it
 //     must have transactions, but none were stored. This catches blocks where a
 //     previous DataSync run set StarkProof but failed to persist transactions
