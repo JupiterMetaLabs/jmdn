@@ -156,9 +156,14 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 	// cutoff slot (entropyAnchoredPool) - deterministic from the chain, so
 	// every node seats the same entropy committee. Before any anchor precedes
 	// the cutoff (the activation transition) it keeps the pre-W1 source read.
+	//
+	// No local block_buddy blocklist on either path: this pool defines who is
+	// EXPECTED to reveal, so a node that removed a blocked member would expect
+	// one reveal fewer and could finalise "mixed" where its peers finalise
+	// "fallback" - a different mix and a different ENTROPY.
 	eligible, handled, err := entropyAnchoredPool(uint64(epoch))
 	if !handled {
-		eligible, err = eligibleMembersFromSource(0, false, true)
+		eligible, err = eligibleMembersFromSource(0, false, false)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("messaging: eligible pool for entropy committee epoch %d: %w", epoch, err)

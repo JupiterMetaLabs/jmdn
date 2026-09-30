@@ -88,13 +88,14 @@ func anchorBlockFor(t *testing.T, height, slot uint64, snap *seedcommittee.Commi
 // store fresh in-memory persistence and a controllable committed tip, and
 // restores everything afterwards.
 type anchorEnv struct {
-	mu      sync.Mutex
-	kv      map[uint64][]byte
-	blocks  map[uint64]*config.ZKBlock
-	tip     uint64
-	auth    testAuthority
-	kvPuts  int
-	blockFn func(uint64) (*config.ZKBlock, error)
+	mu       sync.Mutex
+	kv       map[uint64][]byte
+	blocks   map[uint64]*config.ZKBlock
+	tip      uint64
+	nextSlot uint64
+	auth     testAuthority
+	kvPuts   int
+	blockFn  func(uint64) (*config.ZKBlock, error)
 }
 
 func withAnchoring(t *testing.T, activation uint64) *anchorEnv {
@@ -107,6 +108,9 @@ func withAnchoring(t *testing.T, activation uint64) *anchorEnv {
 	cfg.Consensus.SeedAuthorityBLSPub = env.auth.pubHex
 
 	prevGet, prevPut, prevBlock, prevTip := anchorKVGet, anchorKVPut, anchorBlockAt, committedTipFn
+	prevNextSlot := nextPossibleSlotFn
+	env.nextSlot = ^uint64(0) // "every cutoff is final" unless a test says otherwise
+	nextPossibleSlotFn = func(uint64) uint64 { env.mu.Lock(); defer env.mu.Unlock(); return env.nextSlot }
 	anchorMu.Lock()
 	prevRecords := anchorRecords
 	anchorRecords = map[uint64]*anchorRecord{}
@@ -141,6 +145,7 @@ func withAnchoring(t *testing.T, activation uint64) *anchorEnv {
 		cfg.Consensus.CommitteeEpochBlocks = prevL
 		cfg.Consensus.SeedAuthorityBLSPub = prevPin
 		anchorKVGet, anchorKVPut, anchorBlockAt, committedTipFn = prevGet, prevPut, prevBlock, prevTip
+		nextPossibleSlotFn = prevNextSlot
 		anchorMu.Lock()
 		anchorRecords = prevRecords
 		anchorMu.Unlock()
@@ -150,6 +155,8 @@ func withAnchoring(t *testing.T, activation uint64) *anchorEnv {
 }
 
 func (e *anchorEnv) setTip(h uint64) { e.mu.Lock(); e.tip = h; e.mu.Unlock() }
+
+func (e *anchorEnv) setNextSlot(s uint64) { e.mu.Lock(); e.nextSlot = s; e.mu.Unlock() }
 
 // setLive installs a live seed source returning n members at offset - the
 // thing that used to decide the pool and must no longer matter once anchored.

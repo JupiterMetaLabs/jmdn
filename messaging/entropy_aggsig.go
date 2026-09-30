@@ -229,18 +229,17 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 		eligible[m.PeerID] = m.BLSPub
 	}
 
-	// Numerator only: a locally-blocked peer is a NON-VOTER, but its seat still
-	// sizes n above. Same shape as VerifyCertificate — numerator ⊆ denominator,
-	// so blocking can only ever make quorum harder to reach, never lower the
-	// bar. A blocked signer's certificate simply fails the count on this node
-	// rather than shifting the threshold every peer is measuring against.
-	if blocked := blockedBuddies(); len(blocked) > 0 {
-		for pid := range eligible {
-			if _, isBlocked := blocked[pid]; isBlocked {
-				delete(eligible, pid)
-			}
-		}
-	}
+	// NO local blocklist here, in the numerator either. The previous version
+	// deleted block_buddy entries from `eligible`, which made the signer loop
+	// below REJECT THE WHOLE CERTIFICATE on this node whenever a blocked peer
+	// had signed it ("not in the eligible pool"). That is not "quorum harder",
+	// as it claimed: this function does not accept or reject a block, it
+	// decides whether a window slot contributes to the fallback SEED. A slot
+	// dropped on one node and kept on its peers shifts FallbackSeedForEpoch's
+	// lowest-B subset, so that node derives a different mix, seals a different
+	// ENTROPY and seats a different committee - the D-36 divergence through
+	// the other door. The block_buddy blocklist is an operator's dialing
+	// policy; committed certificate data is judged against the fleet pool.
 
 	// The parent's certifier signatures are over the parent's canonical vote
 	// message. When the parent block carried a ConsensusHash (its committee voted
@@ -327,6 +326,10 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 	// The comment named eligibleMembers as the thing to avoid and then reached
 	// the same filter through a different door. If you are changing how snap is
 	// resolved, that is the trap to avoid re-entering.
+	//
+	// Numerator and denominator now come from the same fleet pool, so a
+	// certificate verifies identically on every node regardless of any local
+	// block_buddy entry.
 	//
 	// Fail-closed: a certificate below threshold is not recorded, so the epoch's
 	// fallback seed fails closed rather than folding a value a minority chose.
