@@ -215,6 +215,23 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 	rec.ExtraData["voting_snapshot_epoch"] = b.VotingSnapshotEpoch
 	rec.ExtraData["prev_agg_cert"] = b.PrevAggCert
 	rec.ExtraData["committee_snapshot_hash"] = b.CommitteeSnapshotHash
+	// Committee anchor (W1, messaging/committee_anchor.go): the seed-signed
+	// snapshot body, present only on anchor blocks. Persisted so a restarted
+	// node - or a node syncing from this record - can rebuild the anchored pool
+	// for the next selection period from the chain alone. Same ExtraData
+	// round-trip as committee_certificate; omitted when empty.
+	if b.CommitteeSnapshotAnchor != "" {
+		rec.ExtraData["committee_snapshot_anchor"] = b.CommitteeSnapshotAnchor
+	}
+	// VdfParamsDigest is one of the fields ConsensusHash covers
+	// (Security.RecomputeBlockHashWithConsensusFields) but was never persisted, so
+	// a stored epoch-boundary block no longer recomputed to its own ConsensusHash.
+	// Nothing recomputed stored blocks before W1; the committee-anchor binding
+	// check does (ThebeSync serves blocks from this record). Omitted when empty
+	// (Stage-1, no beacon).
+	if b.VdfParamsDigest != "" {
+		rec.ExtraData["vdf_params_digest"] = b.VdfParamsDigest
+	}
 
 	return rec
 }

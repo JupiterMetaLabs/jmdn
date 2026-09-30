@@ -168,6 +168,22 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 		blk.CommitteeSnapshotHash = b
 	}
+	// Committee anchor body (W1): see DB_OPs/backend/block.go.
+	if v, ok := r.ExtraData["committee_snapshot_anchor"]; ok {
+		s, ok2 := v.(string)
+		if !ok2 {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding committee_snapshot_anchor: want string, got %T", r.BlockNumber, v)
+		}
+		blk.CommitteeSnapshotAnchor = s
+	}
+	// VdfParamsDigest (ConsensusHash input): see DB_OPs/backend/block.go.
+	if v, ok := r.ExtraData["vdf_params_digest"]; ok {
+		s, ok2 := v.(string)
+		if !ok2 {
+			return nil, fmt.Errorf("blockRecordToZKBlock: block %d: decoding vdf_params_digest: want string, got %T", r.BlockNumber, v)
+		}
+		blk.VdfParamsDigest = s
+	}
 	return blk, nil
 }
 

@@ -243,6 +243,8 @@ func DefaultConfig() NodeConfig {
 			// >= 1 resolve correctly, but the chain cannot reach block 20 to get
 			// there. Re-enable once the sentinel collision is fixed.
 			RequirePinnedCommittee: false,
+			// Chain-anchored committee pool (W1). 0 = off. See config.go.
+			CommitteeAnchorActivationHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,
 			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
