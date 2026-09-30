@@ -227,18 +227,24 @@ func toBlockRecordWithZK(b *config.ZKBlock) *thebegateway.BlockRecord {
 	if rec.ExtraData == nil {
 		rec.ExtraData = map[string]any{}
 	}
-	rec.ExtraData["proof_hash"] = b.ProofHash
+	// Same canonical proof_hash as the zk_proofs row, so the two records agree.
+	rec.ExtraData["proof_hash"] = thebegateway.CanonicalProofHash(b.ProofHash, b.StarkProof)
 	rec.ExtraData["zk_status"] = b.Status
 	return rec
 }
 
 // toZKProofRecord converts a config.ZKBlock to thebegateway.ZKProofRecord.
+//
+// ProofHash is canonicalized: an Auspex block with a StarkProof but no proof_hash gets
+// "0x"+hex(keccak256(StarkProof)) — the value orchestrator 01e6341 now sends — instead of
+// the empty string. Storing it empty made every such block after the first collide on zk_proofs.proof_hash
+// UNIQUE and silently lose its proof row. See thebegateway/proofhash.go.
 func toZKProofRecord(b *config.ZKBlock) *thebegateway.ZKProofRecord {
 	// Commitment: []uint32 → []byte (big-endian uint32 packing)
 	commitment := commitmentToBytes(b.Commitment)
 	return &thebegateway.ZKProofRecord{
 		BlockNumber: b.BlockNumber,
-		ProofHash:   b.ProofHash,
+		ProofHash:   thebegateway.CanonicalProofHash(b.ProofHash, b.StarkProof),
 		StarkProof:  b.StarkProof,
 		Commitment:  commitment,
 	}
