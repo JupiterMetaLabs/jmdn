@@ -27,45 +27,75 @@ import "gossipnode/config"
 //  4. VerifyAndAcceptVDFProof — LAST, so it can use a mix step 3 may have just
 //     produced.
 func ApplyBlockEntropyEffects(block *config.ZKBlock) {
-	// Committed-slot high-water mark (entropy_slot_watermark.go): lets the
-	// entropy committee's pool check that its freeze cutoff is final.
+	if block == nil {
+		return
+	}
+	entropyEffectsMu.Lock()
+	defer entropyEffectsMu.Unlock()
+	applyEntropyEffectsLocked(block, entropyModeLive)
+}
+
+// entropyMode selects which of the steps a block application runs.
+type entropyMode int
+
+const (
+	entropyModeLive   entropyMode = iota // gossip / local commit
+	entropyModeSync                      // thebesync catch-up
+	entropyModeReplay                    // startup replay of stored blocks
+)
+
+// applyEntropyEffectsLocked is the one body behind every entry point.
+// Caller holds entropyEffectsMu.
+func applyEntropyEffectsLocked(block *config.ZKBlock, mode entropyMode) {
 	noteCommittedSlot(block.Slot)
+
 	foldBlockDeclaredReveals(block)
 	VerifyAndRecordPrevCert(block)
-	maybeFinaliseCompletedEpochs(block)
+
+	if mode == entropyModeLive {
+		maybeFinaliseCompletedEpochs(block)
+	} else {
+		// Sync and replay decide epochs exactly as the live path does (same
+		// function, same order), but the Stage-E hook is suppressed: a
+		// catch-up crossing many epochs must not launch one VDF evaluation
+		// per epoch. Sealing for the newest epoch is resumed once, after the
+		// replay (resumeSealingAfterReplay), or by the next live decision.
+		wasQuiet := entropyQuietFinalise.Swap(true)
+		maybeFinaliseCompletedEpochs(block)
+		entropyQuietFinalise.Store(wasQuiet)
+	}
+
 	_ = VerifyAndAcceptVDFProof(block)
 
 	// 5. Recovery deadline. LIVE PATH ONLY — see maybeTriggerVDFProofRecovery
 	//    for why the sync path must not do this. Does no I/O: it reads
 	//    in-memory state and at most hands an epoch to a background
 	//    dispatcher, so block processing never waits on a peer.
-	maybeTriggerVDFProofRecovery(block)
+	if mode == entropyModeLive {
+		maybeTriggerVDFProofRecovery(block)
+	}
 }
 
 // RecordSyncedBlockEntropy folds one block applied through SYNC (thebesync,
 // fast sync, replay) into the same entropy state.
 //
-// It runs steps 1, 2 and 4 of ApplyBlockEntropyEffects and DELIBERATELY OMITS
-// step 3, epoch finalisation.
+// It runs the same steps as ApplyBlockEntropyEffects, INCLUDING epoch
+// finalisation, but with the Stage-E sealing hook suppressed and without the
+// VDF-recovery deadline.
 //
-// WHY FINALISATION IS OMITTED HERE. maybeFinaliseCompletedEpochs notifies
-// Stage E, which starts a background VDF evaluation per finalised epoch
-// (~T_vdf of sequential squaring each). A catch-up replaying thousands of
-// blocks crosses hundreds of epoch boundaries, and finalising during replay
-// would launch hundreds of concurrent evaluations for epochs whose entropy is
-// long past useful — retention keeps only a handful. Historical epochs do not
-// need re-finalising; what the node needs is the AGGREGATE STATE, which steps
-// 1 and 2 rebuild, so that the first epoch it participates in live can fall
-// back correctly.
-//
-// The consequence is explicit rather than hidden: while syncing, step 4 will
-// usually report ErrMixUnavailable, because a mix exists only for an epoch
-// this node finalised. That is the correct fail-closed answer — it declines to
-// adopt a proof it cannot independently verify — and it resolves once the node
-// is live and finalising its own epochs.
+// WHY FINALISATION NOW RUNS HERE. It used to be omitted, to avoid launching a
+// VDF evaluation per epoch crossed during catch-up. That left a synced node
+// with no mix for any epoch it caught up through: it could not verify the
+// boundary block's proof (ErrMixUnavailable), so it held no ENTROPY for the
+// next epoch, could not build that epoch's accumulator and dropped its
+// reveals. Deciding in quiet mode keeps the mixes (and makes proof adoption
+// work during catch-up) while still starting no evaluations. Decisions use the
+// committed blocks only, so a synced node reaches the same mix as the fleet.
 func RecordSyncedBlockEntropy(block *config.ZKBlock) {
-	noteCommittedSlot(block.Slot)
-	foldBlockDeclaredReveals(block)
-	VerifyAndRecordPrevCert(block)
-	_ = VerifyAndAcceptVDFProof(block)
+	if block == nil {
+		return
+	}
+	entropyEffectsMu.Lock()
+	defer entropyEffectsMu.Unlock()
+	applyEntropyEffectsLocked(block, entropyModeSync)
 }

@@ -24,6 +24,7 @@ package Sequencer
 // without starting anything — a mix is computed (Stage D succeeded) but
 // never gets sealed or published.
 import (
+	"bytes"
 	"errors"
 	"os"
 	"strconv"
@@ -33,6 +34,7 @@ import (
 	"github.com/JupiterMetaLabs/avc/beacon"
 	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
+	"github.com/JupiterMetaLabs/avc/vdf"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/messaging"
@@ -207,6 +209,38 @@ func onEpochFinalised(closedEpoch uint64, seed randao.Seed) {
 		return
 	}
 
+	// Restart recovery (messaging/entropy_recovery.go). A restarted node gets
+	// here again for an epoch it may already have resolved before going down.
+	//
+	// 1. This node already sealed or adopted forEpoch's proof and persisted
+	//    it: verify it against THIS mix (milliseconds) and expose it as a
+	//    completed seal, instead of re-running ~T_vdf of sequential work.
+	//    Verification is the full pipeline.Accept - a stored proof that does
+	//    not verify against the mix is ignored, never trusted.
+	if proof, ok := persistedProofFor(forEpoch); ok {
+		err := pipeline.Accept(forEpoch, seed, proof)
+		if err == nil {
+			if perr := messaging.PersistEpochEntropy(forEpoch); perr != nil && !errors.Is(perr, messaging.ErrNoEntropyToPersist) {
+				log.Warn().Err(perr).Uint64("for_epoch", forEpoch).Msg("entropy: re-persisting recovered entropy failed")
+			}
+			installCompletedSealer(forEpoch, proof)
+			log.Info().Uint64("closed_epoch", closedEpoch).Uint64("for_epoch", forEpoch).
+				Msg("entropy: reused this node's persisted VDF proof after restart — verified against the mix, no re-evaluation")
+			return
+		}
+		log.Warn().Err(err).Uint64("for_epoch", forEpoch).
+			Msg("entropy: persisted VDF proof does not verify against this mix — ignoring it and sealing")
+	}
+
+	// 2. Entropy already published (rehydrated from disk or adopted from a
+	//    peer) AND the boundary block that needed the proof is already
+	//    committed: nothing left to produce.
+	if messaging.EntropyBoundaryCommitted(forEpoch) && pipeline.Ready(forEpoch) {
+		log.Info().Uint64("closed_epoch", closedEpoch).Uint64("for_epoch", forEpoch).
+			Msg("entropy: successor epoch's entropy is published and its boundary block is committed — sealing skipped")
+		return
+	}
+
 	sealer := sealerFor(forEpoch, pipeline)
 	sealer.Start(forEpoch, seed)
 	log.Info().Uint64("closed_epoch", closedEpoch).Uint64("for_epoch", forEpoch).
@@ -316,10 +350,78 @@ func SealerResultFor(forEpoch uint64) (SealResult, bool) {
 	vdfSealersMu.Lock()
 	s, ok := vdfSealers[forEpoch]
 	vdfSealersMu.Unlock()
+	if ok {
+		if r, done := s.Result(); done {
+			return r, true
+		}
+	}
+	// Restart fallback: no in-memory seal for this epoch, but this node sealed
+	// or adopted it before a restart. The persisted proof is used only when its
+	// output equals the entropy this node's beacon already holds for the epoch
+	// (published only after sealing or pipeline.Accept) and its difficulty is
+	// the pinned one, so the boundary block carries exactly the value the node
+	// verified.
+	return verifiedPersistedSeal(forEpoch)
+}
+
+// Seams for tests.
+var (
+	lookupPersistedProof = messaging.LookupVDFProof
+	publishedEntropyFor  = messaging.PublishedEntropyFor
+)
+
+func persistedProofFor(forEpoch uint64) (vdf.Proof, bool) {
+	raw, ok := lookupPersistedProof(forEpoch)
+	if !ok {
+		return vdf.Proof{}, false
+	}
+	var p vdf.Proof
+	if err := p.UnmarshalBinary(raw); err != nil {
+		log.Warn().Err(err).Uint64("for_epoch", forEpoch).Msg("entropy: persisted VDF proof is undecodable — ignoring it")
+		return vdf.Proof{}, false
+	}
+	return p, true
+}
+
+func verifiedPersistedSeal(forEpoch uint64) (SealResult, bool) {
+	proof, ok := persistedProofFor(forEpoch)
 	if !ok {
 		return SealResult{}, false
 	}
-	return s.Result()
+	published, ok := publishedEntropyFor(forEpoch)
+	if !ok {
+		return SealResult{}, false
+	}
+	out := proof.Output()
+	if !bytes.Equal(out[:], published) {
+		log.Error().Uint64("for_epoch", forEpoch).
+			Msg("entropy: persisted VDF proof's output differs from this node's published entropy — not using it")
+		return SealResult{}, false
+	}
+	if p := activeVDFPipeline(); p != nil && proof.T != p.Difficulty() {
+		log.Error().Uint64("for_epoch", forEpoch).Uint64("proof_t", proof.T).Uint64("pinned_t", p.Difficulty()).
+			Msg("entropy: persisted VDF proof has a different difficulty than the pinned one — not using it")
+		return SealResult{}, false
+	}
+	installCompletedSealer(forEpoch, proof)
+	return SealResult{ForEpoch: forEpoch, Proof: proof}, true
+}
+
+// installCompletedSealer registers a finished, successful seal for forEpoch
+// unless a live (non-cancelled) sealer is already registered, or the epoch is
+// below the eviction watermark.
+func installCompletedSealer(forEpoch uint64, proof vdf.Proof) {
+	vdfSealersMu.Lock()
+	defer vdfSealersMu.Unlock()
+	if forEpoch < evictedBelow {
+		return
+	}
+	if cur, ok := vdfSealers[forEpoch]; ok && !cur.Cancelled() {
+		return
+	}
+	r := SealResult{ForEpoch: forEpoch, Proof: proof}
+	vdfSealers[forEpoch] = &VDFSealer{resultCh: make(chan SealResult, 1), latched: &r}
+	evictOldSealersLocked(forEpoch)
 }
 
 // SeedSealResultForTest injects a completed (or failed) SealResult for

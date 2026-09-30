@@ -112,6 +112,12 @@ func SetEpochFinalisedHook(f func(closedEpoch uint64, seed randao.Seed)) {
 }
 
 func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
+	notifyEpochFinalisedWithOutcome(closedEpoch, seed, "")
+}
+
+// notifyEpochFinalisedWithOutcome is notifyEpochFinalised with the outcome
+// label recorded alongside the durable mix ("mixed" / "fallback").
+func notifyEpochFinalisedWithOutcome(closedEpoch uint64, seed randao.Seed, outcome string) {
 	// Retain the mix BEFORE dispatching to the sealing hook. This is the
 	// independent half of inbound VDF proof verification (entropy_mix_store.go):
 	// without it, a node that did not seal the epoch itself cannot check any
@@ -144,6 +150,18 @@ func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
 		seed = retained
 	}
 
+	// Durable copy BEFORE the hook, so a crash between here and the end of a
+	// ~20-minute seal still leaves the mix on disk for the restart to verify
+	// and reseal from (entropy_recovery.go). First writer wins; an identical
+	// rewrite (replay, sync) is a no-op.
+	persistFinalisedMix(closedEpoch, seed, outcome)
+
+	// Replay and sync decide epochs but must not start VDF evaluations; the
+	// newest epoch's sealing is resumed once after the replay.
+	if entropyQuietFinalise.Load() {
+		return
+	}
+
 	epochFinalisedHookMu.Lock()
 	hook := epochFinalisedHook
 	epochFinalisedHookMu.Unlock()
@@ -173,7 +191,7 @@ func decideEpoch(epoch uint64, block *config.ZKBlock) {
 
 	res := acc.Finalise()
 	if res.Outcome != randao.OutcomeFallback {
-		notifyEpochFinalised(epoch, res.Seed)
+		notifyEpochFinalisedWithOutcome(epoch, res.Seed, mixOutcomeMixed)
 		pruneAggSigsBelow(cutoffSlotFor(epoch))
 		pruneRevealsBelow(epoch + 1)
 		return
@@ -227,7 +245,7 @@ func resolvePendingFallbacks(block *config.ZKBlock) {
 		case err == nil:
 			log.Info().Uint64("epoch", e).Uint64("height", block.BlockNumber).
 				Msg("entropy: epoch finalised via the §4.2a aggregate-signature fallback")
-			notifyEpochFinalised(e, seed)
+			notifyEpochFinalisedWithOutcome(e, seed, mixOutcomeFallback)
 			pruneAggSigsBelow(cutoffSlotFor(e))
 			pruneRevealsBelow(e + 1)
 		case errors.Is(err, ErrFallbackNotYetReady):
@@ -342,6 +360,14 @@ func maybeFinaliseCompletedEpochs(block *config.ZKBlock) {
 	// lastDecidedEpoch+1, so advancing the watermark removes the claimed epoch
 	// from the next call's result. block.Slot is fixed, so the upper bound is
 	// fixed too.
+	//
+	// Startup gate (entropy_recovery.go): until the replay has rebuilt this
+	// epoch's accumulator, a decision here would finalise from partial state.
+	// The block's reveals and certificate are already folded; the replay (or
+	// the first block after it) makes the decision.
+	if entropyDecisionsPaused() {
+		return
+	}
 	for {
 		finaliseTrackMu.Lock()
 		toDecide := epochsWithClosedRevealWindow(block.Slot, lastDecidedEpoch, haveDecidedAny)
@@ -362,6 +388,10 @@ func maybeFinaliseCompletedEpochs(block *config.ZKBlock) {
 	// Committee-snapshot anchoring (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
 	// items 1/8) - piggybacks on this function's existing per-commit call
 	// sites (blockPropagation.go, broadcast.go) rather than adding a third.
-	// No-op unless CommitteeSnapshotAnchorEnabled is on.
-	maybeFreezeUpcomingSnapshot(block.Slot)
+	// No-op unless CommitteeSnapshotAnchorEnabled is on. Live only: it
+	// freezes the CURRENT source's pool, which is wrong for a replayed or
+	// synced historical slot.
+	if !entropyQuietFinalise.Load() {
+		maybeFreezeUpcomingSnapshot(block.Slot)
+	}
 }

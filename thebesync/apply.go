@@ -161,10 +161,11 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//    this node cannot fold must not abort a sync of a block whose OWN
 	//    committee certificate already verified above.
 	//
-	//    RecordSyncedBlockEntropy, not ApplyBlockEntropyEffects: it omits epoch
-	//    finalisation deliberately. See its doc comment — finalising during a
-	//    bulk replay would launch one background VDF evaluation per crossed
-	//    epoch boundary, for epochs whose entropy is long past useful.
+	//    RecordSyncedBlockEntropy, not ApplyBlockEntropyEffects: it decides
+	//    epochs (so the synced node holds each mix and can verify boundary
+	//    proofs) but with the Stage-E hook suppressed — a bulk catch-up must
+	//    not launch one background VDF evaluation per crossed epoch boundary.
+	//    See its doc comment.
 	messaging.RecordSyncedBlockEntropy(block)
 
 	return hasCert, nil

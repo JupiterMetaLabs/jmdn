@@ -1575,6 +1575,13 @@ func main() {
 	// the ordering here is the actual race-freedom guarantee, not any lock
 	// inside RecoverSlotStoreAtStartup itself.
 	if cfg.Thebe.Enabled {
+		// Entropy restart recovery (messaging/entropy_recovery.go): pause epoch
+		// DECISIONS from here — before node.NewNode() can deliver a block — until
+		// RunEntropyStartupRecovery below has replayed the stored reveals and
+		// certificates. Blocks arriving meanwhile are still folded. The replay
+		// call always disarms; a timer disarms as a last resort.
+		messaging.ArmEntropyRecovery(messaging.DefaultEntropyRecoveryArmTimeout)
+
 		if err := messaging.RecoverSlotStoreAtStartup(slotStoreRecoveryGetTip); err != nil {
 			fmt.Printf("⚠️  slot recovery failed — this node will NOT vote or propose until this is resolved: %v\n", err)
 			log.Error().Err(err).Msg("slot recovery: startup recovery failed — consensus participation blocked (fail-closed, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)")
@@ -2216,6 +2223,35 @@ func main() {
 				// Explicit: D-37 was invisible precisely because zero was
 				// indistinguishable from "not run". Never let that recur.
 				log.Info().Msg("fallback recovery: no in-window certificates were replayed (expected when the collection window has only just opened, or when JMDN_AVC_AGG_CERT is off)")
+			}
+		}
+
+		// ── Entropy restart recovery (RANDAO reveals, mix(e), VDF sealing) ──
+		// Same placement argument as the aggregate rebuild above: replaying a
+		// block verifies its parent certificate and resolves the entropy
+		// committee, both of which need the committee sources wired above; and
+		// the beacon was installed (and rehydrated from disk) earlier. Always
+		// disarms the decision gate armed next to slot recovery.
+		entropyLog := mainLogger()
+		var entropyTipHeight uint64
+		entropyTip, entropyTipErr := slotStoreRecoveryGetTip()
+		entropyHaveTip := entropyTipErr == nil && entropyTip != nil
+		if entropyHaveTip {
+			entropyTipHeight = entropyTip.BlockNumber
+		} else if entropyTipErr != nil && !errors.Is(entropyTipErr, messaging.ErrNoCommittedBlock) && entropyLog != nil {
+			entropyLog.Error(context.Background(), "entropy recovery: cannot read the committed tip — skipping replay", entropyTipErr)
+		}
+		rep, rerr := messaging.RunEntropyStartupRecovery(beaconInstalled, entropyTipHeight, entropyHaveTip,
+			func(height uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, height) })
+		if entropyLog != nil {
+			if rerr != nil {
+				entropyLog.Error(context.Background(), "entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies", rerr)
+			} else if rep.Blocks > 0 {
+				entropyLog.Info(context.Background(), "entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks",
+					ion.Uint64("tip_height", rep.TipHeight), ion.Uint64("tip_slot", rep.TipSlot),
+					ion.Uint64("from_height", rep.FromHeight), ion.Uint64("from_epoch", rep.FromEpoch), ion.Uint64("tip_epoch", rep.TipEpoch),
+					ion.Int("blocks", rep.Blocks), ion.Int("mixes_restored", rep.MixesRestored),
+					ion.Bool("sealing_resumed", rep.Resumed), ion.Uint64("resumed_epoch", rep.ResumedEpoch))
 			}
 		}
 	}
