@@ -1024,7 +1024,18 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		},
 	}
 
-	if b.ProofHash != "" {
+	// Send the ZK proof whenever the block carries ANY proof data, not only when
+	// ProofHash is set. proof_hash was Espresso-derived and is empty for
+	// Auspex-produced blocks (the orchestrator omits it since Espresso was
+	// retired), so gating on ProofHash alone dropped the StarkProof + Commitment
+	// for every block from other backends: synced nodes stored blocks with no
+	// proof, catchup.go:blockNeedsDataSync (len(StarkProof)==0) re-fetched them on
+	// every pass, and — because StarkProof and Commitment are folded into
+	// internal/merkle/hashBlock (the SyncMonitor leaf reported to the seednode) —
+	// a proof-holding node and a proof-less synced node computed DIFFERENT
+	// fingerprints for the same chain. Widening the gate is backend-agnostic and
+	// lets one catch-up pass backfill and reconverge existing blocks.
+	if b.ProofHash != "" || len(b.StarkProof) > 0 || len(b.Commitment) > 0 {
 		nh.ZkProof = &blockpb.ZKProof{
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,
