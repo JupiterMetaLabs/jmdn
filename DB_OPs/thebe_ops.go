@@ -263,6 +263,7 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
 		for _, r := range txRecs {
 			if t := txRecordToTransaction(r); t != nil {
+				t.Timestamp = uint64(blk.Timestamp) // block time; the tx row has none
 				blk.Transactions = append(blk.Transactions, *t)
 			}
 		}
@@ -449,6 +450,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	for _, r := range recs {
 		txs = append(txs, txRecordToConfig(r))
 	}
+	stampTxTimestamps(ctx, h, recs, txs)
 	return txs, nil
 }
 
@@ -530,6 +532,7 @@ func GetTransactionsByAccountInRange(PooledConnection *config.PooledConnection, 
 	for _, r := range recs {
 		txs = append(txs, txRecordToConfig(r))
 	}
+	stampTxTimestamps(ctx, h, recs, txs)
 	return txs, nil
 }
 
@@ -552,6 +555,34 @@ func GenerateARTNonce() uint64 {
 // ========================================
 // CONVERSION HELPERS (from account_immuclient.go)
 // ========================================
+
+// stampTxTimestamps fills Transaction.Timestamp (epoch seconds) from the
+// containing block's timestamp — one header read per distinct block, so a
+// 500-tx account page over a few blocks costs a few reads, not 500. On any
+// read error the placeholder (block number, see txRecordToConfig) is kept, so
+// the explorer's 1/1/1970 symptom can only improve, never regress. recs and
+// txs are parallel slices.
+func stampTxTimestamps(ctx context.Context, h store.ThebeHandle, recs []*thebegateway.TransactionRecord, txs []*config.Transaction) {
+	if h == nil {
+		return
+	}
+	seen := map[uint64]uint64{}
+	for i, r := range recs {
+		if r == nil || i >= len(txs) || txs[i] == nil {
+			continue
+		}
+		ts, ok := seen[r.BlockNumber]
+		if !ok {
+			if blk, err := h.GetBlock(ctx, r.BlockNumber); err == nil && blk != nil && !blk.Timestamp.IsZero() {
+				ts = uint64(blk.Timestamp.Unix())
+			}
+			seen[r.BlockNumber] = ts
+		}
+		if ts != 0 {
+			txs[i].Timestamp = ts
+		}
+	}
+}
 
 // txRecordToConfig converts a thebegateway.TransactionRecord to *config.Transaction.
 func txRecordToConfig(r *thebegateway.TransactionRecord) *config.Transaction {
@@ -589,7 +620,11 @@ func txRecordToConfig(r *thebegateway.TransactionRecord) *config.Transaction {
 	}
 	tx.Type = uint8(r.Type)
 	tx.Data = r.Data
-	tx.Timestamp = r.BlockNumber // approximation; exact timestamp not in TransactionRecord
+	// TransactionRecord carries no time of its own. Leave the containing block
+	// NUMBER here as a placeholder (explorers detect values < 1e9 as "not a
+	// time"); read paths that return txs to clients call stampTxTimestamps to
+	// replace it with the block's epoch-seconds timestamp.
+	tx.Timestamp = r.BlockNumber
 
 	// Signature: SigR/SigS are stored as base-16 (no 0x) via big.Int.Text(16) in
 	// toTransactionRecord, and CHAR(66) pads with trailing spaces — so trim space

@@ -960,7 +960,7 @@ Five writers are **unlocked and ungated**:
 | `BatchUpdateAccounts` fallback (Redis down) | `thebe_account_manager.go:618` → `SaveAccount` → `backend.UpdateAccountBalance` | **The recorded bug's mirror image** — absolute balance overwrite, no lock, no gate. The *same logical writer* is merge-gated when Redis is up. Also drops identity nonce/DID/AccountType/Metadata (`SaveAccount` forwards only Address+Balance, `compat_connections.go:164`) |
 | `am.CreateAccount` | `thebe_account_manager.go:179,203` | Two raw writes; step 1 sets `Balance:"0"`, so a failure between them **zeroes an existing account** |
 | DID propagation | `thebe_ops.go:386-391` | `state_apply_lock.go:25` classifies this as merge-gated; it reaches `storeAccount` directly |
-| `UpdateAccountBalance` shim | `thebe_missing.go:213` | Raw read-modify-write, any caller |
+| `UpdateAccountBalance` shim | `thebe_shims.go:213` | Raw read-modify-write, any caller |
 | Outbox retry | `outbox_worker.go:116` | Replays a minutes-old **absolute** record; the only guard against balance resurrection is `STO-02`'s clause — the same clause that silently drops good writes |
 
 Full table in §10.5.
@@ -1039,7 +1039,7 @@ fail-closed for the same data. `GetSyncKV` additionally string-matches `"not fou
 ### STO-12 · MEDIUM · PROVEN · The in-flight `tx_processing` guard is dead, and `IsTxProcessing` is live
 
 `DB_OPs.Create` is a no-op (`thebe_ops.go:50-52`), `Exists` always false
-(`thebe_missing.go:271-277`), `Read` always errors for that key (`thebe_ops.go:70`). So the
+(`thebe_shims.go:271-277`), `Read` always errors for that key (`thebe_ops.go:70`). So the
 duplicate-in-flight detection the live path believes it has does not exist, while working primitives
 (`SetTxProcessing`/`IsTxProcessing`, `gateway.go:247-261`) sit unused.
 **The call graph found the asymmetry:** `SetTxProcessing` and `ClearTxProcessing` are
@@ -1071,7 +1071,7 @@ Both activate the moment a Redis cache is injected. `main.go:1140,1154` currentl
 
 ### STO-15 · MEDIUM · CONFIRMED · `rollbackState` is a third undocumented raw writer, correct only by accident
 
-`Processing.go:624` → `thebe_missing.go:203-208` → `thebe_ops.go:327-353`. It bypasses
+`Processing.go:624` → `thebe_shims.go:203-208` → `thebe_ops.go:327-353`. It bypasses
 `mergeAccountForWrite` exactly as the authoritative path does but is enumerated in neither
 `authoritative_write.go` nor `state_apply_lock.go`. It happens to be correct (it runs under
 `LockStateApply`) — and it works only because `storeAccount:351` overwrites its deliberately-older
@@ -1917,8 +1917,8 @@ violated by `CON-01`, `CON-06`, `CON-12`. Raising `MaxMainPeers` bought nothing 
 | 8 | `am.CreateAccount` | `:179,:203` | **neither** | no | **No** — two raw writes, step 1 zeroes balance |
 | 9 | DID propagation | `thebe_ops.go:386-391` | **neither** | no | **No** — docs claim merge-gated; non-destructive only via `NormalizePropagatedAccountState` |
 | 10 | DID/CLI account creation | `DID.go:169`, `CLI.go:802`, … | **neither** | no | Acceptable only because `AllowLocalAccountCreate` defaults off |
-| 11 | `UpdateAccountBalance` shim | `thebe_missing.go:213` | **neither** | no | **No** |
-| 12 | `UpdateAccount` shim | `thebe_missing.go:203` | **neither** | no | Correct only for #3's locked caller |
+| 11 | `UpdateAccountBalance` shim | `thebe_shims.go:213` | **neither** | no | **No** |
+| 12 | `UpdateAccount` shim | `thebe_shims.go:203` | **neither** | no | Correct only for #3's locked caller |
 | 13 | Outbox retry | `outbox_worker.go:116` | **neither** | no | **No** — replays a stale absolute snapshot |
 | 14 | `RefreshAccountTxStats` | `reader.go:786` | SQL-only, bypasses the KV log | no | Mixed — the only thing that heals `STO-01`, and only for later senders |
 
