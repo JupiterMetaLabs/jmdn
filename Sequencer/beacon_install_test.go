@@ -2,6 +2,7 @@ package Sequencer
 
 import (
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -40,6 +41,27 @@ func TestInstallAVCBeaconFromEnv_NotConfigured_NoErrorNotInstalled(t *testing.T)
 	}
 	if installed {
 		t.Fatal("installed=true with no configuration present")
+	}
+	if activeVDFPipeline() != nil {
+		t.Fatal("no pipeline should have been installed")
+	}
+}
+
+// A2: two of the three required variables set must be a hard error, not the
+// same silent Stage-1 fallback as zero set — a node like this previously
+// kept running on Stage 1 with only a log line to show for it.
+func TestInstallAVCBeaconFromEnv_PartialConfig_ReturnsError(t *testing.T) {
+	resetVDFWiringState(t)
+	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", "")
+	t.Setenv("JMDN_AVC_VDF_GROUP_NAME", "rsa-2048-frc")
+	t.Setenv("JMDN_AVC_VDF_DIFFICULTY_T", "476510")
+
+	installed, err := InstallAVCBeaconFromEnv()
+	if !errors.Is(err, ErrPartialVDFConfig) {
+		t.Fatalf("err = %v, want errors.Is(..., ErrPartialVDFConfig)", err)
+	}
+	if installed {
+		t.Fatal("installed=true on a partial, invalid configuration")
 	}
 	if activeVDFPipeline() != nil {
 		t.Fatal("no pipeline should have been installed")

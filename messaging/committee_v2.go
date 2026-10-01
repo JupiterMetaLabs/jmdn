@@ -806,6 +806,26 @@ func VerifyCertificateForRound(
 	return TallyAgainst(responses, seated, blockHashHex, consensusHashHex, height)
 }
 
+// VerifySyncedBlockCertificate is ThebeSync's certificate check. For anchored
+// periods under committee-v2 it is the live path's check (the block's seated
+// committee); everything else keeps the legacy verifier, unchanged.
+func VerifySyncedBlockCertificate(block *config.ZKBlock, responses []BLS_Signer.BLSresponse) (CertificateResult, error) {
+	if !CommitteeV2Enabled || !periodIsAnchored(EpochForHeight(block.BlockNumber)) {
+		return VerifyCertificate(responses, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
+	}
+	// Stage 2: this block's committee is seeded by ENTROPY(EpochForSlot(slot)).
+	// On a boundary block that entropy arrives in the block's own VdfProof, so
+	// adopt the proof first. Safe before the certificate: the proof is checked
+	// against this node's own mix(E-1) and the pinned group and T, so a valid
+	// proof is the one correct value whoever relays it, and Publish is idempotent.
+	adoptSyncedBoundaryProof(block)
+	rc, err := RoundContextForBlock(block)
+	if err != nil {
+		return CertificateResult{}, err
+	}
+	return VerifyCertificateForRound(responses, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
+}
+
 // TallyAgainst counts a certificate against an explicitly supplied committee.
 //
 // Everything the existing verifier guarantees is preserved: YES-only counting,

@@ -99,3 +99,16 @@ func RecordSyncedBlockEntropy(block *config.ZKBlock) {
 	defer entropyEffectsMu.Unlock()
 	applyEntropyEffectsLocked(block, entropyModeSync)
 }
+
+// adoptSyncedBoundaryProof adopts a synced boundary block's VdfProof before
+// its certificate is checked. No-op without a proof or on Stage 1. The later
+// RecordSyncedBlockEntropy calls VerifyAndAcceptVDFProof again; that second
+// call is a no-op (BeaconSource.Publish accepts the same value twice).
+func adoptSyncedBoundaryProof(block *config.ZKBlock) {
+	if block == nil || len(block.VdfProof) == 0 {
+		return
+	}
+	entropyEffectsMu.Lock()
+	defer entropyEffectsMu.Unlock()
+	_ = VerifyAndAcceptVDFProof(block)
+}

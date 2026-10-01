@@ -179,7 +179,11 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// Bootstrap epochs (consensus.entropy_bootstrap, Sequencer/beacon_bootstrap.go)
 	// have config-pinned entropy and no sealer, hence no proof: their boundary
 	// block deliberately leaves VdfProof/SeedEpoch at zero on every node.
-	if block.Slot == messaging.EpochBoundarySlot(epoch) && !Sequencer.IsBootstrapEpoch(epoch) {
+	// Stage 1 (no pipeline installed) never seals, so it never demands a proof:
+	// requiring one there halted the chain at the first slot divisible by N.
+	// Stage 2 keeps the fail-closed rule unchanged.
+	if Sequencer.VDFPipelineInstalled() &&
+		block.Slot == messaging.EpochBoundarySlot(epoch) && !Sequencer.IsBootstrapEpoch(epoch) {
 		result, ok := Sequencer.SealerResultFor(epoch)
 		if !ok {
 			return fmt.Errorf("attachAVCConsensusFields: %w: epoch %d, block %d",

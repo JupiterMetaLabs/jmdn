@@ -14,12 +14,14 @@ import (
 	"testing"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	seedcommittee "gossipnode/seednode/committee"
 
 	"github.com/JupiterMetaLabs/avc/committee"
+	"github.com/JupiterMetaLabs/avc/randao"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -291,6 +293,27 @@ func TestCheckCommitteeAnchor_EpochMayRepeatButNeverRegress(t *testing.T) {
 	}
 	if rej := checkCommitteeAnchor(anchorBlockFor(t, 880, 920, signedSnapshot(t, env.auth, 500, 29, 0))); rej != nil {
 		t.Fatalf("re-carrying the same epoch (seed unreachable) must pass: %+v", rej)
+	}
+}
+
+// F2 fix (Change C): an anchored period's predecessor that should exist but
+// cannot be read must reject the block, not silently skip the regression
+// check — the check is exactly what protects a node that is missing history.
+func TestCheckCommitteeAnchor_UnreadablePreviousAnchorIsRejected(t *testing.T) {
+	env := withAnchoring(t, 860)
+	// Deliberately record nothing for period 44 (the anchor at 860) before
+	// checking the anchor at 880, which must prove period 44 is not regressed.
+	if rej := checkCommitteeAnchor(anchorBlockFor(t, 880, 920, signedSnapshot(t, env.auth, 499, 29, 0))); rej == nil || rej.reason != "committee_anchor_unverifiable" {
+		t.Fatalf("an unreadable previous anchor must be rejected as unverifiable, got %+v", rej)
+	}
+}
+
+// Guards against over-fixing C: the very first anchor has no predecessor by
+// definition and must still pass with nothing recorded.
+func TestCheckCommitteeAnchor_FirstAnchorNeedsNoPredecessor(t *testing.T) {
+	env := withAnchoring(t, 860)
+	if rej := checkCommitteeAnchor(anchorBlockFor(t, 860, 900, signedSnapshot(t, env.auth, 500, 29, 0))); rej != nil {
+		t.Fatalf("the first anchor must not require a predecessor: %+v", rej)
 	}
 }
 
@@ -575,6 +598,20 @@ func TestBuildCommitteeAnchor_FirstAnchorWithoutSeedFailsLoudly(t *testing.T) {
 	}
 }
 
+// F2 fix (Change C), proposer side: never build an anchor the fleet will
+// reject. A previous anchor that should exist but cannot be read must fail
+// closed here too, even with a perfectly healthy seed source.
+func TestBuildCommitteeAnchor_UnreadablePreviousAnchorFailsClosed(t *testing.T) {
+	env := withAnchoring(t, 860)
+	snap := signedSnapshot(t, env.auth, 500, 29, 0)
+	SetCommitteeAnchorSource(func(context.Context) (*seedcommittee.CommitteeSnapshot, error) { return snap, nil })
+	// Deliberately record nothing for period 44 before building the anchor at
+	// 880, which must prove period 44 is not regressed before using the seed.
+	if _, _, err := BuildCommitteeAnchor(880); err == nil {
+		t.Fatalf("an unreadable previous anchor must fail closed, even with a healthy seed source")
+	}
+}
+
 // ---- config -----------------------------------------------------------------
 
 func TestValidateCommitteeAnchorConfig(t *testing.T) {
@@ -769,5 +806,236 @@ func TestPreflightCommitteeAnchorSource(t *testing.T) {
 	SetCommitteeAnchorSource(nil)
 	if _, _, err := PreflightCommitteeAnchorSource(); err != nil {
 		t.Errorf("anchoring off must be a silent no-op, got %v", err)
+	}
+}
+
+// ---- Change B: sync verifies anchored blocks the way the live path does -----
+
+// mintedSnapshot is signedSnapshot but with REAL, individually-signable BLS
+// keypairs per entry (signedSnapshot's placeholder hex pubkeys have no
+// matching private key, so nothing minted that way can ever sign a
+// certificate that verifies). Returns the snapshot and the minted members in
+// the same order as snap.Entries.
+func mintedSnapshot(t *testing.T, auth testAuthority, epoch uint64, n int) (*seedcommittee.CommitteeSnapshot, []blsMember) {
+	t.Helper()
+	members := make([]blsMember, n)
+	entries := make([]seedcommittee.CommitteeEntry, n)
+	for i := 0; i < n; i++ {
+		pid := fmt.Sprintf("peer-%03d", i)
+		members[i] = mustMintMember(pid, byte(0x20+i))
+		entries[i] = seedcommittee.CommitteeEntry{PeerID: pid, BLSPub: members[i].pubHex, RewardAddress: fmt.Sprintf("0x%040x", i+1)}
+	}
+	sig, err := blssign.BLSSign(auth.priv, seedcommittee.CanonicalCommitteeBytes(epoch, "", entries))
+	if err != nil {
+		t.Fatalf("sign minted snapshot: %v", err)
+	}
+	return &seedcommittee.CommitteeSnapshot{
+		Epoch: epoch, Entries: entries, AuthorityPubHex: auth.pubHex, Signature: hex.EncodeToString(sig),
+	}, members
+}
+
+// B1: VerifyCertificate's anchored-period pool must be capped the same way
+// the legacy pool already was. On 8e89514 authenticatedCommittee returned the
+// anchored pool uncapped, so a pool of 5 with max_validators=3 produced
+// threshold 4 against at most 3 real signers — never reachable.
+func TestVerifyCertificate_AnchoredPoolIsCappedForTheBlocksPeriod(t *testing.T) {
+	env := withAnchoring(t, 860)
+	cfg := settings.Get()
+	prevMax := cfg.Consensus.MaxValidators
+	cfg.Consensus.MaxValidators = 3
+	t.Cleanup(func() { cfg.Consensus.MaxValidators = prevMax })
+
+	snap, members := mintedSnapshot(t, env.auth, 500, 5)
+	if err := RecordCommitteeAnchor(anchorBlockFor(t, 860, 900, snap)); err != nil {
+		t.Fatal(err)
+	}
+
+	// capCommittee sorts peer_id ascending and keeps the first 3: peer-000..002.
+	hash := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000ab1")
+	var votes []BLS_Signer.BLSresponse
+	for i := 0; i < 3; i++ {
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, 885))
+	}
+
+	res, err := VerifyCertificate(votes, hash.Hex(), "", 885)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.CommitteeSize != 3 {
+		t.Fatalf("CommitteeSize = %d, want 3 (the anchored pool must be capped like the legacy one)", res.CommitteeSize)
+	}
+	if !res.Reached {
+		t.Fatalf("3 votes over a capped committee of 3 must reach quorum: %+v", res)
+	}
+}
+
+// B2 (unanchored path, byte-identical to today): with anchoring off,
+// VerifySyncedBlockCertificate must produce exactly what VerifyCertificate
+// produces for the same input.
+func TestVerifySyncedBlockCertificate_UnanchoredIsLegacy(t *testing.T) {
+	enableV2(t)
+	members := committeeOfSize(t, 5)
+	hash := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000ab2")
+	var votes []BLS_Signer.BLSresponse
+	for i := 0; i < 4; i++ {
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, 10))
+	}
+	block := &config.ZKBlock{BlockNumber: 10, BlockHash: hash}
+
+	want, wantErr := VerifyCertificate(votes, hash.Hex(), "", 10)
+	got, gotErr := VerifySyncedBlockCertificate(block, votes)
+	if (wantErr == nil) != (gotErr == nil) || want != got {
+		t.Fatalf("unanchored path diverged from the legacy verifier: want (%+v, %v), got (%+v, %v)", want, wantErr, got, gotErr)
+	}
+}
+
+// B2: for an anchored period under committee-v2, ThebeSync must verify
+// against the block's SEATED committee (SelectCommittee), not the legacy
+// alphabetically-capped set — the two differ whenever the seed draw doesn't
+// happen to pick the alphabetically-first members, which is the common case.
+func TestVerifySyncedBlockCertificate_AnchoredPeriodUsesSeatedCommittee(t *testing.T) {
+	enableV2(t)
+	env := withAnchoring(t, 860)
+	// A pool well above the seat count (committee_size is fixed at
+	// config.MaxMainPeers regardless of pool size): a small random draw out
+	// of a large pool is very unlikely to retain every alphabetically-first
+	// legacy-cap member, so the two verifiers disagree quickly.
+	snap, members := mintedSnapshot(t, env.auth, 500, 29)
+	if err := RecordCommitteeAnchor(anchorBlockFor(t, 860, 900, snap)); err != nil {
+		t.Fatal(err)
+	}
+	env.setTip(899)
+
+	byID := make(map[string]blsMember, len(members))
+	for _, m := range members {
+		byID[m.peerID] = m
+	}
+
+	// Try parent hashes until a round's seated-only certificate reaches quorum
+	// under VerifySyncedBlockCertificate but NOT under the legacy alphabetical
+	// verifier — the precondition that proves this test exercises the seated
+	// path, not a coincidence where the seated set happens to be a superset
+	// of the legacy cap.
+	var block *config.ZKBlock
+	var res, legacy CertificateResult
+	for i := 0; i < 64; i++ {
+		cand := &config.ZKBlock{
+			BlockNumber: 885, Slot: 885, Period: 0,
+			PrevHash: common.HexToHash(fmt.Sprintf("0x%064x", i+1)),
+		}
+		rc, err := RoundContextForBlock(cand)
+		if err != nil {
+			t.Fatalf("RoundContextForBlock: %v", err)
+		}
+		seated, err := SelectCommittee(rc)
+		if err != nil {
+			t.Fatalf("SelectCommittee: %v", err)
+		}
+		var candVotes []BLS_Signer.BLSresponse
+		for _, m := range seated {
+			candVotes = append(candVotes, byID[m.PeerID].blockVoteAt(t, cand.BlockHash.Hex(), 1, cand.BlockNumber))
+		}
+		candRes, err := VerifySyncedBlockCertificate(cand, candVotes)
+		if err != nil {
+			t.Fatalf("VerifySyncedBlockCertificate: %v", err)
+		}
+		candLegacy, _ := VerifyCertificate(candVotes, cand.BlockHash.Hex(), cand.ConsensusHashHex(), cand.BlockNumber)
+		if candRes.Reached && !candLegacy.Reached {
+			block, res, legacy = cand, candRes, candLegacy
+			break
+		}
+	}
+	if block == nil {
+		t.Fatal("precondition: could not find a round where the seated and legacy verifiers disagree in 64 tries")
+	}
+	if !res.Reached {
+		t.Fatalf("certificate signed by the seated committee must reach quorum: %+v", res)
+	}
+	if legacy.Reached {
+		t.Fatalf("precondition failed: the legacy alphabetical verifier must NOT reach quorum on the seated-only votes")
+	}
+}
+
+// B2: on a boundary block, VerifySyncedBlockCertificate must adopt the
+// block's VdfProof BEFORE tallying the certificate — without that, a syncing
+// node has no entropy for epoch E yet and SelectCommittee (via SeedSourceFor)
+// fails closed, so the certificate can never be checked at all.
+func TestVerifySyncedBlockCertificate_BoundaryAdoptsProofBeforeTally(t *testing.T) {
+	enableV2(t)
+	env := withAnchoring(t, 860)
+	snap, members := mintedSnapshot(t, env.auth, 500, 29)
+	if err := RecordCommitteeAnchor(anchorBlockFor(t, 860, 900, snap)); err != nil {
+		t.Fatal(err)
+	}
+	env.setTip(895)
+
+	sink, err := committee.NewBeaconSource(6)
+	if err != nil {
+		t.Fatalf("NewBeaconSource: %v", err)
+	}
+	prevBeacon := activeBeacon()
+	SetBeaconSource(sink)
+	t.Cleanup(func() { SetBeaconSource(prevBeacon) })
+
+	const E = 18 // EpochBoundarySlot(18) = 900, inside period 44's anchored window
+	ResetMixStoreForTest()
+	t.Cleanup(ResetMixStoreForTest)
+	if !RememberFinalisedMixForTest(E-1, randao.Seed{0x42}) {
+		t.Fatal("remember mix(E-1): must succeed on a fresh store")
+	}
+
+	SetVDFProofAcceptor(func(forEpoch uint64, _ randao.Seed, _ []byte) error {
+		return sink.Publish(forEpoch, []byte("fixed-entropy-for-epoch-18"))
+	})
+	t.Cleanup(func() { SetVDFProofAcceptor(nil) })
+
+	if _, err := SeedSourceFor(committee.EntropyEpoch(E)); !errors.Is(err, ErrBeaconEpochUnavailable) {
+		t.Fatalf("precondition: expected ErrBeaconEpochUnavailable before the proof is adopted, got %v", err)
+	}
+
+	block := &config.ZKBlock{
+		BlockNumber: 890, Slot: EpochBoundarySlot(E), Period: 0,
+		PrevHash:  common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000bb1"),
+		SeedEpoch: E, VdfProof: []byte(`{"Y":1,"Pi":1,"T":5,"Group":"g"}`),
+	}
+
+	rc, err := RoundContextForBlock(block)
+	if err != nil {
+		t.Fatalf("RoundContextForBlock: %v", err)
+	}
+	if _, err := SelectCommittee(rc); !errors.Is(err, ErrBeaconEpochUnavailable) {
+		t.Fatalf("precondition: SelectCommittee must still fail closed before adoption, got %v", err)
+	}
+
+	byID := make(map[string]blsMember, len(members))
+	for _, m := range members {
+		byID[m.peerID] = m
+	}
+
+	// An empty certificate necessarily fails to reach quorum, but
+	// VerifySyncedBlockCertificate must still adopt the boundary proof as a
+	// side effect BEFORE attempting (and failing) the tally — proving the
+	// ordering, independent of whether this particular call verifies.
+	if res, verr := VerifySyncedBlockCertificate(block, nil); verr == nil && res.Reached {
+		t.Fatalf("precondition: an empty certificate must not reach quorum, got %+v", res)
+	}
+	if _, err := SeedSourceFor(committee.EntropyEpoch(E)); err != nil {
+		t.Fatalf("after VerifySyncedBlockCertificate adopted the proof, SeedSourceFor(E) must succeed, got %v", err)
+	}
+
+	seated2, err := SelectCommittee(rc)
+	if err != nil {
+		t.Fatalf("SelectCommittee after adoption: %v", err)
+	}
+	var votes []BLS_Signer.BLSresponse
+	for _, m := range seated2 {
+		votes = append(votes, byID[m.PeerID].blockVoteAt(t, block.BlockHash.Hex(), 1, block.BlockNumber))
+	}
+	res2, err := VerifySyncedBlockCertificate(block, votes)
+	if err != nil {
+		t.Fatalf("VerifySyncedBlockCertificate with the seated certificate: %v", err)
+	}
+	if !res2.Reached {
+		t.Fatalf("certificate signed by the (now-seatable) committee must reach quorum: %+v", res2)
 	}
 }

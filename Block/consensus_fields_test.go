@@ -198,6 +198,7 @@ func TestAttachAVCConsensusFields_NonBoundarySlot_LeavesVdfProofZero(t *testing.
 func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing.T) {
 	resetSlotAndPeriodStores(t)
 	landOnBoundarySlot(t)
+	t.Cleanup(Sequencer.SetVDFPipelineInstalledForTest(true))
 
 	want := vdf.Proof{Y: big.NewInt(7), Pi: big.NewInt(11), T: 1234, Group: "test-group"}
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Proof: want})
@@ -228,6 +229,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing
 func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenProofNotReady(t *testing.T) {
 	resetSlotAndPeriodStores(t)
 	landOnBoundarySlot(t)
+	t.Cleanup(Sequencer.SetVDFPipelineInstalledForTest(true))
 	// Deliberately do not seed a result for epoch 1 — SealerResultFor must
 	// report ok=false, and attachAVCConsensusFields must fail closed rather
 	// than propose with a missing entropy value for its own boundary slot.
@@ -252,6 +254,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenProofNotReady(t *t
 func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *testing.T) {
 	resetSlotAndPeriodStores(t)
 	landOnBoundarySlot(t)
+	t.Cleanup(Sequencer.SetVDFPipelineInstalledForTest(true))
 
 	sealErr := errors.New("simulated VDF evaluation failure")
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Err: sealErr})
@@ -264,5 +267,22 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *
 	}
 	if block.VdfProof != nil {
 		t.Fatalf("VdfProof = %x on sealing failure, want nil", block.VdfProof)
+	}
+}
+
+func TestAttachAVCConsensusFields_BoundarySlot_Stage1_DoesNotRequireProof(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+	landOnBoundarySlot(t)
+	t.Cleanup(Sequencer.SetVDFPipelineInstalledForTest(false))
+
+	block := &config.ZKBlock{BlockNumber: 1}
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("Stage 1 at a boundary slot must not require a VDF proof: %v", err)
+	}
+	if block.Slot != messaging.EpochBoundarySlot(1) {
+		t.Fatalf("test setup: slot = %d, want %d", block.Slot, messaging.EpochBoundarySlot(1))
+	}
+	if block.VdfProof != nil || block.SeedEpoch != 0 || block.VdfParamsDigest != "" {
+		t.Fatal("Stage 1 boundary block must carry no VDF fields")
 	}
 }

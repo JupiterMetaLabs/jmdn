@@ -71,6 +71,30 @@ func activeVDFPipeline() *beacon.Pipeline {
 	return vdfPipeline
 }
 
+// VDFPipelineInstalled reports whether this process installed a Stage-2
+// (RANDAO+VDF) pipeline. False on a Stage-1 node: no sealer ever runs there,
+// so a boundary block cannot carry a proof and must not require one.
+func VDFPipelineInstalled() bool { return activeVDFPipeline() != nil }
+
+// SetVDFPipelineInstalledForTest makes VDFPipelineInstalled report installed
+// without a real VDF group, for tests in other packages (Block). Test-only,
+// like SeedSealResultForTest. Returns a func that restores the previous value.
+func SetVDFPipelineInstalledForTest(installed bool) (restore func()) {
+	vdfPipelineMu.Lock()
+	prev := vdfPipeline
+	if installed {
+		vdfPipeline = new(beacon.Pipeline)
+	} else {
+		vdfPipeline = nil
+	}
+	vdfPipelineMu.Unlock()
+	return func() {
+		vdfPipelineMu.Lock()
+		vdfPipeline = prev
+		vdfPipelineMu.Unlock()
+	}
+}
+
 var (
 	vdfSealersMu sync.Mutex
 	vdfSealers   = make(map[uint64]*VDFSealer)

@@ -462,13 +462,63 @@ type CertificateResult struct {
 // so blocking can only make quorum HARDER, never lower this node's Byzantine
 // threshold below the fleet's. FAIL CLOSED: an unset/failing/empty source errors.
 //
+// capCommittee trims to committeeSizeLimit() members by sorted peer_id so
+// every node computes the same set and threshold (0 = no cap). Unchanged
+// rule, shared by the legacy and the anchored path.
+func capCommittee(c map[string]string) map[string]string {
+	lim := committeeSizeLimit()
+	if lim <= 0 || len(c) <= lim {
+		return c
+	}
+	ids := make([]string, 0, len(c))
+	for pid := range c {
+		ids = append(ids, pid)
+	}
+	sort.Strings(ids)
+	capped := make(map[string]string, lim)
+	for _, pid := range ids[:lim] {
+		capped[pid] = c[pid]
+	}
+	return capped
+}
+
 // Legacy (JMDN_COMMITTEE_V2 off) path only — the v2 verifier derives n from the
 // seed-ranked selected committee (committee_v2.go) instead.
+//
+// authenticatedCommittee: the fleet-agreed committee for the CURRENT pool
+// (DIDPropagation and other non-block callers).
 func authenticatedCommittee() (map[string]string, error) {
 	// W1: fleet-agreed pool (no blocklist) from the chain once anchored.
 	if pool, handled, err := anchoredPoolForCurrent(false); handled {
-		return pool, err
+		if err != nil {
+			return nil, err
+		}
+		return capCommittee(pool), nil
 	}
+	return liveAuthenticatedCommittee()
+}
+
+// authenticatedCommitteeForHeight: the fleet-agreed committee for the period
+// that contains height. Anchored periods come from that period's anchor;
+// everything else is exactly authenticatedCommittee's legacy path.
+func authenticatedCommitteeForHeight(height uint64) (map[string]string, error) {
+	if pool, handled, err := AnchoredPoolForHeight(height, false); handled {
+		if err != nil {
+			return nil, err
+		}
+		return capCommittee(pool), nil
+	}
+	return liveAuthenticatedCommittee()
+}
+
+// liveAuthenticatedCommittee is authenticatedCommittee's pre-W1 body:
+// the authenticated eligibility source, normalized and capped, WITHOUT the
+// operator-LOCAL block_buddy blocklist. So n is identical on every node
+// regardless of any node's local blocklist — the CON-12 fix. A local blocklist
+// removes a peer from the NUMERATOR (a non-voter) but its seat still counts here,
+// so blocking can only make quorum HARDER, never lower this node's Byzantine
+// threshold below the fleet's. FAIL CLOSED: an unset/failing/empty source errors.
+func liveAuthenticatedCommittee() (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -497,22 +547,7 @@ func authenticatedCommittee() (map[string]string, error) {
 	if len(committee) == 0 {
 		return nil, fmt.Errorf("committee eligibility source returned only empty peer ids (fail closed)")
 	}
-
-	// Fleet-uniform hard cap, sorted by peer_id so every node computes the SAME
-	// capped set and therefore the SAME threshold (0 = no cap).
-	if lim := committeeSizeLimit(); lim > 0 && len(committee) > lim {
-		ids := make([]string, 0, len(committee))
-		for pid := range committee {
-			ids = append(ids, pid)
-		}
-		sort.Strings(ids)
-		capped := make(map[string]string, lim)
-		for _, pid := range ids[:lim] {
-			capped[pid] = committee[pid]
-		}
-		committee = capped
-	}
-	return committee, nil
+	return capCommittee(committee), nil
 }
 
 func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
@@ -523,7 +558,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consens
 	// regardless of any node's local blocklist (CON-12). NOTE: intentionally NOT
 	// eligibleMembers(), which applies the blocklist and would let a local blocklist
 	// shrink n and diverge this node's threshold from the fleet.
-	quorumCommittee, err := authenticatedCommittee()
+	quorumCommittee, err := authenticatedCommitteeForHeight(height)
 	if err != nil {
 		// No authenticated committee => cannot compute a Byzantine threshold.
 		return res, err
