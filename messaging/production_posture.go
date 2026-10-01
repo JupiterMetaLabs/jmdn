@@ -31,6 +31,8 @@ import (
 	"strings"
 
 	"gossipnode/config/settings"
+
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
 // IsProductionPosture reports whether this node should be treated as
@@ -74,6 +76,13 @@ func ValidateProductionConsensusPosture(production bool) error {
 	}
 	if !EnforceBodyBinding {
 		off = append(off, "EnforceBodyBinding (JMDN_ENFORCE_BODY_BINDING)")
+	}
+	// D-38(b): avcvotes.AllowUnsignedValidatorVotes is fail-open when on — a
+	// validator's tally vote counts even without a BLS signature. It
+	// defaults off in every shipped config, but nothing stopped a production
+	// node from booting with it enabled, same shape as the three flags above.
+	if avcvotes.AllowUnsignedValidatorVotes {
+		off = append(off, "AllowUnsignedValidatorVotes (avcvotes.AllowUnsignedValidatorVotes)")
 	}
 	// D-26(d)/CON-03: the vote-result-requester gate
 	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) is always
