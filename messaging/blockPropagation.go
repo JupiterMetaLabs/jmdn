@@ -248,9 +248,16 @@ func updateMessageSet(key string) error {
 // getBlockDedupID gets the appropriate ID to use for duplication checking
 // against dedupMessageCache.
 func getBlockDedupID(msg config.BlockMessage) string {
-	// Special handling for ZK blocks to use hash for deduplication
+	// D-28: keyed on ConsensusHash, not BlockHash. BlockHash is transactions-
+	// only, so two forks sharing identical transactions but different
+	// consensus fields (PrevHash, Period, ...) hash identically and the
+	// second one was dropped here as a "duplicate" before checkEquivocation
+	// (which also used to key on BlockHash) ever ran — the exact
+	// drop-before-check bypass that let an equivocating proposer go
+	// undetected. ConsensusHash differs between such forks, so both now
+	// reach validation.
 	if msg.Type == "zkblock" && msg.Block != nil {
-		return fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
+		return fmt.Sprintf("zkblock:%s", msg.Block.ConsensusHashHex())
 	}
 
 	if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
@@ -747,7 +754,10 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	// so an unvalidated block cannot enter the height->hash map and cause the
 	// genuine block to be rejected. A second, DIFFERENT validated block at a
 	// height already seen is a signed fork → rejected.
-	return checkEquivocation(b.BlockNumber, b.BlockHash.Hex())
+	// D-28: keyed on ConsensusHash, not BlockHash — see getBlockDedupID's
+	// comment above for why BlockHash alone cannot distinguish two forks
+	// sharing identical transactions.
+	return checkEquivocation(b.BlockNumber, b.ConsensusHashHex())
 }
 
 // verifyBlockCertificate enforces a mandatory committee certificate that reaches

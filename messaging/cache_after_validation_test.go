@@ -13,6 +13,7 @@ import (
 	"context"
 	"testing"
 
+	"gossipnode/Security"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -39,6 +40,9 @@ func TestInvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 		BlockNumber:  40,
 		Transactions: txs,
 	}
+	// D-28: checkConsensusBinding now rejects a missing ConsensusHash
+	// unconditionally; set once since every case below reuses this same block.
+	genuine.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(genuine)
 	H := genuine.BlockHash
 	messageID := getBlockDedupID(config.BlockMessage{Type: "zkblock", Block: genuine})
 
@@ -93,6 +97,7 @@ func TestValidBlockIsCachedOnce(t *testing.T) {
 		BlockNumber:  41,
 		Transactions: txs,
 	}
+	b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
 	messageID := getBlockDedupID(config.BlockMessage{Type: "zkblock", Block: b})
 	msg := config.BlockMessage{Type: "zkblock", Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
 
