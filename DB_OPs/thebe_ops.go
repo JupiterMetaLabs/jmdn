@@ -556,7 +556,6 @@ func GenerateARTNonce() uint64 {
 // CONVERSION HELPERS (from account_immuclient.go)
 // ========================================
 
-
 // stampTxTimestamps fills Transaction.Timestamp (epoch seconds) from the
 // containing block's timestamp — one header read per distinct block, so a
 // 500-tx account page over a few blocks costs a few reads, not 500. On any
