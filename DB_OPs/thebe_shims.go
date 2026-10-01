@@ -1,11 +1,12 @@
 package DB_OPs
 
-// thebe_missing.go — shims for functions referenced by callers outside DB_OPs that have
-// no implementation yet.  Every function here either delegates to a real ThebeHandle
-// method or is an honest stub that returns a descriptive error.
+// thebe_shims.go — compatibility layer for callers outside DB_OPs (explorer,
+// gETH facade, block processing). Every function here either delegates to a
+// real ThebeHandle method or is an honest ImmuDB-era stub that returns a
+// descriptive error (Exists, GetAllKeys, GetMerkleRoot, Transaction, Set).
 //
-// DO NOT add business logic here.  When the underlying store method is wired up,
-// replace the stub body and remove this comment.
+// DO NOT add business logic here. When a stub's store method is wired up,
+// replace the body; when the last caller of a stub is gone, delete it.
 
 import (
 	"context"
