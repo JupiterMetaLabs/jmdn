@@ -97,8 +97,22 @@ func blockRecordToZKBlock(r *thebegateway.BlockRecord) (*config.ZKBlock, error) 
 		}
 	}
 
+	// Status: the ZK status string (e.g. "verified" for orchestrator-submitted
+	// blocks) is persisted in ExtraData["zk_status"] by backend.toBlockRecordWithZK.
+	// The numeric blocks.status column is a different, unused field (never set by the
+	// writer). Without this read every block came back with Status "" on every node,
+	// including the one that received it from the orchestrator. Not part of the
+	// consensus digest, BlockHash or TxnsRoot, so this changes read output only.
+	status := ""
+	if zs, ok := r.ExtraData["zk_status"]; ok {
+		if v, ok2 := zs.(string); ok2 {
+			status = v
+		}
+	}
+
 	blk := &config.ZKBlock{
 		BlockNumber:          r.BlockNumber,
+		Status:               status,
 		BlockHash:            common.HexToHash(r.BlockHash),
 		PrevHash:             common.HexToHash(r.ParentHash),
 		Timestamp:            r.Timestamp.Unix(),
