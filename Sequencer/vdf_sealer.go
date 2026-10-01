@@ -113,7 +113,14 @@ func SetVDFSealerDeadlineForTest(d time.Duration) (restore func()) {
 }
 
 func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
-	ctx, cancel := context.WithTimeout(context.Background(), vdfSealerDeadline)
+	// Read vdfSealerDeadline exactly once, here, and use this local for the
+	// rest of Start (including inside the goroutine below). The package var
+	// exists only so a test can change it before calling Start; reading it
+	// a second time from the goroutine would race against a concurrent
+	// SetVDFSealerDeadlineForTest restore from a DIFFERENT test's cleanup
+	// running on the main test goroutine while this one is still in flight.
+	deadline := vdfSealerDeadline
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 
 	s.mu.Lock()
 	if s.cancelled {
@@ -164,7 +171,7 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 				s.cancelled = true
 				s.mu.Unlock()
 				log.Error().Uint64("for_epoch", forEpoch).
-					Dur("budget", vdfSealerDeadline).
+					Dur("budget", deadline).
 					Msg("entropy: local VDF evaluation exceeded its deadline and was abandoned — " +
 						"T is likely mis-calibrated for this host's hardware, or evaluation is stuck")
 				return
