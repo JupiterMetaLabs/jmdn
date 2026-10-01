@@ -34,6 +34,11 @@ import (
 func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract, error) {
 	logger().Debug(context.Background(), "Compiling Solidity contract")
 
+	// JMDN-H05: reject oversized input before any temp write / solc spawn.
+	if len(sourceCode) > compiler.MaxSoliditySourceBytes {
+		return nil, fmt.Errorf("solidity source too large: %d bytes (max %d)", len(sourceCode), compiler.MaxSoliditySourceBytes)
+	}
+
 	// Write source to temp file
 	tmpFile, err := os.CreateTemp("", "contract-*.sol")
 	if err != nil {

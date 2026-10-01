@@ -107,6 +107,45 @@ func isPublicAddress(addr string) bool {
 	return true
 }
 
+// filterValidPeerRecords keeps only peer records with valid identity signatures.
+// Unsigned or tampered records are dropped and logged (JMDN-H01 fail-closed).
+func filterValidPeerRecords(peers []*peerpb.SignedPeerRecord) []*peerpb.SignedPeerRecord {
+	if len(peers) == 0 {
+		return peers
+	}
+	out := make([]*peerpb.SignedPeerRecord, 0, len(peers))
+	for _, p := range peers {
+		if p == nil {
+			continue
+		}
+		if err := ValidatePeerRecordSignature(p); err != nil {
+			fmt.Printf("SECURITY: dropping peer record %s: invalid/missing signature: %v\n", p.PeerId, err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// filterValidNeighbors keeps only neighbor edges with valid identity signatures.
+func filterValidNeighbors(neighbors []*peerpb.PeerNeighbor) []*peerpb.PeerNeighbor {
+	if len(neighbors) == 0 {
+		return neighbors
+	}
+	out := make([]*peerpb.PeerNeighbor, 0, len(neighbors))
+	for _, n := range neighbors {
+		if n == nil {
+			continue
+		}
+		if err := ValidateNeighborSignature(n); err != nil {
+			fmt.Printf("SECURITY: dropping neighbor edge %s→%s: invalid/missing signature: %v\n", n.PeerId, n.NeighborId, err)
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // Client represents a seed node gRPC client
 type Client struct {
 	conn   *grpc.ClientConn
@@ -196,6 +235,20 @@ func (c *Client) GetPeer(peerID string) (*peerpb.SignedPeerRecord, error) {
 	if !response.Found {
 		return nil, fmt.Errorf("peer not found")
 	}
+	if response.PeerRecord == nil {
+		return nil, fmt.Errorf("peer not found: empty record")
+	}
+	// JMDN-H01: fail closed — never trust an unsigned / tampered peer record.
+	if err := ValidatePeerRecordSignature(response.PeerRecord); err != nil {
+		fmt.Printf("SECURITY: rejecting peer record %s: invalid signature: %v\n", response.PeerRecord.PeerId, err)
+		return nil, fmt.Errorf("rejecting peer record: invalid signature: %w", err)
+	}
+	if response.Alias != nil {
+		if err := ValidateAliasSignature(response.Alias); err != nil {
+			fmt.Printf("SECURITY: rejecting alias on peer %s: invalid signature: %v\n", response.PeerRecord.PeerId, err)
+			return nil, fmt.Errorf("rejecting peer alias: invalid signature: %w", err)
+		}
+	}
 
 	return response.PeerRecord, nil
 }
@@ -216,6 +269,21 @@ func (c *Client) GetPeerByAlias(alias string) (*peerpb.SignedPeerRecord, error) 
 
 	if !response.Found {
 		return nil, fmt.Errorf("peer with alias not found")
+	}
+	if response.PeerRecord == nil {
+		return nil, fmt.Errorf("peer with alias not found: empty record")
+	}
+	// JMDN-H01: fail closed on inbound peer metadata from the seed.
+	if err := ValidatePeerRecordSignature(response.PeerRecord); err != nil {
+		fmt.Printf("SECURITY: rejecting peer-by-alias record %s: invalid signature: %v\n", response.PeerRecord.PeerId, err)
+		return nil, fmt.Errorf("rejecting peer record: invalid signature: %w", err)
+	}
+
+	if response.Alias != nil {
+		if err := ValidateAliasSignature(response.Alias); err != nil {
+			fmt.Printf("SECURITY: rejecting alias on peer-by-alias %s: invalid signature: %v\n", response.PeerRecord.PeerId, err)
+			return nil, fmt.Errorf("rejecting peer alias: invalid signature: %w", err)
+		}
 	}
 
 	return response.PeerRecord, nil
@@ -254,7 +322,7 @@ func (c *Client) GetNeighbors(peerID string) ([]*peerpb.PeerNeighbor, error) {
 		return []*peerpb.PeerNeighbor{}, nil
 	}
 
-	return response.Neighbors, nil
+	return filterValidNeighbors(response.Neighbors), nil
 }
 
 // AllocateNeighbors requests new neighbors from the seed node
@@ -276,7 +344,7 @@ func (c *Client) AllocateNeighbors(peerID string, forceRefresh bool) ([]*peerpb.
 		return []*peerpb.PeerNeighbor{}, nil
 	}
 
-	return response.Neighbors, nil
+	return filterValidNeighbors(response.Neighbors), nil
 }
 
 // AddNeighbor adds a neighbor relationship to the seed node
@@ -1077,7 +1145,7 @@ func (c *Client) GetPeers(limit int32, status peerpb.PeerStatus) ([]*peerpb.Sign
 		return nil, fmt.Errorf("failed to get peers: %w", err)
 	}
 
-	return response.Peers, nil
+	return filterValidPeerRecords(response.Peers), nil
 }
 func convertProtoToNode(peer *peerpb.SignedPeerRecord) selection.Node {
 	fmt.Println("ℹ️ Converting peer:", peer.PeerId)
@@ -1283,6 +1351,11 @@ func (c *Client) ListBuddyPeers(ctx context.Context) ([]selection.Node, error) {
 		return nil, err
 	}
 
+	// TODO(JMDN-H01): BuddyPeerRecord has no identity signature fields on the
+	// wire today. Fail-closed skip — we cannot require a signature that does
+	// not exist. Prefer requiring a signed envelope (or SignedPeerRecord) once
+	// the seed schema grows one; until then trust is limited to the seed TLS/
+	// sequencer-auth path, not per-record identity signatures.
 	nodes := make([]selection.Node, 0, len(resp.Peers))
 	for _, peer := range resp.Peers {
 		node := convertBuddyPeerRecordToNode(peer)
@@ -1318,8 +1391,8 @@ func (c *Client) ListAllPeers(ctx context.Context) ([]selection.Node, error) {
 		batchSize := len(resp.Peers)
 		totalFetched += batchSize
 
-		// Convert proto peers to Node type
-		for _, peer := range resp.Peers {
+		// Convert proto peers to Node type (JMDN-H01: drop unsigned/tampered).
+		for _, peer := range filterValidPeerRecords(resp.Peers) {
 			node := convertProtoToNode(peer)
 			allNodes = append(allNodes, node)
 		}
@@ -1390,7 +1463,8 @@ func (c *Client) ReportBlockState(ctx context.Context, selfPeerID string, blockH
 		SequencerRoot: resp.SequencerRoot,
 		Message:       resp.Message,
 	}
-	for _, p := range resp.GoodPeers {
+	// JMDN-H01: GoodPeers are SignedPeerRecord — verify before advertising dial targets.
+	for _, p := range filterValidPeerRecords(resp.GoodPeers) {
 		status.GoodPeers = append(status.GoodPeers, SyncPeerInfo{
 			PeerID:     p.PeerId,
 			Multiaddrs: p.Multiaddrs,

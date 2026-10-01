@@ -28,6 +28,7 @@ import (
 	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
+	"gossipnode/metrics"
 	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -2407,6 +2408,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		if legacyOK {
 			// Legacy unbound vote — not bound to a specific block. Alert to
 			// Telegram with the offending peer ID.
+			metrics.ConsensusLegacyVotesTotal.Inc()
 			logger().Warn(trace_ctx, "SECURITY: legacy (unbound) BLS vote received",
 				ion.String("peer_id", r.PeerID),
 				ion.String("block_hash", blockHashHex),

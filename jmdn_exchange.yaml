@@ -158,8 +158,9 @@ security:
   global_rate_limit: 150
   global_burst: 300
 
-  # Cloud / Load Balancer support
-  trust_forwarded_headers: true
+  # Cloud / Load Balancer support.
+  # Default false — set BOTH true and a non-empty trusted_proxies when behind a real LB.
+  trust_forwarded_headers: false
   trusted_proxies: []
 
   # Trusted clients (bypass rate limiting — not auth).
@@ -172,6 +173,12 @@ security:
     eth_rpc:
       rate_limit: 50
       burst: 100
+
+    admin_http:
+      auth_type: "token"
+      token_env: "ADMIN_TOKEN"
+      rate_limit: 20
+      burst: 40
 
     # DID service — public, rate-limited.
     did_service:

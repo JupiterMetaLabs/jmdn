@@ -64,6 +64,13 @@ var (
 		Help: "The total number of failed heartbeats",
 	})
 
+	// Legacy unbound BLS votes observed during consensus verification (JMDN-H06).
+	// Incremented when a "vote:<v>" signature verifies but is not block-bound.
+	ConsensusLegacyVotesTotal = factory.NewCounter(prometheus.CounterOpts{
+		Name: "consensus_legacy_votes_total",
+		Help: "Count of legacy (unbound) BLS votes observed during consensus verification",
+	})
+
 	HeartbeatLatency = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "p2p_heartbeat_latency_seconds",

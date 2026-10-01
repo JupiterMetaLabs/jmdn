@@ -13,6 +13,7 @@ import (
 	peerpb "gossipnode/seednode/proto"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // calculateVFromSignature calculates V component using a deterministic approach
@@ -270,8 +271,121 @@ func SignNeighbor(neighbor *peerpb.PeerNeighbor, h host.Host) error {
 	return nil
 }
 
-// SignNeighbor above is retained for the wire-signing path; the corresponding
-// ECDSA R/S validators and parseRSComponents helper were removed as dead code
-// (zero callers). Peer-record / heartbeat / alias / neighbor verification is
-// handled by the BLS committee path (peerRecordCanonicalMessage + seed authority),
-// not by big.Int R/S reconstruction (which silently truncated leading zeros).
+// ─── Inbound signature verification (JMDN-H01) ───────────────────────────────
+//
+// Sign* above produces R/S/V hex on outbound records. Matching Validate*
+// below MUST run on every production inbound path that trusts peer records,
+// heartbeats, aliases, or neighbor edges before storing/using that data.
+// Fail closed: missing or invalid signatures return an error; callers drop + log.
+//
+// Encoding note (audit M11): Sign* hex-encodes big.Int.Bytes() which can drop
+// leading zeros. Verify left-pads R/S to 32 bytes so both padded and
+// legacy-unpadded encodings verify.
+
+// parseRSComponents decodes hex R/S into a fixed-width 64-byte libp2p ECDSA
+// signature (R||S). Rejects empty or oversized components.
+func parseRSComponents(rHex, sHex string) ([]byte, error) {
+	if strings.TrimSpace(rHex) == "" || strings.TrimSpace(sHex) == "" {
+		return nil, fmt.Errorf("missing R/S signature components")
+	}
+	rBytes, err := hex.DecodeString(rHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid R hex: %w", err)
+	}
+	sBytes, err := hex.DecodeString(sHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid S hex: %w", err)
+	}
+	if len(rBytes) == 0 || len(sBytes) == 0 || len(rBytes) > 32 || len(sBytes) > 32 {
+		return nil, fmt.Errorf("R/S component length out of range (r=%d s=%d)", len(rBytes), len(sBytes))
+	}
+	sig := make([]byte, 64)
+	copy(sig[32-len(rBytes):32], rBytes)
+	copy(sig[64-len(sBytes):64], sBytes)
+	return sig, nil
+}
+
+// verifyPeerIDSignature checks that message was signed by the libp2p identity
+// key embedded in peerIDStr. V is accepted if present but not cryptographically
+// required for libp2p Verify (R||S is the native form).
+func verifyPeerIDSignature(peerIDStr, message, rHex, sHex, vHex string) error {
+	_ = vHex // retained for wire compatibility / future low-S checks
+	if strings.TrimSpace(peerIDStr) == "" {
+		return fmt.Errorf("empty peer id")
+	}
+	pid, err := peer.Decode(peerIDStr)
+	if err != nil {
+		return fmt.Errorf("invalid peer id: %w", err)
+	}
+	pub, err := pid.ExtractPublicKey()
+	if err != nil {
+		return fmt.Errorf("extract public key: %w", err)
+	}
+	if pub == nil {
+		return fmt.Errorf("peer id has no embedded public key")
+	}
+	sig, err := parseRSComponents(rHex, sHex)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256([]byte(message))
+	ok, err := pub.Verify(hash[:], sig)
+	if err != nil {
+		return fmt.Errorf("signature verify: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("invalid signature for peer %s", peerIDStr)
+	}
+	return nil
+}
+
+// ValidatePeerRecordSignature verifies the identity signature on a peer record
+// before the record's multiaddrs/status/bls_pub are trusted. Fail closed.
+func ValidatePeerRecordSignature(peerRecord *peerpb.SignedPeerRecord) error {
+	if peerRecord == nil {
+		return fmt.Errorf("nil peer record")
+	}
+	message := peerRecordCanonicalMessage(peerRecord)
+	return verifyPeerIDSignature(peerRecord.PeerId, message, peerRecord.R, peerRecord.S, peerRecord.V)
+}
+
+// ValidateHeartbeatSignature verifies the identity signature on a heartbeat
+// before status/multiaddr updates are trusted. Fail closed.
+func ValidateHeartbeatSignature(heartbeat *peerpb.HeartbeatMessage) error {
+	if heartbeat == nil {
+		return fmt.Errorf("nil heartbeat")
+	}
+	var messageParts []string
+	messageParts = append(messageParts, heartbeat.PeerId)
+	messageParts = append(messageParts, heartbeat.Status.String())
+	messageParts = append(messageParts, heartbeat.Multiaddrs...)
+	message := strings.Join(messageParts, "|")
+	return verifyPeerIDSignature(heartbeat.PeerId, message, heartbeat.R, heartbeat.S, heartbeat.V)
+}
+
+// ValidateAliasSignature verifies the identity signature on a peer alias
+// before the name→peer_id binding is trusted. Fail closed.
+func ValidateAliasSignature(alias *peerpb.PeerAlias) error {
+	if alias == nil {
+		return fmt.Errorf("nil alias")
+	}
+	message := strings.Join([]string{alias.Name, alias.PeerId}, "|")
+	return verifyPeerIDSignature(alias.PeerId, message, alias.R, alias.S, alias.V)
+}
+
+// ValidateNeighborSignature verifies the identity signature on a neighbor edge
+// before topology is trusted. The signing peer is PeerId (the reporter).
+// Fail closed.
+func ValidateNeighborSignature(neighbor *peerpb.PeerNeighbor) error {
+	if neighbor == nil {
+		return fmt.Errorf("nil neighbor")
+	}
+	var messageParts []string
+	messageParts = append(messageParts, neighbor.PeerId)
+	messageParts = append(messageParts, neighbor.NeighborId)
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.CreatedAt))
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.LastSeen))
+	messageParts = append(messageParts, fmt.Sprintf("%t", neighbor.IsActive))
+	message := strings.Join(messageParts, "|")
+	return verifyPeerIDSignature(neighbor.PeerId, message, neighbor.R, neighbor.S, neighbor.V)
+}
