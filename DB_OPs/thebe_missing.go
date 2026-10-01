@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -32,7 +33,9 @@ func GetTransactionByHash(_ *config.PooledConnection, hash string) (*config.Tran
 	if err != nil {
 		return nil, fmt.Errorf("GetTransactionByHash(%s): %w", hash, err)
 	}
-	return txRecordToConfig(rec), nil
+	tx := txRecordToConfig(rec)
+	stampTxTimestamps(ctx, h, []*thebegateway.TransactionRecord{rec}, []*config.Transaction{tx})
+	return tx, nil
 }
 
 // GetTransactionBlock retrieves the block containing a specific transaction.
@@ -80,6 +83,7 @@ func GetZKBlockByHash(_ *config.PooledConnection, blockHash string) (*config.ZKB
 		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
 		for _, r := range txRecs {
 			if t := txRecordToTransaction(r); t != nil {
+				t.Timestamp = uint64(blk.Timestamp) // block time; the tx row has none
 				blk.Transactions = append(blk.Transactions, *t)
 			}
 		}
@@ -117,6 +121,7 @@ func GetTransactionsPaginated(_ *config.PooledConnection, offset, limit int) ([]
 	for _, r := range recs {
 		txs = append(txs, txRecordToConfig(r))
 	}
+	stampTxTimestamps(ctx, h, recs, txs)
 	return txs, int(total), nil
 }
 
@@ -143,6 +148,7 @@ func GetTransactionsByAccountPaginated(_ *config.PooledConnection, address *comm
 	for _, r := range page {
 		txs = append(txs, txRecordToConfig(r))
 	}
+	stampTxTimestamps(ctx, h, page, txs)
 	return txs, len(recs), nil
 }
 
