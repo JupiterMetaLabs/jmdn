@@ -371,7 +371,7 @@ SCOPE
 > | D-34 | `seenHeights = make(map[uint64]string)` (`consensus_hardening.go:719`); **zero** delete/evict/prune sites — unbounded confirmed |
 > | D-39 | `beacon.Pipeline.Difficulty()` has **0 jmdn callers** — `T` is still never gossiped, persisted or hashed |
 > | D-42 | `epochsWithClosedRevealWindow` (`entropy_finalise.go:277`), `lastDecidedEpoch` in-memory (`:306`) |
-> | D-45 | `beacon_entropy_newest` / `vdf_proof_newest` both present; **`GetAllKeys` is still an explicit stub** — `thebe_missing.go:281` returns `"ImmuDB removed; use ThebeDB SQL queries instead"`, so there is still no fallback index |
+> | D-45 | `beacon_entropy_newest` / `vdf_proof_newest` both present; **`GetAllKeys` is still an explicit stub** — `thebe_shims.go:281` returns `"ImmuDB removed; use ThebeDB SQL queries instead"`, so there is still no fallback index |
 > | D-47 | `const mixRetainEpochs = committee.MinRetainedEpochs + 1` (`entropy_mix_store.go:42`) — compile-time, while `JMDN_AVC_BEACON_RETAIN_EPOCHS` (4 refs) moves only the sink |
 > | D-48 | `VDFProofRequestProtocol` registered (`config/constants.go:119`), no feature gate |
 > | D-53 | `avcvotes.DefaultWatermark` read/mutated at 5 non-test sites — still a process-wide singleton |

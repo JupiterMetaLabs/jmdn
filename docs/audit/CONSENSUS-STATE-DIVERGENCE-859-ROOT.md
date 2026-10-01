@@ -139,7 +139,7 @@ Every account writer must set the new key (`last_block`, or the deterministic `u
 - `Processing.go` apply path (sender/recipient/coinbase/zkvm/fee-recipient/new-account) — set to
   `block.BlockNumber`.
 - `contract_apply.go` — same.
-- `DB_OPs/thebe_missing.go` `UpdateAccount` / `rollbackState` (removed under 4.2) / `BatchRestoreAccounts`
+- `DB_OPs/thebe_shims.go` `UpdateAccount` / `rollbackState` (removed under 4.2) / `BatchRestoreAccounts`
   (`mergeAccountForWrite`) — sync/restore path: gate on `last_block` consistently.
 - `DB_OPs/backend/account.go` `UpdateAccountBalance` — **currently sets `updated_at = time.Now()`**
   (wall-clock); confirm it is not on the consensus apply path, and give it a block-derived key or
