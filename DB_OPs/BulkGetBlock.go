@@ -3,6 +3,7 @@ package DB_OPs
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gossipnode/config"
 )
@@ -35,6 +36,45 @@ func GetBlocksRange(mainDBClient *config.PooledConnection, startBlock, endBlock 
 			return nil, fmt.Errorf("GetBlocksRange: convert block %d: %w", r.BlockNumber, convErr)
 		}
 		blocks = append(blocks, blk)
+	}
+	return blocks, nil
+}
+
+// GetBlocksRangeWithTransactions is GetBlocksRange plus each block's
+// transactions. GetBlocksRange is header-only (BulkGetBlocks reads the blocks
+// table alone), which is right for header consumers (merkle, FastSync headers)
+// but silently wrong for anything that walks transactions: the txindex
+// catch-up used it and indexed zero transactions for every caught-up block.
+//
+// Fail-closed: a transaction read error aborts the call instead of returning a
+// block with an empty transaction list (which a caller cannot tell apart from
+// a genuinely empty block).
+func GetBlocksRangeWithTransactions(mainDBClient *config.PooledConnection, startBlock, endBlock uint64) ([]*config.ZKBlock, error) {
+	blocks, err := GetBlocksRange(mainDBClient, startBlock, endBlock)
+	if err != nil {
+		return nil, err
+	}
+	if len(blocks) == 0 {
+		return blocks, nil
+	}
+	h, err := getHandle(mainDBClient)
+	if err != nil {
+		return nil, fmt.Errorf("GetBlocksRangeWithTransactions: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for _, blk := range blocks {
+		txRecs, err := h.GetTransactionsByBlock(ctx, blk.BlockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("GetBlocksRangeWithTransactions: block %d transactions: %w", blk.BlockNumber, err)
+		}
+		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
+		for _, r := range txRecs {
+			if t := txRecordToTransaction(r); t != nil {
+				t.Timestamp = uint64(blk.Timestamp) // block time; the tx row has none
+				blk.Transactions = append(blk.Transactions, *t)
+			}
+		}
 	}
 	return blocks, nil
 }

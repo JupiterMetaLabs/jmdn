@@ -15,6 +15,7 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
@@ -136,6 +137,12 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	// failure is non-fatal — the block is already durably stored. Matches
 	// ProcessBlockLocally's non-fatal treatment.
 	_, _, _ = DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber)
+
+	// Address/tx index (explorer totals, per-address lists). The live gossip
+	// and sequencer paths already do this; the sync path did not, so every
+	// synced block was left to a header-only boot catch-up and never indexed.
+	// Async and non-fatal, like the live paths.
+	txindex.IndexBlockAsync(block)
 
 	// W1: a synced anchor block fixes the next selection period's pool here too.
 	// Non-fatal for the same reason as the marker: the block is stored, and the
