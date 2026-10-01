@@ -106,6 +106,10 @@ const allowUnpinnedModulusEnv = "JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS"
 // code.
 var ErrUnpinnedModulusInProduction = errors.New("entropy: unpinned VDF modulus override is refused in production posture")
 
+// ErrPartialVDFConfig: some, but not all, of the three required Stage-2
+// variables are set. Treated as a misconfiguration, never as "Stage 1".
+var ErrPartialVDFConfig = errors.New("entropy: JMDN_AVC_VDF_MODULUS_HEX, JMDN_AVC_VDF_GROUP_NAME and JMDN_AVC_VDF_DIFFICULTY_T must be all set or all unset")
+
 // buildVDFGroup constructs the VDF group, preferring pinned provenance.
 //
 // Default path: vdf.NewPinnedRSAGroup, which requires the group name to name
@@ -235,11 +239,24 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 	groupName := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_GROUP_NAME"))
 	difficultyStr := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_DIFFICULTY_T"))
 
-	if modulusHex == "" || groupName == "" || difficultyStr == "" {
-		log.Info().Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) not configured — " +
-			"JMDN_AVC_VDF_MODULUS_HEX / JMDN_AVC_VDF_GROUP_NAME / JMDN_AVC_VDF_DIFFICULTY_T " +
-			"not all set; staying on Stage 1 (salt-based) committee selection")
+	// A2: "not all three set" used to mean Stage 1 regardless of how many of
+	// the three were present. Two of three set is a misconfiguration, not a
+	// deliberate Stage-1 choice — treat it as an error like every other
+	// invalid value below, not as the same silent fallback as zero set.
+	set := 0
+	for _, v := range []string{modulusHex, groupName, difficultyStr} {
+		if v != "" {
+			set++
+		}
+	}
+	switch set {
+	case 0:
+		log.Info().Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) not configured — staying on Stage 1 (salt-based) committee selection")
 		return false, nil
+	case 3:
+		// fall through to validation below
+	default:
+		return false, ErrPartialVDFConfig
 	}
 
 	n, ok := new(big.Int).SetString(modulusHex, 16)

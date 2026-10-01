@@ -1672,9 +1672,17 @@ func main() {
 	// entropy) if it has been genuinely configured via env (see
 	// Sequencer/beacon_install.go's header for why the two required crypto
 	// parameters, the VDF group modulus and the calibrated difficulty T,
-	// are read from environment rather than pinned in code). A safe no-op
-	// when unset: the node stays on Stage 1 (salt-based) committee
-	// selection exactly as it does today.
+	// are read from environment rather than pinned in code).
+	//
+	// A2: Stage 1 now means NO VDF env at all. Anything else that fails to
+	// install — partial config, invalid value, or a production-posture
+	// refusal — stops the node. Block/consensus_fields.go's boundary-slot
+	// check (A1) is gated on whether this process actually installed a
+	// pipeline, not on a separate flag; before that fix, a node whose
+	// install failed here kept running on Stage 1 while every peer whose
+	// beacon DID install stayed on Stage 2 — different committee-selection
+	// entropy from what the operator configured, with one log line as the
+	// only signal. Refusing to start is the whole point of this check.
 	// D-48: beaconInstalled also gates messaging.HandleVDFProofRequestStream
 	// (node/node.go's VDFProofRequestProtocol registration) below, via
 	// messaging.SetVDFBeaconInstalled — hoisted out of the if/else-if chain
@@ -1682,30 +1690,20 @@ func main() {
 	var beaconInstalled bool
 	var beaconErr error
 	if beaconInstalled, beaconErr = Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
-		// A PRODUCTION-POSTURE SECURITY REFUSAL IS FATAL. Everything else here
-		// falls back to Stage 1 and logs, which is right for a misconfiguration
-		// — but wrong for these two, and dangerously so.
-		//
-		// JMDN-V3-006 added guards that refuse a trapdoored or unpinned VDF
-		// modulus on a production node. They return an error to THIS call site,
-		// which logged it and carried on. The node then booted on Stage-1 salt
-		// entropy: different committee-selection entropy from what the operator
-		// configured and from every peer whose beacon DID install, with one log
-		// line as the only signal. The guards read as fail-closed and the
-		// process was not. Refusing to start is the whole point of a production
-		// posture check — see the SEC-03 check at the top of main for the shape
-		// this should have had from the start.
+		reason := "Stage-2 configuration present but invalid"
 		if errors.Is(beaconErr, Sequencer.ErrTrapdooredGroupInProduction) ||
 			errors.Is(beaconErr, Sequencer.ErrUnpinnedModulusInProduction) {
-			fmt.Printf("Refusing to start: %v\n", beaconErr)
-			log.Error().Err(beaconErr).
-				Msg("entropy: production-posture VDF refusal — refusing to start rather than silently downgrading to Stage 1")
-			os.Exit(1)
+			reason = "production-posture VDF refusal"
 		}
-		fmt.Printf("AVC beacon (Stage 2 RANDAO+VDF) configuration present but invalid: %v\n", beaconErr)
-		log.Error().Err(beaconErr).Msg("entropy: AVC beacon (Stage 2) misconfigured — refusing to install, staying on Stage 1")
+		if l := mainLogger(); l != nil {
+			l.Error(ctx, "entropy: refusing to start rather than silently running Stage 1", beaconErr,
+				ion.String("reason", reason))
+		}
+		os.Exit(1)
 	} else if beaconInstalled {
-		fmt.Println("✅ AVC beacon (Stage 2 RANDAO+VDF) installed")
+		if l := mainLogger(); l != nil {
+			l.Info(ctx, "entropy: AVC beacon (Stage 2 RANDAO+VDF) installed")
+		}
 	}
 	// D-48: gate the VDF-proof pull responder (messaging.HandleVDFProofRequestStream)
 	// on whether the beacon is actually installed, not a separate on/off flag —
@@ -2239,15 +2237,15 @@ func main() {
 		if entropyHaveTip {
 			entropyTipHeight = entropyTip.BlockNumber
 		} else if entropyTipErr != nil && !errors.Is(entropyTipErr, messaging.ErrNoCommittedBlock) && entropyLog != nil {
-			entropyLog.Error(context.Background(), "entropy recovery: cannot read the committed tip — skipping replay", entropyTipErr)
+			entropyLog.Error(ctx, "entropy recovery: cannot read the committed tip — skipping replay", entropyTipErr)
 		}
 		rep, rerr := messaging.RunEntropyStartupRecovery(beaconInstalled, entropyTipHeight, entropyHaveTip,
 			func(height uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, height) })
 		if entropyLog != nil {
 			if rerr != nil {
-				entropyLog.Error(context.Background(), "entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies", rerr)
+				entropyLog.Error(ctx, "entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies", rerr)
 			} else if rep.Blocks > 0 {
-				entropyLog.Info(context.Background(), "entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks",
+				entropyLog.Info(ctx, "entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks",
 					ion.Uint64("tip_height", rep.TipHeight), ion.Uint64("tip_slot", rep.TipSlot),
 					ion.Uint64("from_height", rep.FromHeight), ion.Uint64("from_epoch", rep.FromEpoch), ion.Uint64("tip_epoch", rep.TipEpoch),
 					ion.Int("blocks", rep.Blocks), ion.Int("mixes_restored", rep.MixesRestored),
