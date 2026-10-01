@@ -150,19 +150,39 @@ func (idx *DB) EnsureReady(ctx context.Context) error {
 		return fmt.Errorf("txindex: read last indexed block: %w", err)
 	}
 
-	latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	// Indexes built before catchupVersion 2 were filled by a header-only
+	// catch-up: every caught-up block was marked indexed with no rows. They
+	// cannot be trusted below last_indexed_block, so re-index from genesis once
+	// (INSERT OR IGNORE: rows already present are kept, nothing is truncated).
+	ver, err := idx.metaUint(ctx, catchupVersionKey)
+	if err != nil {
+		return fmt.Errorf("txindex: read catchup version: %w", err)
+	}
+	reindexAll := lastIndexed > 0 && ver < catchupVersion
+
+	latestBlock, err := latestBlockFn(ctx)
 	if err != nil {
 		return fmt.Errorf("txindex: get latest block from ThebeDB: %w", err)
 	}
 
 	if latestBlock == 0 {
 		log.Printf("[txindex] No blocks in ThebeDB yet — nothing to index")
-		return nil
+		return idx.setMetaUint(ctx, catchupVersionKey, catchupVersion)
+	}
+
+	if reindexAll {
+		log.Printf("[txindex] Index was built by the header-only catch-up (catchup_version %d < %d) — "+
+			"re-indexing blocks 0..%d with their transactions", ver, catchupVersion, latestBlock)
+		if err := idx.buildRange(ctx, 0, latestBlock); err != nil {
+			return fmt.Errorf("txindex: re-index from genesis failed: %w", err)
+		}
+		log.Printf("[txindex] Re-index complete — index now at block %d", latestBlock)
+		return idx.setMetaUint(ctx, catchupVersionKey, catchupVersion)
 	}
 
 	if lastIndexed >= latestBlock {
 		log.Printf("[txindex] Index is current at block %d", lastIndexed)
-		return nil
+		return idx.setMetaUint(ctx, catchupVersionKey, catchupVersion)
 	}
 
 	gap := latestBlock - lastIndexed
@@ -179,7 +199,7 @@ func (idx *DB) EnsureReady(ctx context.Context) error {
 	}
 
 	log.Printf("[txindex] Catchup complete — index now at block %d", latestBlock)
-	return nil
+	return idx.setMetaUint(ctx, catchupVersionKey, catchupVersion)
 }
 
 // IndexBlock indexes a single newly committed block.
@@ -392,35 +412,39 @@ func createSchema(db *sql.DB) error {
 // and writes index entries. Uses NewBlockIterator so it reuses the existing
 // connection-pool logic and never holds more than one connection at a time.
 func (idx *DB) buildRange(ctx context.Context, from, to uint64) error {
-	iter := DB_OPs.NewBlockIterator(nil, from, to, migrationBatchSize)
-
+	if from > to {
+		return nil
+	}
+	cur := from
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-
-		blocks, err := iter.Next()
+		end := to
+		if to-cur >= migrationBatchSize {
+			end = cur + migrationBatchSize - 1
+		}
+		// Must include transactions: the header-only GetBlocksRange made every
+		// caught-up block look empty (see DB_OPs.GetBlocksRangeWithTransactions).
+		blocks, err := loadBlocks(nil, cur, end)
 		if err != nil {
-			return fmt.Errorf("txindex: block iterator: %w", err)
+			return fmt.Errorf("txindex: load blocks %d..%d: %w", cur, end, err)
 		}
-		if len(blocks) == 0 {
-			break
+		if len(blocks) > 0 {
+			if err := idx.indexBlocks(ctx, blocks); err != nil {
+				return err
+			}
+			log.Printf("[txindex] Indexed up to block %d / %d", blocks[len(blocks)-1].BlockNumber, to)
 		}
-
-		if err := idx.indexBlocks(ctx, blocks); err != nil {
-			return err
+		if end == to {
+			return nil
 		}
-
-		last := blocks[len(blocks)-1]
-		log.Printf("[txindex] Indexed up to block %d / %d", last.BlockNumber, to)
-
-		// Brief pause between batches — avoid saturating ImmuDB connection pool.
+		cur = end + 1
+		// Brief pause between batches — avoid saturating the DB connection pool.
 		time.Sleep(10 * time.Millisecond)
 	}
-
-	return nil
 }
 
 // ── write ────────────────────────────────────────────────────────────────────
@@ -516,6 +540,47 @@ func (idx *DB) lastIndexedBlock(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("txindex: parse last_indexed_block %q: %w", val, err)
 	}
 	return n, nil
+}
+
+// Test seams: block loading (with transactions) and the chain tip.
+var (
+	loadBlocks    = DB_OPs.GetBlocksRangeWithTransactions
+	latestBlockFn = func(ctx context.Context) (uint64, error) { return DB_OPs.GetLatestBlockNumber(ctx, nil) }
+)
+
+const (
+	// catchupVersionKey records which catch-up implementation built the index.
+	// Version 2 = catch-up reads transactions. Anything lower (or absent on an
+	// index that has blocks) is re-indexed from genesis once.
+	catchupVersionKey = "catchup_version"
+	catchupVersion    = 2
+)
+
+func (idx *DB) metaUint(ctx context.Context, key string) (uint64, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var val string
+	err := idx.readDB.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key = ?`, key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var n uint64
+	if _, err := fmt.Sscanf(val, "%d", &n); err != nil {
+		return 0, fmt.Errorf("txindex: parse %s %q: %w", key, val, err)
+	}
+	return n, nil
+}
+
+func (idx *DB) setMetaUint(ctx context.Context, key string, v uint64) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	_, err := idx.writeDB.ExecContext(ctx,
+		`INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, fmt.Sprintf("%d", v))
+	return err
 }
 
 // setMetaMonotonicMax upserts a numeric metadata value only if it is greater
@@ -767,6 +832,7 @@ func Init(ctx context.Context, dbPath string) error {
 	asyncStart.Do(func() {
 		asyncQueue = make(chan *config.ZKBlock, asyncQueueSize)
 		go asyncIndexWorker()
+		go retryDroppedLoop()
 	})
 
 	go func() {
@@ -822,8 +888,62 @@ func IndexBlockAsync(block *config.ZKBlock) {
 	select {
 	case asyncQueue <- block:
 	default:
-		log.Printf("[txindex] ALERT: async index queue full (cap=%d) — dropped block %d, will be picked up by next gap catchup",
+		// The old comment promised "next gap catchup" would pick this up, but
+		// catch-up only looks above last_indexed_block, which later live blocks
+		// advance past this one — so it was lost for good. Remember it and let
+		// retryDroppedLoop re-index it from ThebeDB.
+		droppedMu.Lock()
+		dropped[block.BlockNumber] = struct{}{}
+		droppedMu.Unlock()
+		log.Printf("[txindex] ALERT: async index queue full (cap=%d) — dropped block %d, queued for retry",
 			asyncQueueSize, block.BlockNumber)
+	}
+}
+
+var (
+	droppedMu sync.Mutex
+	dropped   = map[uint64]struct{}{}
+)
+
+const droppedRetryInterval = 30 * time.Second
+
+// retryDroppedLoop re-indexes blocks the async queue had to drop.
+func retryDroppedLoop() {
+	t := time.NewTicker(droppedRetryInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-shutdownCtx.Done():
+			return
+		case <-t.C:
+			retryDroppedOnce(shutdownCtx)
+		}
+	}
+}
+
+func retryDroppedOnce(ctx context.Context) {
+	idx := getIdx()
+	if idx == nil {
+		return
+	}
+	droppedMu.Lock()
+	nums := make([]uint64, 0, len(dropped))
+	for n := range dropped {
+		nums = append(nums, n)
+	}
+	droppedMu.Unlock()
+	for _, n := range nums {
+		blocks, err := loadBlocks(nil, n, n)
+		if err == nil {
+			err = idx.indexBlocks(ctx, blocks)
+		}
+		if err != nil {
+			log.Printf("[txindex] retry dropped block %d: %v (will retry)", n, err)
+			continue
+		}
+		droppedMu.Lock()
+		delete(dropped, n)
+		droppedMu.Unlock()
 	}
 }
 
