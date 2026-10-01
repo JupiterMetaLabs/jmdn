@@ -23,6 +23,7 @@ import (
 	"gossipnode/messaging"
 
 	"sync"
+	"time"
 
 	"github.com/JupiterMetaLabs/avc/beacon"
 	"github.com/JupiterMetaLabs/avc/randao"
@@ -78,8 +79,41 @@ func NewVDFSealer(pipeline *beacon.Pipeline) *VDFSealer {
 // bytes to embed in the epoch-boundary block (config.ZKBlock.VdfProof), and
 // SealLocally discards them - it's the recovery path for a node that only
 // needs to publish entropy, not carry the proof forward.
+// vdfSealerDeadlineMultiple bounds one evaluation's wall-clock lifetime as a
+// multiple of messaging.TargetVDFDelay — the design-target duration T is
+// CALIBRATED to approximate on the slowest expected fleet hardware (D-46a).
+// There is no portable way to turn a raw squaring count T into a wall-clock
+// bound directly: that would require a live timing measurement at startup,
+// which beacon_install.go's own header already rules out. TargetVDFDelay is
+// the one wall-clock value this codebase already trusts as "what a correctly-
+// calibrated T should take", so deriving the deadline from it (rather than
+// from a disconnected, newly-invented constant) ties the bound to the same
+// assumption the whole VDF design already rests on. 3x leaves generous room
+// for a node slower than the calibration target without being unbounded: a
+// node still running past 3x its design budget is not merely slow, something
+// is wrong (a mis-set T, a stuck host), and the goroutine releasing lets
+// CancelSealer/evictOldSealersLocked reclaim it instead of accumulating
+// forever — exactly the D-46a failure this closes.
+const vdfSealerDeadlineMultiple = 3
+
+// vdfSealerDeadline is the per-evaluation deadline Start enforces. A var, not
+// the multiplication inlined at the call site, so a test can shrink it
+// without waiting out the real ~1-hour production budget. Production code
+// must never assign to this — SetVDFSealerDeadlineForTest exists only for
+// tests, matching this file's other *ForTest seams.
+var vdfSealerDeadline = vdfSealerDeadlineMultiple * messaging.TargetVDFDelay
+
+// SetVDFSealerDeadlineForTest overrides vdfSealerDeadline for the duration of
+// a test. Returns a func that restores the previous value — call it via
+// t.Cleanup, the same pattern as ClearSealerForTest's siblings.
+func SetVDFSealerDeadlineForTest(d time.Duration) (restore func()) {
+	prev := vdfSealerDeadline
+	vdfSealerDeadline = d
+	return func() { vdfSealerDeadline = prev }
+}
+
 func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), vdfSealerDeadline)
 
 	s.mu.Lock()
 	if s.cancelled {
@@ -113,6 +147,28 @@ func (s *VDFSealer) Start(forEpoch uint64, mix randao.Seed) {
 		proof, err := s.pipeline.SealContext(ctx, forEpoch, mix)
 
 		if errors.Is(err, vdf.ErrEvalCancelled) {
+			// vdf.EvalContext wraps ANY ctx.Err() (explicit Cancel() or this
+			// deadline firing) as ErrEvalCancelled, so the two causes are
+			// distinguished here, not by SealContext — see which one actually
+			// fired before attributing it to a peer's proof winning the race.
+			if errors.Is(err, context.DeadlineExceeded) {
+				// D-46a: nobody has resolved this epoch — this evaluation
+				// simply outran its budget (vdfSealerDeadlineMultiple x
+				// messaging.TargetVDFDelay). No state to unwind (SealContext
+				// published nothing); not delivering a result here matches
+				// the cancelled-by-peer case below, so a later Result() call
+				// still correctly reports "not ready" rather than a stale
+				// empty proof — but the cause logged is actionable: T is
+				// likely mis-calibrated for this host, or it is stuck.
+				s.mu.Lock()
+				s.cancelled = true
+				s.mu.Unlock()
+				log.Error().Uint64("for_epoch", forEpoch).
+					Dur("budget", vdfSealerDeadline).
+					Msg("entropy: local VDF evaluation exceeded its deadline and was abandoned — " +
+						"T is likely mis-calibrated for this host's hardware, or evaluation is stuck")
+				return
+			}
 			// Someone else's proof was adopted first. SealContext published
 			// nothing, so there is no state to unwind — just record the
 			// outcome and do NOT deliver a result. Delivering one would let a

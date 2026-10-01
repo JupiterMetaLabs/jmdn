@@ -226,3 +226,28 @@ func waitForResult(t *testing.T, s *VDFSealer) SealResult {
 		}
 	}
 }
+
+// TestStart_DeadlineExceeded_AbandonsEvaluation is the D-46a regression: on
+// 8e89514, Start used context.WithCancel with no deadline, so a mis-calibrated
+// or stuck evaluation ran forever instead of being released. With
+// vdfSealerDeadline shrunk to effectively zero, the evaluation must be
+// abandoned — Result must stay "not ready" even well past the point a normal
+// (undeadlined) evaluation at this difficulty would have completed, proving
+// the deadline fired rather than the goroutine merely still running.
+func TestStart_DeadlineExceeded_AbandonsEvaluation(t *testing.T) {
+	t.Cleanup(SetVDFSealerDeadlineForTest(1 * time.Nanosecond))
+
+	p, _ := testPipeline(t)
+	s := NewVDFSealer(p)
+	s.Start(testEpoch, randao.Seed{0xAB, 0xCD})
+
+	// testDifficulty=3000 normally completes in well under this window (see
+	// TestResultDeliversAfterCompletion's own 10s waitForResult budget) — if
+	// the deadline had NOT fired, Result would very likely be ready by now.
+	time.Sleep(200 * time.Millisecond)
+
+	if _, ok := s.Result(); ok {
+		t.Fatal("Result reported ready after the deadline should have aborted evaluation — " +
+			"the context timeout in Start is not actually bounding the goroutine's lifetime")
+	}
+}
