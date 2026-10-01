@@ -227,13 +227,19 @@ func checkCommitteeAnchor(b *config.ZKBlock) *blockRejection {
 		return reject("committee_anchor_invalid", "anchor block %d: %v", b.BlockNumber, err)
 	}
 	// Monotonic: the membership epoch may repeat (seed unreachable, previous
-	// snapshot re-carried) but never go backwards.
-	if prev, perr := anchoredRecord(b.BlockNumber / epochLengthBlocks()); perr == nil && prev != nil {
-		if snap.Epoch < prev.Snapshot.Epoch {
-			return reject("committee_anchor_regressed",
-				"anchor block %d: snapshot epoch %d is older than the previous anchor's %d",
-				b.BlockNumber, snap.Epoch, prev.Snapshot.Epoch)
-		}
+	// snapshot re-carried) but never go backwards. A previous anchor that should
+	// exist but cannot be read is a rejection, not a skip: the regression check
+	// is exactly what protects a node that is missing history.
+	prev, perr := anchoredRecord(b.BlockNumber / epochLengthBlocks())
+	if perr != nil {
+		return reject("committee_anchor_unverifiable",
+			"anchor block %d: previous anchor unavailable, cannot prove the membership epoch does not regress: %v",
+			b.BlockNumber, perr)
+	}
+	if prev != nil && snap.Epoch < prev.Snapshot.Epoch {
+		return reject("committee_anchor_regressed",
+			"anchor block %d: snapshot epoch %d is older than the previous anchor's %d",
+			b.BlockNumber, snap.Epoch, prev.Snapshot.Epoch)
 	}
 	return nil
 }
@@ -576,7 +582,11 @@ func BuildCommitteeAnchor(height uint64) (body string, hash []byte, err error) {
 		return "", nil, nil
 	}
 	var prev *seedcommittee.CommitteeSnapshot
-	if rec, perr := anchoredRecord(height / epochLengthBlocks()); perr == nil && rec != nil {
+	rec, perr := anchoredRecord(height / epochLengthBlocks())
+	if perr != nil {
+		return "", nil, fmt.Errorf("committee anchor: previous anchor for height %d unreadable (fail closed): %w", height, perr)
+	}
+	if rec != nil {
 		s := rec.Snapshot
 		prev = &s
 	}
