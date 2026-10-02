@@ -172,6 +172,18 @@ func BumpARTOrdinalFloor(floor uint64) error {
 // the caller must reject the block — proposing a block that creates accounts
 // WITHOUT carried identities would push every node back to local minting.
 func EnrichBlockAccountNonces(block *config.ZKBlock) error {
+	return EnrichBlockAccountNoncesWithPredicted(block, nil)
+}
+
+// EnrichBlockAccountNoncesWithPredicted is EnrichBlockAccountNonces plus the
+// accounts the block's contract txs are PREDICTED to touch during EVM execution
+// (BlockProcessing.PredictContractCreatedAccounts: internal CALL{value}
+// recipients, SELFDESTRUCT beneficiaries, value-funded CREATE/CREATE2 children,
+// deployed contracts). Without them, an account first created inside the EVM has
+// no block-carried identity and the apply path cannot create it. They join the
+// SAME ordinal pass as senders/receivers, so existing accounts carry their stored
+// identity and new ones get the next monotonic ordinals, ascending-address order.
+func EnrichBlockAccountNoncesWithPredicted(block *config.ZKBlock, predicted []common.Address) error {
 	if block == nil {
 		return fmt.Errorf("enrich account nonces: nil block")
 	}
@@ -215,6 +227,12 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 			ca := crypto.CreateAddress(*block.Transactions[i].From, block.Transactions[i].Nonce)
 			touch(&ca)
 		}
+	}
+	// Execution-touched accounts predicted by the sequencer's pre-consensus
+	// simulation (see EnrichBlockAccountNoncesWithPredicted).
+	for i := range predicted {
+		a := predicted[i]
+		touch(&a)
 	}
 	// Reward-split recipients (buddy staking rewards) are CREDITED at apply just
 	// like a transaction receiver, so a never-funded reward address needs a
