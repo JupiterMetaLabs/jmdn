@@ -245,6 +245,7 @@ func DefaultConfig() NodeConfig {
 			RequirePinnedCommittee: false,
 			// Chain-anchored committee pool (W1). 0 = off. See config.go.
 			CommitteeAnchorActivationHeight: 0,
+			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,
 			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0

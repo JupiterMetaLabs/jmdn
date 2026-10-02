@@ -277,6 +277,21 @@ type ConsensusSettings struct {
 	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR off (the older, unwired hash-only anchor).
 	CommitteeAnchorActivationHeight uint64 `mapstructure:"committee_anchor_activation_height" yaml:"committee_anchor_activation_height"`
 
+	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
+	// contract txs whose EXECUTION creates an account (internal CALL{value},
+	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no
+	// block-carried ART identity (messaging/BlockProcessing/contract_apply.go).
+	// From this height on such a tx is applied as an EVM REVERT (effects
+	// discarded, gas charged, nonce bumped, status-0 receipt) instead of failing
+	// and withholding the WHOLE block. The sequencer's pre-consensus prediction
+	// (PredictContractCreatedAccounts) stamps these accounts in the common case,
+	// so the backstop only fires when prediction could not see the account.
+	//
+	// A FLEET-AGREED consensus parameter: every node must carry the same value,
+	// set in one coordinated upgrade, to a height the chain has not reached yet.
+	// Below it (and at 0, the default) the legacy whole-block failure is kept.
+	EVMUnstampedAccountRevertHeight uint64 `mapstructure:"evm_unstamped_account_revert_height" yaml:"evm_unstamped_account_revert_height"`
+
 	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
 	// committee snapshot when the seed is unreachable.
 	//

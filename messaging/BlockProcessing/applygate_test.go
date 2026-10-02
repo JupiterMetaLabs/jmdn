@@ -29,13 +29,16 @@ package BlockProcessing_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -46,6 +49,7 @@ import (
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 
 	"gossipnode/DB_OPs"
@@ -84,9 +88,10 @@ func buildHandle(t *testing.T, dir string) func() {
 		t.Fatalf("kv.NewStore: %v", err)
 	}
 
-	// SQLite projection for a local test (no Postgres needed). Adjust the DSN form
-	// if thebeSql.NewSQLEngine expects a driver prefix in your build.
-	sqlEngine, err := thebeSql.NewSQLEngine("file:" + filepath.Join(dir, "sql.db") + "?_foreign_keys=on")
+	// ThebeDB's SQL engine is Postgres-only (lib/pq). Each store gets its OWN fresh
+	// database so the two "validators" in a test share nothing but the blocks.
+	//   export APPLYGATE_PG_DSN="host=127.0.0.1 user=postgres sslmode=disable"
+	sqlEngine, err := thebeSql.NewSQLEngine(freshPGDatabase(t))
 	if err != nil {
 		t.Fatalf("thebeSql.NewSQLEngine: %v", err)
 	}
@@ -99,12 +104,23 @@ func buildHandle(t *testing.T, dir string) func() {
 	cas := cassata.New(db, zap.NewNop())
 
 	// EVM execution against this store's local ledger (EVM-A16) + P4 contract fold.
+	// hasCode mirrors main.go: read code from the SAME repo the executor commits
+	// to. (contractDB.HasCode reads an unset singleton and always returns false,
+	// which silently routed every CALL onto the value-transfer path.)
+	contractRepo := contractDB.NewKVStateRepository(cas.KV(), cas)
 	evmexec.Register(
 		chainID,
 		DB_OPs.ContractAccountSource{},
-		contractDB.NewKVStateRepository(cas.KV(), cas),
-		contractDB.HasCode,
+		contractRepo,
+		func(addr common.Address) bool {
+			code, err := contractRepo.GetCode(context.Background(), addr)
+			if err != nil {
+				return true
+			}
+			return len(code) > 0
+		},
 	)
+	contractDB.SetSharedAccountSource(DB_OPs.ContractAccountSource{})
 	kvForFold := cas.KV()
 	DB_OPs.SetContractFoldHook(func(f *consensushash.StateFingerprinterV1) error {
 		return contractDB.FoldAllContracts(kvForFold, f)
@@ -127,6 +143,32 @@ func buildHandle(t *testing.T, dir string) func() {
 		DB_OPs.SetGlobalHandle(nil)
 		_ = db.Close()
 	}
+}
+
+// freshPGDatabase creates a uniquely-named, empty Postgres database and returns
+// its DSN. Skips the test when APPLYGATE_PG_DSN is unset.
+func freshPGDatabase(t *testing.T) string {
+	t.Helper()
+	base := strings.TrimSpace(os.Getenv("APPLYGATE_PG_DSN"))
+	if base == "" {
+		t.Skip("set APPLYGATE_PG_DSN (e.g. \"host=127.0.0.1 user=postgres sslmode=disable\") to run the apply gate")
+	}
+	admin, err := sql.Open("postgres", base+" dbname=postgres")
+	if err != nil {
+		t.Fatalf("open admin pg: %v", err)
+	}
+	defer admin.Close()
+	name := fmt.Sprintf("applygate_%d", time.Now().UnixNano())
+	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
+		t.Fatalf("create database %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if a, err := sql.Open("postgres", base+" dbname=postgres"); err == nil {
+			_, _ = a.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)")
+			_ = a.Close()
+		}
+	})
+	return base + " dbname=" + name
 }
 
 // seedGenesis funds the two accounts on the currently-installed handle.
