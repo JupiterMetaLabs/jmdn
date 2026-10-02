@@ -27,6 +27,7 @@ import (
 	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/proposalguard"
 	"gossipnode/l1finality"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
 
@@ -733,7 +734,27 @@ func processZKBlock(c *gin.Context) {
 	// Fail-closed: without carried identities the fleet falls back to per-node nonce
 	// minting (the exact divergence this prevents), so a failed enrichment rejects the
 	// block (the orchestrator retries/requeues the batch).
-	if err := DB_OPs.EnrichBlockAccountNonces(&block); err != nil {
+	//
+	// Contract txs can create accounts DURING execution (internal CALL{value} to a
+	// fresh address, SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2). Those
+	// are invisible in tx.From/tx.To, so simulate the block's contract txs first
+	// (no commit) and stamp every execution-touched account in the same pass.
+	// Fail-closed on a simulation state-read error, like enrichment itself.
+	predicted, perr := BlockProcessing.PredictContractCreatedAccounts(spanCtx, &block)
+	if perr != nil {
+		span.RecordError(perr)
+		span.SetAttributes(attribute.String("status", "execution_prediction_failed"))
+		logger().Error(spanCtx, "Failed to predict contract-created accounts — block rejected",
+			perr,
+			ion.Int64("block_number", blockNumberAttr),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.String("log_file", FILENAME),
+			ion.String("topic", BLOCKTOPIC),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to predict contract-created accounts: " + perr.Error()})
+		return
+	}
+	if err := DB_OPs.EnrichBlockAccountNoncesWithPredicted(&block, predicted); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "account_nonce_enrichment_failed"))
 		duration := time.Since(startTime).Seconds()
