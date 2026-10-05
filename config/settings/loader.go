@@ -307,6 +307,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.committee_epoch_blocks", d.Consensus.CommitteeEpochBlocks)
 	v.SetDefault("consensus.require_pinned_committee", d.Consensus.RequirePinnedCommittee)
 	v.SetDefault("consensus.committee_anchor_activation_height", d.Consensus.CommitteeAnchorActivationHeight)
+	v.SetDefault("consensus.evm_unstamped_account_revert_height", d.Consensus.EVMUnstampedAccountRevertHeight)
 	v.SetDefault("consensus.committee_strict_boundary", d.Consensus.CommitteeStrictBoundary)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)

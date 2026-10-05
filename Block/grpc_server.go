@@ -3,6 +3,7 @@ package Block
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -57,6 +58,14 @@ func NewBlockServer(h host.Host, chainID int) *BlockServer {
 		chainID: chainID,
 		logger:  ionLogger,
 	}
+}
+
+// grpcStartConsensus hands a validated, stamped block to the consensus state
+// machine. A package variable only so applygate tests can capture the exact block
+// ProcessBlock would propose (TestProcessBlockGRPC_StampsExecutionCreatedAccounts);
+// production never reassigns it.
+var grpcStartConsensus = func(peerList Sequencer.PeerList, h host.Host, block *config.ZKBlock) error {
+	return Sequencer.NewConsensus(peerList, h).Start(block)
 }
 
 // ProcessBlock handles the gRPC ProcessBlock request
@@ -145,19 +154,23 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		return nil, status.Errorf(codes.Unavailable, "%v", err)
 	}
 
-	// Stamp canonical ART identity nonces for every sender/receiver AND buddy
-	// reward-split recipient (block.FeeRecipients, populated by attach above), so a
-	// never-funded reward address — and any first-time receiver — is created from a
-	// block-carried identity at apply rather than a per-node mint (which would break
-	// the Fastsync AccountSync diff fleet-wide). Same call and fail-closed contract
-	// as the HTTP proposer path (Server.go); advisory field, does not touch BlockHash
-	// or ConsensusHash. Must run after attach and before consensus.Start.
-	if err := DB_OPs.EnrichBlockAccountNonces(block); err != nil {
+	// Stamp canonical ART identity nonces: every sender/receiver, buddy reward-split
+	// recipient (block.FeeRecipients, populated by attach above), and every account
+	// the block's contract txs create during EVM execution (predicted by
+	// simulation). This is the SAME helper the HTTP proposer path (Server.go) calls
+	// — D-78: this path previously kept the pre-prediction call, so gRPC-proposed
+	// blocks reproduced the block-936 "no block-carried ART identity" failure.
+	// Advisory field; does not touch BlockHash or ConsensusHash. Must run after
+	// attach and before consensus.Start. Fail-closed.
+	if err := stampProposalAccountNonces(ctx, block); err != nil {
 		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: refusing to propose — account-nonce enrichment failed", err,
+			s.logger.Error(ctx, "gRPC: refusing to propose — account-nonce stamping failed", err,
 				ion.Uint64("block_number", block.BlockNumber))
 		}
-		return nil, status.Errorf(codes.Internal, "failed to enrich block with account nonces: %v", err)
+		if errors.Is(err, errProposalPrediction) {
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
+		}
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
 	// Create consensus instance and start consensus process
@@ -174,12 +187,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		lifecycle.MarkProposed(block.BlockNumber, block.BlockHash.Hex(), txHashes)
 	}
 
-	consensus := Sequencer.NewConsensus(peerList, s.host)
-	// Debugging
-	if s.logger != nil {
-		s.logger.Debug(ctx, "Consensus instance created")
-	}
-	if err := consensus.Start(block); err != nil {
+	if err := grpcStartConsensus(peerList, s.host, block); err != nil {
 		if s.logger != nil {
 			s.logger.Error(ctx, "gRPC: Failed to start consensus process", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
