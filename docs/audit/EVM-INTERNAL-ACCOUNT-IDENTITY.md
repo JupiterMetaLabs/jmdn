@@ -45,9 +45,13 @@ string exactly.
 - `DB_OPs.EnrichBlockAccountNoncesWithPredicted` stamps every predicted address in
   the existing ordinal pass. Existing accounts get their stored identity; new
   accounts get the next ordinals, assigned in ascending-address order.
-- `Block/Server.go` runs the prediction immediately before enrichment. A state-read
-  error during simulation rejects the proposal (fail closed), the same way an
-  enrichment error does.
+- Both proposal ingresses — HTTP `processZKBlock` (`Block/Server.go`) and gRPC
+  `BlockServer.ProcessBlock` (`Block/grpc_server.go`) — run prediction + enrichment
+  through ONE helper, `stampProposalAccountNonces` (`Block/proposal_nonces.go`). A
+  state-read error during simulation rejects the proposal (fail closed), the same
+  way an enrichment error does. The gRPC path was missed in the first commit
+  (D-78); `TestProposalIngress_UsesSharedNonceStamp` now fails if any ingress
+  stops calling the helper.
 - Validators only read `AccountNonces`, so a pre-fix validator applies these blocks
   unchanged. `TestReplayNewBlocksOnOldValidator` replayed the new sequencer's
   blocks on `v3base` (db8c266) and every fingerprint matched.
@@ -76,7 +80,17 @@ same ones:
 - the block-carried `AccountNonces`, which are the same bytes on every node;
 - the deterministic EVM result;
 - whether the account already exists, which is the same for any node at this height
-  that has not diverged. A diverged node is caught by the `StateFingerprint` halt.
+  that has not diverged (D-79). A node whose account store differs halts on the
+  first fingerprint-stamped block after the divergence, before it can reach this
+  branch (`TestInternalCreate_BackstopDivergentStoreHalts`).
+
+The gate reads `settings.Get()` with no "not loaded" fallback, so missing
+configuration fails closed instead of silently choosing a branch (D-80).
+
+**Merging does not close the block-936 class on its own.** With the default height
+0, a block that deploys a contract and calls it, or funds a contract and has it pay
+out, in the same block is still invisible to prediction and still fails whole. That
+class closes only once B is activated fleet-wide.
 
 Infrastructure errors and stale nonces still fail the whole block, as before.
 

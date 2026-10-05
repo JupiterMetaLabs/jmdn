@@ -27,7 +27,6 @@ import (
 	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/proposalguard"
 	"gossipnode/l1finality"
-	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
 
@@ -735,31 +734,21 @@ func processZKBlock(c *gin.Context) {
 	// minting (the exact divergence this prevents), so a failed enrichment rejects the
 	// block (the orchestrator retries/requeues the batch).
 	//
-	// Contract txs can create accounts DURING execution (internal CALL{value} to a
-	// fresh address, SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2). Those
-	// are invisible in tx.From/tx.To, so simulate the block's contract txs first
-	// (no commit) and stamp every execution-touched account in the same pass.
-	// Fail-closed on a simulation state-read error, like enrichment itself.
-	predicted, perr := BlockProcessing.PredictContractCreatedAccounts(spanCtx, &block)
-	if perr != nil {
-		span.RecordError(perr)
-		span.SetAttributes(attribute.String("status", "execution_prediction_failed"))
-		logger().Error(spanCtx, "Failed to predict contract-created accounts — block rejected",
-			perr,
-			ion.Int64("block_number", blockNumberAttr),
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.processZKBlock"))
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to predict contract-created accounts: " + perr.Error()})
-		return
-	}
-	if err := DB_OPs.EnrichBlockAccountNoncesWithPredicted(&block, predicted); err != nil {
+	//
+	// Contract txs can also create accounts DURING execution (internal CALL{value}
+	// to a fresh address, SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2);
+	// stampProposalAccountNonces predicts those too. It is the SAME step the gRPC
+	// ingress (grpc_server.go) runs — do not inline it here.
+	if err := stampProposalAccountNonces(spanCtx, &block); err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "account_nonce_enrichment_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to enrich block with account nonces — block rejected",
+		code, stat := http.StatusInternalServerError, "account_nonce_enrichment_failed"
+		if errors.Is(err, errProposalPrediction) {
+			code, stat = http.StatusServiceUnavailable, "execution_prediction_failed"
+		}
+		span.SetAttributes(attribute.String("status", stat))
+		logger().Error(spanCtx, "Failed to stamp block account nonces — block rejected",
 			err,
 			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
@@ -767,7 +756,7 @@ func processZKBlock(c *gin.Context) {
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
 			ion.String("function", "BlockServer.processZKBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enrich block with account nonces: " + err.Error()})
+		c.JSON(code, gin.H{"error": err.Error()})
 		return
 	}
 

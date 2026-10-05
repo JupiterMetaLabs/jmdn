@@ -474,3 +474,55 @@ func TestInternalCreate_PredictionHasNoSideEffects(t *testing.T) {
 		t.Fatal("prediction created the recipient account")
 	}
 }
+
+// TestInternalCreate_BackstopDivergentStoreHalts (D-79): the backstop branch
+// also depends on the node's LOCAL account store. If a validator already holds an
+// account the sequencer does not, the sequencer reverts the unstampable tx while
+// the validator would apply it. That must never commit silently. It cannot: the
+// P2.5 state fingerprint folds every account (account-set membership included),
+// so the validator halts on the FIRST stamped block it applies after its store
+// diverged — before the backstop block is even reached.
+func TestInternalCreate_BackstopDivergentStoreHalts(t *testing.T) {
+	setRevertHeight(t, 1)
+	blocks, _, fresh := intraBlockDependency(t)
+
+	// Sequencer: produce + stamp both blocks (fresh absent → payout reverted).
+	cleanupA := buildHandle(t, t.TempDir())
+	seedGenesis(t)
+	b1 := sequencerBlock(t, 1, common.Hash{}, blocks[0], true)
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b1, nil); err != nil {
+		cleanupA()
+		t.Fatalf("sequencer block 1: %v", err)
+	}
+	b2 := sequencerBlock(t, 2, b1.BlockHash, blocks[1], true)
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b2, nil); err != nil {
+		cleanupA()
+		t.Fatalf("sequencer block 2: %v", err)
+	}
+	cleanupA()
+
+	// Validator whose store diverged: it already holds `fresh` (zero balance).
+	cleanupB := buildHandle(t, t.TempDir())
+	defer cleanupB()
+	seedGenesis(t)
+	if err := DB_OPs.CreateAccount(nil, "did:jmdn:"+strings.ToLower(fresh.Hex()), fresh, nil); err != nil {
+		t.Fatalf("pre-create fresh on validator: %v", err)
+	}
+	var haltErr error
+	for _, blk := range []*config.ZKBlock{b1, b2} {
+		if err := BlockProcessing.ProcessBlockTransactions(context.Background(), blk, nil); err != nil {
+			haltErr = err
+			break
+		}
+	}
+	if haltErr == nil {
+		t.Fatal("validator with a divergent account store applied every block — silent divergence")
+	}
+	if !strings.Contains(haltErr.Error(), "state divergence") {
+		t.Fatalf("want a state-divergence halt, got: %v", haltErr)
+	}
+	if v := view(t, fresh); v.balance != "0" {
+		t.Fatalf("divergent validator committed the payout: fresh balance %s", v.balance)
+	}
+	t.Logf("PASS (loud, not silent): %v", haltErr)
+}

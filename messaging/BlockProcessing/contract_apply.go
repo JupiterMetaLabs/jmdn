@@ -47,10 +47,12 @@ var ErrUnstampedNewAccount = errors.New("contract execution created an account w
 // applied as an EVM revert instead of failing the whole block. A FLEET-AGREED
 // consensus parameter (consensus.evm_unstamped_account_revert_height): 0 = off
 // (legacy whole-block failure, unchanged).
+//
+// No IsLoaded fallback (D-80): a consensus gate must not quietly pick a branch
+// when configuration is missing. settings.Get() panics before Load — the same
+// fail-closed behaviour as contractExecContext, which reads settings on this path
+// before this gate is ever reached.
 func unstampedAccountRevertActive(blockNumber uint64) bool {
-	if !settings.IsLoaded() {
-		return false
-	}
 	h := settings.Get().Consensus.EVMUnstampedAccountRevertHeight
 	return h != 0 && blockNumber >= h
 }
@@ -233,8 +235,21 @@ func applyContractTx(
 		// Deterministic backstop (post-activation): treat the tx exactly like an EVM
 		// revert — discard its execution effects (value moves, created accounts,
 		// contract storage), charge gas, bump the sender nonce, status-0 receipt.
-		// Every node holds the SAME carried AccountNonces and computes the SAME EVM
-		// result, so every node takes this branch identically; the block applies.
+		//
+		// Determinism rests on THREE inputs, all of which must agree fleet-wide:
+		//   1. the block-carried AccountNonces (identical bytes on every node);
+		//   2. the EVM result (deterministic given identical pre-state);
+		//   3. the node's local account store — `unstamped` only collects addresses
+		//      stage.get MISSES, so an account present on some nodes and absent on
+		//      others sends them down different branches (D-79).
+		// (3) holds whenever pre-state is consistent, which (2) already requires. A
+		// node whose account store differs is caught BEFORE it can take a different
+		// branch here: the P2.5 state fingerprint folds every account (membership
+		// included), so it halts on the first producer-stamped block after the
+		// divergence (TestInternalCreate_BackstopDivergentStoreHalts). That check
+		// runs only for fingerprint-stamped blocks (always, while the EVM executor
+		// is enabled) — so confirm the accounts table is consistent fleet-wide
+		// before choosing an activation height.
 		logger().Warn(span_ctx, "Contract tx created an account with no block-carried ART identity — applying as REVERTED (deterministic backstop)",
 			ion.String("tx_hash", tx.Hash.Hex()),
 			ion.String("account", unstamped[0].Hex()),
