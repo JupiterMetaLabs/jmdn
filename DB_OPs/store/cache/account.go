@@ -135,6 +135,10 @@ func (s *cachedAccountStore) ListAccountsPaginated(ctx context.Context, limit, o
 	return s.inner.ListAccountsPaginated(ctx, limit, offset)
 }
 
+func (s *cachedAccountStore) ListAccountsAfter(ctx context.Context, after string, limit int) ([]*store.Account, error) {
+	return s.inner.ListAccountsAfter(ctx, after, limit)
+}
+
 func (s *cachedAccountStore) CountAccounts(ctx context.Context) (uint64, error) {
 	return s.inner.CountAccounts(ctx)
 }

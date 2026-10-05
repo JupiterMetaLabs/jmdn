@@ -237,7 +237,10 @@ func GetL1CommitForBlock(blockNumber uint64) (string, uint64, error) {
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	h, err := getHandle(nil)
+	// Honor the connection: a task connection (TaskConn(TaskSync) from the
+	// FastSync/ThebeSync serving paths) routes this read to that task's pool;
+	// nil keeps the process-wide handle, unchanged.
+	h, err := getHandle(mainDBClient)
 	if err != nil {
 		return nil, fmt.Errorf("GetZKBlockByNumber: %w", err)
 	}
@@ -289,7 +292,7 @@ func GetLatestBlockNumber(ctx context.Context, mainDBClient *config.PooledConnec
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	h, err := getHandle(nil)
+	h, err := getHandle(mainDBClient) // task routing; nil = process handle
 	if err != nil {
 		return 0, fmt.Errorf("GetLatestBlockNumber: %w", err)
 	}

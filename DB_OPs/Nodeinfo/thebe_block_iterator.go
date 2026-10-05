@@ -99,7 +99,7 @@ func (i *dbBlockIterator) Next() ([]*fastsync_types.ZKBlock, error) {
 		batchEnd = i.end
 	}
 
-	blocks, err := DB_OPs.GetBlocksRange(nil, i.current, batchEnd)
+	blocks, err := DB_OPs.GetBlocksRange(DB_OPs.TaskConn(DB_OPs.TaskSync), i.current, batchEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (i *dbBlockIterator) Prev() ([]*fastsync_types.ZKBlock, error) {
 	// Capture the batch end before i.tail is updated below.
 	batchEnd := i.tail
 
-	blocks, err := DB_OPs.GetBlocksRange(nil, batchStart, batchEnd)
+	blocks, err := DB_OPs.GetBlocksRange(DB_OPs.TaskConn(DB_OPs.TaskSync), batchStart, batchEnd)
 	if err != nil {
 		return nil, err
 	}

@@ -1192,11 +1192,52 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "thebedb: kv store OK")
 
-		sqlEngine, err := thebeSql.NewSQLEngine(cfg.Thebe.SQLDSN)
+		// Task-wise Postgres pools (DB_OPs/task_pools.go): write / read / sync each
+		// get their own *sql.DB and budget, so peer-sync serving cannot exhaust the
+		// connections JSON-RPC and block apply need (accountsdb-pool-exhaustion RCA).
+		// The write pool replaces thebeSql.NewSQLEngine's internal pool (same
+		// open+ping), now sized by thebe.pools.write instead of PG_MAX_OPEN_CONNS.
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		writeDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskWrite, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Write})
 		if err != nil {
+			poolCancel()
 			fmt.Fprintf(os.Stderr, "FATAL thebedb: sql engine init failed: %v\n", err)
 			os.Exit(1)
 		}
+		readDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskRead, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Read})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: read pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		syncDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskSync, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Sync})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: sync pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		poolTotal := cfg.Thebe.Pools.Write + cfg.Thebe.Pools.Read + cfg.Thebe.Pools.Sync
+		if berr := DB_OPs.CheckServerConnectionBudget(poolCtx, writeDB, poolTotal); berr != nil {
+			// Warn, not fatal: the check cannot see other clients' real usage, and
+			// pools open lazily — but a shortfall means a task can hit "too many
+			// connections" under load.
+			fmt.Fprintf(os.Stderr, "WARN thebedb: %v — lower thebe.pools.* or raise Postgres max_connections\n", berr)
+		}
+		poolCancel()
+		defer readDB.Close()
+		defer syncDB.Close()
+		fmt.Fprintf(os.Stderr, "thebedb: task pools OK — write=%d read=%d sync=%d (total %d)\n",
+			cfg.Thebe.Pools.Write, cfg.Thebe.Pools.Read, cfg.Thebe.Pools.Sync, poolTotal)
+		metrics.RegisterDBTaskPools(func() []metrics.DBTaskPoolSample {
+			stats := DB_OPs.TaskPoolStats()
+			out := make([]metrics.DBTaskPoolSample, len(stats))
+			for i, st := range stats {
+				out[i] = metrics.DBTaskPoolSample{Task: string(st.Task), MaxOpen: st.MaxOpen, Stats: st.Stats}
+			}
+			return out
+		})
+
+		sqlEngine := thebeSql.NewSQLEngineFromDB(writeDB)
 		fmt.Fprintln(os.Stderr, "thebedb: sql engine OK")
 
 		db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
@@ -1317,11 +1358,18 @@ func main() {
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
 		// before the first GetConnection is sufficient.
-		reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
+		// Reads go to the READ task pool, not the write engine's pool.
+		reader := thebegateway.NewThebeReader(readDB, db.KV, nil)
 		// EVM event logs: KV-backed store so eth_getLogs works (it returned
 		// "LogWriter not configured" while this was nil) and so the apply path
 		// can index logs at commit time (BlockProcessing.applyContractTx).
-		thebeHandleBackend := backend.New(gw, reader, logstore.New(db.KV))
+		logStore := logstore.New(db.KV)
+		thebeHandleBackend := backend.New(gw, reader, logStore)
+		// SYNC task handle: identical backend over the sync pool. Peer-sync serving
+		// paths select it with DB_OPs.TaskConn(DB_OPs.TaskSync); writes made through
+		// it still go via the gateway (write pool).
+		syncReader := thebegateway.NewThebeReader(syncDB, db.KV, nil)
+		DB_OPs.SetTaskHandle(DB_OPs.TaskSync, backend.NewComposite(backend.New(gw, syncReader, logStore), nil))
 		config.SetGlobalHandleFactory(func() (io.Closer, error) {
 			return backend.NewComposite(thebeHandleBackend, nil), nil
 		})

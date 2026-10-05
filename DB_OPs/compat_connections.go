@@ -104,6 +104,7 @@ func storeAccountToDBOps(a *store.Account) *Account {
 }
 
 // ListAccountsPaginatedCtx returns a page of accounts using offset-based pagination via ThebeDB.
+// OFFSET paging is O(offset) per page; for full scans use ListAccountsAfterCtx.
 func ListAccountsPaginatedCtx(ctx context.Context, limit, offset int) ([]*Account, error) {
 	h, err := getHandle(nil)
 	if err != nil {
@@ -113,16 +114,33 @@ func ListAccountsPaginatedCtx(ctx context.Context, limit, offset int) ([]*Accoun
 	if err != nil {
 		return nil, err
 	}
-	result := make([]*Account, len(rows))
-	for i, r := range rows {
-		result[i] = storeAccountToDBOps(r)
+	return storeAccountsToDBOps(rows), nil
+}
+
+// ListAccountsAfterCtx returns up to limit accounts strictly after the cursor
+// address `after` in canonical ascending LOWER(address) order ("" = start); the
+// next cursor is the last returned Address. conn selects the task pool (nil =
+// process handle). Each page is an index range scan, so a full listing is O(N).
+func ListAccountsAfterCtx(ctx context.Context, conn *config.PooledConnection, after string, limit int) ([]*Account, error) {
+	h, err := getHandle(conn)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccountsAfterCtx: %w", err)
 	}
-	return result, nil
+	rows, err := h.ListAccountsAfter(ctx, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return storeAccountsToDBOps(rows), nil
 }
 
 // CountAccountsCtx returns the total number of accounts via ThebeDB.
 func CountAccountsCtx(ctx context.Context) (uint64, error) {
-	h, err := getHandle(nil)
+	return CountAccountsConn(ctx, nil)
+}
+
+// CountAccountsConn is CountAccountsCtx on the given task connection (nil = process handle).
+func CountAccountsConn(ctx context.Context, conn *config.PooledConnection) (uint64, error) {
+	h, err := getHandle(conn)
 	if err != nil {
 		return 0, fmt.Errorf("CountAccountsCtx: %w", err)
 	}
@@ -131,7 +149,13 @@ func CountAccountsCtx(ctx context.Context) (uint64, error) {
 
 // GetAccountsByNonces returns accounts matching any of the given nonces via ThebeDB.
 func GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, error) {
-	h, err := getHandle(nil)
+	return GetAccountsByNoncesConn(ctx, nil, nonces)
+}
+
+// GetAccountsByNoncesConn is GetAccountsByNonces on the given task connection
+// (nil = process handle).
+func GetAccountsByNoncesConn(ctx context.Context, conn *config.PooledConnection, nonces []uint64) ([]*Account, error) {
+	h, err := getHandle(conn)
 	if err != nil {
 		return nil, fmt.Errorf("GetAccountsByNonces: %w", err)
 	}
@@ -139,11 +163,15 @@ func GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, erro
 	if err != nil {
 		return nil, err
 	}
+	return storeAccountsToDBOps(rows), nil
+}
+
+func storeAccountsToDBOps(rows []*store.Account) []*Account {
 	result := make([]*Account, len(rows))
 	for i, r := range rows {
 		result[i] = storeAccountToDBOps(r)
 	}
-	return result, nil
+	return result
 }
 
 // SaveAccount persists a full Account record — delegates to UpdateAccountBalance.

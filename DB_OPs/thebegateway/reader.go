@@ -193,6 +193,26 @@ const (
         FROM accounts ORDER BY LOWER(address) ASC
         LIMIT $1 OFFSET $2`
 
+	// Keyset page over the SAME canonical order as sqlListAccountsPaginated
+	// (ascending LOWER(address)). Served by idx_accounts_address_lower: each page
+	// is an index range scan of `limit` rows instead of sorting the whole table
+	// and skipping OFFSET rows (which made a full listing O(N^2) and ran on every
+	// block via the state fingerprint and on every FastSync account page).
+	//
+	// The cursor compares on LOWER(address) only, so it is independent of the
+	// case the caller formats the cursor in, and strictly advances — a listing
+	// can never revisit a row (no infinite loop). Addresses are written in one
+	// form (backend.toAccountRecord: common.Address.Hex()), so two rows differing
+	// only by case do not occur; if one ever did, keyset would return the first
+	// and skip the variant rather than loop.
+	sqlListAccountsAfter = `
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
+               created_at, updated_at
+        FROM accounts
+        WHERE LOWER(address) > LOWER($1)
+        ORDER BY LOWER(address) ASC, address ASC
+        LIMIT $2`
+
 	sqlCountAccounts = `SELECT COUNT(*) FROM accounts`
 
 	sqlGetAccountsByNonces = `
@@ -773,6 +793,28 @@ func (r *thebeReader) ListAccountsPaginated(ctx context.Context, limit, offset i
 		var rec AccountRecord
 		if err := r.scanAccount(rows, &rec); err != nil {
 			return nil, fmt.Errorf("ListAccountsPaginated: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	return results, rows.Err()
+}
+
+// ListAccountsAfter returns up to limit accounts strictly after the cursor
+// address `after` in canonical (LOWER(address), address) order. after == ""
+// starts from the beginning. The next cursor is the last row's Address.
+// Time: O(limit) index range scan (idx_accounts_address_lower).
+func (r *thebeReader) ListAccountsAfter(ctx context.Context, after string, limit int) ([]*AccountRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlListAccountsAfter, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccountsAfter: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AccountRecord
+	for rows.Next() {
+		var rec AccountRecord
+		if err := r.scanAccount(rows, &rec); err != nil {
+			return nil, fmt.Errorf("ListAccountsAfter: scan: %w", err)
 		}
 		results = append(results, &rec)
 	}

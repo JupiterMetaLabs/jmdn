@@ -77,6 +77,9 @@ func DefaultConfig() NodeConfig {
 			StreamName: "",
 			MaxLen:     1000,
 			GroupName:  "",
+			// Write keeps the pre-split ThebeDB default (PG_MAX_OPEN_CONNS=10).
+			// 10+10+4 = 24 per node, well inside Postgres' default 100.
+			Pools: ThebePoolsConfig{Write: 10, Read: 10, Sync: 4},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
