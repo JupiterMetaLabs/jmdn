@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"gossipnode/internal/l1auth"
 )
 
 // globalCfg holds the loaded configuration for package-level access.
@@ -74,6 +76,13 @@ func Load() (*NodeConfig, error) {
 
 	// Eagerly resolve token env vars so the hot path never calls os.Getenv
 	cfg.Security.ResolveTokens()
+
+	// Refuse to boot on a malformed sequencer pin: the L1-finality gossip auth
+	// compares decoded peer IDs, so a typo here would reject the real sequencer
+	// and silently drop every genuine L1 commit. Empty is allowed (not enforced).
+	if err := l1auth.ValidatePin(cfg.Consensus.SequencerPinnedPeerID); err != nil {
+		return nil, err
+	}
 
 	globalCfg = &cfg
 	return &cfg, nil
@@ -218,6 +227,7 @@ func setDefaults(v *viper.Viper) {
 	// Consensus
 	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
 	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
+	v.SetDefault("consensus.sequencer_pinned_peer_id", d.Consensus.SequencerPinnedPeerID)
 	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)

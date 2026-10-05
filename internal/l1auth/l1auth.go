@@ -24,19 +24,37 @@
 package l1auth
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Enforced reports whether L1-commit sender authentication is active. It is active
-// exactly when a trusted sequencer peer ID is configured (consensus.sequencer_peer_id).
-// Empty = legacy unauthenticated behavior (caller should WARN loudly and accept, to
-// stay non-bricking pre-rollout); non-empty = fail-closed enforcement. Production
-// posture requires it (see main.go boot gate), so the empty case cannot ship to
-// mainnet — the lesson from the block-858 finding-4 empty-pin trap.
+// exactly when a trusted sequencer peer ID is configured
+// (consensus.sequencer_pinned_peer_id / JMDN_CONSENSUS_SEQUENCER_PINNED_PEER_ID).
+// Empty = legacy unauthenticated behavior (caller should WARN once and accept, to
+// stay non-bricking pre-rollout); non-empty = fail-closed enforcement. There is no
+// boot-time gate that forces the pin to be set: operators MUST pin it on every
+// production node, or forged L1 finality is accepted exactly as before this fix.
 func Enforced(trustedSequencerID string) bool {
 	return strings.TrimSpace(trustedSequencerID) != ""
+}
+
+// ValidatePin checks a configured sequencer pin at startup. An empty pin is
+// allowed (enforcement off); a non-empty pin that does not decode as a libp2p
+// peer ID is an error. Without this check a one-character typo would silently
+// make IsSequencer return false for the real sequencer, dropping every genuine
+// L1 commit on the node for as long as it runs.
+func ValidatePin(trustedSequencerID string) error {
+	pin := strings.TrimSpace(trustedSequencerID)
+	if pin == "" {
+		return nil
+	}
+	if _, err := peer.Decode(pin); err != nil {
+		return fmt.Errorf("consensus.sequencer_pinned_peer_id %q is not a valid libp2p peer ID: %w", pin, err)
+	}
+	return nil
 }
 
 // IsSequencer reports whether the authenticated gossip sender is the trusted

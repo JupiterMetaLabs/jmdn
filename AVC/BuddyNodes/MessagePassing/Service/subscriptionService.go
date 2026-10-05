@@ -943,8 +943,8 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return nil
-	} else if !enforced {
-		logger().NamedLogger.Info(logger_ctx, "Applying L1 commit WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+	} else if !enforced && l1finality.WarnUnpinnedOnce() {
+		logger().NamedLogger.Warn(logger_ctx, "Applying L1 commit WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset; set it on every production node to enforce (logged once)",
 			ion.String("sender", msg.Sender.String()),
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "SubscriptionService.handleL1Commit"))
@@ -1011,8 +1011,8 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 			ion.Int64("end_block", int64(payload.EndBlock)),
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 		return nil
-	} else if !enforced {
-		logger().NamedLogger.Info(logger_ctx, "Applying L1 commit range WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+	} else if !enforced && l1finality.WarnUnpinnedOnce() {
+		logger().NamedLogger.Warn(logger_ctx, "Applying L1 commit range WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset; set it on every production node to enforce (logged once)",
 			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 	}

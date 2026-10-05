@@ -56,3 +56,31 @@ func TestIsSequencer(t *testing.T) {
 		}
 	}
 }
+
+func TestValidatePin(t *testing.T) {
+	if err := ValidatePin(""); err != nil {
+		t.Fatalf("empty pin must be allowed (enforcement off), got %v", err)
+	}
+	if err := ValidatePin("  \t"); err != nil {
+		t.Fatalf("whitespace pin must be treated as empty, got %v", err)
+	}
+	good := newPeerID(t)
+	if err := ValidatePin(good); err != nil {
+		t.Fatalf("valid peer id rejected: %v", err)
+	}
+	if err := ValidatePin(" " + good + " "); err != nil {
+		t.Fatalf("valid peer id with surrounding whitespace rejected: %v", err)
+	}
+	// One-character corruption of a real ID must be rejected at startup rather
+	// than silently dropping every genuine commit at runtime.
+	typo := good[:len(good)-1] + "0"
+	if typo == good {
+		typo = good[:len(good)-1] + "1"
+	}
+	if err := ValidatePin(typo); err == nil {
+		t.Fatalf("malformed pin %q must be rejected", typo)
+	}
+	if err := ValidatePin("not-a-peer-id"); err == nil {
+		t.Fatal("garbage pin must be rejected")
+	}
+}

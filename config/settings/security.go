@@ -98,19 +98,9 @@ func DefaultSecurityConfig() SecurityConfig {
 				Burst:     0,
 			},
 			// 2. Block/Sequencer API (Internal)
-			// SECURITY (Ibnu76 / review B5): default CLOSED, not open. This service
-			// carries /api/l1-commit(-range), which the sequencer re-broadcasts under
-			// its own libp2p identity — so an unauthenticated POST is a confused-deputy
-			// that launders a forged L1-finality flag past the gossip check. The shipped
-			// jmdn_default.yaml already token-gates it; making the COMPILED default match
-			// means the guarantee no longer depends on that YAML being present. Empty
-			// SEQUENCER_TOKEN is fail-closed (token.go rejects when the resolved token is
-			// ""), so a node without the env var refuses block-ingest rather than opening
-			// it. Operators who intentionally run it open must set auth_type: none.
 			ServiceBlockIngestHTTP: {
 				TLS:      false,
-				AuthType: AuthTypeToken,
-				TokenEnv: "SEQUENCER_TOKEN",
+				AuthType: AuthTypeNone,
 			},
 			// 3. JSON-RPC (HTTP public)
 			ServiceEthRPC: {

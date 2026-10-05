@@ -11,6 +11,7 @@ package l1finality
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -34,9 +35,9 @@ import (
 //   - proceed=false            → drop the message (authenticated sender is not the
 //     pinned sequencer; a forgery).
 //   - proceed=true, enforced=false → no sequencer pinned (legacy/pre-rollout);
-//     the caller MUST log a loud WARN and then apply. Production posture already
-//     requires SequencerPinnedPeerID (production_posture.go), so this branch cannot
-//     ship to mainnet — the block-858 finding-4 empty-pin lesson.
+//     the caller should WARN (see WarnUnpinnedOnce) and then apply. Nothing in
+//     the boot path forces the pin to be set, so an unpinned production node
+//     behaves exactly as it did before this fix.
 //   - proceed=true, enforced=true  → sender is the pinned sequencer; apply.
 func AuthorizeGossipSender(authenticatedSender string) (proceed, enforced bool) {
 	pin := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID)
@@ -44,6 +45,18 @@ func AuthorizeGossipSender(authenticatedSender string) (proceed, enforced bool) 
 		return true, false
 	}
 	return l1auth.IsSequencer(authenticatedSender, pin), true
+}
+
+var unpinnedWarnOnce sync.Once
+
+// WarnUnpinnedOnce returns true exactly once per process. Callers use it to
+// emit the "applying L1 commit without sender authentication" notice a single
+// time at WARN level instead of once per message at INFO (which the default
+// logging.level=warn would hide entirely).
+func WarnUnpinnedOnce() bool {
+	first := false
+	unpinnedWarnOnce.Do(func() { first = true })
+	return first
 }
 
 // MaxRangeSpan caps how many blocks a single l1-commit-range request/message

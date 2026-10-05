@@ -64,8 +64,9 @@ type ConsensusSettings struct {
 	// and only a commit whose authenticated sender equals this pin is applied.
 	//
 	// Empty => the L1-finality gossip auth cannot enforce and falls back to the
-	// prior (unauthenticated) behavior with a loud warning — pin it in any
-	// production deployment. See docs/audit/SEC-L1-FINALITY-SPOOF.md.
+	// prior (unauthenticated) behavior with a one-time warning — pin it in any
+	// production deployment. A non-empty value that is not a valid peer ID is
+	// rejected at Load() so a typo cannot silently drop every genuine commit.
 	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
