@@ -405,7 +405,7 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 		return nil, nil
 	}
 
-	accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, it.batchSize, it.lastKey, "")
+	accs, lastKey, err := listAccountsForSync(it.batchSize, it.lastKey)
 	if err != nil {
 		return nil, fmt.Errorf("account nonce iterator: %w", err)
 	}
@@ -446,7 +446,7 @@ func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Accoun
 	var seekKey []byte
 
 	for {
-		accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, 1000, seekKey, "")
+		accs, lastKey, err := listAccountsForSync(1000, seekKey)
 		if err != nil {
 			return nil, fmt.Errorf("GetAccountsByNonces scan: %w", err)
 		}

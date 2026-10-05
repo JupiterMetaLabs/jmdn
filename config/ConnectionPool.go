@@ -36,6 +36,13 @@ const (
 	TOPIC           = "ImmuDB_ConnectionPool"
 )
 
+// ErrMaxConnectionsReached is returned by Get when every pooled connection is
+// in use and the pool is at MaxConnections. Get never blocks; callers that can
+// tolerate a short wait should match this with errors.Is and back off.
+// The message is unchanged from the previous inline errors.New so existing
+// string matching keeps working.
+var ErrMaxConnectionsReached = errors.New("maximum number of connections reached")
+
 // ConnectionPoolConfig holds configuration for the connection pool
 type ConnectionPoolConfig struct {
 	MinConnections     int           // Minimum number of connections to maintain
@@ -276,7 +283,7 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 
 	// No reusable connection found, check if we can create a new one
 	if len(p.Connections) >= p.Config.MaxConnections {
-		span.RecordError(errors.New("maximum number of connections reached"))
+		span.RecordError(ErrMaxConnectionsReached)
 		span.SetAttributes(attribute.String("status", "max_connections_reached"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
@@ -287,7 +294,7 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ConnectionPool.Get"))
-		return nil, errors.New("maximum number of connections reached")
+		return nil, ErrMaxConnectionsReached
 	}
 
 	// Create a new connection

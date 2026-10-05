@@ -68,6 +68,7 @@ func InitAccountsPool() error {
 
 		// Now that the DB exists, initialize a dedicated pool for it.
 		poolCfg := config.DefaultConnectionPoolConfig()
+		poolCfg.MaxConnections = accountsPoolMax(poolCfg.MaxConnections)
 
 		poolingConfig := &config.PoolingConfig{
 			DBAddress:  config.DBAddress,
@@ -463,6 +464,16 @@ func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnecti
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.GetAccountConnectionandPutBack"))
+	}
+
+	// A context that can never be cancelled (context.Background/TODO, or a
+	// WithValue chain over one) has a nil Done channel, so the watcher below
+	// would block until GRO shutdown: one goroutine + one GRO tracking entry
+	// leaked per call, and a late Put at shutdown onto a conn that someone
+	// else may be holding by then. Such callers must already Put explicitly
+	// (the auto-return can never fire for them), so skip the watcher.
+	if ctx.Done() == nil {
+		return conn, nil
 	}
 
 	// Set up automatic cleanup when context is done

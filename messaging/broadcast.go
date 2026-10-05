@@ -765,6 +765,10 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 
 	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
+		// mainDBClient was taken with context.Background(), so its auto-return
+		// never fires: return it explicitly or it is pinned in the main pool
+		// for the life of the process (one leaked main-DB conn per failed commit).
+		DB_OPs.PutMainDBConnection(mainDBClient)
 		log.Error().Err(err).Msg("Failed to get accounts DB connection")
 		return fmt.Errorf("failed to get accounts DB connection: %w", err)
 	}
