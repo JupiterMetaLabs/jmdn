@@ -162,6 +162,12 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 	return nil
 }
 
+// ErrNoVotesInCRDT is returned by ProcessVotesFromCRDT when no counted vote for
+// the target block is present yet. It is a normal, transient state (votes still
+// replicating), not a failure by itself — callers that retry match it with
+// errors.Is and only treat a FINAL empty result as an error.
+var ErrNoVotesInCRDT = errors.New("no votes found in CRDT")
+
 // ProcessVotesFromCRDT extracts votes for one block and returns the
 // aggregated decision (1 accept / -1 reject) and per-peer rejection reasons.
 // targetBlockHash is required - votes without matching block_hash are skipped.
@@ -297,10 +303,18 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	}
 
 	if len(single) == 0 {
-		logger().Error(logger_ctx, "No authorized single-vote peers found in vote CRDT (v2 path)", nil,
+		// Expected and transient on every round: a buddy is asked for its result
+		// right after voting, often before the votes have replicated into its CRDT,
+		// and the callers retry (handleVoteResultRequest) or only print
+		// (printCRDTVotes). Logging this at ERROR fired on rounds that went on to
+		// reach consensus. Debug here; the caller decides whether a FINAL empty
+		// result is an error (it matches ErrNoVotesInCRDT).
+		logger().Debug(logger_ctx, "No authorized single-vote peers in vote CRDT yet (v2 path)",
 			ion.String("target_block_hash", targetBlockHash),
+			ion.Uint64("height", height),
+			ion.Int("dropped_forgeries", droppedForgeries),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, rejectionReasons, nil, nil, errors.New("no votes found in CRDT")
+		return 0, rejectionReasons, nil, nil, ErrNoVotesInCRDT
 	}
 
 	// Phase 1.5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §12.5): aggregate the
@@ -688,7 +702,7 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 	if len(voteData) == 0 {
 		logger().Error(logger_ctx, "No votes found in CRDT to process", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("no votes found in CRDT")
+		return 0, nil, ErrNoVotesInCRDT
 	}
 
 	// Get peer weights from seed node

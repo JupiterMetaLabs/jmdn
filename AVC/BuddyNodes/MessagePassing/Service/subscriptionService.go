@@ -787,6 +787,15 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 	// Process votes from CRDT with block hash filtering
 	result, _, _, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash, blockHeight)
 	if err != nil {
+		if errors.Is(err, Structs.ErrNoVotesInCRDT) {
+			// Votes not replicated here yet — nothing to push this time; the
+			// sequencer's pull path (handleVoteResultRequest) retries.
+			logger().Warn(logger_ctx, "No votes in CRDT yet; skipping BFT trigger",
+				ion.String("block_hash", blockHash),
+				ion.Uint64("height", blockHeight),
+				ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
+			return
+		}
 		logger().Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
