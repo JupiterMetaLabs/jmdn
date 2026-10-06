@@ -773,19 +773,21 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 // exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
 func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	if (b.ConsensusHash == common.Hash{}) {
-		// Fix 3: Period selects the committee seed, and ConsensusHash is the
-		// only thing binding it. A zero ConsensusHash skips the binding check,
-		// so while Period was always 0 this was harmless - but once timeout
-		// certificates advance Period, a relay could zero ConsensusHash and
-		// rewrite Period to claim a committee that never held quorum. The
-		// proposer always sets ConsensusHash (Block/consensus_fields.go), so
-		// an honest block with Period > 0 always carries one.
-		if b.Period != 0 {
-			return reject("consensus_hash_missing",
-				"block %s: Period %d is set but ConsensusHash is empty (period would be unbound)",
-				b.BlockHash.Hex(), b.Period)
-		}
-		return nil
+		// D-28: a missing ConsensusHash is REJECTED unconditionally, not just
+		// when Period != 0. The v3 consensus-fields preimage is unconditional
+		// (Security/consensus_fields_hash.go — the rollout flag that used to
+		// make an empty ConsensusHash a legitimate "pre-v4 block" case was
+		// removed before testnet launch), so every block attachAVCConsensusFields
+		// built carries a real ConsensusHash regardless of Period. Skipping
+		// here when Period == 0 was also the exact bypass that left
+		// getBlockDedupID/checkEquivocation's re-key onto ConsensusHash
+		// (above in blockPropagation.go) still collidable: two different
+		// forks could each simply omit ConsensusHash and share the same
+		// (zero) key, reproducing the identical-BlockHash collision this
+		// whole fix exists to close.
+		return reject("consensus_hash_missing",
+			"block %s: no ConsensusHash present (required — v3 preimage is unconditional)",
+			b.BlockHash.Hex())
 	}
 	want := Security.RecomputeBlockHashWithConsensusFields(b)
 	if b.ConsensusHash != want {

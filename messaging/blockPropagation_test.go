@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
@@ -232,12 +233,17 @@ func TestValidateRemoteBlock(t *testing.T) {
 	// (body binding is on by default, so an arbitrary hash would be rejected
 	// as body_mismatch). The hashHint arg is ignored, kept for readability.
 	newBlock := func(_ string, num uint64, txs ...config.Transaction) *config.ZKBlock {
-		return &config.ZKBlock{
+		b := &config.ZKBlock{
 			BlockHash:    RecomputeBlockHashFromTxs(txs),
 			TxnsRoot:     RecomputeTxnsRoot(txs),
 			BlockNumber:  num,
 			Transactions: txs,
 		}
+		// D-28: checkConsensusBinding now rejects a missing ConsensusHash
+		// unconditionally, and it runs before checkEquivocation/the
+		// certificate check this helper's callers exercise.
+		b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
+		return b
 	}
 
 	t.Run("happy path accepted", func(t *testing.T) {

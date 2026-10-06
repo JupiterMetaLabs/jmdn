@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"math/big"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -233,5 +234,43 @@ func TestInstallAVCBeaconFromEnv_UnpinnedOverride_AllowsUnknownName(t *testing.T
 	}
 	if !installed {
 		t.Fatal("expected installed=true on the override path with an unknown name")
+	}
+}
+
+// D-46a: an unpinned group accepted any positive T with no upper bound on
+// 8e89514. A T above maxVDFDifficultyTCeiling must now be refused at install
+// time, before it ever reaches a sealer goroutine.
+func TestInstallAVCBeaconFromEnv_DifficultyAboveCeiling_ReturnsError(t *testing.T) {
+	resetVDFWiringState(t)
+	n := testFixtureModulus(t)
+	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))
+	t.Setenv("JMDN_AVC_VDF_GROUP_NAME", "local-testnet-group")
+	t.Setenv("JMDN_AVC_VDF_DIFFICULTY_T", strconv.FormatUint(maxVDFDifficultyTCeiling+1, 10))
+	t.Setenv(allowUnpinnedModulusEnv, "1")
+
+	installed, err := InstallAVCBeaconFromEnv()
+	if !errors.Is(err, ErrVDFDifficultyExceedsCeiling) {
+		t.Fatalf("err = %v, want errors.Is(..., ErrVDFDifficultyExceedsCeiling)", err)
+	}
+	if installed {
+		t.Fatal("installed=true with a difficulty above the configured ceiling")
+	}
+}
+
+// A T exactly AT the ceiling must still be accepted — the check is > , not >=.
+func TestInstallAVCBeaconFromEnv_DifficultyAtCeiling_Installs(t *testing.T) {
+	resetVDFWiringState(t)
+	n := testFixtureModulus(t)
+	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))
+	t.Setenv("JMDN_AVC_VDF_GROUP_NAME", "local-testnet-group")
+	t.Setenv("JMDN_AVC_VDF_DIFFICULTY_T", strconv.FormatUint(maxVDFDifficultyTCeiling, 10))
+	t.Setenv(allowUnpinnedModulusEnv, "1")
+
+	installed, err := InstallAVCBeaconFromEnv()
+	if err != nil {
+		t.Fatalf("a difficulty exactly at the ceiling must be accepted: %v", err)
+	}
+	if !installed {
+		t.Fatal("expected installed=true at the ceiling boundary")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	"gossipnode/Security"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -35,14 +36,18 @@ func (f *fakeEquivStore) RecordFirstSeen(height uint64, hashHex string) error {
 }
 
 // p6Block builds a block whose BlockHash is the canonical hash of its txs (body
-// binding is on by default), mirroring the shared newBlock helper.
+// binding is on by default), mirroring the shared newBlock helper. ConsensusHash
+// is set too (D-28: checkConsensusBinding now rejects a missing one
+// unconditionally, and it runs before checkEquivocation).
 func p6Block(num uint64, txs ...config.Transaction) *config.ZKBlock {
-	return &config.ZKBlock{
+	b := &config.ZKBlock{
 		BlockHash:    RecomputeBlockHashFromTxs(txs),
 		TxnsRoot:     RecomputeTxnsRoot(txs),
 		BlockNumber:  num,
 		Transactions: txs,
 	}
+	b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
+	return b
 }
 
 // TestEquivocationSurvivesRestart covers the "node restart then same-height
