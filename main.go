@@ -1629,6 +1629,13 @@ func main() {
 	// block's selection period once anchoring is active; otherwise identical
 	// to the line above.
 	Structs.SetAuthorizedCommitteeForHeightFn(messaging.AuthorizedCommitteeForTallyAtHeight)
+	// "Count every validator's vote in the buddy tally again" LLD: the VOTER
+	// set a buddy counts votes from (every eligible validator, uncapped), as
+	// distinct from the committee-seat set wired above (who may sign a buddy
+	// RESULT). Flag-switched (JMDN_VALIDATOR_VOTER_SET): off -> falls back to
+	// the committee wiring above, byte-identical to the previous behaviour.
+	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
+	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")

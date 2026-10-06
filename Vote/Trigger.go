@@ -281,27 +281,44 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// voterPeerIDsForBlock buddy-set expansion) and stays byte-identical;
 	// nothing here may affect vt.Vote, blockHash, or this function's
 	// return value, and a failure here is logged and dropped, not fatal.
-	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
-		// Per-vote BLS signature. Nothing in the codebase signs individual
-		// votes before this — the existing signer only produces an
-		// AGGREGATED result at tally time (ListenerHandler.go). Same domain,
-		// same key material as that path, just invoked at cast time instead
-		// of at aggregation time.
-		blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
-			vt.Vote.Vote,
-			BLS_Signer.DomainChainID(),
-			zkBlock.BlockNumber,
-			blockHash,
-			// v3 for now ("" => v3). The CRDT verify path (verifyTallySignatures)
-			// receives only the block-hash string, not the block, so it cannot yet
-			// source ConsensusHash to verify a v4 signature — signing v4 here would
-			// make it drop these votes. ACTIVATE v4 by carrying ConsensusHash into
-			// the CRDT vote flow / vote-result request, then pass
-			// zkBlock.ConsensusHashHex() here and thread it to verifyTallySignatures.
-			"",
-		)
-		signingOK := blsErr == nil && signed
+	// Per-vote BLS signature. Nothing in the codebase signed individual votes
+	// before this cutover — the existing signer only produces an AGGREGATED
+	// result at tally time (ListenerHandler.go). Same domain, same key
+	// material as that path, just invoked at cast time instead of at
+	// aggregation time. Hoisted out of the VoteCRDTDualWrite block below
+	// (which it used to live inside) because the signature must also be
+	// stamped onto the WIRE vote (vt.Vote, sent via pubsub/direct-send) so a
+	// receiving buddy can build the identical VoteRecord this node writes to
+	// its own VoteCRDTLayer and ingest it into its own — see
+	// Structs.IngestValidatorVote. Signing is attempted unconditionally; only
+	// what happens with the result differs.
+	blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
+		vt.Vote.Vote,
+		BLS_Signer.DomainChainID(),
+		zkBlock.BlockNumber,
+		blockHash,
+		// v3 for now ("" => v3). The CRDT verify path (verifyTallySignatures)
+		// receives only the block-hash string, not the block, so it cannot yet
+		// source ConsensusHash to verify a v4 signature — signing v4 here would
+		// make it drop these votes. ACTIVATE v4 by carrying ConsensusHash into
+		// the CRDT vote flow / vote-result request, then pass
+		// zkBlock.ConsensusHashHex() here and thread it to verifyTallySignatures.
+		"",
+	)
+	signingOK := blsErr == nil && signed
 
+	// Carry the signature on the wire so a receiving buddy can ingest this
+	// vote too (count every validator's vote LLD, C2). Left empty when
+	// signing fails (a normal, non-buddy validator with no BLS key material)
+	// — an unsigned wire vote is not countable by the v2 tally either way
+	// (Structs.IngestValidatorVote requires both fields), so there is nothing
+	// lost by leaving them blank in that case.
+	if signingOK {
+		vt.Vote.BLSSignature = blsResp.Signature
+		vt.Vote.BLSPubKeyHex = blsResp.PubKey
+	}
+
+	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
 		// A node that cannot sign is a NORMAL (non-Buddy) validator in the
 		// approved design: it submits an unsigned vote rather than no vote at
 		// all. With the flag off this stays a skip, exactly as before —

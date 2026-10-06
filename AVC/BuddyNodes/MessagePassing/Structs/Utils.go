@@ -224,9 +224,14 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		return 0, nil, nil, nil, errors.New("vote CRDT layer not initialized")
 	}
 
-	authorized, err := authorizedCommitteeFor(height)
+	// "Count every validator's vote in the buddy tally again" LLD, C6: the
+	// tally authorizes against the VOTER set (every eligible validator,
+	// uncapped, by default), not the committee seat set — see
+	// authorizedVotersFor's doc comment. authorizedCommitteeFor (still used
+	// for committee-RESULT-signing authorization elsewhere) is untouched.
+	authorized, err := authorizedVotersFor(height)
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to resolve authorized committee (v2 path)", err,
+		logger().Error(logger_ctx, "Failed to resolve authorized voters (v2 path)", err,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 		return 0, nil, nil, nil, err
 	}
@@ -273,6 +278,24 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 	}
 	tally = verified
+
+	// "Count every validator's vote in the buddy tally again" LLD, §4c: one
+	// summary log line per tallied block, unconditional (unlike the Error/Warn
+	// lines above, which fire only when something is wrong). len(authorized)
+	// is |V| — the voter set size this decision was actually authorized
+	// against (the uncapped validator pool by default, or the committee when
+	// JMDN_VALIDATOR_VOTER_SET=0) — so an operator can see at a glance
+	// whether the tally ran against the pool they expect, alongside how much
+	// of the raw CRDT ballot TallyBlock and verifyTallySignatures each
+	// discarded for this block.
+	logger().Info(logger_ctx, "Tallied block vote CRDT (v2 path)",
+		ion.Int("authorized_voters", len(authorized)),
+		ion.Int("skipped_unauthorized", tally.SkippedUnauthorized),
+		ion.Int("dropped_forgeries", droppedForgeries),
+		ion.Int("counted_peers", len(tally.AuthorizedVotesByPeer)),
+		ion.Uint64("height", height),
+		ion.String("target_block_hash", targetBlockHash),
+		ion.String("function", "Structs.processVotesFromCRDT_v2"))
 
 	// Equivocation reporting (reputation side-effect) is an A4 concern,
 	// explicitly deferred by the user ("later we will think of the A4
