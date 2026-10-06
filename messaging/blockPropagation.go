@@ -715,8 +715,10 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	// equal the recompute from its own consensus fields — binds Slot/Period/
 	// PrevAggCert/FeeRecipients/CommitteeSnapshotHash so a relay cannot rewrite
 	// them post-commit. Runs BEFORE certificate verification so the cert's v4
-	// signatures verify against a confirmed-honest ConsensusHash. Zero value
-	// (pre-v4 block) is skipped; v4 verification then falls back to v3.
+	// signatures verify against a confirmed-honest ConsensusHash. D-28: a zero
+	// value is REJECTED, not skipped — attachAVCConsensusFields stamps one on
+	// every block regardless of Period, so an empty ConsensusHash is the
+	// dedup/equivocation bypass this fix closes.
 	if rej := checkConsensusBinding(b); rej != nil {
 		return rej
 	}
