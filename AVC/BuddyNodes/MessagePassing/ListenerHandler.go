@@ -1095,6 +1095,23 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 	)
 
 	if _, exists := voteData["vote"]; exists {
+		// "Count every validator's vote in the buddy tally again" LLD, C4:
+		// ingest into the v2, block-keyed vote CRDT FIRST — the only keyspace
+		// the tally reads — and independently of the legacy write below (D6:
+		// kept as-is for other legacy readers). Ordered before the legacy
+		// write deliberately: that write's own failure path below returns
+		// early, and a legacy-CRDT hiccup must never cost a vote the tally
+		// would otherwise have counted. Non-fatal either way: an unsigned or
+		// malformed vote (e.g. from a validator with no BLS key material, or
+		// a pre-upgrade peer) is simply not counted, logged, not an error.
+		if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, remotePeer, message.Message, "direct"); err != nil {
+			logger().Warn(voteSpanCtx, "validator vote: v2 CRDT ingest failed (vote not counted by this buddy)",
+				ion.Err(err),
+				ion.String("remote_peer_id", remotePeer.String()),
+				ion.String("block_hash", blockHash),
+				ion.String("function", "MessagePassing.handleSubmitVote"))
+		}
+
 		OP := &Types.OP{
 			NodeID: message.Sender,
 			OpType: int8(1), // 1 for add, -1 for remove

@@ -330,6 +330,23 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			}
 
+			// "Count every validator's vote in the buddy tally again" LLD, C5:
+			// ingest into the v2, block-keyed vote CRDT FIRST — the only
+			// keyspace the tally reads — and independently of the legacy
+			// write below (D6). Ordered before the legacy write deliberately:
+			// that write's own failure path below returns an error, and a
+			// legacy-CRDT hiccup must never cost a vote the tally would
+			// otherwise have counted. Keyed on msg.Sender, the same
+			// authenticated identity the legacy write below uses (D-26a),
+			// never msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
+			// simply not counted, logged, not an error.
+			if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, msg.Sender, msg.Data.Message, "pubsub"); err != nil {
+				logger().Warn(logger_ctx, "validator vote: v2 CRDT ingest failed (vote not counted by this buddy)",
+					ion.Err(err),
+					ion.String("sender", msg.Sender.String()),
+					ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			}
+
 			OP := &Types.OP{
 				NodeID: msg.Sender,
 				OpType: int8(1), // 1 for add, -1 for remove

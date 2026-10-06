@@ -1,6 +1,10 @@
 package Structs
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
 
 // authorizedCommitteeFn is the injected committee source for the vote-CRDT
 // read path (Stage 3.5 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md). Injected
@@ -54,4 +58,47 @@ func authorizedCommitteeFor(height uint64) (map[string]string, error) {
 		return authorizedCommitteeForHeightFn(height)
 	}
 	return authorizedCommittee()
+}
+
+// authorizedVotersForHeightFn is the injected VOTER-set source — who a buddy
+// COUNTS votes from — as distinct from authorizedCommitteeForHeightFn, who
+// may SIGN a buddy result. "Count every validator's vote in the buddy tally
+// again" LLD, C6. Wired at startup via SetAuthorizedVotersForHeightFn, beside
+// the committee seam above.
+var authorizedVotersForHeightFn func(height uint64) (map[string]string, error)
+
+// SetAuthorizedVotersForHeightFn wires the per-height voter-set source.
+func SetAuthorizedVotersForHeightFn(fn func(height uint64) (map[string]string, error)) {
+	authorizedVotersForHeightFn = fn
+}
+
+// ValidatorVoterSetEnabled is the rollback switch for this change.
+// JMDN_VALIDATOR_VOTER_SET=0 restores the pre-change behaviour: the tally
+// authorizes against the committee set exactly as before, byte-identical.
+var ValidatorVoterSetEnabled = envOnCommitteeSource("JMDN_VALIDATOR_VOTER_SET", true)
+
+func envOnCommitteeSource(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// authorizedVotersFor resolves the set of peers whose votes a buddy COUNTS at
+// tally time. With the flag off, or no voter-set source installed, this is
+// byte-identical to authorizedCommitteeFor — a complete rollback requiring no
+// other action. With the flag on, it is the uncapped eligible validator pool
+// (or the chain-anchored pool for that height), not the capped committee —
+// see messaging.AuthorizedVotersForTallyAtHeight's doc comment for why.
+func authorizedVotersFor(height uint64) (map[string]string, error) {
+	if !ValidatorVoterSetEnabled || authorizedVotersForHeightFn == nil {
+		return authorizedCommitteeFor(height)
+	}
+	return authorizedVotersForHeightFn(height)
 }
