@@ -352,7 +352,17 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 // the vote's pubHex must equal it. When the bound key is empty (legacy getBuddy
 // source with no snapshot), only peer_id membership is checked.
 func keyAuthorized(peerID, pubHex string) bool {
-	eligible, err := eligibleMembers()
+	// Under JMDN_COMMITTEE_V2 the seated committee rotates across the WHOLE
+	// pool, so authorize against the uncapped pool (same source as
+	// AuthorizedCommitteeForTally). The capped, alphabetical eligibleMembers()
+	// set would deny correctly seated v2 members as not_in_eligible_set.
+	var eligible map[string]string
+	var err error
+	if CommitteeV2Enabled {
+		eligible, err = eligibleMembersUncapped()
+	} else {
+		eligible, err = eligibleMembers()
+	}
 	if err != nil {
 		// fmt.Printf (not zerolog) so this denial reliably reaches journald.
 		fmt.Printf("🚫 committee auth denied: peer=%s reason=eligibility_source_error err=%v\n", peerID, err)
