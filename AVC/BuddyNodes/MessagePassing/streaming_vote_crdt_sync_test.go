@@ -59,7 +59,15 @@ func rawLWWSetJSON(t *testing.T, key string, elements ...string) json.RawMessage
 
 // The central promise of Stage 3: one sync message carrying both keyspaces
 // merges each element into the CORRECT engine, and never into the other.
-func TestMergeCRDTData_RoutesLegacyAndV2KeysToTheirOwnEngines(t *testing.T) {
+// Phase 5 (legacy-CRDT migration — stop legacy sync) changed this test's own
+// premise: it used to assert legacy and v2 keys each route to their own
+// engine. Legacy sync is now unwired (CRDTSyncHandler.go's mergeCRDTData
+// loop `continue`s on a non-v2 key instead of calling
+// mergeLegacyVoteElement), so a legacy key is no longer merged anywhere —
+// not into the legacy engine (unwired) and not into the v2 engine (it's not
+// a v2 key). Renamed from TestMergeCRDTData_RoutesLegacyAndV2KeysToTheirOwnEngines
+// to reflect that.
+func TestMergeCRDTData_IgnoresLegacyKeysMergesV2Only(t *testing.T) {
 	node, _ := freshTestNode(t)
 	_, senderID := freshTestNode(t) // the remote peer this sync message is "from"
 
@@ -83,24 +91,22 @@ func TestMergeCRDTData_RoutesLegacyAndV2KeysToTheirOwnEngines(t *testing.T) {
 		t.Fatalf("mergeCRDTData: %v", err)
 	}
 
-	// Landed in the legacy engine, under the legacy key.
-	legacySet, ok := DataLayer.GetSet(node.CRDTLayer, senderID.String())
-	if !ok || len(legacySet) != 1 || legacySet[0] != legacyVoteJSON {
-		t.Fatalf("legacy engine got %v (ok=%v), want [%q]", legacySet, ok, legacyVoteJSON)
+	// The legacy key must not land anywhere: not in the legacy engine
+	// (sync is unwired) and not in the v2 engine (it's not a v2 key).
+	if _, ok := DataLayer.GetSet(node.CRDTLayer, senderID.String()); ok {
+		t.Fatal("legacy key should no longer be merged into the legacy engine — legacy sync is unwired (Phase 5)")
+	}
+	if _, ok := avcdatalayer.GetSet(node.VoteCRDTLayer, senderID.String()); ok {
+		t.Fatal("the legacy peer-keyed entry leaked into the v2 engine")
 	}
 
-	// Landed in the v2 engine, under the block-keyed key.
+	// Landed in the v2 engine, under the block-keyed key — v2 sync is unaffected.
 	voteSet, ok := avcdatalayer.GetSet(node.VoteCRDTLayer, voteKey)
 	if !ok || len(voteSet) != 1 || voteSet[0] != voteElem {
 		t.Fatalf("v2 engine got %v (ok=%v), want [%q]", voteSet, ok, voteElem)
 	}
 
-	// Did NOT cross over: the legacy key must not exist in the v2 engine,
-	// and the vote key must not exist in the legacy engine. This is the
-	// contamination check the LLD's §4.2 names explicitly.
-	if _, ok := avcdatalayer.GetSet(node.VoteCRDTLayer, senderID.String()); ok {
-		t.Fatal("the legacy peer-keyed entry leaked into the v2 engine")
-	}
+	// Did NOT cross over: the vote key must not exist in the legacy engine.
 	if _, ok := DataLayer.GetSet(node.CRDTLayer, voteKey); ok {
 		t.Fatal("the block-keyed vote entry leaked into the legacy engine")
 	}
@@ -153,10 +159,14 @@ func TestMergeCRDTData_MergedV2VoteIsTallyable(t *testing.T) {
 	}
 }
 
-// A node still mid-migration — VoteCRDTLayer nil, e.g. before Stage 1 ships
-// on some node in a mixed rollout — must not fail merging the legacy portion
-// of a sync message just because the v2 portion has nowhere to go.
-func TestMergeCRDTData_NilVoteCRDTLayerDegradesLegacyOnly(t *testing.T) {
+// A node with VoteCRDTLayer nil — e.g. before Stage 1 ships on some node in
+// a mixed rollout — must not fail merging a sync message just because the
+// v2 portion has nowhere to go. Renamed from
+// TestMergeCRDTData_NilVoteCRDTLayerDegradesLegacyOnly: Phase 5 (legacy-CRDT
+// migration — stop legacy sync) means legacy no longer merges regardless of
+// VoteCRDTLayer's state, so this test now only confirms the no-error
+// contract, not a legacy fallback that no longer exists.
+func TestMergeCRDTData_NilVoteCRDTLayerDoesNotError(t *testing.T) {
 	node, _ := freshTestNode(t)
 	node.VoteCRDTLayer = nil
 	_, senderID := freshTestNode(t)
@@ -170,14 +180,20 @@ func TestMergeCRDTData_NilVoteCRDTLayerDegradesLegacyOnly(t *testing.T) {
 	}
 
 	if err := mergeCRDTData(node, syncMsg); err != nil {
-		t.Fatalf("mergeCRDTData must not fail outright when only VoteCRDTLayer is nil: %v", err)
+		t.Fatalf("mergeCRDTData must not fail outright when VoteCRDTLayer is nil: %v", err)
 	}
-	if got, ok := DataLayer.GetSet(node.CRDTLayer, senderID.String()); !ok || len(got) != 1 {
-		t.Fatalf("legacy element should still have merged, got %v (ok=%v)", got, ok)
+	if _, ok := DataLayer.GetSet(node.CRDTLayer, senderID.String()); ok {
+		t.Fatal("legacy key should not be merged — legacy sync is unwired (Phase 5), regardless of VoteCRDTLayer's state")
 	}
 }
 
-func TestBuildLocalSyncData_CombinesBothEnginesWithoutCollision(t *testing.T) {
+// Phase 5 continued (legacy-CRDT migration — stop legacy sync): this used to
+// assert legacy and v2 keys both land in the combined sync data. The legacy
+// publish branch is now unwired (buildLocalSyncData no longer calls
+// GetAllCRDTs on the legacy engine at all), so seeding the legacy engine
+// should have no effect on the output — only v2 publishes. Renamed from
+// TestBuildLocalSyncData_CombinesBothEnginesWithoutCollision.
+func TestBuildLocalSyncData_PublishesV2OnlyIgnoresLegacy(t *testing.T) {
 	node, selfID := freshTestNode(t)
 
 	if err := DataLayer.Add(node.CRDTLayer, selfID, selfID.String(), `{"vote":1}`); err != nil {
@@ -190,26 +206,28 @@ func TestBuildLocalSyncData_CombinesBothEnginesWithoutCollision(t *testing.T) {
 
 	syncData := buildLocalSyncData(node)
 
-	if _, ok := syncData[selfID.String()]; !ok {
-		t.Error("legacy key missing from combined sync data")
+	if _, ok := syncData[selfID.String()]; ok {
+		t.Error("legacy key should not be published — legacy sync is unwired (Phase 5)")
 	}
 	voteKey := avcvotes.BlockVoteKey(7, "0xh")
 	sigKey := avcvotes.BlockSigKey(7, "0xh")
 	if _, ok := syncData[voteKey]; !ok {
-		t.Error("v2 vote key missing from combined sync data")
+		t.Error("v2 vote key missing from sync data")
 	}
 	if _, ok := syncData[sigKey]; !ok {
-		t.Error("v2 sig key missing from combined sync data")
+		t.Error("v2 sig key missing from sync data")
 	}
-	// Three distinct keys, three distinct entries — nothing was overwritten
-	// by the union, which is the collision risk votes.OwnsKey exists to rule
-	// out by construction.
-	if len(syncData) != 3 {
-		t.Errorf("got %d entries, want 3 (1 legacy + votes: + votesig:): %v", len(syncData), keysOf(syncData))
+	// Exactly the two v2 keys — the legacy seed contributes nothing.
+	if len(syncData) != 2 {
+		t.Errorf("got %d entries, want 2 (votes: + votesig: only): %v", len(syncData), keysOf(syncData))
 	}
 }
 
-func TestBuildLocalSyncData_NilVoteCRDTLayerStillPublishesLegacy(t *testing.T) {
+// Renamed from TestBuildLocalSyncData_NilVoteCRDTLayerStillPublishesLegacy:
+// legacy is never published now regardless of VoteCRDTLayer's state, so a
+// nil VoteCRDTLayer plus a seeded legacy engine should produce an empty
+// sync message, not a legacy-only one.
+func TestBuildLocalSyncData_NilVoteCRDTLayerProducesEmptySyncData(t *testing.T) {
 	node, selfID := freshTestNode(t)
 	node.VoteCRDTLayer = nil
 
@@ -218,8 +236,8 @@ func TestBuildLocalSyncData_NilVoteCRDTLayerStillPublishesLegacy(t *testing.T) {
 	}
 
 	syncData := buildLocalSyncData(node)
-	if len(syncData) != 1 {
-		t.Fatalf("got %d entries, want exactly the 1 legacy entry: %v", len(syncData), keysOf(syncData))
+	if len(syncData) != 0 {
+		t.Fatalf("got %d entries, want 0 — legacy is never published (Phase 5), v2 has nowhere to go: %v", len(syncData), keysOf(syncData))
 	}
 }
 

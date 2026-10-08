@@ -10,12 +10,9 @@ import (
 	"time"
 
 	"gossipnode/AVC/BFT/bft"
-	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
@@ -1112,39 +1109,12 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 				ion.String("function", "MessagePassing.handleSubmitVote"))
 		}
 
-		OP := &Types.OP{
-			NodeID: message.Sender,
-			OpType: int8(1), // 1 for add, -1 for remove
-			KeyValue: Types.KeyValue{
-				Key:   message.Sender.String(), // key would be the peer id of the sender
-				Value: message.Message,
-			},
-		}
-
-		result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
-		if err, ok := result.(error); ok && err != nil {
-			voteSpan.RecordError(err)
-			voteSpan.SetAttributes(attribute.String("status", "crdt_add_failed"))
-			duration := time.Since(startTime).Seconds()
-			voteSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(voteSpanCtx, "Failed to add vote to CRDT",
-				err,
-				ion.String("remote_peer_id", remotePeer.String()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "MessagePassing.handleSubmitVote"))
-			return
-		}
-
-		logger().Info(voteSpanCtx, "Successfully added vote to CRDT",
-			ion.String("remote_peer_id", remotePeer.String()),
-			ion.String("block_hash", blockHash),
-			ion.Float64("vote_value", voteValue),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "MessagePassing.handleSubmitVote"))
+		// W2 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used
+		// to also write the remote peer's vote into the legacy CRDT, keyed on
+		// message.Sender. Not deleted outright — see W1's comment in
+		// Vote/Trigger.go for why (voterPeerIDsForBlock's rescue, the
+		// "legacy rescue fired" log line, Phase 6 removal). The v2 ingest
+		// above is independent and unaffected.
 
 		// D-26(a) phase 2: the republish-to-pubsub relay that used to live here
 		// is REMOVED.
@@ -1504,23 +1474,28 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 	// Retry up to 3 times in case the global listener node is not yet set
 	// (race between node init and the sequencer's first pull request).
+	// G5 (legacy-CRDT gate cleanup): this used to also wait for
+	// listenerNode.CRDTLayer != nil, gating the entire vote-result response —
+	// sync, the diagnostic print, and the v2-only tally below — on the
+	// LEGACY engine's readiness, even though none of those three need it.
+	// listenerNode itself is the only real precondition here.
 	var listenerNode *AVCStruct.BuddyNode
 	for i := 0; i < 3; i++ {
 		listenerNode = AVCStruct.NewGlobalVariables().Get_ForListner()
-		if listenerNode != nil && listenerNode.CRDTLayer != nil {
+		if listenerNode != nil {
 			break
 		}
 		if i < 2 {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		voteResultSpan.RecordError(fmt.Errorf("listener node or CRDT layer not initialized"))
+	if listenerNode == nil {
+		voteResultSpan.RecordError(fmt.Errorf("listener node not initialized"))
 		voteResultSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(voteResultSpanCtx, "Listener node or CRDT layer not initialized",
-			fmt.Errorf("listener node or CRDT layer not initialized"),
+		logger().Error(voteResultSpanCtx, "Listener node not initialized",
+			fmt.Errorf("listener node not initialized"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -1757,8 +1732,6 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			Str("target_block_hash", targetBlockHash).
 			Dur("elapsed", time.Since(crdtSyncStart)).
 			Msg("vote result request: CRDT sync completed successfully")
-		// Print CRDT content after sync
-		CRDTSync.PrintCurrentCRDTContent()
 	}
 
 	// Process votes from CRDT — retry up to 3 times with 300ms waits.

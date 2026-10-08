@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
@@ -30,6 +29,8 @@ import (
 	"gossipnode/messaging"
 	"gossipnode/seednode"
 
+	avcdatalayer "github.com/JupiterMetaLabs/avc/buddynodes/datalayer"
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -1786,13 +1787,28 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 // voterPeerIDsForBlock returns the union of:
 //
 //	a) listenerNode.BuddyNodes.Buddies_Nodes (the pre-selected committee)
-//	b) all peer IDs found in the CRDT that have a vote for targetBlockHash
+//	b) every peer whose v2 vote for (height, targetBlockHash) is already
+//	   stored — avcvotes.BlockVoteKey, a single key lookup
 //
 // This ensures CollectVoteResultsFromBuddies queries every peer that actually
 // voted, not just the peers that were enrolled at consensus-start time.
 // selfID is excluded from the result.
+//
+// Phase 4 (legacy-CRDT migration): this used to scan the legacy CRDT
+// (GetAllCRDTs + per-key GetSet + JSON parse over every stored peer) instead
+// of this one-key lookup — ported, not deleted outright. The
+// "voterPeerIDsForBlock: legacy rescue fired" log line this replaces had not
+// yet accrued enough real-block data to settle whether the augmentation
+// itself is load-bearing, but porting is safe regardless of that answer: if
+// the rescue never actually fires, this costs one cheap key lookup that
+// returns nothing; if it does fire, it is now O(1) instead of O(every
+// legacy key) and correct. Bounded by v2's own compaction window
+// (JMDN_VOTE_CRDT_COMPACT_K, default 128 blocks) — a peer whose vote is
+// older than that would not be rescued, a limitation the legacy scan never
+// had but the v2 migration accepts fleet-wide.
 func voterPeerIDsForBlock(
 	listenerNode *PubSubMessages.BuddyNode,
+	height uint64,
 	targetBlockHash string,
 	selfID peer.ID,
 ) []peer.ID {
@@ -1808,36 +1824,27 @@ func voterPeerIDsForBlock(
 		result = append(result, id)
 	}
 
-	// Augment with any peer that voted in the CRDT for this specific block.
-	// CRDT keys are base58-encoded peer ID strings.
-	if listenerNode.CRDTLayer == nil {
+	// Augment with any peer whose v2 vote for this exact (height, blockHash)
+	// is already stored. Elements are "<peerID>:<vote>" (avcvotes.AddVote's
+	// own format), so a plain split suffices — no JSON parse needed.
+	if listenerNode.VoteCRDTLayer == nil {
 		return result
 	}
-	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
-	for key := range allCRDTs {
-		pid, err := peer.Decode(key)
-		if err != nil {
-			continue // key is not a peer ID — skip
-		}
-		if pid == selfID || seen[pid] {
+	elems, ok := avcdatalayer.GetSet(listenerNode.VoteCRDTLayer, avcvotes.BlockVoteKey(height, targetBlockHash))
+	if !ok {
+		return result
+	}
+	for _, e := range elems {
+		pidStr, _, found := strings.Cut(e, ":")
+		if !found {
 			continue
 		}
-		// Verify this peer voted for the target block.
-		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
-		if !exists || len(votes) == 0 {
+		pid, err := peer.Decode(pidStr)
+		if err != nil || pid == selfID || seen[pid] {
 			continue
 		}
-		for _, voteStr := range votes {
-			var voteObj map[string]interface{}
-			if err := json.Unmarshal([]byte(voteStr), &voteObj); err != nil {
-				continue
-			}
-			if bh, ok := voteObj["block_hash"].(string); ok && bh == targetBlockHash {
-				seen[pid] = true
-				result = append(result, pid)
-				break
-			}
-		}
+		seen[pid] = true
+		result = append(result, pid)
 	}
 	return result
 }
@@ -1870,8 +1877,9 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	// Peers that voted but weren't enrolled in MainPeers at consensus start
 	// would never be queried without this expansion.
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+	blockHeight := consensus.ZKBlockData.GetZKBlock().BlockNumber
 	selfID := consensus.Host.ID()
-	buddySet := voterPeerIDsForBlock(listenerNode, blockHash, selfID)
+	buddySet := voterPeerIDsForBlock(listenerNode, blockHeight, blockHash, selfID)
 
 	logger().Info(trace_ctx, "Requesting vote aggregation results from buddy nodes",
 		ion.Int("buddy_nodes", len(buddySet)),

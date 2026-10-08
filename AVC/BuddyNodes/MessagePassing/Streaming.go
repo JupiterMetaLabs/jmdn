@@ -7,7 +7,6 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -443,49 +442,3 @@ func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats(logger_ctx context.C
 	return stats
 }
 
-// GetVotesFromCRDT retrieves all votes from the CRDT for a given key
-func GetVotesFromCRDT(logger_ctx context.Context, crdtLayer *Types.Controller, key string) ([]string, bool) {
-	// Record trace span and close it
-	votesSpanCtx, votesSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.GetVotesFromCRDT")
-	defer votesSpan.End()
-
-	startTime := time.Now().UTC()
-	votesSpan.SetAttributes(attribute.String("key", key))
-
-	logger().Info(votesSpanCtx, "Getting votes from CRDT",
-		ion.String("key", key),
-		ion.Bool("crdt_layer_provided", crdtLayer != nil),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "MessagePassing.GetVotesFromCRDT"))
-
-	if crdtLayer == nil {
-		votesSpan.SetAttributes(attribute.String("status", "crdt_layer_nil"))
-		duration := time.Since(startTime).Seconds()
-		votesSpan.SetAttributes(attribute.Float64("duration", duration))
-		return nil, false
-	}
-
-	// Get all elements from the CRDT set
-	votes, found := DataLayer.GetSet(crdtLayer, key)
-
-	votesSpan.SetAttributes(
-		attribute.Bool("found", found),
-		attribute.Int("votes_count", len(votes)),
-	)
-
-	duration := time.Since(startTime).Seconds()
-	votesSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(votesSpanCtx, "Retrieved votes from CRDT",
-		ion.String("key", key),
-		ion.Bool("found", found),
-		ion.Int("votes_count", len(votes)),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "MessagePassing.GetVotesFromCRDT"))
-
-	return votes, found
-}

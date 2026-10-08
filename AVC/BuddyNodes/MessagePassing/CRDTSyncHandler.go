@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -42,10 +41,12 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		return nil
 	}
 
-	// Get the CRDT layer
-	if listenerNode.CRDTLayer == nil {
-		return fmt.Errorf("CRDT layer not available")
-	}
+	// G3 (legacy-CRDT gate cleanup): this used to require listenerNode.CRDTLayer
+	// != nil before publishing or subscribing at all — but buildLocalSyncData
+	// below already guards the legacy and v2 engines independently (:685,
+	// :691), so a nil legacy engine should mean "publish v2 state only," not
+	// "skip sync entirely." No replacement check needed: nothing else in this
+	// function dereferences listenerNode.CRDTLayer directly.
 
 	// Ensure buddy nodes list is populated from cached consensus if empty
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
@@ -669,24 +670,17 @@ type rawLWWSet struct {
 func buildLocalSyncData(listenerNode *AVCStruct.BuddyNode) map[string]json.RawMessage {
 	syncData := make(map[string]json.RawMessage)
 
-	addAll := func(all map[string]crdt.CRDT) {
-		for key, obj := range all {
-			data, err := json.Marshal(obj)
-			if err != nil {
-				logger().Info(context.Background(), "⚠️ Failed to marshal CRDT for key",
-					ion.String("args", fmt.Sprintf("⚠️ Failed to marshal CRDT for key %s: %v", key, err)))
-				continue
-			}
-			syncData[key] = data
-		}
-	}
+	// Phase 5 continued (legacy-CRDT migration — stop legacy sync): this used
+	// to also publish the entire legacy engine's state (GetAllCRDTs, via a
+	// shared addAll closure) into every outgoing sync message. Unwired, not
+	// deleted — the receive side (mergeCRDTData's legacy branch) was already
+	// unwired; this closes the matching publish side, since nothing has
+	// written new legacy data since Phase 3 and re-shipping a frozen
+	// snapshot forever serves no purpose. The v2 branch below is untouched
+	// and was always independent of this one — different engine, different
+	// guard, no shared state beyond the syncData map both write into (and
+	// their key spaces don't collide, by avcvotes.OwnsKey's own guarantee).
 
-	if listenerNode.CRDTLayer != nil && listenerNode.CRDTLayer.CRDTLayer != nil {
-		addAll(listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs())
-	}
-	// VoteCRDTLayer is nil-guarded, not required: a node mid-migration (or
-	// with JMDN_VOTE_CRDT_V2 never having written anything yet) still
-	// publishes its legacy state exactly as before this stage.
 	if listenerNode.VoteCRDTLayer != nil && listenerNode.VoteCRDTLayer.CRDTLayer != nil {
 		for key, obj := range listenerNode.VoteCRDTLayer.CRDTLayer.GetAllCRDTs() {
 			data, err := json.Marshal(obj)
@@ -713,9 +707,13 @@ func buildLocalSyncData(listenerNode *AVCStruct.BuddyNode) map[string]json.RawMe
 // first, which is what would make the two keyspaces ambiguous instead of
 // merely different.
 func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) error {
-	if listenerNode.CRDTLayer == nil || listenerNode.CRDTLayer.CRDTLayer == nil {
-		return fmt.Errorf("CRDT layer not available")
-	}
+	// G4 (legacy-CRDT gate cleanup): this used to require
+	// listenerNode.CRDTLayer != nil before the loop below even starts,
+	// blocking the v2 branch (OwnsKey -> mergeVoteCRDTElement, which only
+	// touches VoteCRDTLayer) on the legacy engine's readiness. The legacy
+	// branch (mergeLegacyVoteElement) is now independently guarded in the
+	// loop below instead, so a nil legacy engine skips only legacy-keyed
+	// elements, not the whole merge.
 
 	// Get the sender's peer ID (who sent this sync message)
 	senderPeerID, err := peer.Decode(syncMsg.NodeID)
@@ -738,13 +736,14 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 			continue
 		}
 
-		n, err := mergeLegacyVoteElement(listenerNode, key, rawData)
-		if err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to merge legacy CRDT for key",
-				ion.String("args", fmt.Sprintf("⚠️ Failed to merge legacy CRDT for key %s: %v", key, err)))
-			continue
-		}
-		legacyMerged += n
+		// W5 (legacy-CRDT migration, Phase 5 — stop legacy sync): this key
+		// isn't a v2 key (OwnsKey returned false), so it used to go to
+		// mergeLegacyVoteElement. That call is unwired, not deleted — see
+		// W1's comment in Vote/Trigger.go for why. A not-yet-upgraded peer's
+		// legacy keys arriving in a mixed-fleet sync message are silently
+		// ignored here, same as any other merge error already was (continue,
+		// not an aborted message — see the OwnsKey branch above).
+		continue
 	}
 
 	logger().Info(context.Background(), "✅ Completed merging CRDT data from peer",

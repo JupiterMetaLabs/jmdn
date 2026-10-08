@@ -10,8 +10,6 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
@@ -244,34 +242,18 @@ func (vt *VoteTrigger) SubmitVote() error {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
 	}
 
-	// Store own vote in the local CRDT before sending to the sequencer.
-	// This ensures that when the sequencer pulls BLS from this node, its
-	// CRDT has at least its own vote to sign over — regardless of pubsub
-	// propagation timing. Without this, ProcessVotesFromCRDT finds 0 votes
-	// and returns an error, producing 0 BLS results on the sequencer side.
-	if listenerNode.CRDTLayer != nil {
-		ownVoteJSON := vt.ToVoteString(vt.Vote)
-		OP := &Types.OP{
-			NodeID: listenerNode.PeerID,
-			OpType: int8(1),
-			KeyValue: Types.KeyValue{
-				Key:   listenerNode.PeerID.String(),
-				Value: ownVoteJSON,
-			},
-		}
-		if result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); result != nil {
-			if err, ok := result.(error); ok && err != nil {
-				logger().Warn(spanCtx, "Failed to store own vote in local CRDT (non-fatal, will still send to sequencer)",
-					ion.Err(err),
-					ion.String("function", "Vote.SubmitVote"))
-			}
-		}
-		logger().Info(spanCtx, "Stored own vote in local CRDT",
-			ion.String("peer_id", listenerNode.PeerID.String()),
-			ion.Int("vote", int(vt.Vote.Vote)),
-			ion.String("block_hash", vt.Vote.BlockHash),
-			ion.String("function", "Vote.SubmitVote"))
-	}
+	// W1 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used to
+	// store the node's own vote in the legacy CRDT too. The comment that
+	// used to sit here ("without this, ProcessVotesFromCRDT finds 0 votes")
+	// is stale — ProcessVotesFromCRDT is v2-only now (voteCRDTV2Enabled
+	// hardcoded true) and never reads this. The real consumer was
+	// voterPeerIDsForBlock's legacy-scan rescue (Sequencer/Consensus.go),
+	// which is why the write isn't deleted outright: if that rescue turns
+	// out to matter (see its "legacy rescue fired" log line), this is one
+	// of the write paths — alongside W2/W4/W5 — that would need restoring,
+	// or porting to a v2-based equivalent, before Phase 6 removes
+	// listenerNode.CRDTLayer entirely. The v2 write below (avcvotes.AddVote)
+	// is independent and unaffected by this.
 
 	// D-26(a)/D-51 cutover: VoteCRDTDualWrite is now permanently true
 	// (vote_crdt_v2.go) — this is the write that actually matters for the
