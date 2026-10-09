@@ -195,6 +195,38 @@ func (m *spyOutbox) incrCount() int {
 	return len(m.incrCalls)
 }
 
+// ackIDs / incrIDs / enqueueCount return snapshots under the same mutex the
+// worker goroutine writes through. Ack and IncrementAttempts are called from
+// the OutboxWorker's goroutine, and Stop() does not wait for it, so reading
+// m.ackCalls / m.incrCalls directly from a test goroutine is a data race even
+// when the worker has already finished — there is no happens-before edge
+// between the two. Always assert through these, never on the fields.
+func (m *spyOutbox) ackIDs() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int64(nil), m.ackCalls...)
+}
+
+func (m *spyOutbox) incrIDs() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int64(nil), m.incrCalls...)
+}
+
+func (m *spyOutbox) enqueueCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.enqueueCalls
+}
+
+// setCalls replaces the recorded calls under the mutex. Used by drainOnce to
+// copy a finished worker's observations back onto the caller's spy.
+func (m *spyOutbox) setCalls(ack, incr []int64, enqueue int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ackCalls, m.incrCalls, m.enqueueCalls = ack, incr, enqueue
+}
+
 // ---- spyKV ----
 
 type kvCall struct {

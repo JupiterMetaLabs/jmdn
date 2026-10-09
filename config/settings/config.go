@@ -482,10 +482,6 @@ type ThebeCDCConfig struct {
 // Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
 	Redis RedisSettings `mapstructure:"redis" yaml:"redis"`
-
-	// TxIndexPath is the path to the SQLite address→tx index file.
-	// Defaults to "txindex.db" in the working directory if empty.
-	TxIndexPath string `mapstructure:"tx_index_path" yaml:"tx_index_path"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

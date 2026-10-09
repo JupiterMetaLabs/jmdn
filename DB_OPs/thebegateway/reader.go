@@ -217,6 +217,18 @@ const (
 
 	sqlCountTransactions = `SELECT COUNT(*) FROM transactions`
 
+	// Address-paginated listing (explorer / eth_getTransactionsByAddress).
+	// Addresses are stored checksummed (common.Address.Hex()); callers pass the
+	// same form so idx_txn_from_addr / idx_txn_to_addr are used directly.
+	sqlCountTxsByAddr = `SELECT COUNT(*) FROM transactions WHERE from_addr = $1 OR to_addr = $1`
+
+	sqlGetTxRefsByAddrPage = `
+        SELECT tx_hash, block_number
+        FROM transactions
+        WHERE from_addr = $1 OR to_addr = $1
+        ORDER BY block_number DESC, tx_index DESC
+        LIMIT $2 OFFSET $3`
+
 	// sqlRefreshAccountTxStats recomputes tx_nonce and tx_count_sent for a single address.
 	// tx_nonce  = nonce of the most recent outgoing tx + 1 (0 if none).
 	// tx_count_sent = total outgoing txs from this address.
@@ -864,6 +876,38 @@ func (r *thebeReader) CountTransactions(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("CountTransactions: %w", err)
 	}
 	return n, nil
+}
+
+// CountTransactionsByAddress returns how many transactions name address as
+// sender or receiver.
+func (r *thebeReader) CountTransactionsByAddress(ctx context.Context, address string) (uint64, error) {
+	var n uint64
+	if err := r.db.QueryRowContext(ctx, sqlCountTxsByAddr, address).Scan(&n); err != nil {
+		return 0, fmt.Errorf("CountTransactionsByAddress: %w", err)
+	}
+	return n, nil
+}
+
+// GetTransactionRefsByAddress returns one page of (tx_hash, block_number)
+// for address, newest first. offset/limit follow SQL semantics.
+func (r *thebeReader) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]TxRef, error) {
+	rows, err := r.db.QueryContext(ctx, sqlGetTxRefsByAddrPage, address, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionRefsByAddress: query: %w", err)
+	}
+	defer rows.Close()
+	out := make([]TxRef, 0, limit)
+	for rows.Next() {
+		var ref TxRef
+		if err := rows.Scan(&ref.TxHash, &ref.BlockNumber); err != nil {
+			return nil, fmt.Errorf("GetTransactionRefsByAddress: scan: %w", err)
+		}
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetTransactionRefsByAddress: rows: %w", err)
+	}
+	return out, nil
 }
 
 // RefreshAccountTxStats recomputes tx_nonce and tx_count_sent for address from the

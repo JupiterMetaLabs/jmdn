@@ -75,6 +75,8 @@ type TxStore interface {
 	GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.TransactionRecord, error)
 	GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*thebegateway.TransactionRecord, error)
 	CountTransactions(ctx context.Context) (uint64, error)
+	CountTransactionsByAddress(ctx context.Context, address string) (uint64, error)
+	GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]thebegateway.TxRef, error)
 	RefreshAccountTxStats(ctx context.Context, address string) error
 	SetTransactionStatus(ctx context.Context, txHash string, status int) error
 	// WriteContractReceipt persists a full contract receipt through the gateway

@@ -25,7 +25,6 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/helper"
@@ -492,12 +491,8 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 				}()
 			}
 
-			// Index the block's txs into the SQLite address index. Non-sequencer
-			// nodes receive blocks via pubsub; indexing them here keeps
-			// eth_getTransactionsByAddress current between catchups instead of
-			// drifting stale while IsReady stays true. Async + drop-on-overflow;
-			// drops heal via the next gap scan.
-			txindex.IndexBlockAsync(msg.Block)
+			// Address→tx lookups are served by the ThebeDB SQL projection that
+			// the block store above writes synchronously; nothing to index here.
 
 			// Store block message metadata
 			if err := storeMessageInDB(msg); err != nil { // msg is a copy, but it's fine

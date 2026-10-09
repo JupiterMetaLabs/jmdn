@@ -14,7 +14,6 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Vote"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
@@ -869,9 +868,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// best-effort side observer that never affects the commit above.
 	maybeSignChainHeadCheckpoint(block)
 
-	// Update the SQLite tx-by-address index asynchronously.
-	// Non-blocking — never delays the block commit path.
-	txindex.IndexBlockAsync(block)
+	// Address→tx lookups are served by the ThebeDB SQL projection, which the
+	// commit above already wrote (gateway 2PC) — no separate index to update.
 
 	broadcastLogger().Info(context.Background(), "Block processed and stored successfully",
 		ion.Uint64("block_number", block.BlockNumber),

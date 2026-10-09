@@ -98,6 +98,8 @@ type ThebeReader interface {
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*TransactionRecord, error)
 	GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*TransactionRecord, error)
 	CountTransactions(ctx context.Context) (uint64, error)
+	CountTransactionsByAddress(ctx context.Context, address string) (uint64, error)
+	GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]TxRef, error)
 	RefreshAccountTxStats(ctx context.Context, address string) error
 
 	// Contract KV layer — Phase 7

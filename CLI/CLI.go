@@ -13,7 +13,6 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
@@ -109,9 +108,9 @@ func PrintFuncs() {
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>                    - Fast sync blockchain data with a peer (V2 Engine)")
 	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-	fmt.Println("  rebuildindex                                 - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
-	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
+	fmt.Println("  rebuildindex                                 - (retired) tx-address index replaced by the ThebeDB SQL projection")
+	fmt.Println("  rebuildrange <from_block> <to_block>         - (retired) see rebuildindex")
+	fmt.Println("  txindexstatus                                - (retired) address lookups are served by the ThebeDB SQL projection")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
@@ -638,58 +637,24 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 }
 
 func (h *CommandHandler) handleRebuildIndex() {
-	fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
-	startTime := time.Now()
-	if err := txindex.RebuildIndex(context.Background()); err != nil {
-		fmt.Printf("RebuildIndex failed: %v\n", err)
-		return
-	}
-	fmt.Printf("RebuildIndex complete in %v\n", time.Since(startTime))
-	printDashes()
+	fmt.Println("rebuildindex: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-func (h *CommandHandler) handleRebuildRange(parts []string) {
-	if len(parts) != 3 {
-		fmt.Println("Usage: rebuildrange <from_block> <to_block>")
-		return
-	}
-	from, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		fmt.Printf("Invalid from_block %q: %v\n", parts[1], err)
-		return
-	}
-	to, err := strconv.ParseUint(parts[2], 10, 64)
-	if err != nil {
-		fmt.Printf("Invalid to_block %q: %v\n", parts[2], err)
-		return
-	}
-	if from > to {
-		fmt.Println("Error: from_block must be <= to_block")
-		return
-	}
-	fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
-	startTime := time.Now()
-	if err := txindex.RebuildRange(context.Background(), from, to); err != nil {
-		fmt.Printf("RebuildRange failed: %v\n", err)
-		return
-	}
-	fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Since(startTime))
-	printDashes()
+func (h *CommandHandler) handleRebuildRange(_ []string) {
+	fmt.Println("rebuildrange: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
 func (h *CommandHandler) handleTxIndexStatus() {
-	isReady, lastIndexed, err := txindex.Status(context.Background())
+	ready, head, err := h.HandleTxIndexStatus(context.Background())
 	if err != nil {
 		fmt.Printf("txindex status: %v\n", err)
-		printDashes()
 		return
 	}
-	state := "SYNCING (catchup in progress)"
-	if isReady {
-		state = "READY"
+	state := "SYNCING"
+	if ready {
+		state = "READY (served by ThebeDB SQL projection)"
 	}
-	fmt.Printf("txindex status: %s — last indexed block: %d\n", state, lastIndexed)
-	printDashes()
+	fmt.Printf("txindex status: %s — chain head: %d\n", state, head)
 }
 
 func (h *CommandHandler) handleAccountSync(parts []string) {

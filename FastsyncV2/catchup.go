@@ -29,7 +29,6 @@ import (
 
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
-	"gossipnode/DB_OPs/txindex"
 
 	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
@@ -398,13 +397,6 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 	}
 
 	log.Printf("[CatchUpSync] done in %s", time.Since(catchUpStart).Round(time.Millisecond))
-
-	// Refresh the tx-address index with all blocks written during this catchup.
-	// EnsureReady detects the gap between last_indexed_block and the DB latest,
-	// so it only scans what was actually synced — no redundant work.
-	if err := txindex.EnsureReady(ctx); err != nil {
-		log.Printf("[CatchUpSync] txindex catchup warning: %v", err)
-	}
 
 	return nil
 }

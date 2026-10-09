@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 
@@ -615,40 +614,53 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 		stats.TotalBlocks = latestBlockNumber + 1
 		mu.Unlock()
 
-		// Total transactions: SQLite tx-address index first (local
-		// COUNT(DISTINCT tx_hash) — no main-DB round trip). Falls back to the
-		// legacy "tx:" prefix Count when the index is uninitialised or
-		// mid-rebuild (IsReady false → txindex.CountTransactions errors by
-		// design, so a truncated table never reports a partial total).
-		if sqlCount, sqlErr := txindex.CountTransactions(ctx); sqlErr == nil {
-			mu.Lock()
-			stats.TotalTransactions = int64(sqlCount)
-			mu.Unlock()
-			return nil
-		}
-		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
+		// Total transactions: COUNT(*) on the ThebeDB SQL projection, behind a
+		// statsCountTTL in-process cache so a burst of stats requests does not
+		// run one count each. On a transient DB error, degrade to the last good
+		// value rather than failing the whole stats response — but only if one
+		// exists. With a cold cache there is nothing honest to show, so the
+		// error surfaces instead of a fabricated 0.
+		totalTx, err := cachedCount(&statsTxCount, func() (int64, error) {
+			return DB_OPs.CountTransactions(&s.defaultdb)
+		})
 		if err != nil {
-			handleErr(fmt.Errorf("failed to count transactions: %w", err))
-			return fmt.Errorf("failed to count transactions: %w", err)
+			stale, ok := statsTxCount.lastGood()
+			if !ok {
+				handleErr(fmt.Errorf("failed to count transactions: %w", err))
+				return fmt.Errorf("failed to count transactions: %w", err)
+			}
+			totalTx = stale
 		}
 		mu.Lock()
-		stats.TotalTransactions = int64(totalTx)
+		stats.TotalTransactions = totalTx
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
-	// Get total DIDs/accounts from the maintained sqlite counter only (O(1)).
-	// Deliberately does NOT fall back to the KV prefix Count on the request
-	// path: that Count is O(n) and can exceed its deadline on a large accounts DB,
-	// which would fail the whole stats response. Until the one-time background
-	// seed populates the counter, report 0 (transient) rather than erroring.
+	// Total DIDs/accounts: COUNT(*) on the accounts table, same cache and same
+	// degradation contract as the transaction count above. Deliberately does
+	// NOT fall back to the KV prefix Count on the request path: that Count is
+	// O(n) and can exceed its deadline on a large accounts DB, which would fail
+	// the whole stats response.
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		n, _, err := txindex.GetAccountCount(ctx)
+		// accounts.did_address is UNIQUE NOT NULL, so accounts == DIDs here.
+		n, err := cachedCount(&statsAccountCount, func() (int64, error) {
+			return DB_OPs.CountAccounts(&s.defaultdb)
+		})
 		if err != nil {
-			n = 0 // counter unavailable/unseeded — never block the endpoint on a scan
+			// Degrade to the last good value rather than failing the whole
+			// stats response; with a cold cache, surface the error instead of
+			// reporting a fabricated 0.
+			stale, ok := statsAccountCount.lastGood()
+			if !ok {
+				handleErr(fmt.Errorf("failed to count accounts: %w", err))
+				return fmt.Errorf("failed to count accounts: %w", err)
+			}
+			n = stale
 		}
 		mu.Lock()
 		stats.TotalDIDs = n
+		stats.TotalAddresses = n
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))

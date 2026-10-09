@@ -81,6 +81,13 @@ type BlockRecord struct {
 
 // TransactionRecord maps to the `transactions` SQL table.
 // Derived from config.Transaction + caller-supplied block context.
+// TxRef is a lightweight (block, hash) reference to a transaction, used by
+// address-paginated listings that hydrate the full record separately.
+type TxRef struct {
+	TxHash      string
+	BlockNumber uint64
+}
+
 type TransactionRecord struct {
 	TxHash            string         `json:"tx_hash"`              // CHAR(66)
 	BlockNumber       uint64         `json:"block_number"`         // BIGINT
