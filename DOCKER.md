@@ -718,11 +718,10 @@ jmdn-state  (/opt/jmdn in the jmdn container):
 ├── config/peer.json    ← node peer identity (auto-generated first run)
 ├── certs/              ← TLS (auto-generated or operator-mounted)
 └── DB/
-    ├── gossipnode.db   ← SQLite node manager state
-    └── txindex.db      ← SQLite address→transaction index (+ -wal, -shm)
+    └── gossipnode.db   ← SQLite node manager state
 ```
 
-`txindex.db` is fully rebuildable from ImmuDB — a derived index, not a source of truth. Losing it isn't catastrophic: the node re-catches-up automatically in the background (address-history endpoints return "still syncing" until done — see [§14](#14-troubleshooting)). It's included in the backup below only because that's simpler than special-casing it.
+Address→transaction lookups and the explorer totals are served by the ThebeDB SQL projection (the `transactions` / `accounts` tables), which the node writes synchronously at block apply. There is no separate index file to back up or rebuild. (Older releases kept a `txindex.db` here; a leftover file is unused and can be deleted.)
 
 ### Backup and restore
 
@@ -994,15 +993,9 @@ docker logs --tail 100 -f jmdn    # look for "[CatchUpSync] done in …"
 
 The SyncMonitor keeps the node in sync automatically after that.
 
-### Transaction-address index stuck or erroring
+### Transaction-address lookups returning 503
 
-`eth_getTransactionsByAddress` and `GET /explorer/address/:address/transactions` are backed by a SQLite index (`DB/txindex.db`) the node rebuilds from ImmuDB in the background — never restored from backup. While catching up, both endpoints return "still syncing" / `503` rather than wrong data.
-
-```bash
-docker exec -it jmdn jmdn -cmd txindexstatus     # READY / SYNCING + last indexed block
-docker exec -it jmdn jmdn -cmd rebuildindex      # full rebuild from genesis (background, node stays up)
-docker exec -it jmdn jmdn -cmd rebuildrange <from_block> <to_block>   # narrower repair
-```
+`eth_getTransactionsByAddress` and `GET /explorer/address/:address/transactions` read the ThebeDB SQL projection directly. A `503` from either means the projection database is unreachable (check `thebe.sql_dsn` / Postgres health), not that an index is syncing — there is no index to rebuild. The former `rebuildindex`, `rebuildrange` and `txindexstatus` commands are retired and only print a notice.
 
 ### Full container reset
 

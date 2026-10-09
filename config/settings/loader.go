@@ -211,7 +211,6 @@ func setDefaults(v *viper.Viper) {
 	// Database
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
-	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)
 
 	// Thebe
 	v.SetDefault("thebe.enabled", d.Thebe.Enabled)

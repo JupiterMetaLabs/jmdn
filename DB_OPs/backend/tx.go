@@ -131,6 +131,22 @@ func (b *thebeBackend) GetTransactionsPaginated(ctx context.Context, limit, offs
 }
 
 // CountTransactions returns the total number of transactions in the SQL store.
+func (b *thebeBackend) CountTransactionsByAddress(ctx context.Context, address string) (uint64, error) {
+	n, err := b.r.CountTransactionsByAddress(ctx, address)
+	if err != nil {
+		return 0, fmt.Errorf("backend.CountTransactionsByAddress(%s): %w", address, err)
+	}
+	return n, nil
+}
+
+func (b *thebeBackend) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]thebegateway.TxRef, error) {
+	refs, err := b.r.GetTransactionRefsByAddress(ctx, address, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetTransactionRefsByAddress(%s): %w", address, err)
+	}
+	return refs, nil
+}
+
 func (b *thebeBackend) CountTransactions(ctx context.Context) (uint64, error) {
 	n, err := b.r.CountTransactions(ctx)
 	if err != nil {

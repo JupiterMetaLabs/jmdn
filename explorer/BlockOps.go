@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 
@@ -620,19 +619,15 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 		// legacy "tx:" prefix Count when the index is uninitialised or
 		// mid-rebuild (IsReady false → txindex.CountTransactions errors by
 		// design, so a truncated table never reports a partial total).
-		if sqlCount, sqlErr := txindex.CountTransactions(ctx); sqlErr == nil {
-			mu.Lock()
-			stats.TotalTransactions = int64(sqlCount)
-			mu.Unlock()
-			return nil
-		}
-		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
+		totalTx, err := cachedCount(&statsTxCount, func() (int64, error) {
+			return DB_OPs.CountTransactions(&s.defaultdb)
+		})
 		if err != nil {
 			handleErr(fmt.Errorf("failed to count transactions: %w", err))
 			return fmt.Errorf("failed to count transactions: %w", err)
 		}
 		mu.Lock()
-		stats.TotalTransactions = int64(totalTx)
+		stats.TotalTransactions = totalTx
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
@@ -643,12 +638,18 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 	// which would fail the whole stats response. Until the one-time background
 	// seed populates the counter, report 0 (transient) rather than erroring.
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		n, _, err := txindex.GetAccountCount(ctx)
+		// accounts.did_address is UNIQUE NOT NULL, so accounts == DIDs here.
+		n, err := cachedCount(&statsAccountCount, func() (int64, error) {
+			return DB_OPs.CountAccounts(&s.defaultdb)
+		})
 		if err != nil {
-			n = 0 // counter unavailable/unseeded — never block the endpoint on a scan
+			// Report the last good value (or 0) rather than failing the whole
+			// stats response on a transient DB error.
+			n = statsAccountCount.lastGood()
 		}
 		mu.Lock()
 		stats.TotalDIDs = n
+		stats.TotalAddresses = n
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))

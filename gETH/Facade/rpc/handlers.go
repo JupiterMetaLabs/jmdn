@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 
+	"gossipnode/DB_OPs"
+
 	log "gossipnode/logging"
 
 	"errors"
@@ -17,7 +19,6 @@ import (
 
 	"encoding/json"
 
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
@@ -307,8 +308,9 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			resp, _ := invalidParams(req, "address must be a valid hex address")
 			return resp, nil
 		}
-		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
-		addr = strings.ToLower(addr)
+		// The ThebeDB SQL projection stores checksummed addresses
+		// (common.Address.Hex()); DB_OPs.*ByAddress normalise for us.
+		address := common.HexToAddress(addr)
 
 		page := 1
 		if len(req.Params) > 1 {
@@ -346,17 +348,16 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		offset := (page - 1) * limit
 
 		// Look up total first and short-circuit out-of-range pages before
-		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
-		// the covering index) — a cheap request for page 1e6 shouldn't force
-		// an expensive scan just to come back empty.
+		// paying for an OFFSET skip-scan — a cheap request for page 1e6
+		// shouldn't force an expensive scan just to come back empty.
 		//
 		// NOTE: this count and the paginated query below are two separate
-		// SQLite reads, not one transaction, so `total` can be very slightly
-		// stale relative to the rows returned if a block lands in between.
+		// reads, not one transaction, so `total` can be very slightly stale
+		// relative to the rows returned if a block lands in between.
 		// Intentional — harmless for a UI paginator, not worth a transaction.
-		total, totalErr := txindex.CountByAddress(ctx, addr)
+		total, totalErr := DB_OPs.CountTransactionsByAddress(ctx, address)
 		if totalErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", totalErr))
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
@@ -376,14 +377,14 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 
-		refs, idxErr := txindex.QueryByAddressOffset(ctx, addr, offset, limit)
+		refs, idxErr := DB_OPs.TransactionRefsByAddress(ctx, address, offset, limit)
 		if idxErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", idxErr))
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 
-		// Hydrate each ref from ImmuDB by hash in parallel (bounded) — each
+		// Hydrate each ref by hash in parallel (bounded) — each
 		// fetch is an independent point lookup, page size is capped at 100.
 		const hydrationConcurrency = 10
 		txs := make([]any, len(refs))
@@ -392,7 +393,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		for i, ref := range refs {
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(i int, ref txindex.TxRef) {
+			go func(i int, ref DB_OPs.TxRef) {
 				defer wg.Done()
 				defer func() { <-sem }()
 

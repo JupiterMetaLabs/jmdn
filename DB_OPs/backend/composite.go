@@ -169,6 +169,16 @@ func (h *compositeHandle) GetTransactionsPaginated(ctx context.Context, limit, o
 	return h.txs.GetTransactionsPaginated(ctx, limit, offset)
 }
 
+// CountTransactionsByAddress delegates to the cache-decorated TxStore.
+func (h *compositeHandle) CountTransactionsByAddress(ctx context.Context, address string) (uint64, error) {
+	return h.txs.CountTransactionsByAddress(ctx, address)
+}
+
+// GetTransactionRefsByAddress delegates to the cache-decorated TxStore.
+func (h *compositeHandle) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]thebegateway.TxRef, error) {
+	return h.txs.GetTransactionRefsByAddress(ctx, address, limit, offset)
+}
+
 // CountTransactions delegates to the cache-decorated TxStore.
 func (h *compositeHandle) CountTransactions(ctx context.Context) (uint64, error) {
 	return h.txs.CountTransactions(ctx)
