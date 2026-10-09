@@ -221,6 +221,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
 	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
 	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
+	v.SetDefault("thebe.pools.write", d.Thebe.Pools.Write)
+	v.SetDefault("thebe.pools.read", d.Thebe.Pools.Read)
+	v.SetDefault("thebe.pools.sync", d.Thebe.Pools.Sync)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)

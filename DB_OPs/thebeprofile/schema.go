@@ -69,6 +69,19 @@ CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
 CREATE INDEX IF NOT EXISTS idx_accounts_did_address
     ON accounts(did_address);
 
+-- Canonical-order index. Every account read keys on LOWER(address) (GetAccount,
+-- the fingerprint / FastSync listing order), which the address PRIMARY KEY
+-- cannot serve, so without this each GetAccount was a sequential scan and each
+-- listing page sorted the whole table. Also serves the keyset cursor
+-- (LOWER(address), address) > (...) in sqlListAccountsAfter.
+CREATE INDEX IF NOT EXISTS idx_accounts_address_lower
+    ON accounts(LOWER(address), address);
+
+-- FastSync AccountSync hydrates every 3,000-nonce page with
+-- WHERE nonce = ANY($1); without an index each page scanned the whole table.
+CREATE INDEX IF NOT EXISTS idx_accounts_nonce
+    ON accounts(nonce);
+
 -- updated_at is the LWW ordering key for the account upsert (apply_account.go:
 -- WHERE accounts.updated_at <= EXCLUDED.updated_at). The consensus apply path
 -- writes a DETERMINISTIC, block-derived updated_at (= block timestamp) so every

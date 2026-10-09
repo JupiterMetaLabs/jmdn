@@ -467,6 +467,22 @@ type ThebeConfig struct {
 	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
 	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+	// Pools are the task-wise Postgres connection budgets (DB_OPs/task_pools.go).
+	// Each task gets its own pool, so one task exhausting its budget cannot take
+	// connections from another. The sum must fit the server's max_connections.
+	Pools ThebePoolsConfig `mapstructure:"pools" yaml:"pools"`
+}
+
+// ThebePoolsConfig sizes each task's dedicated Postgres pool (max open
+// connections). Env: JMDN_THEBE_POOLS_WRITE / _READ / _SYNC.
+type ThebePoolsConfig struct {
+	// Write: ThebeDB engine — 2PC writes, outbox drain, contract-state reads.
+	Write int `mapstructure:"write" yaml:"write"`
+	// Read: process-wide reads — JSON-RPC, consensus apply, explorer, CLI.
+	Read int `mapstructure:"read" yaml:"read"`
+	// Sync: serving peers' FastSync/ThebeSync requests (account, block, header
+	// pages). Bounded small: sync is bulk, retried, and must never starve the rest.
+	Sync int `mapstructure:"sync" yaml:"sync"`
 }
 
 type ThebeCDCConfig struct {

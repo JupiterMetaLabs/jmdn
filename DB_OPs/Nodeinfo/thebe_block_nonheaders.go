@@ -24,7 +24,7 @@ func (sync *sync_struct) NewBlockNonHeaderIterator() types.BlockNonHeader {
 func (i *dbBlockNonHeaderIterator) GetBlockNonHeaders(blocknumbers []uint64) ([]*blockpb.NonHeaders, error) {
 	var results []*blockpb.NonHeaders
 	for _, num := range blocknumbers {
-		b, err := DB_OPs.GetZKBlockByNumber(nil, num)
+		b, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), num)
 		if err != nil || b == nil {
 			continue
 		}
@@ -36,7 +36,7 @@ func (i *dbBlockNonHeaderIterator) GetBlockNonHeaders(blocknumbers []uint64) ([]
 // Time Complexity: O(N*M) where N is end-start range and M is transactions per block
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockNonHeaderIterator) GetBlockNonHeadersRange(start, end uint64) ([]*blockpb.NonHeaders, error) {
-	blocks, err := DB_OPs.GetBlocksRange(nil, start, end)
+	blocks, err := DB_OPs.GetBlocksRange(DB_OPs.TaskConn(DB_OPs.TaskSync), start, end)
 	if err != nil {
 		return nil, err
 	}
