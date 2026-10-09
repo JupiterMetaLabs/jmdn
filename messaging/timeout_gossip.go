@@ -63,6 +63,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
 	"gossipnode/internal/roundlock"
+	"gossipnode/metrics"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog/log"
@@ -297,6 +298,7 @@ func MaybeStartTimeoutFlow(h host.Host, height uint64, blockVoters map[string]bo
 func recordAndMaybeCertify(h host.Host, vote TimeoutVote, blockVoters map[string]bool) {
 	key := timeoutRoundKey{vote.Height, vote.Period}
 	votes := defaultTimeoutVoteCollector.add(vote)
+	metrics.TimeoutVotesReceivedCounter.Inc()
 	tryCertify(h, key, votes, blockVoters)
 }
 
@@ -347,6 +349,8 @@ func tryCertify(h host.Host, key timeoutRoundKey, votes []TimeoutVote, blockVote
 		return
 	}
 	defaultTimeoutVoteCollector.recordCert(*cert)
+	metrics.TimeoutCertificatesFormedCounter.Inc()
+	metrics.TimeoutPeriodsAdvancedCounter.WithLabelValues("local").Inc()
 
 	log.Info().Uint64("height", key.Height).Uint64("new_period", newPeriod).
 		Int("signers", len(cert.SignerBitmap)).
@@ -369,6 +373,7 @@ func AcceptIncomingTimeoutCertificate(cert TimeoutCertificate) (uint64, bool, er
 	newPeriod, accepted, err := DefaultPeriodStore.AcceptTimeoutCertificate(cert, poolSize, pubKeys)
 	if accepted {
 		defaultTimeoutVoteCollector.recordCert(cert)
+		metrics.TimeoutPeriodsAdvancedCounter.WithLabelValues("gossip_or_rejoin").Inc()
 	}
 	return newPeriod, accepted, err
 }

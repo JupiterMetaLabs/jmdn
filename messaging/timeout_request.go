@@ -57,6 +57,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/internal/roundlock"
+	"gossipnode/metrics"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -266,6 +267,7 @@ func handleTimeoutRequestBroadcast(h host.Host, msg BroadcastMessageStruct) {
 			Msg("timeout request: rejected")
 		return
 	}
+	metrics.TimeoutRequestsReceivedCounter.Inc()
 
 	localPeriod := DefaultPeriodStore.PeriodFor(req.Height)
 	action, freshTimeoutLock := decideTimeoutRequest(req, h.ID().String(), pinned, localPeriod, roundlock.Default)
