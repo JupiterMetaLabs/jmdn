@@ -62,8 +62,9 @@ func rawLWWSetJSON(t *testing.T, key string, elements ...string) json.RawMessage
 // Phase 5 (legacy-CRDT migration — stop legacy sync) changed this test's own
 // premise: it used to assert legacy and v2 keys each route to their own
 // engine. Legacy sync is now unwired (CRDTSyncHandler.go's mergeCRDTData
-// loop `continue`s on a non-v2 key instead of calling
-// mergeLegacyVoteElement), so a legacy key is no longer merged anywhere —
+// loop `continue`s on a non-v2 key instead of calling the legacy merge
+// helper it used to; that helper was itself later deleted as dead code once
+// nothing referenced it), so a legacy key is no longer merged anywhere —
 // not into the legacy engine (unwired) and not into the v2 engine (it's not
 // a v2 key). Renamed from TestMergeCRDTData_RoutesLegacyAndV2KeysToTheirOwnEngines
 // to reflect that.

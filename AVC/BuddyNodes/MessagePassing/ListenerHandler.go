@@ -1112,9 +1112,9 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		// W2 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used
 		// to also write the remote peer's vote into the legacy CRDT, keyed on
 		// message.Sender. Not deleted outright — see W1's comment in
-		// Vote/Trigger.go for why (voterPeerIDsForBlock's rescue, the
-		// "legacy rescue fired" log line, Phase 6 removal). The v2 ingest
-		// above is independent and unaffected.
+		// Vote/Trigger.go for the full reasoning (voterPeerIDsForBlock's
+		// rescue, since ported to v2, Phase 6 removal). The v2 ingest above
+		// is independent and unaffected.
 
 		// D-26(a) phase 2: the republish-to-pubsub relay that used to live here
 		// is REMOVED.

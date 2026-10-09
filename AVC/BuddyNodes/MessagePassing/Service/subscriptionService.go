@@ -270,9 +270,10 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// G1 (legacy-CRDT gate cleanup): this used to also require
 		// listenerNode.CRDTLayer != nil, blocking the v2 ingest call below
 		// (IngestValidatorVote) on the legacy engine's readiness even though
-		// it only writes to VoteCRDTLayer. The legacy write further down is
-		// now independently guarded instead (see its own CRDTLayer != nil
-		// check) so a nil legacy engine skips only that write, not v2 ingest.
+		// it only writes to VoteCRDTLayer. The legacy write that guard used
+		// to also protect has since been removed outright (W4, legacy-CRDT
+		// migration Phase 3) — there is no remaining CRDTLayer reference in
+		// this file to guard.
 		if listenerNode == nil {
 			logger().Error(logger_ctx, "Listener node not initialized", nil,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))

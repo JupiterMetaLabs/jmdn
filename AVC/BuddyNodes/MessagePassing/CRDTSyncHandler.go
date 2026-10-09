@@ -41,11 +41,11 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	}
 
 	// G3 (legacy-CRDT gate cleanup): this used to require listenerNode.CRDTLayer
-	// != nil before publishing or subscribing at all — but buildLocalSyncData
-	// below already guards the legacy and v2 engines independently (:685,
-	// :691), so a nil legacy engine should mean "publish v2 state only," not
-	// "skip sync entirely." No replacement check needed: nothing else in this
-	// function dereferences listenerNode.CRDTLayer directly.
+	// != nil before publishing or subscribing at all. buildLocalSyncData below
+	// has since had its legacy branch removed outright (legacy-CRDT migration
+	// Phase 5) — it only ever publishes the v2 engine now, so there is no
+	// legacy guard left to point at. No replacement check needed: nothing
+	// else in this function dereferences listenerNode.CRDTLayer directly.
 
 	// Ensure buddy nodes list is populated from cached consensus if empty
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
@@ -710,9 +710,9 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 	// listenerNode.CRDTLayer != nil before the loop below even starts,
 	// blocking the v2 branch (OwnsKey -> mergeVoteCRDTElement, which only
 	// touches VoteCRDTLayer) on the legacy engine's readiness. The legacy
-	// branch (mergeLegacyVoteElement) is now independently guarded in the
-	// loop below instead, so a nil legacy engine skips only legacy-keyed
-	// elements, not the whole merge.
+	// branch has since been unwired entirely (W5, Phase 5) and its handler
+	// function deleted outright as dead code once unreferenced — see the
+	// non-v2 branch below, now a plain continue.
 
 	// Get the sender's peer ID (who sent this sync message)
 	senderPeerID, err := peer.Decode(syncMsg.NodeID)
@@ -722,7 +722,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 
 	logger().Info(context.Background(), "🔄 Merging CRDT data from peer", ion.String("args", fmt.Sprintf("🔄 Merging CRDT data from peer %s", senderPeerID.String()[:8])))
 
-	legacyMerged, voteMerged := 0, 0
+	legacyIgnored, voteMerged := 0, 0
 	for key, rawData := range syncMsg.SyncData {
 		if avcvotes.OwnsKey(key) {
 			n, err := mergeVoteCRDTElement(listenerNode, senderPeerID, key, rawData)
@@ -736,18 +736,26 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 		}
 
 		// W5 (legacy-CRDT migration, Phase 5 — stop legacy sync): this key
-		// isn't a v2 key (OwnsKey returned false), so it used to go to
-		// mergeLegacyVoteElement. That call is unwired, not deleted — see
-		// W1's comment in Vote/Trigger.go for why. A not-yet-upgraded peer's
+		// isn't a v2 key (OwnsKey returned false), so it used to go to a
+		// legacy merge helper. That call was unwired here, and the helper
+		// itself was later deleted once nothing referenced it (it had become
+		// genuinely dead code, not merely unwired — unlike W1-W4's legacy
+		// writes, which stay defined but unreferenced; see W1's comment in
+		// Vote/Trigger.go for that reasoning). A not-yet-upgraded peer's
 		// legacy keys arriving in a mixed-fleet sync message are silently
 		// ignored here, same as any other merge error already was (continue,
-		// not an aborted message — see the OwnsKey branch above).
+		// not an aborted message — see the OwnsKey branch above). Counted,
+		// not discarded silently: legacyIgnored is the one signal left that
+		// a peer is still sending legacy keys during the soak window — a
+		// nonzero count here means a mixed-fleet peer, not that anything was
+		// merged (nothing is, by design).
+		legacyIgnored++
 		continue
 	}
 
 	logger().Info(context.Background(), "✅ Completed merging CRDT data from peer",
-		ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s (%d legacy, %d v2 elements)",
-			senderPeerID.String()[:8], legacyMerged, voteMerged)))
+		ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s (%d legacy keys ignored, %d v2 elements merged)",
+			senderPeerID.String()[:8], legacyIgnored, voteMerged)))
 
 	return nil
 }
@@ -758,8 +766,8 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 // re-parsing elements back into a votes.VoteRecord and re-calling AddVote:
 // a votes: element is only "<peerID>:<vote>", with height/blockHash implicit
 // in the KEY, not recoverable from the element alone, so AddVote's own
-// signature does not fit a merge. This mirrors mergeLegacyVoteElement's own
-// shape exactly, just against the other engine.
+// signature does not fit a merge. This mirrored the shape of the now-deleted
+// legacy merge helper exactly, just against the other engine.
 //
 // senderPeerID is attributed as the writing actor for this merge — the same
 // role votePeerID plays in the legacy path — not the original voter, which

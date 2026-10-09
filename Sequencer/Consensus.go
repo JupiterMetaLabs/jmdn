@@ -1796,11 +1796,11 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 //
 // Phase 4 (legacy-CRDT migration): this used to scan the legacy CRDT
 // (GetAllCRDTs + per-key GetSet + JSON parse over every stored peer) instead
-// of this one-key lookup — ported, not deleted outright. The
-// "voterPeerIDsForBlock: legacy rescue fired" log line this replaces had not
-// yet accrued enough real-block data to settle whether the augmentation
-// itself is load-bearing, but porting is safe regardless of that answer: if
-// the rescue never actually fires, this costs one cheap key lookup that
+// of this one-key lookup — ported, not deleted outright. Whether the
+// augmentation itself is load-bearing in practice was never actually
+// measured (the legacy function had no observability on it, no log line,
+// no metric), but porting is safe regardless of that unknown: if the
+// rescue never actually fires, this costs one cheap key lookup that
 // returns nothing; if it does fire, it is now O(1) instead of O(every
 // legacy key) and correct. Bounded by v2's own compaction window
 // (JMDN_VOTE_CRDT_COMPACT_K, default 128 blocks) — a peer whose vote is

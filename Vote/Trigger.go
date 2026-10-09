@@ -245,15 +245,17 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// W1 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used to
 	// store the node's own vote in the legacy CRDT too. The comment that
 	// used to sit here ("without this, ProcessVotesFromCRDT finds 0 votes")
-	// is stale — ProcessVotesFromCRDT is v2-only now (voteCRDTV2Enabled
+	// was stale — ProcessVotesFromCRDT is v2-only now (voteCRDTV2Enabled
 	// hardcoded true) and never reads this. The real consumer was
 	// voterPeerIDsForBlock's legacy-scan rescue (Sequencer/Consensus.go),
-	// which is why the write isn't deleted outright: if that rescue turns
-	// out to matter (see its "legacy rescue fired" log line), this is one
-	// of the write paths — alongside W2/W4/W5 — that would need restoring,
-	// or porting to a v2-based equivalent, before Phase 6 removes
-	// listenerNode.CRDTLayer entirely. The v2 write below (avcvotes.AddVote)
-	// is independent and unaffected by this.
+	// which is why this write was unwired rather than deleted outright —
+	// a cheap revert in case that rescue turned out to be load-bearing.
+	// voterPeerIDsForBlock has since been ported to a v2 equivalent
+	// (BlockVoteKey lookup) rather than restored on the legacy path, so this
+	// write no longer has a live consumer either way; it remains unwired,
+	// not deleted, pending Phase 6's removal of listenerNode.CRDTLayer
+	// entirely. The v2 write below (avcvotes.AddVote) is independent and
+	// unaffected by any of this.
 
 	// D-26(a)/D-51 cutover: VoteCRDTDualWrite is now permanently true
 	// (vote_crdt_v2.go) — this is the write that actually matters for the
