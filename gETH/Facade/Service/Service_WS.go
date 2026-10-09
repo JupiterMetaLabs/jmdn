@@ -3,15 +3,16 @@ package Service
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 	"gossipnode/gETH/common"
-	"log"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"

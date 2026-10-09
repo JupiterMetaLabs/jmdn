@@ -52,13 +52,6 @@ func (j *journal) revert(db *ContractDB, snapshot int) {
 // length returns the current journal length (used as snapshot IDs).
 func (j *journal) length() int { return len(j.entries) }
 
-// dirty marks addr as modified at the current journal position.
-func (j *journal) dirty(addr common.Address) {
-	if _, exist := j.dirties[addr]; !exist {
-		j.dirties[addr] = len(j.entries)
-	}
-}
-
 // ============================================================================
 // Journal entry types
 // ============================================================================

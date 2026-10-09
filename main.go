@@ -122,7 +122,8 @@ func goMaybeTracked(
 var (
 	// legacyFastsyncServer retains the FastsyncV2 /fastsync/v1 serving engine when
 	// serve_legacy=true (sequencer only), keeping its stream handlers alive.
-	legacyFastsyncServer *FastsyncV2.FastsyncV2
+	// Write-only by design (held for lifetime, never read).
+	legacyFastsyncServer *FastsyncV2.FastsyncV2 //nolint:unused // retained on purpose, see comment
 	globalPubSub         *Pubsub.StructGossipPubSub
 )
 
@@ -795,19 +796,6 @@ func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
 		return nil, fmt.Errorf("slot recovery: reading locally committed block %d: %w", height, err)
 	}
 	return blk, nil
-}
-
-// initFastsyncV2 initializes the FastSync V2 service.
-// ctx is the node's top-level shutdown context — it governs the lifetime of
-// server-side network handler goroutines inside the engine.
-func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
-		return nil
-	}
-	log.Info().Msg("FastsyncV2 service initialized")
-	return fs
 }
 
 // initPubSub initializes the PubSub system for the node

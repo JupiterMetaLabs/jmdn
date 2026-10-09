@@ -27,22 +27,18 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go).
-// Duplicated rather than imported: Vote -> MessagePassing -> Structs already
-// exists (Vote/Trigger.go imports MessagePassing; MessagePassing/
-// ListenerHandler.go imports Structs), so Structs -> Vote would be an
-// import cycle. The two must never disagree: the read side (this file) and
-// the write side (Vote/vote_crdt_v2.go) have to flip together, which is
-// exactly why both are now hardcoded true in the same commit rather than
-// left as two separately-toggleable env reads.
+// voteCRDTV2Enabled is the read-side half of the D-26(a)/D-51 cutover: the
+// tally reads only the v2, block-keyed keyspace. Its write-side counterpart
+// (Vote.VoteCRDTDualWrite) was a permanently-true flag and has been removed
+// along with its file; that rationale now lives beside the v2 write in
+// Vote/Trigger.go.
 //
 // D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): permanently true,
-// not env-gated. See Vote/vote_crdt_v2.go's package doc comment for the full
-// reasoning — short version: the legacy path below (processVotesFromCRDT_legacy)
+// not env-gated, and a const so the dead branch below is provable — the legacy path below (processVotesFromCRDT_legacy)
 // has no per-vote signature and keys its CRDT write on an unauthenticated
 // payload field; a naive fix at that ingest point was tried and reverted
-// (18806fb) because it also rejects legitimate direct-stream-to-pubsub vote
-// relay, which is indistinguishable from forgery at that layer. The real
+// (pre-v3base history) because it also rejects legitimate direct-stream-to-pubsub
+// vote relay, which is indistinguishable from forgery at that layer. The real
 // authentication boundary is HERE, at tally time, via TallyBlock's
 // committee-registered-pubkey + BLS-signature check — so this is the one
 // flag flip that actually matters, and it ships in the same coordinated
@@ -50,7 +46,7 @@ import (
 // processVotesFromCRDT_legacy is kept, unreachable, only because
 // legacy_vote_panic_test.go calls it directly to pin its own
 // malformed-input crash fix; do not route production traffic to it again.
-var voteCRDTV2Enabled = true
+const voteCRDTV2Enabled = true
 
 // envOnStructs is retained for any future flag that needs this exact
 // duplication pattern; it no longer determines voteCRDTV2Enabled.

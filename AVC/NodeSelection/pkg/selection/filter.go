@@ -2,8 +2,9 @@ package selection
 
 import (
 	"context"
-	"github.com/JupiterMetaLabs/ion"
 	"time"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // FilterConfig defines filtering rules

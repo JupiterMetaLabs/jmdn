@@ -199,9 +199,6 @@ func TestVerifyTallySignatures_ForgedSecondValueDoesNotManufactureEquivocation(t
 // real one, must reach the same decision it would have without the forgery.
 func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) {
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
-	origFlag := voteCRDTV2Enabled
-	voteCRDTV2Enabled = true
-	defer func() { voteCRDTV2Enabled = origFlag }()
 
 	origFn := authorizedCommitteeFn
 	defer func() { authorizedCommitteeFn = origFn }()

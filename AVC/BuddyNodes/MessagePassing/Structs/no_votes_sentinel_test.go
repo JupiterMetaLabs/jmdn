@@ -15,9 +15,6 @@ import (
 // that callers retry on. It must surface as ErrNoVotesInCRDT so callers can
 // tell it apart from a real failure, and keep its historical message.
 func TestProcessVotesFromCRDT_V2_EmptyIsErrNoVotesInCRDT(t *testing.T) {
-	origFlag := voteCRDTV2Enabled
-	voteCRDTV2Enabled = true
-	defer func() { voteCRDTV2Enabled = origFlag }()
 	origFn := authorizedCommitteeFn
 	defer func() { authorizedCommitteeFn = origFn }()
 	SetAuthorizedCommitteeFn(func() (map[string]string, error) {

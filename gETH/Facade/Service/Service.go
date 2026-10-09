@@ -5,14 +5,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strings"
+	"time"
+
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
-	"math/big"
-	"strings"
-	"time"
 
 	"gossipnode/SmartContract/pkg/client"
 	scTracer "gossipnode/SmartContract/pkg/tracer"

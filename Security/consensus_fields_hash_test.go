@@ -44,10 +44,10 @@ func TestEveryConsensusFieldIsTamperEvident(t *testing.T) {
 	base := RecomputeBlockHashWithConsensusFields(sampleBlock())
 
 	mutations := map[string]func(*config.ZKBlock){
-		"Slot":                func(b *config.ZKBlock) { b.Slot++ },
-		"Period":              func(b *config.ZKBlock) { b.Period++ },
-		"SeedEpoch":           func(b *config.ZKBlock) { b.SeedEpoch++ },
-		"VotingSnapshotEpoch": func(b *config.ZKBlock) { b.VotingSnapshotEpoch++ },
+		"Slot":                  func(b *config.ZKBlock) { b.Slot++ },
+		"Period":                func(b *config.ZKBlock) { b.Period++ },
+		"SeedEpoch":             func(b *config.ZKBlock) { b.SeedEpoch++ },
+		"VotingSnapshotEpoch":   func(b *config.ZKBlock) { b.VotingSnapshotEpoch++ },
 		"VdfProof":              func(b *config.ZKBlock) { b.VdfProof = []byte("different") },
 		"CommitteeSnapshotHash": func(b *config.ZKBlock) { b.CommitteeSnapshotHash = []byte("different-hash") },
 		"RandaoReveals": func(b *config.ZKBlock) {

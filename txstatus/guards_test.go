@@ -216,3 +216,14 @@ func TestBreaker_DisabledAlwaysAllows(t *testing.T) {
 		})
 	}
 }
+
+// Moved from guards.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+func (c *negativeCache) len() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}

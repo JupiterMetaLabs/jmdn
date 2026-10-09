@@ -13,7 +13,13 @@ package DB_OPs
 // on the account-write path. It fires only for genuinely NEW accounts (address:
 // keys), so its total matches DB_OPs.CountAccounts. It is best-effort — the
 // counter can be re-seeded if it ever drifts.
-var onAccountCreated func(delta int)
+//
+// NOTE: fireAccountCreated has no caller yet — main wires the hook
+// (SetAccountCreatedHook -> txindex.IncrAccountCount) but the account-write
+// path does not fire it, so the counter only ever holds its startup seed.
+// Wiring it is a behavioural change tracked separately; the plumbing is kept
+// (not deleted) so that fix is a one-line call.
+var onAccountCreated func(delta int) //nolint:unused // see NOTE above: hook plumbing awaiting its caller
 
 // SetAccountCreatedHook installs (or clears, with nil) the new-account hook.
 // Call once at startup, before account writes begin.
@@ -21,7 +27,7 @@ func SetAccountCreatedHook(fn func(delta int)) { onAccountCreated = fn }
 
 // fireAccountCreated notifies the hook that delta brand-new accounts were
 // persisted. No-op when delta <= 0 or no hook is wired.
-func fireAccountCreated(delta int) {
+func fireAccountCreated(delta int) { //nolint:unused // see NOTE above: hook plumbing awaiting its caller
 	if delta <= 0 {
 		return
 	}

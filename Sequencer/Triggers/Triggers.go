@@ -7,17 +7,11 @@ import (
 	"fmt"
 
 	"gossipnode/AVC/BFT/bft"
-	"gossipnode/AVC/BuddyNodes/CRDTSync"
-	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
 
 	"log"
-	"strings"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/Types"
-	voteaggregation "gossipnode/AVC/VoteModule"
-	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -26,7 +20,6 @@ import (
 	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -36,9 +29,6 @@ var LocalGRO interfaces.LocalGoroutineManagerInterface
 const ListeningTriggerMessage = "ListeningTrigger"
 const ListeningTriggerBufferTime = 20 * time.Second
 const CRDTDataSubmitBufferTime = 25 * time.Second
-
-// Global variable to store vote data locally
-var globalVoteData map[string]int8
 
 const BFTTriggerBufferTime = 30 * time.Second
 
@@ -78,162 +68,6 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 
 	log.Printf("Triggers initialized with subscription service and BFT engine")
 	return nil
-}
-
-// extractVoteDataFromCRDT extracts vote data from CRDT and stores peerID and vote value in a hashmap
-func extractVoteDataFromCRDT(buddyNode *AVCStruct.BuddyNode) (map[string]int8, error) {
-	voteData := make(map[string]int8)
-
-	if buddyNode == nil || buddyNode.CRDTLayer == nil {
-		return nil, fmt.Errorf("buddy node or CRDT layer not available")
-	}
-
-	engine := buddyNode.CRDTLayer.CRDTLayer
-
-	// Try to get votes from common vote keys
-	voteKeys := []string{"votes", "consensus_votes", "block_votes", "vote_data"}
-
-	for _, key := range voteKeys {
-		elements, exists := engine.GetSet(key)
-		if exists && len(elements) > 0 {
-			log.Printf("Found vote data in key '%s' with %d elements", key, len(elements))
-
-			for _, element := range elements {
-				// Parse element format: "peerID:voteJSON"
-				parts := strings.SplitN(element, ":", 2)
-				if len(parts) != 2 {
-					log.Printf("Invalid vote element format: %s", element)
-					continue
-				}
-
-				peerIDStr := parts[0]
-				voteJSON := parts[1]
-
-				// Unmarshal the Vote JSON to get the vote value
-				var vote AVCStruct.Vote
-				if err := json.Unmarshal([]byte(voteJSON), &vote); err != nil {
-					log.Printf("Failed to unmarshal vote JSON: %s, error: %v", voteJSON, err)
-					continue
-				}
-
-				// Validate vote value
-				if vote.Vote != 1 && vote.Vote != -1 {
-					log.Printf("Invalid vote value: %d", vote.Vote)
-					continue
-				}
-
-				// Store peerID and vote value in hashmap
-				voteData[peerIDStr] = vote.Vote
-
-				log.Printf("Extracted vote: peer=%s, vote=%d", peerIDStr, vote.Vote)
-			}
-		}
-	}
-
-	if len(voteData) == 0 {
-		return nil, fmt.Errorf("no valid vote data found in CRDT")
-	}
-
-	log.Printf("Successfully extracted %d vote entries", len(voteData))
-	return voteData, nil
-}
-
-// processVoteData processes the extracted vote data and stores it in global variable
-func ProcessVoteData(voteData map[string]int8) (int8, error) {
-	log.Printf("Processing %d vote entries", len(voteData))
-	log.Printf("Vote data: %v", voteData)
-
-	// Store vote data in global variable
-	globalVoteData = voteData
-	// Get the weights of the peers
-	client, err := seednode.NewClient(settings.Get().Network.SeedNode)
-	if err != nil {
-		log.Printf("Failed to get weights of peers: %v", err)
-		return 0, fmt.Errorf("failed to get weights of peers: %v", err)
-	}
-	// seednode.Client owns a grpc.ClientConn. This runs once per vote round, so
-	// without the close the node accumulates a connection (and its goroutines
-	// and file descriptor) every round.
-	defer client.Close()
-	weights, err := client.ListWeightsofPeers()
-	if err != nil {
-		log.Printf("Failed to get weights of peers: %v", err)
-		return 0, fmt.Errorf("failed to get weights of peers: %v", err)
-	}
-	log.Printf("Weights of peers: %v", weights)
-
-	log.Printf("Stored %d vote entries in global variable", len(globalVoteData))
-
-	// 🔄 CRDT SYNC: Sync all buddy nodes' CRDTs before vote aggregation
-	log.Printf("🔄 Triggering CRDT sync before vote aggregation...")
-	if err := TriggerCRDTSyncBeforeVoteAggregation(); err != nil {
-		log.Printf("⚠️ CRDT sync failed, continuing with existing data: %v", err)
-		// Don't fail the vote aggregation, just log the warning
-	} else {
-		log.Printf("✅ CRDT sync completed successfully")
-
-		// 📊 Print CRDT content after sync and before vote aggregation
-		CRDTSync.PrintCurrentCRDTContent()
-	}
-
-	// Once you get the weights and peers then you should submit the to the votemodule.VoteAggregation function.
-	result, err := voteaggregation.VoteAggregation(weights, globalVoteData)
-	if err != nil {
-		log.Printf("Failed to aggregate votes: %v", err)
-		return 0, fmt.Errorf("failed to aggregate votes: %v", err)
-	}
-
-	log.Printf("Vote aggregation result: %v", result)
-
-	if result {
-		return 1, nil
-	} else {
-		return -1, nil
-	}
-}
-
-// GetGlobalVoteData returns the stored vote data from global variable
-func GetGlobalVoteData() map[string]int8 {
-	return globalVoteData
-}
-
-// ClearGlobalVoteData clears the global vote data
-func ClearGlobalVoteData() {
-	globalVoteData = nil
-	log.Printf("Cleared global vote data")
-}
-
-func CRDTDataSubmitTrigger() {
-	// Submit the CRDT data to the @votemodule.VoteAggregation function.
-	time.AfterFunc(CRDTDataSubmitBufferTime, func() {
-		log.Printf("CRDTDataSubmitTrigger: Starting CRDT data aggregation")
-
-		// Get CRDT data from the global buddy node
-		buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
-		if buddyNode == nil || buddyNode.CRDTLayer == nil {
-			log.Printf("CRDTDataSubmitTrigger: Buddy node or CRDT layer not available")
-			return
-		}
-
-		// Extract vote data from CRDT
-		voteData, err := extractVoteDataFromCRDT(buddyNode)
-		if err != nil {
-			log.Printf("CRDTDataSubmitTrigger: Failed to extract vote data: %v", err)
-			return
-		}
-
-		log.Printf("CRDTDataSubmitTrigger: Extracted %d vote entries", len(voteData))
-
-		// Process the vote data
-		result, err := ProcessVoteData(voteData)
-		if err != nil {
-			log.Printf("CRDTDataSubmitTrigger: Failed to process vote data: %v", err)
-			return
-		}
-
-		log.Printf("CRDTDataSubmitTrigger: Processed vote data: %v", result)
-
-	})
 }
 
 func ListeningTrigger(blockhash string) {
@@ -643,103 +477,4 @@ func (w *BFTMessageHandlerWrapper) ProposeConsensus(
 		BlockAccepted: result.BlockAccepted,
 		Decision:      PubSubConnector.Decision(result.Decision),
 	}, nil
-}
-
-// TriggerCRDTSyncBeforeVoteAggregation triggers CRDT synchronization across all buddy nodes
-// This ensures all nodes have consistent CRDT data before vote aggregation
-func TriggerCRDTSyncBeforeVoteAggregation() error {
-	log.Printf("🔄 Starting CRDT sync before vote aggregation...")
-
-	// Get the global listener node to access host and pubsub
-	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-	if listenerNode == nil || listenerNode.Host == nil {
-		return fmt.Errorf("listener node not initialized")
-	}
-
-	// Get the pubsub node
-	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
-	if pubSubNode == nil {
-		return fmt.Errorf("pubsub node not initialized")
-	}
-
-	// Get the CRDT layer
-	crdtLayer := DataLayer.GetCRDTLayer()
-	if crdtLayer == nil || crdtLayer.CRDTLayer == nil {
-		return fmt.Errorf("CRDT layer not initialized")
-	}
-
-	// Create global CRDT sync manager
-	globalSyncManager := CRDTSync.NewGlobalSyncManager(listenerNode.Host)
-
-	// Get buddy node peer IDs
-	buddyPeerIDs := make([]string, len(listenerNode.BuddyNodes.Buddies_Nodes))
-	for i, peer := range listenerNode.BuddyNodes.Buddies_Nodes {
-		buddyPeerIDs[i] = peer.String()
-	}
-
-	log.Printf("📋 Buddy nodes to sync: %v", buddyPeerIDs)
-
-	// Create a StructGossipPubSub wrapper from the existing pubsub node
-	gossipPubSub, err := createStructGossipPubSubFromBuddyNode(pubSubNode, listenerNode.Host)
-	if err != nil {
-		log.Printf("⚠️ Failed to create StructGossipPubSub, using simplified sync: %v", err)
-		return triggerSimplifiedCRDTSync(listenerNode, crdtLayer)
-	}
-
-	// Initialize sync for each buddy node
-	for _, peerID := range buddyPeerIDs {
-		if err := globalSyncManager.InitializeBuddyNodeSync(peerID, gossipPubSub); err != nil {
-			log.Printf("⚠️ Failed to initialize sync for buddy %s: %v", peerID[:8], err)
-			// Continue with other buddies
-		}
-	}
-
-	// Trigger global sync
-	if err := globalSyncManager.TriggerGlobalSync(); err != nil {
-		log.Printf("⚠️ Failed to trigger global CRDT sync: %v", err)
-		return triggerSimplifiedCRDTSync(listenerNode, crdtLayer)
-	}
-
-	// Wait for sync completion with timeout
-	if err := globalSyncManager.WaitForGlobalSyncCompletion(5 * time.Second); err != nil {
-		log.Printf("⚠️ Global CRDT sync timeout: %v", err)
-		return triggerSimplifiedCRDTSync(listenerNode, crdtLayer)
-	}
-
-	log.Printf("✅ Global CRDT sync completed successfully before vote aggregation")
-	return nil
-}
-
-// createStructGossipPubSubFromBuddyNode creates a StructGossipPubSub from existing BuddyNode
-func createStructGossipPubSubFromBuddyNode(buddyNode *AVCStruct.BuddyNode, host host.Host) (*Pubsub.StructGossipPubSub, error) {
-	if buddyNode == nil || buddyNode.PubSub == nil {
-		return nil, fmt.Errorf("buddy node or pubsub not available")
-	}
-
-	// Create a new StructGossipPubSub using the existing pubsub instance
-	gossipPubSub, err := Pubsub.NewGossipPubSub(host, config.PubSub_ConsensusChannel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create StructGossipPubSub: %w", err)
-	}
-
-	return gossipPubSub, nil
-}
-
-// triggerSimplifiedCRDTSync performs a simplified CRDT sync without full pubsub integration
-func triggerSimplifiedCRDTSync(listenerNode *AVCStruct.BuddyNode, crdtLayer *Types.Controller) error {
-	log.Printf("🔄 Performing simplified CRDT sync...")
-
-	// Get all CRDTs from the current node
-	allCRDTs := crdtLayer.CRDTLayer.GetAllCRDTs()
-	log.Printf("📊 Current node has %d CRDT objects", len(allCRDTs))
-
-	// Log CRDT state for debugging
-	for key, crdt := range allCRDTs {
-		log.Printf("📋 CRDT %s: %+v", key, crdt)
-	}
-
-	// In simplified mode, we just ensure the local CRDT is ready
-	// The actual sync would happen via the pubsub system in full mode
-	log.Printf("✅ Simplified CRDT sync completed - local CRDT ready for vote aggregation")
-	return nil
 }

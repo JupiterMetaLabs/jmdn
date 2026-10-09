@@ -775,3 +775,18 @@ func TestMaybeStartTimeoutFlow_SignFailureReleasesTheLock(t *testing.T) {
 		t.Fatalf("fixed: a block result for this round must now be signable")
 	}
 }
+
+// Moved from timeout_request.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// resetPeriodCatchUpLimiterForTest replaces defaultPeriodCatchUpLimiter with a
+// fresh, empty one and returns a restore function for t.Cleanup. Exists so a
+// test's call(s) to ensurePeriodForBlock are never rate-limited by another
+// test's prior use of the same height - without this, two tests (or two
+// calls in one test) that reuse a height value across the same `go test`
+// process would silently and non-deterministically interfere with each
+// other via this shared limiter.
+func resetPeriodCatchUpLimiterForTest() (restore func()) {
+	prev := defaultPeriodCatchUpLimiter
+	defaultPeriodCatchUpLimiter = newPeriodCatchUpLimiter()
+	return func() { defaultPeriodCatchUpLimiter = prev }
+}

@@ -3,9 +3,10 @@ package evm
 import (
 	"context"
 	"fmt"
-	"gossipnode/helper"
 	"math/big"
 	"time"
+
+	"gossipnode/helper"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"

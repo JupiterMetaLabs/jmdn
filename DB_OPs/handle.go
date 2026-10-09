@@ -21,8 +21,6 @@ import (
 
 	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
-
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // globalThebeHandle is the process-wide ThebeHandle set once at startup.
@@ -73,28 +71,6 @@ func storeAccountFromStore(a *store.Account) *Account {
 	return &Account{
 		DIDAddress:  a.DIDAddress,
 		Address:     a.Address,
-		Balance:     a.Balance,
-		Nonce:       a.Nonce,
-		TxNonce:     a.TxNonce,
-		TxCountSent: a.TxCountSent,
-		AccountType: a.AccountType,
-		CreatedAt:   a.CreatedAt,
-		UpdatedAt:   a.UpdatedAt,
-		Metadata:    a.Metadata,
-	}
-}
-
-// storeAccountToStore converts a DB_OPs Account to a store.Account.
-// Copies ALL fields including TxNonce and TxCountSent (store.Account has both).
-// The sibling read-direction converter was fixed in STO-01; this write side is
-// the function a future write path will reach for (STO-19) — keep it lossless.
-func storeAccountToStore(a *Account) *store.Account {
-	if a == nil {
-		return nil
-	}
-	return &store.Account{
-		DIDAddress:  a.DIDAddress,
-		Address:     common.Address(a.Address),
 		Balance:     a.Balance,
 		Nonce:       a.Nonce,
 		TxNonce:     a.TxNonce,

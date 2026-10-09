@@ -13,7 +13,6 @@ import (
 var (
 	defaultRegistryFactory  *RegistryFactory
 	registryFactoryInitOnce sync.Once
-	registryFactoryMutex    sync.RWMutex
 )
 
 // RegistryFactory creates contract registry database instances
@@ -57,16 +56,7 @@ func (f *RegistryFactory) CreateRegistryDB(sharedStore contractDB.KVStore) (Regi
 	}
 }
 
-// createImmuRegistryDB creates an ImmuDB-backed RegistryDB
-func (f *RegistryFactory) createImmuRegistryDB() (RegistryDB, error) {
-	// deprecated
-	return nil, fmt.Errorf("immudb deprecated")
-}
-
-// createInMemoryRegistryDB creates an in-memory RegistryDB
-func (f *RegistryFactory) createInMemoryRegistryDB() (RegistryDB, error) {
-	return NewInMemoryRegistryDB(), nil
-}
+// deprecated
 
 // WithContext returns a context-aware wrapper for database operations
 func (f *RegistryFactory) WithContext(ctx context.Context) *ContextualRegistryFactory {

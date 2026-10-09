@@ -8,9 +8,7 @@ import (
 	"sync"
 	"time"
 
-	crdt "github.com/JupiterMetaLabs/avc/crdt"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
-	"gossipnode/AVC/BuddyNodes/DataLayer"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -42,10 +40,12 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		return nil
 	}
 
-	// Get the CRDT layer
-	if listenerNode.CRDTLayer == nil {
-		return fmt.Errorf("CRDT layer not available")
-	}
+	// G3 (legacy-CRDT gate cleanup): this used to require listenerNode.CRDTLayer
+	// != nil before publishing or subscribing at all. buildLocalSyncData below
+	// has since had its legacy branch removed outright (legacy-CRDT migration
+	// Phase 5) — it only ever publishes the v2 engine now, so there is no
+	// legacy guard left to point at. No replacement check needed: nothing
+	// else in this function dereferences listenerNode.CRDTLayer directly.
 
 	// Ensure buddy nodes list is populated from cached consensus if empty
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
@@ -669,24 +669,17 @@ type rawLWWSet struct {
 func buildLocalSyncData(listenerNode *AVCStruct.BuddyNode) map[string]json.RawMessage {
 	syncData := make(map[string]json.RawMessage)
 
-	addAll := func(all map[string]crdt.CRDT) {
-		for key, obj := range all {
-			data, err := json.Marshal(obj)
-			if err != nil {
-				logger().Info(context.Background(), "⚠️ Failed to marshal CRDT for key",
-					ion.String("args", fmt.Sprintf("⚠️ Failed to marshal CRDT for key %s: %v", key, err)))
-				continue
-			}
-			syncData[key] = data
-		}
-	}
+	// Phase 5 continued (legacy-CRDT migration — stop legacy sync): this used
+	// to also publish the entire legacy engine's state (GetAllCRDTs, via a
+	// shared addAll closure) into every outgoing sync message. Unwired, not
+	// deleted — the receive side (mergeCRDTData's legacy branch) was already
+	// unwired; this closes the matching publish side, since nothing has
+	// written new legacy data since Phase 3 and re-shipping a frozen
+	// snapshot forever serves no purpose. The v2 branch below is untouched
+	// and was always independent of this one — different engine, different
+	// guard, no shared state beyond the syncData map both write into (and
+	// their key spaces don't collide, by avcvotes.OwnsKey's own guarantee).
 
-	if listenerNode.CRDTLayer != nil && listenerNode.CRDTLayer.CRDTLayer != nil {
-		addAll(listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs())
-	}
-	// VoteCRDTLayer is nil-guarded, not required: a node mid-migration (or
-	// with JMDN_VOTE_CRDT_V2 never having written anything yet) still
-	// publishes its legacy state exactly as before this stage.
 	if listenerNode.VoteCRDTLayer != nil && listenerNode.VoteCRDTLayer.CRDTLayer != nil {
 		for key, obj := range listenerNode.VoteCRDTLayer.CRDTLayer.GetAllCRDTs() {
 			data, err := json.Marshal(obj)
@@ -713,9 +706,13 @@ func buildLocalSyncData(listenerNode *AVCStruct.BuddyNode) map[string]json.RawMe
 // first, which is what would make the two keyspaces ambiguous instead of
 // merely different.
 func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) error {
-	if listenerNode.CRDTLayer == nil || listenerNode.CRDTLayer.CRDTLayer == nil {
-		return fmt.Errorf("CRDT layer not available")
-	}
+	// G4 (legacy-CRDT gate cleanup): this used to require
+	// listenerNode.CRDTLayer != nil before the loop below even starts,
+	// blocking the v2 branch (OwnsKey -> mergeVoteCRDTElement, which only
+	// touches VoteCRDTLayer) on the legacy engine's readiness. The legacy
+	// branch has since been unwired entirely (W5, Phase 5) and its handler
+	// function deleted outright as dead code once unreferenced — see the
+	// non-v2 branch below, now a plain continue.
 
 	// Get the sender's peer ID (who sent this sync message)
 	senderPeerID, err := peer.Decode(syncMsg.NodeID)
@@ -725,7 +722,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 
 	logger().Info(context.Background(), "🔄 Merging CRDT data from peer", ion.String("args", fmt.Sprintf("🔄 Merging CRDT data from peer %s", senderPeerID.String()[:8])))
 
-	legacyMerged, voteMerged := 0, 0
+	legacyIgnored, voteMerged := 0, 0
 	for key, rawData := range syncMsg.SyncData {
 		if avcvotes.OwnsKey(key) {
 			n, err := mergeVoteCRDTElement(listenerNode, senderPeerID, key, rawData)
@@ -738,45 +735,29 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 			continue
 		}
 
-		n, err := mergeLegacyVoteElement(listenerNode, key, rawData)
-		if err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to merge legacy CRDT for key",
-				ion.String("args", fmt.Sprintf("⚠️ Failed to merge legacy CRDT for key %s: %v", key, err)))
-			continue
-		}
-		legacyMerged += n
+		// W5 (legacy-CRDT migration, Phase 5 — stop legacy sync): this key
+		// isn't a v2 key (OwnsKey returned false), so it used to go to a
+		// legacy merge helper. That call was unwired here, and the helper
+		// itself was later deleted once nothing referenced it (it had become
+		// genuinely dead code, not merely unwired — unlike W1-W4's legacy
+		// writes, which stay defined but unreferenced; see W1's comment in
+		// Vote/Trigger.go for that reasoning). A not-yet-upgraded peer's
+		// legacy keys arriving in a mixed-fleet sync message are silently
+		// ignored here, same as any other merge error already was (continue,
+		// not an aborted message — see the OwnsKey branch above). Counted,
+		// not discarded silently: legacyIgnored is the one signal left that
+		// a peer is still sending legacy keys during the soak window — a
+		// nonzero count here means a mixed-fleet peer, not that anything was
+		// merged (nothing is, by design).
+		legacyIgnored++
+		continue
 	}
 
 	logger().Info(context.Background(), "✅ Completed merging CRDT data from peer",
-		ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s (%d legacy, %d v2 elements)",
-			senderPeerID.String()[:8], legacyMerged, voteMerged)))
+		ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s (%d legacy keys ignored, %d v2 elements merged)",
+			senderPeerID.String()[:8], legacyIgnored, voteMerged)))
 
 	return nil
-}
-
-// mergeLegacyVoteElement applies one remote CRDT object's elements into the
-// legacy engine, keyed by the voting peer's own ID — unchanged behavior from
-// before Stage 3, just factored out of mergeCRDTData's loop body.
-func mergeLegacyVoteElement(listenerNode *AVCStruct.BuddyNode, votePeerIDStr string, rawData json.RawMessage) (merged int, err error) {
-	votePeerID, err := peer.Decode(votePeerIDStr)
-	if err != nil {
-		return 0, fmt.Errorf("invalid peer ID in sync data: %w", err)
-	}
-
-	var remoteCRDT rawLWWSet
-	if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
-		return 0, fmt.Errorf("unmarshaling CRDT: %w", err)
-	}
-
-	for element := range remoteCRDT.Adds {
-		if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to add vote element to CRDT for peer",
-				ion.String("args", fmt.Sprintf("⚠️ Failed to add vote element to CRDT for peer %s: %v", votePeerIDStr[:8], err)))
-			continue
-		}
-		merged++
-	}
-	return merged, nil
 }
 
 // mergeVoteCRDTElement applies one remote block-keyed CRDT object's elements
@@ -785,8 +766,8 @@ func mergeLegacyVoteElement(listenerNode *AVCStruct.BuddyNode, votePeerIDStr str
 // re-parsing elements back into a votes.VoteRecord and re-calling AddVote:
 // a votes: element is only "<peerID>:<vote>", with height/blockHash implicit
 // in the KEY, not recoverable from the element alone, so AddVote's own
-// signature does not fit a merge. This mirrors mergeLegacyVoteElement's own
-// shape exactly, just against the other engine.
+// signature does not fit a merge. This mirrored the shape of the now-deleted
+// legacy merge helper exactly, just against the other engine.
 //
 // senderPeerID is attributed as the writing actor for this merge — the same
 // role votePeerID plays in the legacy path — not the original voter, which

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +35,7 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	}
 
 	// Read the source code
-	sourceCode, err := ioutil.ReadFile(sourcePath)
+	sourceCode, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read source file: %w", err)
 	}
@@ -94,7 +93,7 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	standardJSONInput := string(standardJSONInputBytes)
 
 	// Create a temporary file for the JSON input
-	inputFile, err := ioutil.TempFile("", "solc-input-*.json")
+	inputFile, err := os.CreateTemp("", "solc-input-*.json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -167,7 +166,7 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 			// Save artifact to disk
 			artifactPath := filepath.Join(artifactsDir, contractName+".json")
 			artifactData, _ := json.MarshalIndent(contracts[contractName], "", "  ")
-			if err := ioutil.WriteFile(artifactPath, artifactData, 0644); err != nil {
+			if err := os.WriteFile(artifactPath, artifactData, 0644); err != nil {
 				logger().Error(context.Background(), "Failed to write contract artifact", err,
 					ion.String("path", artifactPath))
 			}

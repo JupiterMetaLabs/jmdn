@@ -208,3 +208,13 @@ func TestValidateBootstrapFitsRetention_Boundary(t *testing.T) {
 		t.Fatalf("want ErrBootstrapSpanExceedsRetention, got %v", err)
 	}
 }
+
+// Moved from beacon_bootstrap.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// resetBootstrapEpochs clears the recorded set. Test helper; production
+// installs once per process.
+func resetBootstrapEpochs() {
+	bootstrapEpochsMu.Lock()
+	bootstrapEpochs = map[uint64]struct{}{}
+	bootstrapEpochsMu.Unlock()
+}

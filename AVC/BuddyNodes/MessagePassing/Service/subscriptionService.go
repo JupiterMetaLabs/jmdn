@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	common "gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -232,12 +230,12 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// field the publisher fills in itself and is no longer read here.
 		//
 		// WHY A COMPARISON WAS NOT THE FIX. Rejecting on
-		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted
-		// (4d621ea): handleSubmitVote used to republish a direct-stream vote
-		// to pubsub under the RELAYER's identity, so the two disagreed on every
-		// honest relay too and no guard at this layer could tell relay from
+		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted:
+		// handleSubmitVote used to republish a direct-stream vote to pubsub
+		// under the RELAYER's identity, so the two disagreed on every honest
+		// relay too and no guard at this layer could tell relay from
 		// forgery. The fix was to remove the ambiguity instead of trying to
-		// judge it: phase 1 (f430919) made every voter publish its own vote
+		// judge it: phase 1 made every voter publish its own vote
 		// under its own identity, and phase 2 (this change) dropped that
 		// republish and re-keyed here. There is now exactly one sender for a
 		// vote, and it is authenticated by the transport.
@@ -269,10 +267,17 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		// listenerNode was already retrieved above for self-loop check
-		if listenerNode == nil || listenerNode.CRDTLayer == nil {
-			logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+		// G1 (legacy-CRDT gate cleanup): this used to also require
+		// listenerNode.CRDTLayer != nil, blocking the v2 ingest call below
+		// (IngestValidatorVote) on the legacy engine's readiness even though
+		// it only writes to VoteCRDTLayer. The legacy write that guard used
+		// to also protect has since been removed outright (W4, legacy-CRDT
+		// migration Phase 3) — there is no remaining CRDTLayer reference in
+		// this file to guard.
+		if listenerNode == nil {
+			logger().Error(logger_ctx, "Listener node not initialized", nil,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
-			return errors.New("listener node or CRDT layer not initialized")
+			return errors.New("listener node not initialized")
 		}
 
 		// Add vote to CRDT directly
@@ -331,14 +336,15 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			}
 
 			// "Count every validator's vote in the buddy tally again" LLD, C5:
-			// ingest into the v2, block-keyed vote CRDT FIRST — the only
-			// keyspace the tally reads — and independently of the legacy
-			// write below (D6). Ordered before the legacy write deliberately:
-			// that write's own failure path below returns an error, and a
-			// legacy-CRDT hiccup must never cost a vote the tally would
-			// otherwise have counted. Keyed on msg.Sender, the same
-			// authenticated identity the legacy write below uses (D-26a),
-			// never msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
+			// ingest into the v2, block-keyed vote CRDT — the only keyspace
+			// the tally reads. This used to be ordered deliberately ahead of
+			// a legacy write below it, so that write's own failure path
+			// could never cost a vote the tally would otherwise have
+			// counted — that legacy write was removed outright (W4,
+			// legacy-CRDT migration Phase 3), so there is nothing left to be
+			// ordered ahead of; this call is now simply the ingest. Keyed on
+			// msg.Sender, the authenticated identity (D-26a), never
+			// msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
 			// simply not counted, logged, not an error.
 			if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, msg.Sender, msg.Data.Message, "pubsub"); err != nil {
 				logger().Warn(logger_ctx, "validator vote: v2 CRDT ingest failed (vote not counted by this buddy)",
@@ -347,26 +353,11 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			}
 
-			OP := &Types.OP{
-				NodeID: msg.Sender,
-				OpType: int8(1), // 1 for add, -1 for remove
-				KeyValue: Types.KeyValue{
-					Key:   msg.Sender.String(), // authenticated peer ID — separates votes by real sender
-					Value: msg.Data.Message,
-				},
-			}
-
-			result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
-			if err, ok := result.(error); ok && err != nil {
-				logger().Error(logger_ctx, "Failed to add vote to CRDT", err,
-					ion.String("function", "SubscriptionService.handleReceivedMessage"))
-				return errors.New("failed to add vote to local CRDT Engine: " + err.Error())
-			}
-
-			logger().Info(logger_ctx, "Successfully added vote to CRDT",
-				ion.String("topic", config.PubSub_ConsensusChannel),
-				ion.String("sender", msg.Sender.String()),
-				ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			// W4 (legacy-CRDT migration, Phase 3 — stop legacy writes): this
+			// used to also write the authenticated sender's vote into the
+			// legacy CRDT. Not deleted outright — see W1's comment in
+			// Vote/Trigger.go for why. The v2 ingest above is independent
+			// and unaffected.
 
 			// Only trigger vote processing once (check if already triggered)
 			voteProcessingMutex.Lock()
@@ -782,8 +773,13 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 // processVotesAndTriggerBFT processes votes from CRDT and triggers BFT consensus
 // If blockHash is empty, processing is skipped to avoid mixing votes from different blocks
 func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string, blockHeight uint64) {
-	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		err := errors.New("cannot process votes - listener node or CRDT layer not initialized")
+	// G2 (legacy-CRDT gate cleanup): this used to also require
+	// listenerNode.CRDTLayer != nil, blocking this function's only real work
+	// (Structs.ProcessVotesFromCRDT below, v2-only) on the legacy engine's
+	// readiness. No legacy write happens in this function, so no replacement
+	// check is needed.
+	if listenerNode == nil {
+		err := errors.New("cannot process votes - listener node not initialized")
 		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
