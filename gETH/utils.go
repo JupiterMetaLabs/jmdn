@@ -5,20 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
-	"sort"
 )
-
-type dbServer struct {
-	defaultdb  config.PooledConnection
-	accountsdb config.PooledConnection
-}
-
-// __DEAD_CODE_AUDIT__
-func initDBs() (dbServer, error) {
-	return dbServer{}, nil
-}
 
 func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) ([]*proto.Transaction, error) {
 	var transactions []*proto.Transaction

@@ -81,15 +81,6 @@ func (c *negativeCache) store(hash string) {
 	c.entries[hash] = c.now().Add(c.ttl)
 }
 
-func (c *negativeCache) len() int {
-	if c == nil {
-		return 0
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // tokenBucket — caps the sustained status-lookup rate
 // ─────────────────────────────────────────────────────────────────────────────

@@ -8,11 +8,12 @@ import (
 
 	"errors"
 	"fmt"
-	"github.com/JupiterMetaLabs/ion"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JupiterMetaLabs/ion"
 
 	"encoding/json"
 

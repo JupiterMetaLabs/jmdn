@@ -426,3 +426,9 @@ func TestSetEpochFinalisedHook_NotifiesRegisteredHook(t *testing.T) {
 		t.Fatalf("hook got (%d, %s), want (11, %s)", gotEpoch, gotSeed, want)
 	}
 }
+
+// Moved from entropy_finalise.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
+	notifyEpochFinalisedWithOutcome(closedEpoch, seed, "")
+}

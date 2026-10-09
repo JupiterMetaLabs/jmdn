@@ -3,9 +3,10 @@ package Logger
 import (
 	"context"
 	"fmt"
-	"gossipnode/logging"
 	"sync"
 	"time"
+
+	"gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 )

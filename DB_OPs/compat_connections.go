@@ -57,11 +57,6 @@ func GetMainDBConnectionandPutBack(_ context.Context) (*config.PooledConnection,
 // Deprecated: migrate callers to use getHandle() directly.
 func PutMainDBConnection(_ *config.PooledConnection) {}
 
-// ensureMainDBSelected is a no-op for ThebeDB — no database selection is needed.
-//
-// Deprecated: remove callers.
-func ensureMainDBSelected(_ *config.PooledConnection) error { return nil }
-
 // ---------------------------------------------------------------------------
 // Accounts DB connection pool shims (were in Account_Connections.go)
 // ---------------------------------------------------------------------------

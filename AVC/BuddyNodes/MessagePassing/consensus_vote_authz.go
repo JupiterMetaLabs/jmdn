@@ -52,11 +52,6 @@ import (
 // of that, not just a naming convention or a comment.
 var voteRequesterAuthorizer func(peer.ID) bool
 
-// setVoteRequesterAuthorizerForTest overrides the built-in committee-
-// membership check. Test-only -- see voteRequesterAuthorizer's comment for
-// why this is unexported rather than merely documented as test-only.
-func setVoteRequesterAuthorizerForTest(fn func(peer.ID) bool) { voteRequesterAuthorizer = fn }
-
 // authorizedRequesterSource supplies the AUTHORITATIVE set of peers allowed
 // to request this node's signed vote, plus an `ok` flag telling whether that
 // set could be resolved right now. Wired unconditionally at startup from two

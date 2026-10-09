@@ -158,4 +158,3 @@ func TestUnpinnedModulusRefusedInProductionDespiteOverride(t *testing.T) {
 		t.Fatalf("want ErrUnpinnedModulusInProduction, got %v", err)
 	}
 }
-

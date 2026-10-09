@@ -30,7 +30,6 @@ const ListeningTriggerMessage = "ListeningTrigger"
 const ListeningTriggerBufferTime = 20 * time.Second
 const CRDTDataSubmitBufferTime = 25 * time.Second
 
-
 const BFTTriggerBufferTime = 30 * time.Second
 
 // Global variables for trigger management
@@ -70,7 +69,6 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 	log.Printf("Triggers initialized with subscription service and BFT engine")
 	return nil
 }
-
 
 func ListeningTrigger(blockhash string) {
 	time.AfterFunc(ListeningTriggerBufferTime, func() {
@@ -480,5 +478,3 @@ func (w *BFTMessageHandlerWrapper) ProposeConsensus(
 		Decision:      PubSubConnector.Decision(result.Decision),
 	}, nil
 }
-
-

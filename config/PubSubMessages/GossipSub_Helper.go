@@ -10,6 +10,7 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+
 	log "gossipnode/logging"
 )
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
-	"gossipnode/AVC/BuddyNodes/DataLayer"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -751,31 +750,6 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 			senderPeerID.String()[:8], legacyMerged, voteMerged)))
 
 	return nil
-}
-
-// mergeLegacyVoteElement applies one remote CRDT object's elements into the
-// legacy engine, keyed by the voting peer's own ID — unchanged behavior from
-// before Stage 3, just factored out of mergeCRDTData's loop body.
-func mergeLegacyVoteElement(listenerNode *AVCStruct.BuddyNode, votePeerIDStr string, rawData json.RawMessage) (merged int, err error) {
-	votePeerID, err := peer.Decode(votePeerIDStr)
-	if err != nil {
-		return 0, fmt.Errorf("invalid peer ID in sync data: %w", err)
-	}
-
-	var remoteCRDT rawLWWSet
-	if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
-		return 0, fmt.Errorf("unmarshaling CRDT: %w", err)
-	}
-
-	for element := range remoteCRDT.Adds {
-		if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
-			logger().Info(context.Background(), "⚠️ Failed to add vote element to CRDT for peer",
-				ion.String("args", fmt.Sprintf("⚠️ Failed to add vote element to CRDT for peer %s: %v", votePeerIDStr[:8], err)))
-			continue
-		}
-		merged++
-	}
-	return merged, nil
 }
 
 // mergeVoteCRDTElement applies one remote block-keyed CRDT object's elements

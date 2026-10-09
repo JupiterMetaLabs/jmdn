@@ -36,27 +36,6 @@ package Vote
 // as a var (not a const) only because existing tests and other packages
 // still reference the symbol; do not reintroduce an env branch here.
 
-import (
-	"os"
-	"strings"
-)
-
-// envOn mirrors the same helper duplicated in Security, messaging, and
-// internal/reputation — it's unexported everywhere, so it's copied here
-// rather than imported (no shared exported utility exists for this).
-func envOn(key string, def bool) bool {
-	v, ok := os.LookupEnv(key)
-	if !ok {
-		return def
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
-}
-
 // VoteCRDTDualWrite used to gate the additive write into the new
 // block-keyed vote CRDT via JMDN_VOTE_CRDT_V2 (default off). It is now
 // permanently true — see the package doc comment above (D-26(a)/D-51

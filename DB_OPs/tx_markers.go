@@ -38,14 +38,10 @@ import (
 // convention already used for tx_processing cleanup (Processing.go).
 const MarkerRevoked = int64(-1)
 
-// maxMarkerBatch chunks marker writes. ThebeDB's BadgerDB store has no
-// ExecAll-style 1024-entry commit cap (the C2 chain-halt class) — writes are
-// per-key — but chunking keeps failure windows small and bounded.
-const maxMarkerBatch = 500
-
 // TxProcessedKey / BlockProcessedKey build the marker keys. Formats are frozen —
 // they must match the legacy populations already on disk.
-func TxProcessedKey(txHash string) string       { return "tx_processed:" + txHash }
+func TxProcessedKey(txHash string) string { return "tx_processed:" + txHash }
+
 // __DEAD_CODE_AUDIT_PUBLIC__
 func TxProcessingKey(txHash string) string      { return "tx_processing:" + txHash }
 func BlockProcessedKey(blockHash string) string { return "block_processed:" + blockHash }

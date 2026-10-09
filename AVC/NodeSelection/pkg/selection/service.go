@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 
 	"github.com/JupiterMetaLabs/ion"
+
 	seednode "gossipnode/seednode"
 )
 

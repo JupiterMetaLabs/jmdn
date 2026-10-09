@@ -18,6 +18,8 @@ package Vote
 // stated plainly rather than glossed over.
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
@@ -151,5 +153,23 @@ func TestAddVote_RejectsEmptyPeerIDRegardlessOfSignature(t *testing.T) {
 	}
 	if err := avcvotes.AddVote(&voteEngine, peer.ID(""), rec); err == nil {
 		t.Fatal("AddVote accepted an empty peer ID")
+	}
+}
+
+// Moved from vote_crdt_v2.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// envOn mirrors the same helper duplicated in Security, messaging, and
+// internal/reputation — it's unexported everywhere, so it's copied here
+// rather than imported (no shared exported utility exists for this).
+func envOn(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
 }

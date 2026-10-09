@@ -744,13 +744,6 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	}
 }
 
-// __DEAD_CODE_AUDIT__
-func (h *CommandHandler) handleSyncInfo() {
-	fmt.Println("FastSync Configuration (V2):")
-	fmt.Println("  sync engine: ThebeSync (FastSync v4) — use 'catchup'")
-	printDashes()
-}
-
 func (h *CommandHandler) handleGetDID(parts []string) {
 	if len(parts) != 2 {
 		fmt.Println("Usage: getDID <did>")
@@ -900,14 +893,6 @@ func (h *CommandHandler) handleDiscoverNeighbors() {
 	printDashes()
 }
 
-// __DEAD_CODE_AUDIT__
-func (h *CommandHandler) checkDBClient() error {
-	if h.MainClient == nil {
-		return fmt.Errorf("database client not initialized")
-	}
-	return nil
-}
-
 // LatencyStats holds latency measurement results
 type LatencyStats struct {
 	Average    float64
@@ -974,14 +959,6 @@ func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
 	}
 
 	return stats
-}
-
-// checkDIDClient ensures the DID database client is properly initialized before use
-func (h *CommandHandler) checkDIDClient() error {
-	if h.DIDClient == nil {
-		return fmt.Errorf("DID database client not initialized")
-	}
-	return nil
 }
 
 // handleGethStatus displays the current gETH configuration

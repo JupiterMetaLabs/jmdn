@@ -111,10 +111,6 @@ func SetEpochFinalisedHook(f func(closedEpoch uint64, seed randao.Seed)) {
 	epochFinalisedHookMu.Unlock()
 }
 
-func notifyEpochFinalised(closedEpoch uint64, seed randao.Seed) {
-	notifyEpochFinalisedWithOutcome(closedEpoch, seed, "")
-}
-
 // notifyEpochFinalisedWithOutcome is notifyEpochFinalised with the outcome
 // label recorded alongside the durable mix ("mixed" / "fallback").
 func notifyEpochFinalisedWithOutcome(closedEpoch uint64, seed randao.Seed, outcome string) {
