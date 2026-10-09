@@ -39,8 +39,10 @@ func TestOutboxWorker_FailedRetryDoesNotReEnqueue(t *testing.T) {
 	if store.incrCount() != 1 {
 		t.Fatalf("want exactly 1 IncrementAttempts for the existing row, got %d", store.incrCount())
 	}
-	if store.enqueueCalls != 0 {
-		t.Fatalf("a failed RETRY must not enqueue a new row (amplification), got %d Enqueue calls", store.enqueueCalls)
+	// Locked accessor, not the raw field: the worker goroutine writes
+	// enqueueCalls and Stop() does not wait for it.
+	if n := store.enqueueCount(); n != 0 {
+		t.Fatalf("a failed RETRY must not enqueue a new row (amplification), got %d Enqueue calls", n)
 	}
 	if store.ackCount() != 0 {
 		t.Fatalf("failed retry must not Ack, got %d", store.ackCount())
@@ -57,8 +59,8 @@ func TestRetryGateway_OnlyRetryVariantSkipsEnqueue(t *testing.T) {
 	if err := gw.WriteBlock(context.Background(), &thebegateway.BlockRecord{BlockNumber: 1}); err == nil {
 		t.Fatal("expected error")
 	}
-	if out.enqueueCalls != 1 {
-		t.Fatalf("normal gateway: want 1 Enqueue, got %d", out.enqueueCalls)
+	if n := out.enqueueCount(); n != 1 {
+		t.Fatalf("normal gateway: want 1 Enqueue, got %d", n)
 	}
 
 	rp, ok := gw.(interface {
@@ -70,8 +72,8 @@ func TestRetryGateway_OnlyRetryVariantSkipsEnqueue(t *testing.T) {
 	if err := rp.RetryGateway().WriteBlock(context.Background(), &thebegateway.BlockRecord{BlockNumber: 2}); err == nil {
 		t.Fatal("expected error")
 	}
-	if out.enqueueCalls != 1 {
-		t.Fatalf("retry gateway: Enqueue count must stay 1, got %d", out.enqueueCalls)
+	if n := out.enqueueCount(); n != 1 {
+		t.Fatalf("retry gateway: Enqueue count must stay 1, got %d", n)
 	}
 }
 

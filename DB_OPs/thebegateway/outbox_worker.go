@@ -46,6 +46,10 @@ const ExhaustedRetention = 7 * 24 * time.Hour
 // (720 × 5 s ≈ 1 h at the recommended interval).
 const maintenanceEvery = 720
 
+// maintenanceTimeout caps one prune+compact pass. It is also the worst case a
+// pass could outlive Stop() if it were not cancelled — see maintain().
+const maintenanceTimeout = time.Minute
+
 // retryGatewayProvider is implemented by the real gateway: it hands back a
 // variant that never re-enqueues on failure. The worker MUST retry through
 // such a gateway, otherwise every failed retry adds a new row.
@@ -111,6 +115,14 @@ func (w *OutboxWorker) run() {
 			w.ticks++
 			if w.ticks >= maintenanceEvery {
 				w.ticks = 0
+				// Don't begin an hour-scale maintenance pass while shutting
+				// down; maintain() also aborts in flight if Stop() lands
+				// mid-pass.
+				select {
+				case <-w.stop:
+					return
+				default:
+				}
 				w.maintain()
 			}
 		}
@@ -139,13 +151,30 @@ func (w *OutboxWorker) drainBatch() {
 // maintain drops exhausted rows older than ExhaustedRetention and asks the
 // store to reclaim free pages. Best-effort: errors are ignored, the worker
 // must never crash on maintenance.
+//
+// Shutdown: run() only re-checks w.stop between ticks, so a pass that has
+// already begun would otherwise keep writing to the outbox for up to
+// maintenanceTimeout after Stop() returned — and Stop() does not wait for this
+// goroutine. The context is therefore cancelled as soon as w.stop closes, so an
+// in-flight PruneExhausted/Compact aborts instead of outliving shutdown.
 func (w *OutboxWorker) maintain() {
 	m, ok := w.store.(outboxMaintainer)
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), maintenanceTimeout)
 	defer cancel()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-w.stop:
+			cancel()
+		case <-done:
+		}
+	}()
+
 	_, _ = m.PruneExhausted(ctx, ExhaustedRetention)
 	_ = m.Compact(ctx)
 }
