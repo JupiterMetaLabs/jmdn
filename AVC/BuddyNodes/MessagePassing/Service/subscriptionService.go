@@ -235,7 +235,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// under the RELAYER's identity, so the two disagreed on every honest
 		// relay too and no guard at this layer could tell relay from
 		// forgery. The fix was to remove the ambiguity instead of trying to
-		// judge it: phase 1 (f430919) made every voter publish its own vote
+		// judge it: phase 1 made every voter publish its own vote
 		// under its own identity, and phase 2 (this change) dropped that
 		// republish and re-keyed here. There is now exactly one sender for a
 		// vote, and it is authenticated by the transport.

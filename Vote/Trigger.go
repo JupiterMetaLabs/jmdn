@@ -268,11 +268,14 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// permanently true and has been removed with its file. DO NOT
 	// reintroduce an env gate here: the cutover ships as one coordinated
 	// fleet-wide restart, and a node silently missing the toggle would run
-	// with an inert v2 keyspace (D-51's own finding). The legacy write that used to sit above is gone (W1) —
-	// its only consumer, voterPeerIDsForBlock, was ported to the v2
-	// BlockVoteKey lookup rather than kept on the legacy path. Nothing here
-	// may affect vt.Vote, blockHash, or this function's return value, and a
-	// failure here is logged and dropped, not fatal.
+	// with an inert v2 keyspace (D-51's own finding).
+	//
+	// The legacy write that used to sit above is gone (W1) — its only
+	// consumer, voterPeerIDsForBlock, was ported to the v2 BlockVoteKey
+	// lookup rather than kept on the legacy path. Nothing here may affect
+	// vt.Vote, blockHash, or this function's return value, and a failure
+	// here is logged and dropped, not fatal.
+
 	// Per-vote BLS signature. Nothing in the codebase signed individual votes
 	// before this cutover — the existing signer only produces an AGGREGATED
 	// result at tally time (ListenerHandler.go). Same domain, same key

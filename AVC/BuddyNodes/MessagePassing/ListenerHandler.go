@@ -1128,7 +1128,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		// the two legitimately disagreed. A guard comparing them was tried
 		// (617dd0e) and reverted for exactly that reason.
 		//
-		// Phase 1 (f430919) removed the NEED for it: every voter now publishes
+		// Phase 1 removed the NEED for it: every voter now publishes
 		// its own vote to PubSub_ConsensusChannel under its own authenticated
 		// identity, in addition to the direct-stream send. With that in place
 		// the relay only produced a duplicate — inert for the tally, since the

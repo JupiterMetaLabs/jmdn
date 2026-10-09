@@ -37,8 +37,8 @@ import (
 // not env-gated, and a const so the dead branch below is provable — the legacy path below (processVotesFromCRDT_legacy)
 // has no per-vote signature and keys its CRDT write on an unauthenticated
 // payload field; a naive fix at that ingest point was tried and reverted
-// (18806fb) because it also rejects legitimate direct-stream-to-pubsub vote
-// relay, which is indistinguishable from forgery at that layer. The real
+// (pre-v3base history) because it also rejects legitimate direct-stream-to-pubsub
+// vote relay, which is indistinguishable from forgery at that layer. The real
 // authentication boundary is HERE, at tally time, via TallyBlock's
 // committee-registered-pubkey + BLS-signature check — so this is the one
 // flag flip that actually matters, and it ships in the same coordinated
