@@ -36,6 +36,30 @@ import (
 
 const defaultBatchSize = 32
 
+// ExhaustedRetention is how long an entry that hit MaxOutboxAttempts is kept
+// for operator inspection before PruneExhausted drops it. Exhausted rows used
+// to be retained forever; combined with the retry-amplification bug fixed in
+// RetryGateway that let outbox.db grow without bound.
+const ExhaustedRetention = 7 * 24 * time.Hour
+
+// maintenanceEvery is the number of poll ticks between prune+compact passes
+// (720 × 5 s ≈ 1 h at the recommended interval).
+const maintenanceEvery = 720
+
+// retryGatewayProvider is implemented by the real gateway: it hands back a
+// variant that never re-enqueues on failure. The worker MUST retry through
+// such a gateway, otherwise every failed retry adds a new row.
+type retryGatewayProvider interface {
+	RetryGateway() ThebeGateway
+}
+
+// outboxMaintainer is optionally implemented by the store (the SQLite store
+// does); the worker uses it to prune exhausted rows and reclaim file space.
+type outboxMaintainer interface {
+	PruneExhausted(ctx context.Context, olderThan time.Duration) (int64, error)
+	Compact(ctx context.Context) error
+}
+
 // OutboxWorker polls OutboxStore on a fixed interval and retries failed
 // ThebeGateway writes with exponential backoff. One goroutine, sequential
 // dispatch — no thundering-herd on a recovering ThebeDB.
@@ -45,11 +69,15 @@ type OutboxWorker struct {
 	interval time.Duration
 	stop     chan struct{}
 	once     sync.Once // guards Stop() — closing a closed channel panics
+	ticks    int       // poll ticks since the last maintenance pass
 }
 
 // NewOutboxWorker creates an OutboxWorker. Call Start() to begin polling.
 // interval: how often to poll the outbox (recommended: 5s).
 func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Duration) *OutboxWorker {
+	if p, ok := gateway.(retryGatewayProvider); ok {
+		gateway = p.RetryGateway()
+	}
 	return &OutboxWorker{
 		store:    store,
 		gateway:  gateway,
@@ -80,6 +108,11 @@ func (w *OutboxWorker) run() {
 			return
 		case <-ticker.C:
 			w.drainBatch()
+			w.ticks++
+			if w.ticks >= maintenanceEvery {
+				w.ticks = 0
+				w.maintain()
+			}
 		}
 	}
 }
@@ -101,6 +134,20 @@ func (w *OutboxWorker) drainBatch() {
 			_ = w.store.Ack(ctx, entry.ID)
 		}
 	}
+}
+
+// maintain drops exhausted rows older than ExhaustedRetention and asks the
+// store to reclaim free pages. Best-effort: errors are ignored, the worker
+// must never crash on maintenance.
+func (w *OutboxWorker) maintain() {
+	m, ok := w.store.(outboxMaintainer)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, _ = m.PruneExhausted(ctx, ExhaustedRetention)
+	_ = m.Compact(ctx)
 }
 
 // dispatch is the ONE place switch/case on Namespace is allowed.

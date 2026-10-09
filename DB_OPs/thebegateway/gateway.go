@@ -56,6 +56,23 @@ type thebeGateway struct {
 	kv       ThebeKVStore // direct KV writes for contract data
 	cache    cache.Cache
 	outbox   OutboxStore
+	// retrying marks the gateway handed to the OutboxWorker. A retry that
+	// fails must NOT enqueue a fresh outbox row — the row being retried is
+	// still there and IncrementAttempts is the only bookkeeping that happens.
+	// Before this flag existed every failed retry inserted a new row with
+	// attempts=0 while the original was also incremented, so one unwritable
+	// record multiplied geometrically for as long as ThebeDB was down (the
+	// 1.3 GB outbox.db files on the Oct 3 devnet).
+	retrying bool
+}
+
+// RetryGateway returns a gateway that performs the same writes but never
+// enqueues to the outbox on failure. NewOutboxWorker calls this automatically
+// when the gateway it is given supports it.
+func (g *thebeGateway) RetryGateway() ThebeGateway {
+	cp := *g
+	cp.retrying = true
+	return &cp
 }
 
 // NewThebeGateway constructs a ThebeGateway. All deps are interfaces.
@@ -93,6 +110,11 @@ func (g *thebeGateway) write(
 		Timestamp: uint64(time.Now().UnixNano()),
 	})
 	if err != nil {
+		if g.retrying || g.outbox == nil {
+			// Retry path (or no outbox configured): report the failure; the
+			// worker increments the existing row's attempts.
+			return fmt.Errorf("thebeGateway.%s: append: %w", method, err)
+		}
 		if outboxErr := g.outbox.Enqueue(ctx, OutboxEntry{
 			Namespace:   ns,
 			Method:      method,

@@ -85,6 +85,17 @@ const (
 	sqlMaxID = `SELECT COALESCE(MAX(id), 0) FROM thebe_outbox`
 
 	sqlDeleteAfter = `DELETE FROM thebe_outbox WHERE id > ?`
+
+	// Exhausted rows (attempts >= MaxOutboxAttempts) older than the cutoff.
+	sqlPruneExhausted = `DELETE FROM thebe_outbox WHERE attempts >= ? AND created_at < ?`
+
+	// Connection setup. WAL keeps the single-writer worker from blocking the
+	// enqueueing apply path; auto_vacuum=INCREMENTAL lets Compact return freed
+	// pages to the OS (full VACUUM would lock the file). auto_vacuum only takes
+	// effect for a NEW file or after one manual VACUUM — an existing outbox.db
+	// that has already grown must be VACUUMed once by the operator.
+	sqlPragmas = `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA auto_vacuum=INCREMENTAL;`
+	sqlCompact = `PRAGMA incremental_vacuum;`
 )
 
 type sqliteOutboxStore struct {
@@ -103,6 +114,11 @@ func NewOutboxStore(dbPath string) (OutboxStore, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("outbox: ping sqlite3: %w", err)
+	}
+
+	if _, err := db.ExecContext(context.Background(), sqlPragmas); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("outbox: pragmas: %w", err)
 	}
 
 	if _, err := db.ExecContext(context.Background(), sqlCreateOutboxTable); err != nil {
@@ -226,6 +242,29 @@ func (s *sqliteOutboxStore) RequeueExhausted(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("outbox: requeue exhausted rows: %w", err)
 	}
 	return int(n), nil
+}
+
+// PruneExhausted deletes entries that have reached MaxOutboxAttempts and were
+// created more than olderThan ago. Returns the number removed. Exhausted rows
+// are otherwise retained (RequeueExhausted can still revive the recent ones).
+// Time: O(rows deleted) via idx_outbox_next_retry_v2 partial scan.
+func (s *sqliteOutboxStore) PruneExhausted(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan).Unix()
+	res, err := s.db.ExecContext(ctx, sqlPruneExhausted, MaxOutboxAttempts, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: prune exhausted: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// Compact returns free pages to the filesystem (PRAGMA incremental_vacuum).
+// A no-op unless the file was created with auto_vacuum=INCREMENTAL (see
+// sqlPragmas) — for an outbox.db that predates that, run VACUUM once.
+func (s *sqliteOutboxStore) Compact(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, sqlCompact); err != nil {
+		return fmt.Errorf("outbox: compact: %w", err)
+	}
+	return nil
 }
 
 // MaxID returns the highest entry id currently in the table, or 0 when empty.
