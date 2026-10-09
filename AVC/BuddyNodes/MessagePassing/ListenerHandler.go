@@ -1093,12 +1093,13 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 
 	if _, exists := voteData["vote"]; exists {
 		// "Count every validator's vote in the buddy tally again" LLD, C4:
-		// ingest into the v2, block-keyed vote CRDT FIRST — the only keyspace
-		// the tally reads — and independently of the legacy write below (D6:
-		// kept as-is for other legacy readers). Ordered before the legacy
-		// write deliberately: that write's own failure path below returns
-		// early, and a legacy-CRDT hiccup must never cost a vote the tally
-		// would otherwise have counted. Non-fatal either way: an unsigned or
+		// ingest into the v2, block-keyed vote CRDT — the only keyspace the
+		// tally reads. This used to be ordered deliberately ahead of a
+		// legacy write below it, so that write's own early-return failure
+		// path could never cost a vote the tally would otherwise have
+		// counted — that legacy write was removed outright (W2, legacy-CRDT
+		// migration Phase 3), so there is nothing left to be ordered ahead
+		// of; this call is now simply the ingest. Non-fatal: an unsigned or
 		// malformed vote (e.g. from a validator with no BLS key material, or
 		// a pre-upgrade peer) is simply not counted, logged, not an error.
 		if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, remotePeer, message.Message, "direct"); err != nil {
@@ -1125,7 +1126,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		// payload kept the original voter's, which is precisely why the vote
 		// CRDT could not key on the authenticated sender: on every honest relay
 		// the two legitimately disagreed. A guard comparing them was tried
-		// (617dd0e) and reverted (4d621ea) for exactly that reason.
+		// (617dd0e) and reverted for exactly that reason.
 		//
 		// Phase 1 (f430919) removed the NEED for it: every voter now publishes
 		// its own vote to PubSub_ConsensusChannel under its own authenticated

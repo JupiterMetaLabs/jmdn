@@ -230,10 +230,10 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// field the publisher fills in itself and is no longer read here.
 		//
 		// WHY A COMPARISON WAS NOT THE FIX. Rejecting on
-		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted
-		// (4d621ea): handleSubmitVote used to republish a direct-stream vote
-		// to pubsub under the RELAYER's identity, so the two disagreed on every
-		// honest relay too and no guard at this layer could tell relay from
+		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted:
+		// handleSubmitVote used to republish a direct-stream vote to pubsub
+		// under the RELAYER's identity, so the two disagreed on every honest
+		// relay too and no guard at this layer could tell relay from
 		// forgery. The fix was to remove the ambiguity instead of trying to
 		// judge it: phase 1 (f430919) made every voter publish its own vote
 		// under its own identity, and phase 2 (this change) dropped that
@@ -336,14 +336,15 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			}
 
 			// "Count every validator's vote in the buddy tally again" LLD, C5:
-			// ingest into the v2, block-keyed vote CRDT FIRST — the only
-			// keyspace the tally reads — and independently of the legacy
-			// write below (D6). Ordered before the legacy write deliberately:
-			// that write's own failure path below returns an error, and a
-			// legacy-CRDT hiccup must never cost a vote the tally would
-			// otherwise have counted. Keyed on msg.Sender, the same
-			// authenticated identity the legacy write below uses (D-26a),
-			// never msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
+			// ingest into the v2, block-keyed vote CRDT — the only keyspace
+			// the tally reads. This used to be ordered deliberately ahead of
+			// a legacy write below it, so that write's own failure path
+			// could never cost a vote the tally would otherwise have
+			// counted — that legacy write was removed outright (W4,
+			// legacy-CRDT migration Phase 3), so there is nothing left to be
+			// ordered ahead of; this call is now simply the ingest. Keyed on
+			// msg.Sender, the authenticated identity (D-26a), never
+			// msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
 			// simply not counted, logged, not an error.
 			if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, msg.Sender, msg.Data.Message, "pubsub"); err != nil {
 				logger().Warn(logger_ctx, "validator vote: v2 CRDT ingest failed (vote not counted by this buddy)",
