@@ -49,9 +49,13 @@ func cachedCount(c *countCache, fetch func() (int64, error)) (int64, error) {
 	return v, nil
 }
 
-// lastGood returns the most recent successfully fetched value, or 0.
-func (c *countCache) lastGood() int64 {
+// lastGood returns the most recent successfully fetched value and whether one
+// has ever been fetched. The bool matters: a cold cache and a genuine count of
+// zero are indistinguishable from the value alone, and reporting a fabricated 0
+// is exactly what this cache exists to avoid. Callers that cannot show a stale
+// value should surface the error instead.
+func (c *countCache) lastGood() (int64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.value
+	return c.value, c.ok
 }

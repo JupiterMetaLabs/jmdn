@@ -30,7 +30,32 @@ func TestCachedCount_TTLAndLastGood(t *testing.T) {
 	if _, err := cachedCount(&c, func() (int64, error) { return 0, errors.New("db down") }); err == nil {
 		t.Fatal("fetch error must propagate")
 	}
-	if got := c.lastGood(); got != 42 {
-		t.Fatalf("lastGood after error = %d, want 42", got)
+	if got, ok := c.lastGood(); got != 42 || !ok {
+		t.Fatalf("lastGood after error = (%d, %v), want (42, true)", got, ok)
+	}
+}
+
+// A cache that has never fetched successfully must report ok=false, so callers
+// surface the error instead of serving a fabricated 0. This is what separates
+// "stale but real" from "no idea" — the distinction the stats handlers rely on.
+func TestCachedCount_ColdCacheReportsNoGoodValue(t *testing.T) {
+	var c countCache
+
+	if got, ok := c.lastGood(); got != 0 || ok {
+		t.Fatalf("cold cache lastGood = (%d, %v), want (0, false)", got, ok)
+	}
+
+	if _, err := cachedCount(&c, func() (int64, error) { return 0, errors.New("db down") }); err == nil {
+		t.Fatal("fetch error must propagate")
+	}
+	if got, ok := c.lastGood(); got != 0 || ok {
+		t.Fatalf("after a failed first fetch lastGood = (%d, %v), want (0, false)", got, ok)
+	}
+
+	if _, err := cachedCount(&c, func() (int64, error) { return 7, nil }); err != nil {
+		t.Fatalf("successful fetch: %v", err)
+	}
+	if got, ok := c.lastGood(); got != 7 || !ok {
+		t.Fatalf("after success lastGood = (%d, %v), want (7, true)", got, ok)
 	}
 }
