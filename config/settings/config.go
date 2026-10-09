@@ -51,6 +51,23 @@ type ConsensusSettings struct {
 	// by any other key is rejected. Empty => snapshot verification cannot pin and
 	// the consumer stays disabled (fail-closed; no committee source).
 	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
+
+	// SequencerPinnedPeerID is the PINNED libp2p peer ID of this fleet's
+	// sequencer, distributed out-of-band (genesis/config) exactly like
+	// SeedAuthorityBLSPub above — the sequencer is a single, static, per-fleet
+	// identity with no rotation mechanism anywhere in this codebase, so a
+	// config-level pin (not a discovered value) is the correct source of truth.
+	//
+	// It is the authenticated identity the L1-finality gossip auth checks the
+	// message sender against (internal/l1auth + l1finality.AuthorizeGossipSender):
+	// libp2p gossipsub StrictSign makes msg.GetFrom the authenticated publisher,
+	// and only a commit whose authenticated sender equals this pin is applied.
+	//
+	// Empty => the L1-finality gossip auth cannot enforce and falls back to the
+	// prior (unauthenticated) behavior with a one-time warning — pin it in any
+	// production deployment. A non-empty value that is not a valid peer ID is
+	// rejected at Load() so a typo cannot silently drop every genuine commit.
+	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`

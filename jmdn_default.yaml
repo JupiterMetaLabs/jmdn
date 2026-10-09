@@ -112,6 +112,16 @@ fastsync:
                           # Set to bootstrapTip+1 after bootstrap to avoid rescanning
                           # the already-complete bootstrap range on every catchup.
 
+# ── Consensus ───────────────────────────────────────────
+consensus:
+  # Pinned libp2p peer ID of this fleet's sequencer. L1-finality gossip
+  # (l1-commit / l1-commit-range) is applied only when the authenticated
+  # publisher equals this ID. Empty = NOT enforced: any mesh peer can stamp
+  # L1 finality on your blocks (the pre-fix behaviour; warned once, on the first commit received).
+  # A non-empty value that is not a valid peer ID refuses to boot.
+  # Env: JMDN_CONSENSUS_SEQUENCER_PINNED_PEER_ID
+  sequencer_pinned_peer_id: ""
+
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)
 # Prefer env vars for secrets: JMDN_SECURITY_EXPLORER_API_KEY, JMDN_SECURITY_JWT_SECRET
