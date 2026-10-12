@@ -48,6 +48,9 @@ func (gps *GossipPubSub) InitGossipSub() error {
 			// default) silently skip gossip → fan-out degrades to direct+catch-up.
 			// Fleet-wide identical value required (peers reject mismatched sizes).
 			pubsub.WithMaxMessageSize(config.MaxBlockMessageBytes),
+			// Pinned, not left as a library default — msg.Sender's
+			// authenticity (l1auth.go, l1finality.go, subscriptionService.go) depends on it.
+			pubsub.WithMessageSignaturePolicy(pubsub.StrictSign),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create GossipSub: %w", err)

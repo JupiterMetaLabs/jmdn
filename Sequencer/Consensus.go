@@ -1803,7 +1803,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 // rescue never actually fires, this costs one cheap key lookup that
 // returns nothing; if it does fire, it is now O(1) instead of O(every
 // legacy key) and correct. Bounded by v2's own compaction window
-// (JMDN_VOTE_CRDT_COMPACT_K, default 128 blocks) — a peer whose vote is
+// (JMDN_VOTE_CRDT_COMPACT_K, default 3 blocks) — a peer whose vote is
 // older than that would not be rescued, a limitation the legacy scan never
 // had but the v2 migration accepts fleet-wide.
 func voterPeerIDsForBlock(

@@ -416,8 +416,15 @@ func (vt *VoteTrigger) SubmitVote() error {
 	//
 	// It must still not mask a direct-send failure, which is why the loop's
 	// error handling below is left exactly as it was.
+	// gossipErr is surfaced below instead of swallowed — D-5: gossip is the
+	// path that actually carries consensus (measured far more reliable than
+	// direct-send), so its failure must reach SubmitVote's caller, not just
+	// a Warn log. Still non-fatal here, and still logged at Warn: a
+	// direct-send failure below must not be masked by this.
+	var gossipErr error
 	if pubSubNode := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); pubSubNode != nil && pubSubNode.PubSub != nil {
 		if perr := Publisher.Publish(logger_ctx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, voteMessage, map[string]string{}); perr != nil {
+			gossipErr = perr
 			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — peers will not receive this vote over gossip; it reaches them only via the next CRDT sync before tally",
 				ion.Err(perr),
 				ion.String("peer_id", listenerNode.PeerID.String()),
@@ -430,6 +437,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("function", "Vote.SubmitVote"))
 		}
 	} else {
+		gossipErr = fmt.Errorf("pubsub node unavailable")
 		logger().Warn(logger_ctx, "PubSub node unavailable — own vote not published to the consensus topic; the tallied v2 vote is unaffected and propagates via CRDT sync",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
@@ -463,6 +471,9 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 		// Success!
 		fmt.Printf("✅ Vote sent to %s\n", NodeToSendTo.PeerID)
+		if gossipErr != nil {
+			return fmt.Errorf("vote delivered via direct-send only — gossip publish failed: %w", gossipErr)
+		}
 		return nil
 	}
 

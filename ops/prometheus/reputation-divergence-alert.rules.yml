@@ -42,10 +42,14 @@ groups:
           max by (peer_id) (reputation_equivocations_reported_total)
 
       - alert: ReputationEquivocationConvergenceGap
-        # `for: 30m` is a starting point, not a validated value -- pick
-        # something comfortably longer than this deployment's actual
-        # K=128-block wall-clock time (JMDN_VOTE_CRDT_COMPACT_K), so normal
-        # gossip-convergence lag never fires this, only a genuine stall.
+        # `for: 30m` must stay comfortably longer than this deployment's
+        # actual K-block wall-clock time (JMDN_VOTE_CRDT_COMPACT_K), so
+        # normal gossip-convergence lag never fires this, only a genuine
+        # stall. K was lowered 128 -> 3; at a ~106s observed block interval
+        # that is ~5.3 min, so 30m is now ~5.7x the window. Under the old
+        # K=128 the window was ~3.8h and this alert was SHORTER than it,
+        # i.e. the rule above was not actually being met. Re-check this
+        # ratio if either K or the block interval changes.
         expr: |
           sum by (peer_id) (reputation:equivocations_reported:fleet_max)
             - on(peer_id) group_left()
