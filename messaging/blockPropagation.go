@@ -86,6 +86,10 @@ const (
 	// cap so the two transports can never silently diverge on block size.
 	maxBlockStreamBytes    = config.MaxBlockMessageBytes
 	blockStreamReadTimeout = 30 * time.Second
+	// broadcastWriteTimeout bounds every direct-stream write in broadcast.go.
+	// Without it a peer that stops draining its yamux receive window parks the
+	// writer forever, and BroadcastVoteTrigger's WaitGroup never returns.
+	broadcastWriteTimeout = 20 * time.Second
 )
 
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
