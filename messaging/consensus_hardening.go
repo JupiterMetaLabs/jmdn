@@ -982,6 +982,10 @@ func requestCatchUp(fromBlock uint64) {
 	}
 }
 
+// RequestCatchUp is the exported form, for packages that detect a gap but
+// cannot import messaging (Vote: messaging imports it). Nil-safe like the rest.
+func RequestCatchUp(fromBlock uint64) { requestCatchUp(fromBlock) }
+
 // checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED.
 // It reads the authenticated local tip/parent and delegates the decision
 // to the pure linkageDecision. On a detected height gap it triggers authenticated

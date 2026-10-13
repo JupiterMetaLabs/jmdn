@@ -350,6 +350,32 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 // used only by TriggerCheckAfterApply, whose caller has just finished storing a
 // block and needs the seednode to learn the new head now.
 func (m *Monitor) runCheckOpts(ctx context.Context, guard bool) Status {
+	return m.runCheckFull(ctx, guard, false)
+}
+
+// TriggerGapCatchUp is the entry point for an EXPLICIT gap signal — the receive
+// path saw a block beyond next-expected, or the vote path refused a proposal as
+// non-contiguous. Unlike TriggerCheck it bypasses the propagation guard, the
+// propagation-lag tolerance and the consecutive-report threshold: the caller has
+// already proven the gap, so "delta=1 is probably in flight" no longer applies.
+//
+// Testnet 2026-10-13: a single missed broadcast (1762) left every validator at
+// 1761 while the sequencer sat at 1762. Every validator rejected 1763 as
+// non-contiguous, so the sequencer could never get 2 ahead, and every gap
+// signal was routed through TriggerCheck whose delta<=1 filter dismissed it.
+// Permanent stall from one dropped block; this is the escape hatch.
+func (m *Monitor) TriggerGapCatchUp(ctx context.Context) Status {
+	return m.runCheckFull(ctx, false, true)
+}
+
+// forcedReconcile is the pure decision behind TriggerGapCatchUp: an explicit gap
+// signal with the sequencer ahead reconciles immediately, regardless of the
+// propagation-lag tolerance. Kept separate so it can be unit-tested.
+func forcedReconcile(m *Monitor, head, seqHead uint64, forced bool) bool {
+	return forced && seqHead > head
+}
+
+func (m *Monitor) runCheckFull(ctx context.Context, guard bool, forced bool) Status {
 	m.runMu.Lock()
 	defer m.runMu.Unlock()
 
@@ -439,6 +465,16 @@ func (m *Monitor) runCheckOpts(ctx context.Context, guard bool) Status {
 		// Fix 4: block-delta filter — a small head gap is almost certainly
 		// propagation lag (block in flight), not a genuine divergence.
 		seqHead := syncSt.SequencerHead
+		if forcedReconcile(m, head, seqHead, forced) {
+			log.Printf("[syncmonitor] explicit gap signal: local=%d seq=%d delta=%d — reconciling now (tolerance/threshold bypassed)",
+				head, seqHead, seqHead-head)
+			st.IsSynced = false
+			m.consecutiveOutOfSync = m.outOfSyncThreshold
+			st.ConsecutiveOutOfSync = m.consecutiveOutOfSync
+			m.triggerReconcile(syncSt.GoodPeers)
+			m.setStatus(st)
+			return st
+		}
 		if seqHead > head && seqHead-head <= m.propagationToleranceBlocks {
 			delta := seqHead - head
 			log.Printf("[syncmonitor] propagation lag: local=%d seq=%d delta=%d ≤ %d — not counting as divergence",

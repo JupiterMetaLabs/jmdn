@@ -54,6 +54,7 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/SmartContract"
 	"gossipnode/SmartContract/evmexec"
+	"gossipnode/Vote"
 	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -1870,8 +1871,11 @@ func main() {
 							return
 						}
 						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
-						go localMonitor.TriggerCheck(context.Background())
+						go localMonitor.TriggerGapCatchUp(context.Background())
 					})
+					// The vote path sees the gap first on a node that missed a
+					// broadcast (it never receives a block, only vote requests).
+					Vote.GapCatchUpHook = messaging.RequestCatchUp
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {
