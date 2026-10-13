@@ -111,23 +111,23 @@ Constants (`config/`, consensus-critical, network-uniform): `BaselineWeight`, `W
 - Bump the committee-snapshot version if the canonical bytes change (coordinate with jmdn's mirror + a fresh interop vector).
 
 ## Enablement preconditions (enforced / to verify before flipping the switch)
-- **M2b hash binding is REQUIRED with reward-split (enforced at boot).** R5
-  recomputes `FeeRecipients` from the block's `PrevAggCert`; that is only
-  tamper-evident when `PrevAggCert` is bound into the block hash, which happens
-  only under M2b (`JMDN_M2B_HASH=1`, `Security.M2bHashEnabled`). With M2b off a
-  relay could rewrite `(PrevAggCert, FeeRecipients)` consistently and the split
-  would be accepted (a relay running a registered buddy could inflate its share).
-  main.go therefore **refuses to start** with `reward_split_enabled` on and M2b
-  off. Enable both together, network-wide.
-- **Reward coverage follows `PrevAggCert`.** `PrevAggCert` is populated only on
-  fold-window blocks (and only when the aggregate-cert path is active), so with
-  the current wiring rewards accrue on those blocks; off-window blocks derive an
-  empty split (single coinbase credit). Confirm this cadence is intended, or
-  broaden the signer source, before rollout.
-- **Catch-up threading:** the historical interlock cited catch-up not crediting
-  `FeeRecipients`. That was FastsyncV2 (retired); ThebeSync catch-up routes
-  through the same `ProcessBlockTransactions` → `SplitFee`. Confirm on a 2-node
-  catch-up test before enabling.
+- **No M2b flag is required (D-40).** R5 (`checkFeeRecipients`) recomputes
+  `FeeRecipients` from the STORED parent block's certifiers and rejects a
+  mismatch on the gossip receive path. `FeeRecipients` is not part of the
+  `ConsensusHash` preimage, so that recompute is its only defence there; the
+  catch-up (ThebeSync) path does not run it. The former `JMDN_M2B_HASH` boot
+  gate checked nothing and was removed. Enable reward-split network-wide.
+- **Reward coverage follows the parent block's persisted certificate.** The
+  signer source is `PrevBlockCertSigners` (the stored parent's
+  `CommitteeCertificate`), which exists on every certified block — not
+  `block.PrevAggCert`, which is populated only on fold-window blocks. Rewards
+  therefore accrue on every certified block; a cert-less (legacy-prefix) or
+  genesis parent yields an empty split (single coinbase credit).
+- **Catch-up threading:** ThebeSync catch-up routes through the same
+  `ProcessBlockTransactions` → `SplitFee`, crediting the `FeeRecipients` carried
+  by the synced block. It does NOT run `checkFeeRecipients`, and `FeeRecipients`
+  is covered by neither `BlockHash` nor `ConsensusHash`, so a sync peer's value
+  is not verified (open item). Confirm on a 2-node catch-up test before enabling.
 
 ## Risks / open items
 - **Canonical-bytes change is a coordinated wire change** (jmdn mirror + seed must match byte-for-byte, and the committee snapshot signature covers the new field). Version-bump + interop vector required.

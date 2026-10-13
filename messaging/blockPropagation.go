@@ -738,11 +738,12 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 
 	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
 	// is enabled, FeeRecipients must equal the value every node independently
-	// recomputes from the block's parent certifiers (PrevAggCert), the
-	// authenticated reward-address map, and parent-state balances — a pure function
-	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
-	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
-	// block (and its PrevAggCert, which the M2b hash covers) rides a
+	// recomputes from the STORED parent block's certifiers (PrevBlockCertSigners),
+	// the authenticated reward-address map, and parent-state balances — a pure
+	// function of already-agreed inputs. Rejecting a mismatch closes the redirect
+	// attack (a sequencer pointing fees at itself). FeeRecipients is not part of
+	// the ConsensusHash preimage, so this recompute is its only defence on this
+	// path. Placed AFTER verifyBlockCertificate so the block rides a
 	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
 	// is OFF this is skipped and the historical interlock above still applies.
 	if rewardSplitEnabled() {

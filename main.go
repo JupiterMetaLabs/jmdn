@@ -944,17 +944,12 @@ func main() {
 	// import config/settings) so it is stamped onto — and signed into — the peer
 	// record when this node registers with the seed. Empty = no reward claim.
 	seednode.SetRewardAddress(cfg.Consensus.RewardAddress)
-	// Reward-split safety coupling (fail-closed): the receive-path validator
-	// recomputes FeeRecipients from the block's PrevAggCert. That is only
-	// tamper-evident when PrevAggCert is bound into the block hash, which happens
-	// ONLY under M2b hash binding. With M2b off, a relay could rewrite
-	// (PrevAggCert, FeeRecipients) consistently and the split would be accepted —
-	// letting a relay running a registered buddy inflate its own share. So refuse
-	// to start with reward-split on but M2b off. See docs/STAKING-REWARDS-DESIGN.md.
-	if cfg.Consensus.RewardSplitEnabled && !Security.M2bHashEnabled {
-		fmt.Println("Refusing to start: consensus.reward_split_enabled requires M2b block-hash binding (set JMDN_M2B_HASH=1) so PrevAggCert/FeeRecipients are tamper-evident; enable them together, network-wide.")
-		os.Exit(1)
-	}
+	// Reward-split safety has no boot-time flag coupling. On the gossip receive
+	// path (messaging.validateRemoteBlock) checkFeeRecipients recomputes
+	// FeeRecipients from the stored parent block's certificate and rejects a
+	// mismatch; FeeRecipients is NOT part of the ConsensusHash preimage, so that
+	// recompute is its only defence there. (D-40: the former JMDN_M2B_HASH gate
+	// checked nothing and was removed.)
 
 	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
 	// any fail-open consensus hardening flag has been disabled. "Production" here
