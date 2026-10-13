@@ -35,10 +35,46 @@ const voteCRDTCompactionDebounce = 750 * time.Millisecond
 
 // voteCRDTCompactK is the compaction safety buffer (LLD §9 Decision 2):
 // votes for heights within K of the tip are retained; only what falls at or
-// below tip-K is evaluated and compacted. Assumed 128, never measured — see
-// the LLD for the reasoning. Overridable for operators who do measure their
-// own vote-arrival/catch-up lag, via JMDN_VOTE_CRDT_COMPACT_K.
-var voteCRDTCompactK = envUint64("JMDN_VOTE_CRDT_COMPACT_K", 128)
+// below tip-K is evaluated and compacted.
+//
+// Lowered from 128 to 3: a finished round's votes are not read again. Only
+// two call sites read this keyspace, both take an explicit height and both
+// read exactly one block's keys — Structs.processVotesFromCRDT_v2 via
+// avcvotes.TallyBlock, and Sequencer.voterPeerIDsForBlock via
+// avcvotes.BlockVoteKey. Every caller passes the height of the block being
+// decided now; a retried round re-requests the SAME height, never an older
+// one. The catch-up path does not touch this keyspace at all — thebesync
+// verifies the certificate stored with each block.
+//
+// 3 rather than 1 is deliberate margin. At K=1 a buddy drops round H the
+// instant it learns tip H+1, so a buddy that hears H+1 from a fast peer
+// while the sequencer is still collecting vote results for H would answer
+// "no votes" and short the certificate — the same shape as the 3/5-over-7
+// stall. Two spare rounds cost a handful of keys and remove that race.
+//
+// Overridable via JMDN_VOTE_CRDT_COMPACT_K for operators who measure their
+// own vote-arrival lag, but floored at minVoteCRDTCompactK — see clampCompactK.
+var voteCRDTCompactK = clampCompactK(envUint64("JMDN_VOTE_CRDT_COMPACT_K", 3))
+
+// minVoteCRDTCompactK floors the operator override. Below 2 the buffer stops
+// doing the job it exists for: at K=1 a buddy drops round H the instant it
+// learns tip H+1 (the 3/5-over-7 stall described above), and envUint64 passes
+// an explicit "0" through verbatim — K=0 compacts at and below tip-0, i.e. the
+// round being decided right now. The default moved 128 -> 3, so the distance
+// between a correct value and a fleet-stalling one is now small enough that a
+// silent typo must not be accepted.
+const minVoteCRDTCompactK = 2
+
+func clampCompactK(k uint64) uint64 {
+	if k < minVoteCRDTCompactK {
+		log.Warn().
+			Uint64("requested", k).
+			Uint64("using", uint64(minVoteCRDTCompactK)).
+			Msg("[VoteCRDTCompaction] JMDN_VOTE_CRDT_COMPACT_K below the safe floor — clamped")
+		return minVoteCRDTCompactK
+	}
+	return k
+}
 
 func envUint64(key string, def uint64) uint64 {
 	v, ok := os.LookupEnv(key)

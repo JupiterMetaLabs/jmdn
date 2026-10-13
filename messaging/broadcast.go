@@ -450,9 +450,17 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 
 	// Submit the vote (this will send Type_SubmitVote message via SubmitMessageProtocol)
 	if err := voteTrigger.SubmitVote(); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to submit vote from broadcast trigger", err,
+		if !errors.Is(err, Vote.ErrGossipPublishOnly) {
+			broadcastLogger().Error(context.Background(), "Failed to submit vote from broadcast trigger", err,
+				ion.String("msg_id", msg.ID))
+			return
+		}
+		// Partial success, not failure: the vote IS out via direct-send. Peers
+		// that missed the gossip publish pick it up on the next CRDT sync
+		// before tally, so this must not be logged as a failed submission.
+		broadcastLogger().Warn(context.Background(), "Vote delivered via direct-send only — gossip publish failed",
+			ion.Err(err),
 			ion.String("msg_id", msg.ID))
-		return
 	}
 
 	broadcastLogger().Info(context.Background(), "Vote submitted - waiting for consensus confirmation broadcast",
