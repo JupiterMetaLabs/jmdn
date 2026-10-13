@@ -253,13 +253,14 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 			continue
 		}
 
-		// Write the message
+		// Write the message (bounded: a peer that stops reading must not wedge us)
+		_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 		_, err = stream.Write(msgBytes)
 		if err != nil {
 			broadcastLogger().Warn(context.Background(), "Failed to write broadcast message",
 				ion.Err(err),
 				ion.String("peer", peerID.String()))
-			stream.Close()
+			_ = stream.Reset()
 			continue
 		}
 
@@ -344,9 +345,11 @@ func BroadcastMessage(h host.Host, content string) error {
 			}
 			defer stream.Close()
 
-			// Send the message
+			// Send the message (bounded: a peer that stops reading must not wedge us)
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			_, err = stream.Write(msgBytes)
 			if err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Warn(context.Background(), "Failed to send broadcast message",
 					ion.Err(err),
 					ion.String("peer", peer.String()))
@@ -558,9 +561,14 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			}
 			defer stream.Close()
 
-			// Send the message
+			// Send the message. Bounded write: the sequencer's consensus thread
+			// blocks on this WaitGroup, so one peer whose yamux receive window
+			// is full (stopped reading, half-dead connection) must not stall the
+			// whole round. Observed on testnet 2026-10-13: Write parked 6+ min.
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			_, err = stream.Write(msgBytes)
 			if err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Warn(context.Background(), "Failed to send vote trigger broadcast message",
 					ion.Err(err),
 					ion.String("peer", peer.String()))
@@ -701,7 +709,9 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 				return err
 			}
 			defer stream.Close()
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			if _, err := stream.Write(msgBytes); err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Debug(context.Background(), "Failed to write message",
 					ion.Err(err),
 					ion.String("peer", peer.String()))
