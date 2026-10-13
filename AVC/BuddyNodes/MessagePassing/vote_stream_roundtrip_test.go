@@ -178,8 +178,17 @@ func dialAndSendVote(t *testing.T, sender host.Host, target peer.ID, voteValue i
 	case "close":
 		// What MessageListener.go does today: the deferred stream.Close()
 		// fires microseconds after the write returns.
+		//
+		// The error is logged, not asserted, because production discards it
+		// too (`defer stream.Close()` in SendMessageToPeer) and because it is
+		// not a delivery signal. On QUIC the receiver often finishes handling
+		// and resets the stream before this call lands, so Close reports
+		// "close called for canceled stream N" on a vote that arrived
+		// perfectly well — asserting nil here made this test flaky without
+		// testing anything production depends on. What this test is actually
+		// about is assertVoteIngested below.
 		if err := s.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
+			t.Logf("Close after write returned %v (ignored — production defers Close and discards this too)", err)
 		}
 	case "closeWrite":
 		// Half-close: end-of-write signalled, read side left open.

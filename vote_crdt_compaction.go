@@ -53,8 +53,28 @@ const voteCRDTCompactionDebounce = 750 * time.Millisecond
 // stall. Two spare rounds cost a handful of keys and remove that race.
 //
 // Overridable via JMDN_VOTE_CRDT_COMPACT_K for operators who measure their
-// own vote-arrival lag.
-var voteCRDTCompactK = envUint64("JMDN_VOTE_CRDT_COMPACT_K", 3)
+// own vote-arrival lag, but floored at minVoteCRDTCompactK — see clampCompactK.
+var voteCRDTCompactK = clampCompactK(envUint64("JMDN_VOTE_CRDT_COMPACT_K", 3))
+
+// minVoteCRDTCompactK floors the operator override. Below 2 the buffer stops
+// doing the job it exists for: at K=1 a buddy drops round H the instant it
+// learns tip H+1 (the 3/5-over-7 stall described above), and envUint64 passes
+// an explicit "0" through verbatim — K=0 compacts at and below tip-0, i.e. the
+// round being decided right now. The default moved 128 -> 3, so the distance
+// between a correct value and a fleet-stalling one is now small enough that a
+// silent typo must not be accepted.
+const minVoteCRDTCompactK = 2
+
+func clampCompactK(k uint64) uint64 {
+	if k < minVoteCRDTCompactK {
+		log.Warn().
+			Uint64("requested", k).
+			Uint64("using", uint64(minVoteCRDTCompactK)).
+			Msg("[VoteCRDTCompaction] JMDN_VOTE_CRDT_COMPACT_K below the safe floor — clamped")
+		return minVoteCRDTCompactK
+	}
+	return k
+}
 
 func envUint64(key string, def uint64) uint64 {
 	v, ok := os.LookupEnv(key)

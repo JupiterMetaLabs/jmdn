@@ -29,6 +29,17 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// ErrGossipPublishOnly reports that the vote WAS delivered by direct-send but
+// the gossip publish failed. Callers must treat it as PARTIAL SUCCESS, not
+// failure: the vote is out, it simply reaches peers via the next CRDT sync
+// rather than gossip. Returned wrapped, so errors.Is identifies it while the
+// underlying publish error stays inspectable.
+//
+// Logging it as a failure would re-open the false-"Failed to submit vote"
+// flood that the ack-casing fix in this same change removed — before that fix
+// every vote took SubmitVote's error path.
+var ErrGossipPublishOnly = errors.New("vote delivered via direct-send only — gossip publish failed")
+
 type VoteTrigger struct {
 	ConsensusMessage *PubSubMessages.ConsensusMessage
 	Vote             *PubSubMessages.Vote
@@ -472,7 +483,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 		// Success!
 		fmt.Printf("✅ Vote sent to %s\n", NodeToSendTo.PeerID)
 		if gossipErr != nil {
-			return fmt.Errorf("vote delivered via direct-send only — gossip publish failed: %w", gossipErr)
+			return fmt.Errorf("%w: %w", ErrGossipPublishOnly, gossipErr)
 		}
 		return nil
 	}
