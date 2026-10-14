@@ -128,8 +128,9 @@ fastsync:
 # ── Consensus feature flags ─────────────────────────────
 # YAML home for the rollout switches that used to be env-only. Precedence per
 # key: legacy env var (if SET, with its original parser) > this file > default.
-# The defaults below are the historical env defaults, so leaving this section
-# out changes nothing. Consensus-critical flags must be identical fleet-wide —
+# Defaults are the historical env defaults, except committee_v2 and agg_cert
+# which default ON to match the testnet fleet (every node sets them; they must
+# be ON together fleet-wide). Leaving this section out = fleet posture. Consensus-critical flags must be identical fleet-wide —
 # coordinate every flip. The effective values are printed once at boot
 # ("consensus flags (env > yaml > default): ...").
 #
@@ -140,12 +141,12 @@ fastsync:
 consensus:
   flags:
     committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
-    committee_v2: false                     # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots.
+    committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.
     reject_legacy_votes: true               # JMDN_REJECT_LEGACY_VOTES (lenient). Production posture locks this ON.
     enforce_committee_registry: true        # JMDN_ENFORCE_COMMITTEE_REGISTRY (lenient). Production posture locks this ON.
     enforce_block_linkage: true             # JMDN_ENFORCE_BLOCK_LINKAGE (lenient). Parent/height contiguity on receive.
     enforce_body_binding: true              # JMDN_ENFORCE_BODY_BINDING (lenient). Production posture locks this ON.
-    agg_cert: false                         # JMDN_AVC_AGG_CERT (exactly-1). Aggregate BLS certificates.
+    agg_cert: true                          # JMDN_AVC_AGG_CERT (exactly-1). Aggregate BLS certificates. Fleet-wide ON.
     timeout_cert_wiring: false              # JMDN_TIMEOUT_CERT_WIRING (lenient). Timeout-certificate gossip.
     timeout_cert_rejoin: false              # JMDN_TIMEOUT_CERT_REJOIN (exactly-1). Rejoin via timeout certificates.
     enforce_slot_recovery_gate: true        # JMDN_ENFORCE_SLOT_RECOVERY_GATE (not-0). Applies to BOTH readers (messaging + vote path).

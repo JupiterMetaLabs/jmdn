@@ -186,9 +186,10 @@ type EntropyBootstrapSettings struct {
 // ConsensusFlags — YAML home for the consensus/committee feature flags.
 //
 // Precedence per key: legacy env var (if set, with its ORIGINAL parser) >
-// consensus.flags.<key> in jmdn.yaml > default. The defaults below equal the
-// historical env defaults, so a node with no YAML keys and no env vars behaves
-// exactly as before. Applied by applyConsensusFlags (root package) right after
+// consensus.flags.<key> in jmdn.yaml > default. The defaults equal the
+// historical env defaults EXCEPT committee_v2 and agg_cert, which default ON
+// to match the testnet fleet (every node sets JMDN_COMMITTEE_V2=1 and
+// JMDN_AVC_AGG_CERT=1; the runbook requires them ON together fleet-wide). Applied by applyConsensusFlags (root package) right after
 // settings.Load, before any consensus component starts.
 //
 // Legacy env parsers (kept verbatim when the env var is set):
@@ -199,12 +200,12 @@ type EntropyBootstrapSettings struct {
 // Consensus-critical flags must be identical fleet-wide; coordinate flips.
 type ConsensusFlags struct {
 	CommitteeSnapshotAnchor      bool   `mapstructure:"committee_snapshot_anchor" yaml:"committee_snapshot_anchor"`             // JMDN_COMMITTEE_SNAPSHOT_ANCHOR, lenient, default off
-	CommitteeV2                  bool   `mapstructure:"committee_v2" yaml:"committee_v2"`                                       // JMDN_COMMITTEE_V2, lenient, default off
+	CommitteeV2                  bool   `mapstructure:"committee_v2" yaml:"committee_v2"`                                       // JMDN_COMMITTEE_V2, lenient, default ON (testnet fleet value)
 	RejectLegacyVotes            bool   `mapstructure:"reject_legacy_votes" yaml:"reject_legacy_votes"`                         // JMDN_REJECT_LEGACY_VOTES, lenient, default on
 	EnforceCommitteeRegistry     bool   `mapstructure:"enforce_committee_registry" yaml:"enforce_committee_registry"`           // JMDN_ENFORCE_COMMITTEE_REGISTRY, lenient, default on
 	EnforceBlockLinkage          bool   `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`                     // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
 	EnforceBodyBinding           bool   `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`                       // JMDN_ENFORCE_BODY_BINDING, lenient, default on
-	AggCert                      bool   `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default off
+	AggCert                      bool   `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
 	TimeoutCertWiring            bool   `mapstructure:"timeout_cert_wiring" yaml:"timeout_cert_wiring"`                         // JMDN_TIMEOUT_CERT_WIRING, lenient, default off
 	TimeoutCertRejoin            bool   `mapstructure:"timeout_cert_rejoin" yaml:"timeout_cert_rejoin"`                         // JMDN_TIMEOUT_CERT_REJOIN, exactly-1, default off
 	EnforceSlotRecoveryGate      bool   `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`           // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)

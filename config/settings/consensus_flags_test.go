@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-// The YAML defaults must equal the historical env defaults exactly, so a node
-// with neither YAML keys nor env vars behaves as before this change.
+// The YAML defaults equal the historical env defaults, except committee_v2 and
+// agg_cert which are ON (testnet fleet value, required ON together).
 func TestConsensusFlags_DefaultsMatchLegacyEnvDefaults(t *testing.T) {
 	f := DefaultConfig().Consensus.Flags
 	want := map[string]bool{
-		"committee_snapshot_anchor": false, "committee_v2": false, "reject_legacy_votes": true,
+		"committee_snapshot_anchor": false, "committee_v2": true, "reject_legacy_votes": true,
 		"enforce_committee_registry": true, "enforce_block_linkage": true, "enforce_body_binding": true,
-		"agg_cert": false, "timeout_cert_wiring": false, "timeout_cert_rejoin": false,
+		"agg_cert": true, "timeout_cert_wiring": false, "timeout_cert_rejoin": false,
 		"enforce_slot_recovery_gate": true, "slot_recovery_preslot_migration": false, "enforce_sync_gate": true,
 		"emit_block_bound_votes": true, "validator_voter_set": true, "validator_vote_ingest": true,
 		"emit_committee_bls": true, "allow_new_receiver_accounts": true, "block_gossip": true,
@@ -47,8 +47,8 @@ func TestConsensusFlags_LoadFromYAML(t *testing.T) {
 	yaml := `
 consensus:
   flags:
-    committee_v2: true
-    agg_cert: true
+    committee_v2: false
+    agg_cert: false
     enforce_sync_gate: false
     vote_crdt_compact_k: 7
 reputation:
@@ -70,7 +70,7 @@ reputation:
 		t.Fatalf("Load: %v", err)
 	}
 	f := cfg.Consensus.Flags
-	if !f.CommitteeV2 || !f.AggCert || f.EnforceSyncGate || f.VoteCRDTCompactK != 7 {
+	if f.CommitteeV2 || f.AggCert || f.EnforceSyncGate || f.VoteCRDTCompactK != 7 {
 		t.Fatalf("yaml overrides not applied: %+v", f)
 	}
 	// untouched keys keep defaults
@@ -85,13 +85,13 @@ reputation:
 // The viper-derived env names work too (JMDN_CONSENSUS_FLAGS_<KEY>), in
 // addition to the legacy names handled by applyConsensusFlags.
 func TestConsensusFlags_ViperEnvAlias(t *testing.T) {
-	t.Setenv("JMDN_CONSENSUS_FLAGS_COMMITTEE_V2", "true")
+	t.Setenv("JMDN_CONSENSUS_FLAGS_COMMITTEE_V2", "false")
 	t.Setenv("JMDN_REPUTATION_PUSH_INTERVAL_SECONDS", "") // not a viper key; must not interfere
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.Consensus.Flags.CommitteeV2 {
-		t.Fatal("JMDN_CONSENSUS_FLAGS_COMMITTEE_V2=true not honoured by viper")
+	if cfg.Consensus.Flags.CommitteeV2 {
+		t.Fatal("JMDN_CONSENSUS_FLAGS_COMMITTEE_V2=false not honoured by viper")
 	}
 }

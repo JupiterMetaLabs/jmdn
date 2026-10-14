@@ -253,15 +253,19 @@ func DefaultConfig() NodeConfig {
 			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
 			RewardAddress:      "",
 			RewardSplitEnabled: false,
-			// Legacy env defaults, verbatim (see ConsensusFlags doc).
+			// Legacy env defaults, except CommitteeV2 and AggCert which are ON:
+			// the testnet fleet runs JMDN_COMMITTEE_V2=1 / JMDN_AVC_AGG_CERT=1 on
+			// every node and the runbook requires them ON together fleet-wide —
+			// a node that forgot the env line silently ran the old path, which
+			// is the failure mode default-on removes. (2026-10-14, /etc/jmdn/jmdn-seq.env)
 			Flags: ConsensusFlags{
 				CommitteeSnapshotAnchor:      false,
-				CommitteeV2:                  false,
+				CommitteeV2:                  true,
 				RejectLegacyVotes:            true,
 				EnforceCommitteeRegistry:     true,
 				EnforceBlockLinkage:          true,
 				EnforceBodyBinding:           true,
-				AggCert:                      false,
+				AggCert:                      true,
 				TimeoutCertWiring:            false,
 				TimeoutCertRejoin:            false,
 				EnforceSlotRecoveryGate:      true,

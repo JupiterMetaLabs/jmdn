@@ -12,8 +12,8 @@ import (
 // its original parser); an UNSET one takes the YAML value.
 func TestApplyConsensusFlags_EnvWinsOverYAMLOnlyWhenSet(t *testing.T) {
 	cfg := settings.DefaultConfig()
-	cfg.Consensus.Flags.CommitteeV2 = true // yaml says on
-	cfg.Consensus.Flags.AggCert = true     // yaml says on
+	cfg.Consensus.Flags.CommitteeV2 = false // yaml says off (default is on)
+	cfg.Consensus.Flags.AggCert = true      // yaml says on
 	cfg.Consensus.Flags.EnforceSyncGate = false
 	cfg.Consensus.Flags.EnforceSlotRecoveryGate = false
 	cfg.Consensus.Flags.VoteCRDTCompactK = 9
@@ -23,14 +23,14 @@ func TestApplyConsensusFlags_EnvWinsOverYAMLOnlyWhenSet(t *testing.T) {
 	// COMMITTEE_V2 unset so YAML applies.
 	t.Setenv("JMDN_AVC_AGG_CERT", "true")
 	messaging.AggCertEnabled = false
-	messaging.CommitteeV2Enabled = false
+	messaging.CommitteeV2Enabled = true
 	saveK := voteCRDTCompactK
 	t.Cleanup(func() { voteCRDTCompactK = saveK })
 
 	applyConsensusFlags(&cfg)
 
-	if !messaging.CommitteeV2Enabled {
-		t.Fatal("env unset: YAML committee_v2=true must apply")
+	if messaging.CommitteeV2Enabled {
+		t.Fatal("env unset: YAML committee_v2=false must apply over the ON default")
 	}
 	if messaging.AggCertEnabled {
 		t.Fatal("env SET (JMDN_AVC_AGG_CERT=true → off under exactly-1): YAML must NOT override")
