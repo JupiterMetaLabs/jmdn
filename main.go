@@ -863,6 +863,10 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", cfgErr)
 		os.Exit(1)
 	}
+	// consensus.flags.* / reputation.* from YAML. Must run before any consensus
+	// component (and before ValidateProductionConsensusPosture) reads the
+	// package-level flag variables. A SET legacy env var still wins.
+	applyConsensusFlags(cfg)
 
 	// Apply CLI flag overrides (only flags explicitly passed on command line)
 	flag.Visit(func(f *flag.Flag) {

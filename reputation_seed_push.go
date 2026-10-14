@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"gossipnode/config/settings"
 	"math"
 	"os"
 	"strconv"
@@ -68,7 +69,11 @@ const reputationPushDefaultIntervalSeconds = 300 // 5 minutes
 // JMDN_REPUTATION_PUSH_INTERVAL_SECONDS for operators who want a tighter or
 // looser cadence; envUint64 is shared with vote_crdt_compaction.go.
 func reputationPushIntervalSeconds() uint64 {
-	return envUint64("JMDN_REPUTATION_PUSH_INTERVAL_SECONDS", reputationPushDefaultIntervalSeconds)
+	def := uint64(reputationPushDefaultIntervalSeconds)
+	if settings.IsLoaded() {
+		def = settings.Get().Reputation.PushIntervalSeconds // reputation.push_interval_seconds
+	}
+	return envUint64("JMDN_REPUTATION_PUSH_INTERVAL_SECONDS", def)
 }
 
 // equivocationPushDebounce (A4-COMPLETION-LLD.md §5) coalesces a burst of
@@ -199,11 +204,24 @@ func startReputationSeedPusher(ctx context.Context, seedClient reputationPusher)
 // directly without waiting on a ticker.
 // reputationPushSuspendEnabled gates the D-61 self-fault suspend. Default ON;
 // set JMDN_REPUTATION_PUSH_SUSPEND=0 to always push (pre-D-61 behaviour).
-func reputationPushSuspendEnabled() bool { return envBoolDefaultTrue("JMDN_REPUTATION_PUSH_SUSPEND") }
+func reputationPushSuspendEnabled() bool {
+	if _, set := os.LookupEnv("JMDN_REPUTATION_PUSH_SUSPEND"); !set && settings.IsLoaded() {
+		return settings.Get().Reputation.PushSuspend // reputation.push_suspend
+	}
+	return envBoolDefaultTrue("JMDN_REPUTATION_PUSH_SUSPEND")
+}
 
 // reputationStorePath is the durable store file (D-62). Empty ⇒ no persistence
 // (the pre-fix in-memory-only behaviour, reset on restart).
-func reputationStorePath() string { return os.Getenv("JMDN_REPUTATION_STORE_PATH") }
+func reputationStorePath() string {
+	if v, set := os.LookupEnv("JMDN_REPUTATION_STORE_PATH"); set {
+		return v
+	}
+	if settings.IsLoaded() {
+		return settings.Get().Reputation.StorePath // reputation.store_path
+	}
+	return ""
+}
 
 func pushReputationOnce(ctx context.Context, seedClient reputationPusher) {
 	if !reputation.Enabled {

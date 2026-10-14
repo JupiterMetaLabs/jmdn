@@ -253,6 +253,34 @@ func DefaultConfig() NodeConfig {
 			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
 			RewardAddress:      "",
 			RewardSplitEnabled: false,
+			// Legacy env defaults, verbatim (see ConsensusFlags doc).
+			Flags: ConsensusFlags{
+				CommitteeSnapshotAnchor:      false,
+				CommitteeV2:                  false,
+				RejectLegacyVotes:            true,
+				EnforceCommitteeRegistry:     true,
+				EnforceBlockLinkage:          true,
+				EnforceBodyBinding:           true,
+				AggCert:                      false,
+				TimeoutCertWiring:            false,
+				TimeoutCertRejoin:            false,
+				EnforceSlotRecoveryGate:      true,
+				SlotRecoveryPreslotMigration: false,
+				EnforceSyncGate:              true,
+				EmitBlockBoundVotes:          true,
+				ValidatorVoterSet:            true,
+				ValidatorVoteIngest:          true,
+				EmitCommitteeBLS:             true,
+				AllowNewReceiverAccounts:     true,
+				BlockGossip:                  true,
+				VoteCRDTCompactK:             3,
+			},
+		},
+		Reputation: ReputationSettings{
+			Observe:             true,
+			PushIntervalSeconds: 300, // reputationPushDefaultIntervalSeconds
+			PushSuspend:         true,
+			StorePath:           "",
 		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below
