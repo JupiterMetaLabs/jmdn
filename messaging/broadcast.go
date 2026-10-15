@@ -483,60 +483,125 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 
 const voteTriggerBroadcastType = "vote_trigger"
 
-// voteTriggerDialTimeout bounds the dial to a committee member we are not yet
+// voteTriggerDialTimeout bounds the dial to a voter or committee member we are not yet
 // connected to. Short: the round has ConsensusTimeout to complete and a member
 // that cannot be reached in a few seconds is treated like a non-responder.
 const voteTriggerDialTimeout = 5 * time.Second
 
-// voteTriggerTargets returns the peers that must receive the proposal: the
-// committee selected for this round (ConsensusMessage.Buddies). Members that are
-// not currently connected are dialled using the multiaddr carried in Buddies, so
-// a committee member is never silently skipped merely because the sequencer had
-// no open connection to it. Falls back to every connected peer (the legacy
-// behaviour) only when the message carries no committee at all, and says so in
-// the returned scope label.
+// voteTriggerVoters resolves the validator VOTER set for a height — every
+// snapshot-registered, BLS-keyed validator whose vote a buddy counts at tally
+// (AuthorizedVotersForTallyAtHeight). A variable so tests can inject a set.
+var voteTriggerVoters = AuthorizedVotersForTallyAtHeight
+
+// voteTriggerTargets returns the peers that must receive the proposal.
+//
+// CONSENSUS DESIGN: every eligible validator VOTES; the seated committee
+// (ConsensusMessage.Buddies) AGGREGATES — each buddy tallies all validator votes
+// it holds and returns its own BLS-signed result, and the sequencer certifies
+// 2f+1 of those. So the trigger must reach the whole voter set, not only the
+// committee. (#197 narrowed it to the committee, which silently stopped every
+// non-seated validator from voting.)
+//
+// Targets = Buddies ∪ voter set for the block's height, self excluded, each
+// sent ONE copy: the trigger is never re-flooded (Hops = MaxHops, and receivers
+// return before forwardBroadcast), so a voter the sequencer cannot reach is
+// dialled here rather than relayed through other peers. Buddies are dialled
+// from the multiaddr they carry; other voters from the peerstore.
+//
+// If the voter set cannot be resolved, the trigger goes to every connected peer
+// plus the committee — the pre-#197 reach without the re-flood. Delivery is
+// fail-open on purpose: who is COUNTED is enforced at tally time
+// (authorizedVotersFor), not by who receives the trigger.
 func voteTriggerTargets(h host.Host, cm *PubSubMessages.ConsensusMessage) ([]peer.ID, string) {
-	all := h.Network().Peers()
-	buddies := cm.GetBuddies()
-	if len(buddies) == 0 {
-		return all, "all-peers(no-committee)"
-	}
-	connected := make(map[peer.ID]struct{}, len(all))
-	for _, p := range all {
-		connected[p] = struct{}{}
-	}
 	self := h.ID()
-	seen := make(map[peer.ID]struct{}, len(buddies))
-	targets := make([]peer.ID, 0, len(buddies))
-	for _, b := range buddies {
-		pid := b.PeerID
+	type cand struct {
+		id    peer.ID
+		addrs []multiaddr.Multiaddr
+	}
+	seen := make(map[peer.ID]struct{})
+	var cands []cand
+	add := func(pid peer.ID, addrs []multiaddr.Multiaddr) {
 		if pid == "" || pid == self {
-			continue
+			return
 		}
 		if _, dup := seen[pid]; dup {
-			continue
+			return
 		}
 		seen[pid] = struct{}{}
-		if _, ok := connected[pid]; !ok {
-			ai := peer.AddrInfo{ID: pid}
-			if b.Multiaddr != nil {
-				ai.Addrs = []multiaddr.Multiaddr{b.Multiaddr}
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), voteTriggerDialTimeout)
-			err := h.Connect(ctx, ai)
-			cancel()
+		cands = append(cands, cand{id: pid, addrs: addrs})
+	}
+
+	for _, b := range cm.GetBuddies() {
+		var addrs []multiaddr.Multiaddr
+		if b.Multiaddr != nil {
+			addrs = []multiaddr.Multiaddr{b.Multiaddr}
+		}
+		add(b.PeerID, addrs)
+	}
+
+	scope := "committee+voters"
+	var voters map[string]string
+	var verr error
+	if zk := cm.GetZKBlock(); zk != nil {
+		voters, verr = voteTriggerVoters(zk.BlockNumber)
+	} else {
+		verr = fmt.Errorf("consensus message carries no block")
+	}
+	if verr != nil || len(voters) == 0 {
+		scope = "all-peers(no-voter-set)"
+		broadcastLogger().Warn(context.Background(), "Vote trigger: voter set unavailable — sending to every connected peer and the committee",
+			ion.Err(verr), ion.Int("voters", len(voters)))
+		for _, p := range h.Network().Peers() {
+			add(p, nil)
+		}
+	} else {
+		for id := range voters {
+			pid, err := peer.Decode(id)
 			if err != nil {
-				broadcastLogger().Warn(context.Background(), "Committee member not reachable for vote trigger",
-					ion.Err(err), ion.String("peer", pid.String()))
 				continue
 			}
+			add(pid, h.Peerstore().Addrs(pid))
 		}
-		targets = append(targets, pid)
 	}
-	return targets, "committee"
+
+	// Dial the unconnected candidates concurrently; keep only reachable ones.
+	var (
+		mu          sync.Mutex
+		wg          sync.WaitGroup
+		targets     = make([]peer.ID, 0, len(cands))
+		unreachable int
+	)
+	for _, c := range cands {
+		if h.Network().Connectedness(c.id) == network.Connected {
+			targets = append(targets, c.id)
+			continue
+		}
+		wg.Add(1)
+		go func(c cand) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), voteTriggerDialTimeout)
+			err := h.Connect(ctx, peer.AddrInfo{ID: c.id, Addrs: c.addrs})
+			cancel()
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				unreachable++
+				broadcastLogger().Warn(context.Background(), "Voter not reachable for vote trigger",
+					ion.Err(err), ion.String("peer", c.id.String()))
+				return
+			}
+			targets = append(targets, c.id)
+		}(c)
+	}
+	wg.Wait()
+	if unreachable > 0 {
+		scope = fmt.Sprintf("%s(unreachable=%d)", scope, unreachable)
+	}
+	return targets, scope
 }
 
-// BroadcastVoteTrigger sends a vote trigger message to the round's committee
+// BroadcastVoteTrigger sends the vote trigger (the full proposal) to every
+// eligible validator and the round's committee — see voteTriggerTargets.
 func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.ConsensusMessage) error {
 	if BroadcastLocalGRO == nil {
 		var err error
@@ -601,8 +666,9 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	// Target the committee, not every connected peer. Only committee members can
-	// vote; everyone else receives the FINALIZED block over gossip after 2f+1.
+	// Target every eligible validator (voters) plus the committee (aggregators),
+	// one copy each, never re-flooded. Non-validator peers get the FINALIZED
+	// block over gossip after 2f+1.
 	peers, scope := voteTriggerTargets(h, consensusMessage)
 	if len(peers) == 0 {
 		return fmt.Errorf("no connected peers to broadcast vote trigger to")
