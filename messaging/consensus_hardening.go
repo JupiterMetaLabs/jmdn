@@ -66,7 +66,7 @@ var (
 	// validator verifies. Applied ONLY on the receiving paths
 	// (verifyBlockCertificate, ProcessBlockLocally, VerifySyncedBlockCertificate);
 	// the sequencer's own gate (Sequencer.Consensus) never consults it.
-	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", false)
+	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", true)
 
 	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
 	// members count, and an eligibility source MUST be configured. FAIL CLOSED:

@@ -277,7 +277,7 @@ func DefaultConfig() NodeConfig {
 				EmitCommitteeBLS:             true,
 				AllowNewReceiverAccounts:     true,
 				BlockGossip:                  true,
-				TrustSequencerCertificate:    false,
+				TrustSequencerCertificate:    true,
 				VoteCRDTCompactK:             3,
 			},
 		},
