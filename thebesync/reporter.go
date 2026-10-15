@@ -30,7 +30,8 @@ func (ChainReporter) TipState(ctx context.Context) (uint64, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	blk, err := DB_OPs.GetZKBlockByNumber(nil, head)
+	// Header-only: StateRoot lives on the blocks row; the proof is not needed.
+	blk, err := DB_OPs.GetZKBlockHeaderByNumber(head)
 	if err != nil {
 		return 0, nil, err
 	}

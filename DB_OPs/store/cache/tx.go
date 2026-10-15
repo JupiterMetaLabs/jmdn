@@ -41,6 +41,9 @@ var _ store.TxStore = (*cachedTxStore)(nil)
 
 // NewCachedTxStore wraps inner with cache. Pass NewNoopCache() for no-cache mode.
 func NewCachedTxStore(inner store.TxStore, c cache.Cache) store.TxStore {
+	if isNoop(c) {
+		return inner // nothing to cache: skip the per-read json.Marshal of the record
+	}
 	return &cachedTxStore{inner: inner, c: c}
 }
 

@@ -5,9 +5,11 @@ import (
 	"fmt"
 
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
 	contractDB "gossipnode/DB_OPs/contractDB"
 	pbdid "gossipnode/DID/proto"
@@ -35,6 +37,11 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 		logger().Info(ctx, "Configured EVM Block API endpoint",
 			ion.String("endpoint", evmEndpoint))
 	}
+
+	// Build the loopback EVM block context in-process (header-only reads)
+	// instead of HTTP GETs of the full tip block (proof included) per eth_call.
+	// The HTTP endpoint above stays as the fallback when no reader is set.
+	evm.SetChainReader(&evm.ChainReader{Head: evmHead, HashAt: evmHashAt})
 
 	Security.SetExpectedChainID(chainID)
 
@@ -104,4 +111,40 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	}
 
 	return nil
+}
+
+// evmHead reports the same tip /api/latest-block serves — the data-complete tip
+// (D-858) — from the blocks row only. Tip 0 is "no blocks yet": an error makes
+// the EVM keep its defaults (30M gas, time.Now()) rather than the HTTP path's
+// zero-filled context.
+func evmHead() (evm.HeadInfo, error) {
+	tip, err := DB_OPs.GetLatestDataCompleteBlock()
+	if err != nil {
+		return evm.HeadInfo{}, err
+	}
+	if tip == 0 {
+		return evm.HeadInfo{}, fmt.Errorf("no blocks in the chain yet")
+	}
+	blk, err := DB_OPs.GetZKBlockHeaderByNumber(tip)
+	if err != nil {
+		return evm.HeadInfo{}, err
+	}
+	ts := uint64(0)
+	if blk.Timestamp > 0 {
+		ts = uint64(blk.Timestamp)
+	}
+	h := evm.HeadInfo{Number: blk.BlockNumber, Timestamp: ts, GasLimit: blk.GasLimit}
+	if blk.CoinbaseAddr != nil {
+		h.Coinbase = *blk.CoinbaseAddr
+	}
+	return h, nil
+}
+
+// evmHashAt returns the stored hash of block n (BLOCKHASH opcode, loopback only).
+func evmHashAt(n uint64) (common.Hash, error) {
+	blk, err := DB_OPs.GetZKBlockHeaderByNumber(n)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return blk.BlockHash, nil
 }
