@@ -5,358 +5,232 @@ import (
 	"testing"
 )
 
-func TestTryLock_BlockThenTimeoutIsRefused(t *testing.T) {
+func TestTryLockFresh_SameBlockIsIdempotent(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 848, Period: 0}
-	if ok, _ := l.TryLock(r, Block); !ok {
-		t.Fatalf("first signature for a round must be allowed")
+	r := Round{Height: 10, Period: 0}
+	ok, _, _, fresh := l.TryLockFresh(r, "A")
+	if !ok || !fresh {
+		t.Fatalf("first lock: ok=%v fresh=%v, want true,true", ok, fresh)
 	}
-	ok, taken := l.TryLock(r, Timeout)
-	if ok || taken != Block {
-		t.Fatalf("timeout after block for the same round must be refused, got ok=%v taken=%v", ok, taken)
+	ok, refusal, _, fresh := l.TryLockFresh(r, "A")
+	if !ok || fresh || refusal != None {
+		t.Fatalf("retry of the same block: ok=%v fresh=%v refusal=%v, want true,false,none", ok, fresh, refusal)
 	}
 }
 
-func TestTryLock_TimeoutThenBlockIsRefused(t *testing.T) {
+// R1: one block per (height, period).
+func TestTryLockFresh_DifferentBlockSameRoundIsRefused(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 848, Period: 2}
-	if ok, _ := l.TryLock(r, Timeout); !ok {
-		t.Fatalf("first signature for a round must be allowed")
+	r := Round{Height: 10, Period: 0}
+	l.TryLockFresh(r, "A")
+	ok, refusal, highest, _ := l.TryLockFresh(r, "B")
+	if ok || refusal != Conflict || highest != 0 {
+		t.Fatalf("second block in one round: ok=%v refusal=%v highest=%d, want false,conflict,0", ok, refusal, highest)
 	}
-	ok, taken := l.TryLock(r, Block)
-	if ok || taken != Timeout {
-		t.Fatalf("block after timeout for the same round must be refused, got ok=%v taken=%v", ok, taken)
+	if got, _ := l.Signed(r); got != "A" {
+		t.Fatalf("refusal must not overwrite the signed block, got %q", got)
 	}
 }
 
-func TestTryLock_SameSideIsIdempotent(t *testing.T) {
+// A retry at the next period is a new round, even for a different block.
+func TestTryLockFresh_NextPeriodIsANewRound(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 10, Period: 1}
-	for i := 0; i < 3; i++ {
-		if ok, _ := l.TryLock(r, Block); !ok {
-			t.Fatalf("retrying the side already taken must stay allowed (attempt %d)", i)
-		}
+	l.TryLockFresh(Round{Height: 10, Period: 0}, "A")
+	ok, _, highest, fresh := l.TryLockFresh(Round{Height: 10, Period: 1}, "B")
+	if !ok || !fresh || highest != 1 {
+		t.Fatalf("next period: ok=%v fresh=%v highest=%d, want true,true,1", ok, fresh, highest)
 	}
 }
 
-func TestTryLock_DifferentRoundsAreIndependent(t *testing.T) {
+// R2: never sign a lower period of a height once a higher one is signed.
+func TestTryLockFresh_LowerPeriodIsRefusedAsStale(t *testing.T) {
 	l := NewLedger()
-	if ok, _ := l.TryLock(Round{Height: 848, Period: 0}, Timeout); !ok {
-		t.Fatal("lock p0")
+	l.TryLockFresh(Round{Height: 10, Period: 2}, "C")
+	ok, refusal, highest, _ := l.TryLockFresh(Round{Height: 10, Period: 1}, "B")
+	if ok || refusal != Stale || highest != 2 {
+		t.Fatalf("lower period: ok=%v refusal=%v highest=%d, want false,stale,2", ok, refusal, highest)
 	}
-	// Timing out period 0 must not stop signing the block at period 1.
-	if ok, _ := l.TryLock(Round{Height: 848, Period: 1}, Block); !ok {
-		t.Fatalf("a block result for the NEXT period must be allowed after timing out the previous one")
-	}
-	if ok, _ := l.TryLock(Round{Height: 849, Period: 0}, Block); !ok {
+	// The same rule does not reach other heights.
+	if ok, _, _, _ := l.TryLockFresh(Round{Height: 11, Period: 0}, "D"); !ok {
 		t.Fatalf("a different height must be independent")
 	}
 }
 
-func TestTryLock_ConcurrentOppositeSidesExactlyOneWins(t *testing.T) {
+// A node that missed earlier periods (offline, restarted) may sign whatever
+// period it is first asked for: no record is no information.
+func TestTryLockFresh_NoRecordAcceptsAnyPeriod(t *testing.T) {
+	l := NewLedger()
+	if ok, _, highest, _ := l.TryLockFresh(Round{Height: 10, Period: 3}, "X"); !ok || highest != 3 {
+		t.Fatalf("first sight of a height at period 3: ok=%v highest=%d, want true,3", ok, highest)
+	}
+}
+
+func TestTryLockFresh_ConcurrentDifferentBlocksExactlyOneWins(t *testing.T) {
 	for trial := 0; trial < 200; trial++ {
 		l := NewLedger()
 		r := Round{Height: uint64(trial), Period: 0}
 		var wg sync.WaitGroup
 		results := make([]bool, 2)
-		for i, side := range []Side{Block, Timeout} {
+		for i, b := range []string{"A", "B"} {
 			wg.Add(1)
-			go func(i int, s Side) {
+			go func(i int, b string) {
 				defer wg.Done()
-				results[i], _ = l.TryLock(r, s)
-			}(i, side)
+				results[i], _, _, _ = l.TryLockFresh(r, b)
+			}(i, b)
 		}
 		wg.Wait()
 		if results[0] == results[1] {
-			t.Fatalf("trial %d: exactly one side must win, got block=%v timeout=%v", trial, results[0], results[1])
+			t.Fatalf("trial %d: exactly one block must win, got A=%v B=%v", trial, results[0], results[1])
 		}
 	}
 }
 
-func TestTryLock_PrunesOldRoundsButKeepsRecent(t *testing.T) {
+// A request at a bogus huge height must not clear the live height's records:
+// pruning follows commits only.
+func TestTryLockFresh_HugeHeightDoesNotClearLiveRecords(t *testing.T) {
 	l := NewLedger()
-	l.TryLock(Round{Height: 1, Period: 0}, Block)
-	l.TryLock(Round{Height: 5000, Period: 0}, Block)
-	if _, ok := l.Signed(Round{Height: 1, Period: 0}); ok {
-		t.Fatalf("a round far below the tip should be pruned")
+	l.ForgetThrough(99)
+	live := Round{Height: 100, Period: 0}
+	l.TryLockFresh(live, "A")
+	l.TryLockFresh(Round{Height: 1 << 62, Period: 0}, "junk")
+	if got, ok := l.Signed(live); !ok || got != "A" {
+		t.Fatalf("live record lost after a huge-height request: %q %v", got, ok)
 	}
-	l.TryLock(Round{Height: 5000 - retainHeights + 1, Period: 0}, Timeout)
-	if _, ok := l.Signed(Round{Height: 5000 - retainHeights + 1, Period: 0}); !ok {
-		t.Fatalf("a round inside the retention window must be kept")
+	if ok, refusal, _, _ := l.TryLockFresh(live, "B"); ok || refusal != Conflict {
+		t.Fatalf("live round must stay closed to a second block: ok=%v refusal=%v", ok, refusal)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// F-3 - "lock-then-fail stranding": TryLock reserves a side on INTENT, before
-// the caller has actually produced a signature. A caller whose sign attempt
-// then fails must release the reservation via Release, or the round is
-// stranded - permanently refused on BOTH sides for the life of the process.
-// ---------------------------------------------------------------------------
-
-// TestRelease_FreesTheRoundForTheOtherSide reproduces the production defect
-// end to end and proves the fix: a node reserves Block, its BLS signing
-// attempt fails (simulated - nothing here assumes WHY it failed), it calls
-// Release, and the round must then be exactly as if the failed attempt never
-// happened - free for either side, not just the one that failed.
-func TestRelease_FreesTheRoundForTheOtherSide(t *testing.T) {
+// Once a height commits, no block at or below it is signed again.
+func TestTryLockFresh_RefusesAtOrBelowCommittedTip(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 848, Period: 0}
-
-	if ok, _ := l.TryLock(r, Block); !ok {
-		t.Fatalf("setup: the first reservation for a round must be allowed")
+	l.TryLockFresh(Round{Height: 100, Period: 0}, "A")
+	l.ForgetThrough(100)
+	for _, h := range []uint64{100, 99, 1} {
+		ok, refusal, _, _ := l.TryLockFresh(Round{Height: h, Period: 5}, "B")
+		if ok || refusal != Committed {
+			t.Fatalf("height %d (tip 100): ok=%v refusal=%v, want false,height_committed", h, ok, refusal)
+		}
 	}
-
-	// Before the fix: this is where the story ends. TryLock(r, Timeout) below
-	// would report ok=false, taken=Block, forever - even though no block
-	// signature was ever actually produced. Confirm that failure mode is real
-	// under these settings before proving the fix removes it.
-	if ok, taken := l.TryLock(r, Timeout); ok || taken != Block {
-		t.Fatalf("precondition failed: expected the stranding defect to reproduce (ok=false, taken=Block), got ok=%v taken=%v", ok, taken)
-	}
-
-	// The fix: the caller whose Block sign attempt failed releases its own
-	// reservation instead of leaving it in place.
-	l.Release(r, Block)
-
-	if side, signed := l.Signed(r); signed {
-		t.Fatalf("round must be completely unlocked after Release, got %v", side)
-	}
-	if ok, _ := l.TryLock(r, Timeout); !ok {
-		t.Fatalf("fixed: the round must now accept a timeout vote, since the block side was never actually signed")
+	if ok, _, _, _ := l.TryLockFresh(Round{Height: 101, Period: 0}, "C"); !ok {
+		t.Fatalf("the next height must be signable")
 	}
 }
 
-// TestRelease_SymmetricForTimeoutSide is the mirror of the above: a failed
-// TIMEOUT sign attempt (messaging/timeout_gossip.go, messaging/
-// timeout_request.go) must free the round for a block result.
-func TestRelease_SymmetricForTimeoutSide(t *testing.T) {
+func TestForgetThrough_KeepsMarginAndDropsOlder(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 900, Period: 3}
-
-	if ok, _ := l.TryLock(r, Timeout); !ok {
-		t.Fatalf("setup: the first reservation for a round must be allowed")
+	for h := uint64(1); h <= 100; h++ {
+		l.TryLockFresh(Round{Height: h, Period: 0}, "A")
 	}
-	l.Release(r, Timeout)
-
-	if ok, _ := l.TryLock(r, Block); !ok {
-		t.Fatalf("fixed: the round must accept a block result, since the timeout side was never actually signed")
+	l.ForgetThrough(100)
+	if _, ok := l.Signed(Round{Height: 100 - commitMargin, Period: 0}); ok {
+		t.Fatalf("a record commitMargin below the tip must be dropped")
+	}
+	if _, ok := l.Highest(100 - commitMargin); ok {
+		t.Fatalf("its highest-period record must be dropped too")
+	}
+	if _, ok := l.Signed(Round{Height: 100 - commitMargin + 1, Period: 0}); !ok {
+		t.Fatalf("records inside the margin must be kept")
 	}
 }
 
-// TestRelease_OnlyClearsTheMatchingSide guards against a caller bug (or a
-// copy/paste of the wrong side at a call site) silently corrupting a
-// legitimate reservation. Release must be a strict compare-and-delete, never
-// an unconditional delete.
-func TestRelease_OnlyClearsTheMatchingSide(t *testing.T) {
+func TestForgetThrough_NeverMovesBackwards(t *testing.T) {
+	l := NewLedger()
+	l.ForgetThrough(50)
+	l.ForgetThrough(40)
+	if tip, ok := l.CommittedTip(); !ok || tip != 50 {
+		t.Fatalf("committed tip %d %v, want 50", tip, ok)
+	}
+	if ok, _, _, _ := l.TryLockFresh(Round{Height: 45, Period: 0}, "A"); ok {
+		t.Fatalf("height 45 is below the tip and must be refused")
+	}
+}
+
+func TestForgetThrough_SmallTipDropsNothing(t *testing.T) {
+	l := NewLedger()
+	l.TryLockFresh(Round{Height: 3, Period: 0}, "A")
+	l.ForgetThrough(2)
+	if _, ok := l.Signed(Round{Height: 3, Period: 0}); !ok {
+		t.Fatalf("a tip below commitMargin must not underflow into dropping records")
+	}
+}
+
+// F-3: a fresh reservation whose sign failed is released, so the round (and
+// any lower period R2 would otherwise refuse) is signable again.
+func TestRelease_FreshReservationFreesTheRound(t *testing.T) {
+	l := NewLedger()
+	l.TryLockFresh(Round{Height: 10, Period: 0}, "A")
+	r := Round{Height: 10, Period: 1}
+	_, _, _, fresh := l.TryLockFresh(r, "B")
+	if !fresh {
+		t.Fatalf("precondition: reservation must be fresh")
+	}
+	l.Release(r, "B")
+	if _, ok := l.Signed(r); ok {
+		t.Fatalf("released round must be empty")
+	}
+	if high, _ := l.Highest(10); high != 0 {
+		t.Fatalf("highest must fall back to the remaining signed period 0, got %d", high)
+	}
+	if ok, _, _, _ := l.TryLockFresh(r, "C"); !ok {
+		t.Fatalf("after release a different block may be signed for the round")
+	}
+}
+
+func TestRelease_LastRoundOfHeightClearsHighest(t *testing.T) {
+	l := NewLedger()
+	r := Round{Height: 10, Period: 4}
+	l.TryLockFresh(r, "A")
+	l.Release(r, "A")
+	if _, ok := l.Highest(10); ok {
+		t.Fatalf("no signed round left: highest must be cleared")
+	}
+	if ok, _, _, _ := l.TryLockFresh(Round{Height: 10, Period: 0}, "B"); !ok {
+		t.Fatalf("with nothing signed, a lower period must not be refused as stale")
+	}
+}
+
+func TestRelease_OnlyClearsTheMatchingBlock(t *testing.T) {
 	l := NewLedger()
 	r := Round{Height: 10, Period: 0}
-
-	if ok, _ := l.TryLock(r, Block); !ok {
-		t.Fatal("setup")
-	}
-	// Releasing the WRONG side must not touch a real Block reservation.
-	l.Release(r, Timeout)
-
-	side, signed := l.Signed(r)
-	if !signed || side != Block {
-		t.Fatalf("Release(wrong side) corrupted the ledger: signed=%v side=%v, want Block still held", signed, side)
-	}
-	if ok, taken := l.TryLock(r, Timeout); ok || taken != Block {
-		t.Fatalf("the real Block reservation must still refuse Timeout after a mismatched Release, got ok=%v taken=%v", ok, taken)
+	l.TryLockFresh(r, "A")
+	l.Release(r, "B")
+	if got, _ := l.Signed(r); got != "A" {
+		t.Fatalf("release of a different block must be a no-op, round now holds %q", got)
 	}
 }
 
-// TestRelease_NoOpOnAnUnlockedRound must never panic and must never lock a
-// round it did not itself unlock - Release is not a substitute for TryLock.
 func TestRelease_NoOpOnAnUnlockedRound(t *testing.T) {
 	l := NewLedger()
-	r := Round{Height: 20, Period: 0}
-
-	l.Release(r, Block) // never locked - must be a silent no-op
-
-	if _, signed := l.Signed(r); signed {
-		t.Fatalf("Release on a never-locked round must not create a reservation")
+	l.Release(Round{Height: 10, Period: 0}, "A")
+	if _, ok := l.Signed(Round{Height: 10, Period: 0}); ok {
+		t.Fatalf("release of an unlocked round must not create an entry")
 	}
 }
 
-// TestRelease_DoesNotAffectOtherRounds is a scoping check: Release(r, side)
-// touches exactly r, nothing else in the ledger.
-func TestRelease_DoesNotAffectOtherRounds(t *testing.T) {
+// F-9: a re-entry (fresh=false) must not release, otherwise a retry whose sign
+// fails would reopen a round an earlier attempt already signed.
+func TestF9_ReentryIsNotFresh(t *testing.T) {
 	l := NewLedger()
-	r1 := Round{Height: 1, Period: 0}
-	r2 := Round{Height: 2, Period: 0}
-
-	l.TryLock(r1, Block)
-	l.TryLock(r2, Timeout)
-	l.Release(r1, Block)
-
-	if _, signed := l.Signed(r1); signed {
-		t.Fatalf("r1 should be released")
+	r := Round{Height: 10, Period: 0}
+	l.TryLockFresh(r, "A") // earlier attempt: signed and shipped
+	_, _, _, fresh := l.TryLockFresh(r, "A")
+	if fresh {
+		t.Fatalf("a re-entry must report fresh=false so its caller does not release")
 	}
-	if side, signed := l.Signed(r2); !signed || side != Timeout {
-		t.Fatalf("r2 must be untouched by releasing r1, got signed=%v side=%v", signed, side)
+	if ok, refusal, _, _ := l.TryLockFresh(r, "B"); ok || refusal != Conflict {
+		t.Fatalf("round must stay closed to a second block: ok=%v refusal=%v", ok, refusal)
 	}
 }
 
-// TestRelease_AfterReleaseARetryStartsClean confirms Release does not leave
-// stray state that would make a subsequent retry of the SAME side behave any
-// differently than a genuinely first attempt - the round the caller retries
-// after a failure must be indistinguishable from one that was never touched.
-func TestRelease_AfterReleaseARetryStartsClean(t *testing.T) {
-	l := NewLedger()
-	r := Round{Height: 30, Period: 0}
-
-	l.TryLock(r, Block)
-	l.Release(r, Block)
-
-	if ok, taken := l.TryLock(r, Block); !ok {
-		t.Fatalf("retrying the same side after Release must succeed, got ok=%v taken=%v", ok, taken)
-	}
-	// And normal mutual exclusion still applies going forward.
-	if ok, taken := l.TryLock(r, Timeout); ok || taken != Block {
-		t.Fatalf("after a fresh successful lock, the OTHER side must be refused as usual, got ok=%v taken=%v", ok, taken)
-	}
-}
-
-// TestRelease_ConcurrentWithTryLock_NoRace is the concurrency test the
-// finding asked for. It runs under -race: Release and a concurrent retry of
-// the SAME side hit the same mutex from two goroutines on every trial, and
-// the ledger must end each trial in one of exactly two valid states - never a
-// torn or impossible one (e.g. signed for the OTHER side, which would mean
-// Release let something illegitimate through).
 func TestRelease_ConcurrentWithTryLock_NoRace(t *testing.T) {
-	for trial := 0; trial < 500; trial++ {
-		l := NewLedger()
-		r := Round{Height: uint64(trial), Period: 0}
-		if ok, _ := l.TryLock(r, Block); !ok {
-			t.Fatalf("trial %d: setup lock failed", trial)
-		}
-
-		var wg sync.WaitGroup
-		var retryOK bool
+	l := NewLedger()
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
 		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			l.Release(r, Block)
-		}()
-		go func() {
-			defer wg.Done()
-			// A concurrent retry of the SAME side must succeed regardless of
-			// whether it interleaves before, during, or after the Release:
-			// TryLock is idempotent for a matching side (found existing==
-			// requested), and if Release runs first it is simply a fresh
-			// lock - both outcomes report ok=true.
-			retryOK, _ = l.TryLock(r, Block)
-		}()
-		wg.Wait()
-
-		if !retryOK {
-			t.Fatalf("trial %d: a same-side retry racing with Release must still succeed", trial)
-		}
-		if side, signed := l.Signed(r); signed && side != Block {
-			t.Fatalf("trial %d: round left in an impossible state %v - Release must never let the OTHER side in", trial, side)
-		}
+		r := Round{Height: uint64(i % 5), Period: uint64(i % 3)}
+		go func() { defer wg.Done(); l.TryLockFresh(r, "A") }()
+		go func() { defer wg.Done(); l.Release(r, "A") }()
 	}
-}
-
-// TestRelease_ConcurrentOppositeSideAfterRelease_ExactlyOneWins proves the
-// package's core safety invariant still holds in the exact scenario Release
-// exists to unblock: once a reservation is released, a genuine race between
-// the two DIFFERENT sides for that now-free round still resolves to exactly
-// one winner, same as TestTryLock_ConcurrentOppositeSidesExactlyOneWins for a
-// round that was never locked at all.
-func TestRelease_ConcurrentOppositeSideAfterRelease_ExactlyOneWins(t *testing.T) {
-	for trial := 0; trial < 200; trial++ {
-		l := NewLedger()
-		r := Round{Height: uint64(trial), Period: 1}
-		l.TryLock(r, Block) // the reservation that is about to fail to sign
-		l.Release(r, Block) // ... and gets released
-
-		var wg sync.WaitGroup
-		results := make([]bool, 2)
-		for i, side := range []Side{Block, Timeout} {
-			wg.Add(1)
-			go func(i int, s Side) {
-				defer wg.Done()
-				results[i], _ = l.TryLock(r, s)
-			}(i, side)
-		}
-		wg.Wait()
-		if results[0] == results[1] {
-			t.Fatalf("trial %d: exactly one side must win after release, got block=%v timeout=%v", trial, results[0], results[1])
-		}
-	}
-}
-
-// --- F-9: release-after-success must not re-open the other side ---
-
-// TestTryLockFresh_ReportsFreshOnlyForTheCreatingCall pins the distinction the
-// whole F-9 guard rests on.
-func TestTryLockFresh_ReportsFreshOnlyForTheCreatingCall(t *testing.T) {
-	l := NewLedger()
-	r := Round{Height: 920001, Period: 0}
-
-	if ok, _, fresh := l.TryLockFresh(r, Block); !ok || !fresh {
-		t.Fatalf("first acquire: ok=%v fresh=%v, want true/true", ok, fresh)
-	}
-	if ok, _, fresh := l.TryLockFresh(r, Block); !ok || fresh {
-		t.Fatalf("re-entry: ok=%v fresh=%v, want true/false", ok, fresh)
-	}
-	if ok, taken, fresh := l.TryLockFresh(r, Timeout); ok || fresh || taken != Block {
-		t.Fatalf("other side: ok=%v taken=%s fresh=%v, want false/block/false", ok, taken, fresh)
-	}
-}
-
-// TestF9_GuardedReleaseKeepsTheRoundClosedAfterASuccessfulSign is the
-// regression test for F-9.
-//
-// A retried vote-result request re-enters TryLock (idempotent for the same
-// side) and may then fail to sign. Releasing on that re-entry would clear the
-// reservation standing behind the signature the FIRST attempt already shipped,
-// letting this node also sign a timeout for the round - both sides, one node,
-// one round. Guarding the release on fresh is what prevents it.
-//
-// Revert TryLockFresh's fresh result (or drop the guard at any call site) and
-// this test fails.
-func TestF9_GuardedReleaseKeepsTheRoundClosedAfterASuccessfulSign(t *testing.T) {
-	l := NewLedger()
-	r := Round{Height: 920002, Period: 0}
-
-	// 1. First vote-result request reserves the round.
-	_, _, fresh1 := l.TryLockFresh(r, Block)
-	// 2. Its BLS sign SUCCEEDS: a real block signature ships and counts toward
-	//    the certificate. Nothing to call - the reservation simply stands.
-	_ = fresh1
-
-	// 3. A RETRIED vote-result request for the same round re-enters.
-	_, _, fresh2 := l.TryLockFresh(r, Block)
-	// 4. THIS attempt's sign fails. The production failure path releases only
-	//    when its own lock was fresh.
-	if fresh2 {
-		l.Release(r, Block)
-	}
-
-	// 5. The node must still be unable to sign the other side.
-	if ok, taken := l.TryLock(r, Timeout); ok {
-		t.Fatalf("F-9: timeout admitted for a round already block-signed (taken=%s) - "+
-			"a retried-and-failed attempt released another attempt's reservation", taken)
-	}
-}
-
-// TestF9_FreshReleaseStillFreesAStrandedRound keeps F-3 working: a round whose
-// ONLY attempt failed to sign must still be released, or the node is stranded
-// from both certificates for the life of the process.
-func TestF9_FreshReleaseStillFreesAStrandedRound(t *testing.T) {
-	l := NewLedger()
-	r := Round{Height: 920003, Period: 0}
-
-	_, _, fresh := l.TryLockFresh(r, Block)
-	if !fresh {
-		t.Fatal("setup: first acquire must be fresh")
-	}
-	l.Release(r, Block) // the one and only attempt failed to sign
-
-	if ok, _ := l.TryLock(r, Timeout); !ok {
-		t.Fatal("F-3 regression: a round whose only sign attempt failed must be free")
-	}
+	wg.Wait()
 }

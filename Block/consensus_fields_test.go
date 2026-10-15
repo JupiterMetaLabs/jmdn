@@ -19,18 +19,17 @@ import (
 )
 
 // resetSlotAndPeriodStores swaps in fresh package-level defaults for the
-// duration of a test and restores the originals afterward — same pattern
-// used throughout messaging's own tests (e.g.
-// TestRoundContextForBlockReadsPeriodStore) for the same reason: these are
-// process-wide singletons other tests may also depend on.
+// slot store and the proposer's period counter for the duration of a test and
+// restores the originals afterward: these are process-wide singletons other
+// tests may also depend on.
 func resetSlotAndPeriodStores(t *testing.T) {
 	t.Helper()
-	savedSlot, savedPeriod := messaging.DefaultSlotStore, messaging.DefaultPeriodStore
+	savedSlot, savedPeriods := messaging.DefaultSlotStore, messaging.DefaultProposerPeriods
 	messaging.DefaultSlotStore = messaging.NewSlotStore()
-	messaging.DefaultPeriodStore = messaging.NewPeriodStore()
+	messaging.DefaultProposerPeriods = messaging.NewProposerPeriods()
 	t.Cleanup(func() {
 		messaging.DefaultSlotStore = savedSlot
-		messaging.DefaultPeriodStore = savedPeriod
+		messaging.DefaultProposerPeriods = savedPeriods
 	})
 
 	// attachAVCConsensusFields now fails closed (docs/COMMITTEE-SNAPSHOT-
@@ -59,12 +58,34 @@ func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) 
 		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
 	}
 
-	// LiveSlotFor(2) = committed(2) + pendingPeriod(0) + 1 = 3.
+	// LiveSlotFor(2) = committed(2) + period(0) + 1 = 3.
 	if block.Slot != 3 {
 		t.Fatalf("block.Slot = %d, want 3 (LiveSlotFor(2))", block.Slot)
 	}
 	if block.Period != 0 {
-		t.Fatalf("block.Period = %d, want 0 (no timeout certs for height 2)", block.Period)
+		t.Fatalf("block.Period = %d, want 0 (no failed round at height 2)", block.Period)
+	}
+}
+
+// R3: after two failed rounds at a height, the retry is stamped Period 2 and
+// sits two slots further on - the slot chain verifiers enforce
+// (Slot = parent slot + Period + 1).
+func TestAttachAVCConsensusFields_RetryAfterFailedRoundsUsesNextPeriod(t *testing.T) {
+	resetSlotAndPeriodStores(t)
+	messaging.DefaultSlotStore.AdvanceOnCommit(0, 0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
+	messaging.DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
+	messaging.DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
+
+	block := &config.ZKBlock{BlockNumber: 2}
+	if err := attachAVCConsensusFields(block); err != nil {
+		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
+	}
+	if block.Period != 2 {
+		t.Fatalf("block.Period = %d, want 2 (two failed rounds)", block.Period)
+	}
+	if block.Slot != 5 {
+		t.Fatalf("block.Slot = %d, want 5 (committed 2 + period 2 + 1)", block.Slot)
 	}
 }
 
@@ -129,15 +150,13 @@ func TestAttachAVCConsensusFields_SetsConsensusHashAndLeavesBlockHash(t *testing
 // helper marks the store ready specifically so the OTHER tests in this file
 // can test field-assignment logic in isolation from this gate).
 func TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered(t *testing.T) {
-	savedSlot, savedPeriod := messaging.DefaultSlotStore, messaging.DefaultPeriodStore
+	savedSlot := messaging.DefaultSlotStore
 	messaging.DefaultSlotStore = messaging.NewSlotStore()
-	messaging.DefaultPeriodStore = messaging.NewPeriodStore()
 	messaging.ResetSlotStoreReadyForTest()
 	savedEnforce := messaging.EnforceSlotRecoveryGate
 	messaging.EnforceSlotRecoveryGate = true
 	t.Cleanup(func() {
 		messaging.DefaultSlotStore = savedSlot
-		messaging.DefaultPeriodStore = savedPeriod
 		messaging.EnforceSlotRecoveryGate = savedEnforce
 	})
 

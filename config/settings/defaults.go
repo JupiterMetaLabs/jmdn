@@ -266,8 +266,6 @@ func DefaultConfig() NodeConfig {
 				EnforceBlockLinkage:          true,
 				EnforceBodyBinding:           true,
 				AggCert:                      true,
-				TimeoutCertWiring:            false,
-				TimeoutCertRejoin:            false,
 				EnforceSlotRecoveryGate:      true,
 				SlotRecoveryPreslotMigration: false,
 				EnforceSyncGate:              true,

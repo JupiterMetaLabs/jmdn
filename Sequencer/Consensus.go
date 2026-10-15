@@ -240,10 +240,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		if zkblock == nil {
 			return fmt.Errorf("CONSENSUSERROR.SEATORDER: nil block, cannot derive the round context (fail-closed)")
 		}
-		roundCtx, rcErr := messaging.RoundContextForBlock(zkblock)
-		if rcErr != nil {
-			return fmt.Errorf("CONSENSUSERROR.SEATORDER: round context unavailable (fail-closed): %w", rcErr)
-		}
+		roundCtx := messaging.RoundContextForBlock(zkblock)
 		seated, selErr := messaging.SelectCommittee(roundCtx)
 		if selErr != nil {
 			return fmt.Errorf("CONSENSUSERROR.SEATORDER: committee selection failed (fail-closed): %w", selErr)
@@ -2139,6 +2136,25 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 }
 
 // parseVoteResultResponse parses vote result response and extracts BLS result
+// noteRoundRefusal records a buddy's refusal to sign this round (roundlock R1
+// or R2). Such a refusal is a raw error object carrying highest_period, the
+// highest period the buddy has signed at this height; the proposer's period
+// counter uses those reports when the round fails (R3). Anything else is
+// ignored. peerID is the authenticated remote of the response stream.
+func (consensus *Consensus) noteRoundRefusal(response string, peerID peer.ID) {
+	var refusal struct {
+		HighestPeriod *uint64 `json:"highest_period"`
+	}
+	if err := json.Unmarshal([]byte(response), &refusal); err != nil || refusal.HighestPeriod == nil {
+		return
+	}
+	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
+		return
+	}
+	messaging.DefaultProposerPeriods.NoteRefusal(
+		consensus.ZKBlockData.GetZKBlock().BlockNumber, peerID.String(), *refusal.HighestPeriod)
+}
+
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
 	logger_ctx := context.Background()
 	tracer := logger().Tracer("Consensus")
@@ -2154,6 +2170,8 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 	logger().Info(trace_ctx, "Parsing vote result response",
 		ion.String("peer_id", peerID.String()),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
+
+	consensus.noteRoundRefusal(response, peerID)
 
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
@@ -2355,20 +2373,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 		blk := consensus.ZKBlockData.GetZKBlock()
-		rc, rcErr := messaging.RoundContextForBlock(blk)
-		if rcErr != nil {
-			// Fail closed - most likely this node hasn't processed the
-			// TimeoutCertificate that advanced Period for this height yet
-			// (messaging.ErrPeriodNotSynced). Proceeding with a stale local
-			// Period would silently compute the wrong committee seed for
-			// this round, which is the exact bug this check exists to catch.
-			logger().Error(trace_ctx, "refusing consensus (fail closed): round context unavailable", rcErr,
-				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
-			consensus.setRejectSummary(
-				"round context unavailable (this node may not have caught up to the certified period for this height yet)",
-				rcErr.Error())
-			return false
-		}
+		rc := messaging.RoundContextForBlock(blk)
 		blockHashHex = blk.BlockHash.Hex()
 		consensusHashHex = blk.ConsensusHashHex()
 		blockHeight = blk.BlockNumber

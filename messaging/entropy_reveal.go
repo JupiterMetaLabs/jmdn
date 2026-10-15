@@ -71,7 +71,7 @@ import (
 )
 
 // entropyAccumulatorStore is the epoch-keyed store of Accumulators — same
-// map+mutex shape as SlotStore/PeriodStore.
+// map+mutex shape as SlotStore/ProposerPeriods.
 //
 // There is no longer a paired Round to keep in sync with each Accumulator
 // (that was the previous version's epochRound); the verifier is stateless, so

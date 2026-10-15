@@ -13,7 +13,7 @@ func TestConsensusFlags_DefaultsMatchLegacyEnvDefaults(t *testing.T) {
 	want := map[string]bool{
 		"committee_snapshot_anchor": false, "committee_v2": true, "reject_legacy_votes": true,
 		"enforce_committee_registry": true, "enforce_block_linkage": true, "enforce_body_binding": true,
-		"agg_cert": true, "timeout_cert_wiring": false, "timeout_cert_rejoin": false,
+		"agg_cert":                   true,
 		"enforce_slot_recovery_gate": true, "slot_recovery_preslot_migration": false, "enforce_sync_gate": true,
 		"emit_block_bound_votes": true, "validator_voter_set": true, "validator_vote_ingest": true,
 		"emit_committee_bls": true, "allow_new_receiver_accounts": true, "block_gossip": true,
@@ -21,7 +21,7 @@ func TestConsensusFlags_DefaultsMatchLegacyEnvDefaults(t *testing.T) {
 	got := map[string]bool{
 		"committee_snapshot_anchor": f.CommitteeSnapshotAnchor, "committee_v2": f.CommitteeV2, "reject_legacy_votes": f.RejectLegacyVotes,
 		"enforce_committee_registry": f.EnforceCommitteeRegistry, "enforce_block_linkage": f.EnforceBlockLinkage, "enforce_body_binding": f.EnforceBodyBinding,
-		"agg_cert": f.AggCert, "timeout_cert_wiring": f.TimeoutCertWiring, "timeout_cert_rejoin": f.TimeoutCertRejoin,
+		"agg_cert":                   f.AggCert,
 		"enforce_slot_recovery_gate": f.EnforceSlotRecoveryGate, "slot_recovery_preslot_migration": f.SlotRecoveryPreslotMigration, "enforce_sync_gate": f.EnforceSyncGate,
 		"emit_block_bound_votes": f.EmitBlockBoundVotes, "validator_voter_set": f.ValidatorVoterSet, "validator_vote_ingest": f.ValidatorVoteIngest,
 		"emit_committee_bls": f.EmitCommitteeBLS, "allow_new_receiver_accounts": f.AllowNewReceiverAccounts, "block_gossip": f.BlockGossip,
@@ -74,7 +74,7 @@ reputation:
 		t.Fatalf("yaml overrides not applied: %+v", f)
 	}
 	// untouched keys keep defaults
-	if !f.RejectLegacyVotes || !f.EnforceBodyBinding || f.TimeoutCertRejoin {
+	if !f.RejectLegacyVotes || !f.EnforceBodyBinding {
 		t.Fatalf("unset keys lost their defaults: %+v", f)
 	}
 	if cfg.Reputation.Observe || cfg.Reputation.PushIntervalSeconds != 0 || cfg.Reputation.StorePath != "/var/lib/jmdn/reputation.json" || !cfg.Reputation.PushSuspend {

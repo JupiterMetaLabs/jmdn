@@ -497,6 +497,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// (§7.1b) — this is not receiving a peer's slot value, it is
 			// deriving the same one locally from the same certified event.
 			DefaultSlotStore.AdvanceOnCommit(msg.Block.BlockNumber, msg.Block.Period)
+			NoteHeightCommitted(msg.Block.BlockNumber)
 
 			// M4 §C/§D + B1 + Stage-F receive side — receiver-side twin of
 			// broadcast.go's ProcessBlockLocally, sharing one definition.
@@ -825,23 +826,8 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
 	// byte-identical to the previous VerifyCertificate call. The round context
 	// comes from the block, never the clock - see RoundContextForBlock.
-	// Fix 3: if the block claims a later Period than this node holds, fetch
-	// the certificate that advanced it before building the round context -
-	// otherwise a node that missed the certificate gossip fails closed on
-	// every block of the new period. Re-verified; no-op when wiring is off.
-	ensurePeriodForBlock(getHostInstance(), msg.Block)
 	blockHashHex, consensusHashHex, height := msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber
-	rc, rcErr := RoundContextForBlock(msg.Block)
-	if rcErr != nil {
-		// Fail closed - most likely this node hasn't processed the
-		// TimeoutCertificate that advanced Period for this height yet. See
-		// ErrPeriodNotSynced's doc comment.
-		if relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, rcErr, responses, blockHashHex, consensusHashHex, height); rerr == nil && relaxed.Reached {
-			return nil
-		}
-		return reject("period_not_synced",
-			"round context unavailable (fail closed): %v", rcErr)
-	}
+	rc := RoundContextForBlock(msg.Block)
 	res, err := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
 	res, err = relaxForTrustedSequencer("block_propagation", res, err, responses, blockHashHex, consensusHashHex, height)
 	if err != nil {

@@ -206,8 +206,6 @@ type ConsensusFlags struct {
 	EnforceBlockLinkage          bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`                     // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
 	EnforceBodyBinding           bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`                       // JMDN_ENFORCE_BODY_BINDING, lenient, default on
 	AggCert                      bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
-	TimeoutCertWiring            bool `mapstructure:"timeout_cert_wiring" yaml:"timeout_cert_wiring"`                         // JMDN_TIMEOUT_CERT_WIRING, lenient, default off
-	TimeoutCertRejoin            bool `mapstructure:"timeout_cert_rejoin" yaml:"timeout_cert_rejoin"`                         // JMDN_TIMEOUT_CERT_REJOIN, exactly-1, default off
 	EnforceSlotRecoveryGate      bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`           // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
 	SlotRecoveryPreslotMigration bool `mapstructure:"slot_recovery_preslot_migration" yaml:"slot_recovery_preslot_migration"` // JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION, exactly-1, default off
 	EnforceSyncGate              bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                             // JMDN_ENFORCE_SYNC_GATE, not-0, default on
