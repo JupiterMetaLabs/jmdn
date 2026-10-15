@@ -68,6 +68,9 @@ func ValidateProductionConsensusPosture(production bool) error {
 		return nil
 	}
 	var off []string
+	if TrustSequencerCertificate {
+		off = append(off, "TrustSequencerCertificate (consensus.flags.trust_sequencer_certificate / JMDN_TRUST_SEQUENCER_CERT) — validators skip the 2f+1 re-check")
+	}
 	if !RejectLegacyVotes {
 		off = append(off, "RejectLegacyVotes (JMDN_REJECT_LEGACY_VOTES)")
 	}

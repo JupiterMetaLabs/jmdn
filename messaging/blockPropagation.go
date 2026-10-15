@@ -797,15 +797,20 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	// otherwise a node that missed the certificate gossip fails closed on
 	// every block of the new period. Re-verified; no-op when wiring is off.
 	ensurePeriodForBlock(getHostInstance(), msg.Block)
+	blockHashHex, consensusHashHex, height := msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber
 	rc, rcErr := RoundContextForBlock(msg.Block)
 	if rcErr != nil {
 		// Fail closed - most likely this node hasn't processed the
 		// TimeoutCertificate that advanced Period for this height yet. See
 		// ErrPeriodNotSynced's doc comment.
+		if relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, rcErr, responses, blockHashHex, consensusHashHex, height); rerr == nil && relaxed.Reached {
+			return nil
+		}
 		return reject("period_not_synced",
 			"round context unavailable (fail closed): %v", rcErr)
 	}
-	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber, rc)
+	res, err := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
+	res, err = relaxForTrustedSequencer("block_propagation", res, err, responses, blockHashHex, consensusHashHex, height)
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

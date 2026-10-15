@@ -335,6 +335,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.flags.emit_committee_bls", f.EmitCommitteeBLS)
 	v.SetDefault("consensus.flags.allow_new_receiver_accounts", f.AllowNewReceiverAccounts)
 	v.SetDefault("consensus.flags.block_gossip", f.BlockGossip)
+	v.SetDefault("consensus.flags.trust_sequencer_certificate", f.TrustSequencerCertificate)
 	v.SetDefault("consensus.flags.vote_crdt_compact_k", f.VoteCRDTCompactK)
 
 	// Reputation

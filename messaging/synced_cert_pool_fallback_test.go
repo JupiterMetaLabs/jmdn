@@ -155,3 +155,82 @@ func TestVerifySyncedBlockCertificate_LegacyPassUnchanged(t *testing.T) {
 		t.Fatalf("5 of the alphabetical seven must reach quorum: %+v", got)
 	}
 }
+
+// ── trust_sequencer_certificate (testnet stopgap) ───────────────────────────────
+
+func trustSequencer(t *testing.T) {
+	t.Helper()
+	prev := TrustSequencerCertificate
+	TrustSequencerCertificate = true
+	t.Cleanup(func() { TrustSequencerCertificate = prev })
+}
+
+// With the flag on, ONE verifying block-bound +1 from a registered validator is
+// enough for a received block's certificate: the quorum is the sequencer's call.
+func TestTrustSequencerCertificate_SingleRegisteredVoteAccepts(t *testing.T) {
+	enableV2(t)
+	trustSequencer(t)
+	members := poolOf(t, 10, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002140")
+	const height = 2140
+	votes := []BLS_Signer.BLSresponse{members[9].blockVoteAt(t, hash.Hex(), 1, height)}
+
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Reached || got.YesVotes != 1 {
+		t.Fatalf("trusted-sequencer mode must accept one registered block-bound vote: %+v", got)
+	}
+	// The same helper the live receive path uses, fed a verifier error (e.g.
+	// round context unavailable): still accepted on the one real vote.
+	relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, ErrPeriodNotSynced, votes, hash.Hex(), "", height)
+	if rerr != nil || !relaxed.Reached {
+		t.Fatalf("verifier error must be overridden by a real registered vote: (%+v, %v)", relaxed, rerr)
+	}
+}
+
+// Trust is extended to the sequencer's DECISION, not to any block anyone sends:
+// a certificate with no verifying registered vote (outsider keys, a -1 vote, or
+// a vote for another block) is still rejected.
+func TestTrustSequencerCertificate_NoRegisteredVoteStillRejects(t *testing.T) {
+	enableV2(t)
+	trustSequencer(t)
+	members := poolOf(t, 10, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002141")
+	other := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002142")
+	const height = 2141
+	outsider := mustMintMember("zz-outsider", 0xEE)
+	votes := []BLS_Signer.BLSresponse{
+		outsider.blockVoteAt(t, hash.Hex(), 1, height),    // not registered
+		members[3].blockVoteAt(t, hash.Hex(), -1, height), // registered, but a NO
+		members[4].blockVoteAt(t, other.Hex(), 1, height), // registered, wrong block
+	}
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reached {
+		t.Fatalf("no verifying registered +1 for this block must stay rejected even in trusted mode: %+v", got)
+	}
+	relaxed, rerr := relaxForTrustedSequencer("thebesync", CertificateResult{}, ErrPeriodNotSynced, votes, hash.Hex(), "", height)
+	if rerr == nil || relaxed.Reached {
+		t.Fatalf("a verifier error with no real vote must be preserved: (%+v, %v)", relaxed, rerr)
+	}
+}
+
+// Flag off: relaxForTrustedSequencer is a pass-through, byte for byte.
+func TestTrustSequencerCertificate_OffIsPassThrough(t *testing.T) {
+	prev := TrustSequencerCertificate
+	TrustSequencerCertificate = false
+	t.Cleanup(func() { TrustSequencerCertificate = prev })
+	in := CertificateResult{CommitteeSize: 7, Threshold: 5, YesVotes: 3, Reached: false}
+	got, err := relaxForTrustedSequencer("x", in, nil, nil, "", "", 1)
+	if err != nil || got != in {
+		t.Fatalf("flag off must not alter the verifier result: (%+v, %v)", got, err)
+	}
+	got, err = relaxForTrustedSequencer("x", CertificateResult{}, ErrPeriodNotSynced, nil, "", "", 1)
+	if err == nil || got.Reached {
+		t.Fatalf("flag off must not swallow verifier errors: (%+v, %v)", got, err)
+	}
+}

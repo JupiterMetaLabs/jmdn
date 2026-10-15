@@ -759,16 +759,23 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
 		// authenticated committee size (never a simple majority of whoever
 		// responded).
+		var res CertificateResult
+		var err error
 		rc, rcErr := RoundContextForBlock(block)
 		if rcErr != nil {
 			// Fail closed - most likely this node hasn't processed the
 			// TimeoutCertificate that advanced Period for this height yet. See
 			// ErrPeriodNotSynced's doc comment.
-			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
-				ion.String("block_hash", block.BlockHash.Hex()))
-			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
+			res, err = relaxForTrustedSequencer("process_block_locally", CertificateResult{}, rcErr, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
+			if err != nil || !res.Reached {
+				broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
+					ion.String("block_hash", block.BlockHash.Hex()))
+				return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
+			}
+		} else {
+			res, err = VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
+			res, err = relaxForTrustedSequencer("process_block_locally", res, err, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
 		}
-		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
 		if err != nil {
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): committee eligibility source invalid", err,
 				ion.String("block_hash", block.BlockHash.Hex()))

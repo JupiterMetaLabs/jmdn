@@ -837,6 +837,14 @@ func VerifyCertificateForRound(
 // is logged at WARN with the counts so the frequency is visible.
 func VerifySyncedBlockCertificate(block *config.ZKBlock, responses []BLS_Signer.BLSresponse) (CertificateResult, error) {
 	blockHashHex, consensusHashHex, height := block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber
+	res, err := verifySyncedBlockCertificateStrict(block, responses)
+	return relaxForTrustedSequencer("thebesync", res, err, responses, blockHashHex, consensusHashHex, height)
+}
+
+// verifySyncedBlockCertificateStrict is VerifySyncedBlockCertificate without
+// the TrustSequencerCertificate override.
+func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_Signer.BLSresponse) (CertificateResult, error) {
+	blockHashHex, consensusHashHex, height := block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber
 	if CommitteeV2Enabled && periodIsAnchored(EpochForHeight(height)) {
 		// Stage 2: this block's committee is seeded by ENTROPY(EpochForSlot(slot)).
 		// On a boundary block that entropy arrives in the block's own VdfProof, so
