@@ -38,12 +38,13 @@ func (gps *GossipPubSub) InitGossipSub() error {
 	hostID := gps.Host.ID()
 	gossipSub, exists := sharedRouters[hostID]
 	if !exists {
-		// Initialize GossipSub instance with FloodPublish for reliable small-network propagation
-		// and PeerExchange to help nodes find each other
+		// Initialize GossipSub instance with FloodPublish for reliable small-network
+		// propagation. PeerExchange is deliberately OFF: with it on, the sequencer
+		// accreted twice as many peers as it has validators and fanned every 2+ MB
+		// block out to all of them. Peer discovery is the seed nodes' job.
 		var err error
 		gossipSub, err = pubsub.NewGossipSub(context.Background(), gps.Host,
 			pubsub.WithFloodPublish(true),
-			pubsub.WithPeerExchange(true),
 			// match the direct-stream cap or blocks >1 MiB (libp2p gossip
 			// default) silently skip gossip → fan-out degrades to direct+catch-up.
 			// Fleet-wide identical value required (peers reject mismatched sizes).
