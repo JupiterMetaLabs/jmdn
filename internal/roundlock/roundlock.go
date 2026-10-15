@@ -1,62 +1,35 @@
-// Package roundlock enforces, per node, that a validator never signs BOTH a
-// block result and a timeout vote for the same consensus round (height,
-// period) - the mutual-exclusion rule the timeout-certificate design calls
-// §7.1b.
+// Package roundlock is the per-node signing ledger a buddy consults before it
+// BLS-signs a block result. It enforces two rules for one consensus round
+// (height, period):
 //
-// # WHY THIS IS THE SAFETY-CRITICAL PIECE
+//   - R1, sign once: this node signs at most ONE block per round. A block is
+//     identified by its BlockHash together with its ConsensusHash - BlockHash
+//     alone covers only the transactions, so a retry of the same transactions
+//     at a new period shares it. Asking again for the block already signed is
+//     allowed (idempotent), so a retried vote-result request is not refused.
+//   - R2, never backwards: once this node has signed a block at (height, p) it
+//     refuses any block at the same height with a period below p. The
+//     sequencer only ever moves a height's period up after a failed round, so
+//     a lower period can only be a delayed or replayed proposal.
 //
-// A block certificate needs 2f+1 of the k SEATED members (5 of 7); a timeout
-// certificate needs 2/3 of the whole eligible POOL (20 of 29). Those quorums
-// are over different sets, so the usual "two quorums must intersect in an
-// honest node" argument does not by itself stop both certificates existing
-// for the same round - which would let round p finalize a block at height h
-// while the period advances and round p+1 finalizes a DIFFERENT block at h.
-// What stops it is that every honest node refuses to put its signature on
-// both sides of the same round. This package is that refusal, in one place,
-// shared by both signing sites:
+// Every refusal reports the highest period this node has signed for the
+// height. A sequencer that restarted mid-height (its period counter is
+// in-memory) uses those reports to resume above every round it already burned
+// - see messaging.ProposerPeriods.
 //
-//   - the buddy's vote-result signer (AVC/BuddyNodes/MessagePassing), which
-//     produces the signatures a block certificate counts, and
-//   - the timeout-vote signer (messaging/timeout_gossip.go,
-//     messaging/timeout_request.go).
+// A height's records matter only until it commits. ForgetThrough, called from
+// every local commit point (messaging.NoteHeightCommitted), records the
+// committed tip, refuses any later request at or below it, and drops records
+// more than commitMargin heights below it. Pruning is driven only by commits,
+// never by the heights of incoming requests, so a request at a bogus huge
+// height cannot clear the live height's records.
 //
-// Whichever side a node signs first for a round wins; the other is refused
-// for that round from then on. Asking again for the side already taken is
-// allowed (idempotent), so a retried vote-result request is not refused.
-//
-// A round is identified by the period of the block being voted on. A
-// TimeoutVote with Period p+1 is the claim "round p timed out", so the
-// timeout signer locks round p.
-//
-// Scope: in-memory. A process restart forgets the locks. That matches the
-// PeriodStore and SlotStore it sits beside (also in-memory, documented in
-// messaging/slot_store.go); durable persistence belongs with that task.
-// Memory is bounded by pruning rounds far below the highest height seen.
+// Scope: in-memory. A restart forgets the ledger. The node then signs a
+// height's current round again, which is safe for an honest sequencer: it
+// never re-proposes a round it already left.
 package roundlock
 
 import "sync"
-
-// Side is what a node signed for a round.
-type Side uint8
-
-const (
-	// Block: this node signed a block result (a vote-result BLS signature)
-	// for a block at this round.
-	Block Side = iota + 1
-	// Timeout: this node signed a timeout vote claiming this round timed out.
-	Timeout
-)
-
-func (s Side) String() string {
-	switch s {
-	case Block:
-		return "block"
-	case Timeout:
-		return "timeout"
-	default:
-		return "none"
-	}
-}
 
 // Round identifies one consensus round.
 type Round struct {
@@ -64,132 +37,177 @@ type Round struct {
 	Period uint64
 }
 
-// retainHeights bounds memory: rounds more than this many heights below the
-// highest height ever locked are dropped. Far larger than any in-flight
-// window; a round that old has long since committed or been superseded.
-const retainHeights = 1024
+// Refusal says why TryLockFresh refused.
+type Refusal uint8
 
-// Ledger records, per round, which side this node has signed.
+const (
+	// None: not refused.
+	None Refusal = iota
+	// Conflict: this node already signed a DIFFERENT block for this round (R1).
+	Conflict
+	// Stale: this node already signed a block at a higher period for this
+	// height (R2).
+	Stale
+	// Committed: the height is at or below this node's committed tip; no
+	// block at it can be accepted any more.
+	Committed
+)
+
+func (r Refusal) String() string {
+	switch r {
+	case Conflict:
+		return "conflict"
+	case Stale:
+		return "stale_period"
+	case Committed:
+		return "height_committed"
+	default:
+		return "none"
+	}
+}
+
+// commitMargin is how many heights below the committed tip keep their
+// records. Not needed for safety - TryLockFresh refuses every height at or
+// below the tip - it is belt-and-braces against a commit point that reports
+// out of order.
+const commitMargin = 16
+
+// Ledger records, per round, which block this node signed, and per height the
+// highest period it signed.
 type Ledger struct {
-	mu        sync.Mutex
-	signed    map[Round]Side
-	maxHeight uint64
+	mu            sync.Mutex
+	signed        map[Round]string
+	highest       map[uint64]uint64
+	committed     uint64
+	haveCommitted bool
 }
 
 // NewLedger returns an empty ledger.
-func NewLedger() *Ledger { return &Ledger{signed: make(map[Round]Side)} }
+func NewLedger() *Ledger {
+	return &Ledger{signed: make(map[Round]string), highest: make(map[uint64]uint64)}
+}
 
-// Default is the process-wide ledger both signing sites use.
+// Default is the process-wide ledger the buddy vote-result signer uses.
 var Default = NewLedger()
 
-// TryLock records that this node is about to sign side for round r. It
-// returns ok=true when the node may sign (nothing signed yet for r, or the
-// same side already), and ok=false with the side already taken when the
-// OTHER side was signed first - the caller must then refuse to sign.
-func (l *Ledger) TryLock(r Round, side Side) (ok bool, taken Side) {
-	o, t, _ := l.TryLockFresh(r, side)
-	return o, t
-}
-
-// TryLockFresh is TryLock, additionally reporting whether THIS call created the
-// reservation.
+// TryLockFresh records that this node is about to sign block for round r.
 //
-// Only a caller that got fresh=true may Release on its own failure path. A
-// re-entry (fresh=false) is riding a reservation an EARLIER attempt took, and
-// that earlier attempt may already have produced and shipped a signature -
-// TryLock is deliberately idempotent for the same side, so a retried
-// vote-result request is not refused. Releasing on a re-entry would therefore
-// clear a reservation that a real signature is standing behind, re-opening the
-// round to the OTHER side and defeating the mutual exclusion this package
-// exists to enforce.
+// It returns ok=true when the node may sign: nothing signed yet for r (fresh
+// reservation), or the same block already (idempotent re-entry). It returns
+// ok=false with the reason when R1 or R2 forbids signing. highest is the
+// highest period this node has signed for r.Height after this call, reported
+// either way so a refusal can carry it back to the sequencer.
 //
-// The failure mode this guards, in order:
-//
-//  1. vote-result for round r -> TryLock fresh -> ledger r->Block
-//  2. BLS sign SUCCEEDS       -> the block signature ships and counts
-//  3. RETRIED vote-result     -> TryLock re-entry, ok=true
-//  4. that BLS sign FAILS     -> failure path releases
-//  5. Release(r, Block)       -> side matches -> DELETE
-//  6. round r unlocked        -> this node may now also sign a TIMEOUT for r
-//
-// Step 6 is both sides of one round signed by one node. Release's own
-// compare-and-delete cannot catch it because the side matches; only knowing
-// that step 3 was a re-entry can.
-func (l *Ledger) TryLockFresh(r Round, side Side) (ok bool, taken Side, fresh bool) {
+// fresh is true only when THIS call created the reservation. Only such a
+// caller may Release on its own signing failure (F-9): a re-entry rides a
+// reservation an earlier attempt took, and that attempt may already have
+// shipped a signature.
+func (l *Ledger) TryLockFresh(r Round, block string) (ok bool, refusal Refusal, highest uint64, fresh bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	high, signedHere := l.highest[r.Height]
+	if l.haveCommitted && r.Height <= l.committed {
+		return false, Committed, high, false
+	}
+	if signedHere && r.Period < high {
+		return false, Stale, high, false
+	}
 	if prev, exists := l.signed[r]; exists {
-		return prev == side, prev, false
+		if prev != block {
+			return false, Conflict, high, false
+		}
+		return true, None, high, false
 	}
-	l.signed[r] = side
-	if r.Height > l.maxHeight {
-		l.maxHeight = r.Height
-		l.pruneLocked()
+	l.signed[r] = block
+	if !signedHere || r.Period > high {
+		l.highest[r.Height] = r.Period
+		high = r.Period
 	}
-	return true, side, true
+	return true, None, high, true
 }
 
-// Signed reports which side, if any, this node has signed for r.
-func (l *Ledger) Signed(r Round) (Side, bool) {
+// Signed reports which block, if any, this node has signed for r.
+func (l *Ledger) Signed(r Round) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	s, ok := l.signed[r]
-	return s, ok
+	b, ok := l.signed[r]
+	return b, ok
 }
 
-// Release undoes a lock this node itself acquired via TryLock(r, side) but
-// did not follow through on: TryLock said it was free to sign side for r, and
-// the signing attempt that followed - the actual BLS/identity-key sign call -
-// then failed (a key-load error, a signing error, or any other reason no
-// valid signature was actually produced) rather than a decision made by this
-// package.
+// Highest reports the highest period this node has signed for height.
+func (l *Ledger) Highest(height uint64) (uint64, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	p, ok := l.highest[height]
+	return p, ok
+}
+
+// Release undoes a reservation this node itself took via TryLockFresh(r, block)
+// but did not follow through on: the BLS sign that followed failed, so no
+// signature exists.
 //
-// F-3 ("lock-then-fail stranding"): without this, TryLock's reservation is
-// permanent for the process's life. A round whose intended side failed to
-// sign is stranded - this node can never sign the OTHER side for it either,
-// because TryLock refuses based on the side that was merely ATTEMPTED, never
-// actually signed. That means the node contributes to NEITHER the block
-// certificate NOR the timeout certificate for that round, for as long as the
-// process runs: a liveness defect, and specifically the kind that gets harder
-// to reach quorum on the more nodes it happens to, with no error anywhere
-// that names the cause (the round just looks perpetually one vote short).
+// F-3 ("lock-then-fail stranding"): without this, a round whose sign attempt
+// failed would stay reserved for the process's life, and this node could never
+// sign a block for it, nor (through R2) for any lower period of the height.
 //
 // SAFETY PRECONDITION: the caller MUST have obtained fresh=true from
-// TryLockFresh for this exact (r, side). Release is safe ONLY then. Calling it
-// after an idempotent re-entry (fresh=false) clears a reservation an earlier
-// attempt took, which may already have shipped a real signature - that re-opens
-// the round to the other side and defeats this package. The compare-and-delete
-// below does NOT catch that case, because the side matches. Every caller
-// (round_lock.go, messaging/timeout_gossip.go, messaging/timeout_request.go)
-// therefore guards its release on fresh.
+// TryLockFresh for this exact (r, block). Releasing after an idempotent
+// re-entry clears a reservation an earlier attempt may have signed behind,
+// which would let this node sign a second block for the round (F-9).
 //
-// Only clears the entry when it still holds EXACTLY (r, side) - i.e. nothing
-// has changed what is recorded for r since this caller's own TryLock call.
-// In practice the map only ever transitions from absent to one side and never
-// from one side to the other (TryLock's ok=false branch never mutates it), so
-// this is a belt-and-suspenders check against a caller bug (releasing the
-// wrong side, or releasing twice) rather than protection against a real race.
-//
-// Callers MUST NOT call Release once a signature has actually been produced
-// or broadcast - only when the attempt that followed TryLock genuinely failed
-// to produce one. Calling it after a successful sign would re-open the round
-// to the other side and defeat the whole package.
-func (l *Ledger) Release(r Round, side Side) {
+// Only clears the entry when it still holds exactly block, and recomputes the
+// height's highest period from what remains signed.
+func (l *Ledger) Release(r Round, block string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if prev, exists := l.signed[r]; exists && prev == side {
-		delete(l.signed, r)
+	if prev, exists := l.signed[r]; !exists || prev != block {
+		return
+	}
+	delete(l.signed, r)
+	var high uint64
+	found := false
+	for other := range l.signed {
+		if other.Height == r.Height && (!found || other.Period > high) {
+			high, found = other.Period, true
+		}
+	}
+	if found {
+		l.highest[r.Height] = high
+	} else {
+		delete(l.highest, r.Height)
 	}
 }
 
-func (l *Ledger) pruneLocked() {
-	if l.maxHeight <= retainHeights {
+// ForgetThrough records that height is committed locally. From then on
+// TryLockFresh refuses every height at or below it, and records for heights
+// commitMargin or more below it are dropped. The tip only moves up: a call
+// with a height at or below the current tip is a no-op.
+func (l *Ledger) ForgetThrough(height uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.haveCommitted && height <= l.committed {
 		return
 	}
-	floor := l.maxHeight - retainHeights
+	l.committed, l.haveCommitted = height, true
+	if height < commitMargin {
+		return
+	}
+	floor := height - commitMargin
 	for r := range l.signed {
-		if r.Height < floor {
+		if r.Height <= floor {
 			delete(l.signed, r)
 		}
 	}
+	for h := range l.highest {
+		if h <= floor {
+			delete(l.highest, h)
+		}
+	}
+}
+
+// CommittedTip reports the committed tip ForgetThrough last recorded.
+func (l *Ledger) CommittedTip() (uint64, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.committed, l.haveCommitted
 }
