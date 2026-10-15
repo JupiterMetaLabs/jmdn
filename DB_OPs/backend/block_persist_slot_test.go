@@ -1,12 +1,8 @@
 package backend
 
-// Tests for docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8's Tier 1 fix: a
-// restarted node's SlotStore starts at 0 (slot_store.go's own header comment
-// admits it "does NOT survive a process restart correctly") because
-// toBlockRecord never carried Slot/Period into the persisted record for a
-// startup path to read back. This closes that half of the gap; the other
-// half (SlotStore.SeedFromCommittedTip) already exists and is tested in
-// jmdn/messaging.
+// Tests that toBlockRecord carries Slot/Period into the persisted record, so a
+// synced or replaying node reads back exactly the values the committee signed
+// (both are in the ConsensusHash preimage).
 
 import (
 	"testing"

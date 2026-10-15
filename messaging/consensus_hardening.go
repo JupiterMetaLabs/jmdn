@@ -850,6 +850,28 @@ func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	return nil
 }
 
+// CheckSyncedSlot is ThebeSync's slot rule: a block's slot is its block
+// number. The one exception is history from before slots were stamped: a
+// block may carry Slot 0 only when its parent does too, so a zero slot after
+// a slotted parent is still rejected. parentSlot is called only for a Slot-0
+// block, to read the already-applied parent.
+func CheckSyncedSlot(b *config.ZKBlock, parentSlot func() (uint64, error)) error {
+	if b == nil || b.Slot == b.BlockNumber {
+		return nil
+	}
+	if b.Slot == 0 {
+		ps, err := parentSlot()
+		if err != nil {
+			return fmt.Errorf("block %d has slot 0 and its parent's slot cannot be read: %w", b.BlockNumber, err)
+		}
+		if ps == 0 {
+			return nil
+		}
+		return fmt.Errorf("block %d has slot 0 after a parent at slot %d (want slot = block number)", b.BlockNumber, ps)
+	}
+	return fmt.Errorf("block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
+}
+
 // CheckSyncedPeriodBinding is ThebeSync's guard on a block's Period. The
 // committee that certifies a block is seated from the block's own Period
 // (RoundContextForBlock), so a synced block that claims a non-zero Period
@@ -1152,16 +1174,12 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 			"block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, config.MaxPeriod)
 	}
 
-	// (Slot chain) Each failed round at a height burns one slot, so a block
-	// committed at Period p sits exactly p+1 slots after its parent - the same
-	// arithmetic every node's SlotStore.AdvanceOnCommit and the entropy path
-	// (prevSlot = Slot - (Period+1)) already assume. Enforced here so the
-	// proposer cannot stamp a Slot and Period that disagree. Skipped when the
-	// parent predates the slot counter (Slot 0).
-	if parent.Slot != 0 && (b.Slot <= parent.Slot || b.Slot-parent.Slot-1 != b.Period) {
+	// (Slot) A block's slot is its block number, whatever its Period
+	// (slot_store.go). Every block arriving live is stamped by the current
+	// proposer, so the rule has no exception here.
+	if b.Slot != b.BlockNumber {
 		return reject("bad_slot",
-			"block %d slot %d, period %d does not follow parent slot %d (want slot = parent slot + period + 1)",
-			b.BlockNumber, b.Slot, b.Period, parent.Slot)
+			"block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
 	}
 
 	// (State-root chain) The generator computes

@@ -49,18 +49,18 @@ func resetSlotAndPeriodStores(t *testing.T) {
 func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) {
 	resetSlotAndPeriodStores(t)
 
-	// Two heights already committed cleanly -> committed slot sits at 2.
-	messaging.DefaultSlotStore.AdvanceOnCommit(0, 0)
-	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
+	// Heights 0 and 1 committed.
+	messaging.DefaultSlotStore.AdvanceOnCommit(0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(1)
 
 	block := &config.ZKBlock{BlockNumber: 2}
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
 	}
 
-	// LiveSlotFor(2) = committed(2) + period(0) + 1 = 3.
-	if block.Slot != 3 {
-		t.Fatalf("block.Slot = %d, want 3 (LiveSlotFor(2))", block.Slot)
+	// Slot = block number.
+	if block.Slot != 2 {
+		t.Fatalf("block.Slot = %d, want 2 (slot = block number)", block.Slot)
 	}
 	if block.Period != 0 {
 		t.Fatalf("block.Period = %d, want 0 (no failed round at height 2)", block.Period)
@@ -68,12 +68,11 @@ func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) 
 }
 
 // R3: after two failed rounds at a height, the retry is stamped Period 2 and
-// sits two slots further on - the slot chain verifiers enforce
-// (Slot = parent slot + Period + 1).
+// keeps the height's slot - every attempt at a height shares slot = height.
 func TestAttachAVCConsensusFields_RetryAfterFailedRoundsUsesNextPeriod(t *testing.T) {
 	resetSlotAndPeriodStores(t)
-	messaging.DefaultSlotStore.AdvanceOnCommit(0, 0)
-	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(1)
 	messaging.DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
 	messaging.DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
 
@@ -84,8 +83,8 @@ func TestAttachAVCConsensusFields_RetryAfterFailedRoundsUsesNextPeriod(t *testin
 	if block.Period != 2 {
 		t.Fatalf("block.Period = %d, want 2 (two failed rounds)", block.Period)
 	}
-	if block.Slot != 5 {
-		t.Fatalf("block.Slot = %d, want 5 (committed 2 + period 2 + 1)", block.Slot)
+	if block.Slot != 2 {
+		t.Fatalf("block.Slot = %d, want 2 (the retry shares the height's slot)", block.Slot)
 	}
 }
 
@@ -181,23 +180,24 @@ func TestAttachAVCConsensusFields_FailsClosedWhenSlotStoreNotRecovered(t *testin
 
 // --- VDF proof attachment (VDF-Implementation-Handoff.md §6) ---
 
-// landOnBoundarySlot advances DefaultSlotStore directly to slot 49 (via a
-// single AdvanceOnCommit(0, 48) — the advance amount is period+1, so this
-// is equivalent to 49 ordinary commits without looping) so that
-// LiveSlotFor(1) = 49 + PeriodFor(1) + 1 = 50, exactly
-// messaging.EpochBoundarySlot(1). Must be called after resetSlotAndPeriodStores.
+// boundaryHeight is the first block of epoch 1: with slot = block number, the
+// epoch-boundary block is simply height messaging.EpochBoundarySlot(1).
+var boundaryHeight = messaging.EpochBoundarySlot(1)
+
+// landOnBoundarySlot commits the height just below the boundary, so the next
+// block is the boundary block. Must be called after resetSlotAndPeriodStores.
 func landOnBoundarySlot(t *testing.T) {
 	t.Helper()
-	messaging.DefaultSlotStore.AdvanceOnCommit(0, 48)
+	messaging.DefaultSlotStore.AdvanceOnCommit(boundaryHeight - 1)
 }
 
 func TestAttachAVCConsensusFields_NonBoundarySlot_LeavesVdfProofZero(t *testing.T) {
 	resetSlotAndPeriodStores(t)
 
 	// Same setup as TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores:
-	// two commits then BlockNumber=2 -> slot 3, not a multiple of messaging.N (50).
-	messaging.DefaultSlotStore.AdvanceOnCommit(0, 0)
-	messaging.DefaultSlotStore.AdvanceOnCommit(1, 0)
+	// BlockNumber=2 -> slot 2, not a multiple of messaging.N (50).
+	messaging.DefaultSlotStore.AdvanceOnCommit(0)
+	messaging.DefaultSlotStore.AdvanceOnCommit(1)
 
 	block := &config.ZKBlock{BlockNumber: 2}
 	if err := attachAVCConsensusFields(block); err != nil {
@@ -223,7 +223,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Proof: want})
 	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenProofNotReady(t *t
 	// report ok=false, and attachAVCConsensusFields must fail closed rather
 	// than propose with a missing entropy value for its own boundary slot.
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	err := attachAVCConsensusFields(block)
 	if !errors.Is(err, Sequencer.ErrVDFProofNotReady) {
 		t.Fatalf("attachAVCConsensusFields error = %v, want errors.Is(..., Sequencer.ErrVDFProofNotReady)", err)
@@ -279,7 +279,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Err: sealErr})
 	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	err := attachAVCConsensusFields(block)
 	if !errors.Is(err, sealErr) {
 		t.Fatalf("attachAVCConsensusFields error = %v, want errors.Is(..., sealErr)", err)
@@ -294,7 +294,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_Stage1_DoesNotRequireProof(t *tes
 	landOnBoundarySlot(t)
 	t.Cleanup(Sequencer.SetVDFPipelineInstalledForTest(false))
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("Stage 1 at a boundary slot must not require a VDF proof: %v", err)
 	}

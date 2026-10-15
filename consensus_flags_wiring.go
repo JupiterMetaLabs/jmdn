@@ -51,7 +51,6 @@ func applyConsensusFlags(cfg *settings.NodeConfig) {
 			messaging.EnforceSlotRecoveryGate = b
 			MessagePassing.SetEnforceSlotRecoveryGate(b)
 		}},
-		{"JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION", f.SlotRecoveryPreslotMigration, func() bool { return messaging.PreSlotMigration }, func(b bool) { messaging.PreSlotMigration = b }},
 		{"JMDN_ENFORCE_SYNC_GATE", f.EnforceSyncGate, nil, MessagePassing.SetEnforceConsensusSyncGate},
 		{"JMDN_EMIT_BLOCK_BOUND_VOTES", f.EmitBlockBoundVotes, func() bool { return BLS_Signer.EmitBlockBoundVotes }, func(b bool) { BLS_Signer.EmitBlockBoundVotes = b }},
 		{"JMDN_VALIDATOR_VOTER_SET", f.ValidatorVoterSet, func() bool { return Structs.ValidatorVoterSetEnabled }, func(b bool) { Structs.ValidatorVoterSetEnabled = b }},
