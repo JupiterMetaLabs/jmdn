@@ -27,6 +27,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
@@ -320,6 +321,37 @@ func HandleBlockStream(stream network.Stream) {
 // direct-stream re-flood; the fail-closed security gate is identical regardless
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
+	// Certificate-only finalize (sender: BroadcastBlockToEveryNodeWithExtraData
+	// with FinalizeCertOnly): the envelope carries the header + committee
+	// certificate but no proof. Substitute the full proposal this node cached at
+	// vote-trigger time and continue down the normal, fail-closed zkblock path.
+	// The cached proposal is the block the certificate was signed over (same
+	// BlockHash / ConsensusHash), so admitZKBlock verifies it exactly as it would
+	// the full envelope. If this node never saw the proposal (not on the
+	// committee, restarted mid-round) it simply waits for the gossiped full copy;
+	// a cert-only envelope is never forwarded.
+	if msg.Type == blockCertMessageType {
+		if msg.Block == nil {
+			return
+		}
+		cm := PubSubMessages.LookupConsensusMessageByBlockHash(msg.Block.BlockHash.Hex())
+		if cm == nil || cm.ZKBlock == nil || cm.ZKBlock.ConsensusHashHex() != msg.Block.ConsensusHashHex() {
+			metrics.BlocksRejectedCounter.WithLabelValues("cert_only_no_proposal", "local").Inc()
+			broadcastLogger().Info(context.Background(), "cert-only finalize for a block without a cached proposal; waiting for gossip copy",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber),
+				ion.String("from", remotePeer))
+			return
+		}
+		full := *cm.ZKBlock
+		if st := msg.Data["status"]; st != "" {
+			full.Status = st
+		}
+		msg.Block = &full
+		msg.Type = "zkblock"
+		forward = false
+	}
+
 	// Check for duplicates
 	messageID := getBlockDedupID(msg)
 	if isMessageProcessed(messageID) {
@@ -390,11 +422,12 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		}
 
 		// Block validated and marked processed → forwarding is now safe. The direct
-		// re-flood is OFF by default (gossip-only): the pubsub mesh re-propagates,
-		// and gossip-delivered blocks already pass forward=false. It only runs when
-		// direct propagation is explicitly re-enabled (consensus.p2p >= 1), so a
-		// gossip-only node never re-floods a block it received over a direct stream.
-		if forward && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
+		// re-flood runs ONLY when gossip is off: with gossip on (the default) the
+		// pubsub mesh already re-propagates with its own dedup, and every validator
+		// also received the block directly from the sequencer, so a direct re-flood
+		// to all peers was pure duplication (testnet: 15 validators × 14 peers ×
+		// 2.66 MB ≈ 560 MB per block, every copy dropped by dedup on arrival).
+		if forward && !EnableBlockGossip && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
 				broadcastLogger().Info(context.Background(), "Forwarding validated ZK block to peers",

@@ -217,6 +217,7 @@ type ConsensusFlags struct {
 	EmitCommitteeBLS             bool `mapstructure:"emit_committee_bls" yaml:"emit_committee_bls"`                           // JMDN_EMIT_COMMITTEE_BLS, not-0, default on
 	AllowNewReceiverAccounts     bool `mapstructure:"allow_new_receiver_accounts" yaml:"allow_new_receiver_accounts"`         // JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS, lenient, default on
 	BlockGossip                  bool `mapstructure:"block_gossip" yaml:"block_gossip"`                                       // JMDN_BLOCK_GOSSIP, lenient, default on
+	FinalizeCertOnly             bool `mapstructure:"finalize_cert_only" yaml:"finalize_cert_only"`                           // JMDN_FINALIZE_CERT_ONLY, lenient, default off
 	// TrustSequencerCertificate — TESTNET STOPGAP, fail-open. When on, a
 	// validator does NOT re-verify the 2f+1 committee quorum of a block it
 	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the

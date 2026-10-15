@@ -62,6 +62,7 @@ func applyConsensusFlags(cfg *settings.NodeConfig) {
 		{"JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS", f.AllowNewReceiverAccounts, func() bool { return Security.AllowNewReceiverAccounts }, func(b bool) { Security.AllowNewReceiverAccounts = b }},
 		{"JMDN_BLOCK_GOSSIP", f.BlockGossip, func() bool { return messaging.EnableBlockGossip }, func(b bool) { messaging.EnableBlockGossip = b }},
 		{"JMDN_TRUST_SEQUENCER_CERT", f.TrustSequencerCertificate, func() bool { return messaging.TrustSequencerCertificate }, func(b bool) { messaging.TrustSequencerCertificate = b }},
+		{"JMDN_FINALIZE_CERT_ONLY", f.FinalizeCertOnly, func() bool { return messaging.FinalizeCertOnly }, func(b bool) { messaging.FinalizeCertOnly = b }},
 		{"JMDN_REPUTATION_OBSERVE", cfg.Reputation.Observe, func() bool { return reputation.Enabled }, func(b bool) { reputation.Enabled = b }},
 	}
 

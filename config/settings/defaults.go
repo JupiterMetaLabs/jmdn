@@ -278,6 +278,7 @@ func DefaultConfig() NodeConfig {
 				AllowNewReceiverAccounts:     true,
 				BlockGossip:                  true,
 				TrustSequencerCertificate:    true,
+				FinalizeCertOnly:             false, // committee gets header+certificate instead of the full block; needs the whole committee on this build
 				VoteCRDTCompactK:             3,
 			},
 		},
