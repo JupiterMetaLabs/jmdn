@@ -50,6 +50,8 @@ func DefaultConfig() NodeConfig {
 			Username:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_USERNAME
 			Password:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_PASSWORD
 			TxIndexPath: "./DB/txindex.db",
+			// Accounts-DB pool cap; matches config.DefaultConnectionPoolConfig().
+			AccountsPoolMax: 30,
 			Redis: RedisSettings{
 				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
 				Password: "jmdnredissync",  // optional: set if Redis requires authentication
@@ -96,6 +98,8 @@ func DefaultConfig() NodeConfig {
 			SyncTimeout:       10 * time.Minute,
 			CatchUpFromBlock:  0,
 			SyncCheckInterval: 10 * time.Minute,
+			// Account-sync share of the accounts-DB pool (see AccountSyncDBSlots).
+			AccountSyncDBSlots: 4,
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),

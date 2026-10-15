@@ -49,6 +49,16 @@ func Load() (*NodeConfig, error) {
 	_ = v.BindEnv("selection.mnemonic", "JMDN_NODE_SELECTION_MNEMONIC")
 	_ = v.BindEnv("selection.salt", "JMDN_NETWORK_SALT")
 
+	// Compatibility: the pool-exhaustion hotfix (#185) read these two limits
+	// from hotfix-only env names, and its rollout set JMDN_ACCOUNTS_POOL_MAX=60
+	// on the sequencer unit. Keep honouring those names so a binary upgrade
+	// without a unit-file change cannot silently drop the sequencer's cap back
+	// to the 30-connection default that caused the outage. Env overrides YAML
+	// as for every other key; when both env names are set the derived
+	// JMDN_DATABASE_* / JMDN_FASTSYNC_* name wins over the hotfix-era one.
+	_ = v.BindEnv("database.accounts_pool_max", "JMDN_DATABASE_ACCOUNTS_POOL_MAX", "JMDN_ACCOUNTS_POOL_MAX")
+	_ = v.BindEnv("fastsync.account_sync_db_slots", "JMDN_FASTSYNC_ACCOUNT_SYNC_DB_SLOTS", "JMDN_ACCOUNTSYNC_DB_SLOTS")
+
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -139,6 +149,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
 	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)
+	v.SetDefault("database.accounts_pool_max", d.Database.AccountsPoolMax)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -185,6 +196,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.catch_up_from_block", d.FastSync.CatchUpFromBlock)
 	v.SetDefault("fastsync.sync_check_interval", d.FastSync.SyncCheckInterval)
+	v.SetDefault("fastsync.account_sync_db_slots", d.FastSync.AccountSyncDBSlots)
 
 	// Security
 	v.SetDefault("security.enabled", d.Security.Enabled)

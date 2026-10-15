@@ -163,6 +163,13 @@ type DatabaseSettings struct {
 	// TxIndexPath is the path to the SQLite address→tx index file.
 	// Defaults to "txindex.db" in the working directory if empty.
 	TxIndexPath string `mapstructure:"tx_index_path" yaml:"tx_index_path"`
+
+	// AccountsPoolMax is the maximum number of pooled connections to the
+	// accounts database. The pool never waits: once every connection is in
+	// use, callers fail at once with "maximum number of connections reached".
+	// Raise-only: a value below 30 (the shared pool default) or above 256 is
+	// ignored with a warning and 30 is used. Read once, when the pool is created.
+	AccountsPoolMax int `mapstructure:"accounts_pool_max" yaml:"accounts_pool_max"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -268,4 +275,13 @@ type FastSyncSettings struct {
 	// root to the seednode and checks whether reconciliation is needed.
 	// Default: 10 minutes. Minimum enforced by the monitor: 1 minute.
 	SyncCheckInterval time.Duration `mapstructure:"sync_check_interval" yaml:"sync_check_interval"`
+
+	// AccountSyncDBSlots caps how many accounts-DB connections FastSync's
+	// account iterator may hold at once, across every sync session: serving
+	// account pages to peers, and building this node's own ART when it syncs.
+	// It keeps a syncing peer from starving JSON-RPC, block commit and
+	// consensus of accounts-DB connections. Valid range 1-16; any other value
+	// is ignored with a warning and 4 is used. Read once, on the first
+	// account-sync scan after startup.
+	AccountSyncDBSlots int `mapstructure:"account_sync_db_slots" yaml:"account_sync_db_slots"`
 }

@@ -52,6 +52,8 @@ database:
   redis:
     url: "127.0.0.1:6379"
     password: ""
+  accounts_pool_max: 30  # Max pooled accounts-DB connections. Raise-only: 30-256;
+                         # out-of-range values are ignored with a warning.
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
@@ -111,6 +113,9 @@ fastsync:
                           # 0 = full scan from genesis (safe default, no bootstrap loaded).
                           # Set to bootstrapTip+1 after bootstrap to avoid rescanning
                           # the already-complete bootstrap range on every catchup.
+  account_sync_db_slots: 4 # Max accounts-DB connections account sync may hold at once,
+                           # across all peers (1-16). Keeps a syncing peer from starving
+                           # JSON-RPC and block commit. Out-of-range values fall back to 4.
 
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)

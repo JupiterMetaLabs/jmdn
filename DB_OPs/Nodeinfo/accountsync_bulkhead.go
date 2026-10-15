@@ -2,13 +2,13 @@ package NodeInfo
 
 import (
 	"errors"
-	"os"
-	"strconv"
-	"strings"
+	"log"
+	"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 )
 
 // MODULE: DB_OPs/Nodeinfo (account-sync scan bulkhead)
@@ -26,16 +26,16 @@ import (
 // fails instantly with config.ErrMaxConnectionsReached.
 //
 // The limiter is process-wide (all sessions share it). It does not make a sync
-// session faster; it bounds the damage a slow one can do.
+// session faster; it bounds the damage a slow one can do. Its size comes from
+// fastsync.account_sync_db_slots in jmdn.yaml, read once on first use.
 //
 // DO NOT:
 //   - Acquire a slot and then call anything that acquires a slot again (the
 //     limiter is not re-entrant; it would self-deadlock at capacity 1).
 //   - Hold a slot across anything other than one ListAccountsPaginatedFrom call.
 
-// accountSyncDBSlotsEnv overrides the number of concurrent account-sync scans.
-const accountSyncDBSlotsEnv = "JMDN_ACCOUNTSYNC_DB_SLOTS"
-
+// Bounds for fastsync.account_sync_db_slots. The default must match
+// settings.DefaultConfig().FastSync.AccountSyncDBSlots.
 const (
 	defaultAccountSyncDBSlots = 4
 	maxAccountSyncDBSlots     = 16
@@ -92,20 +92,46 @@ func (l *scanLimiter) do(fn func() error) error {
 	return err
 }
 
-func accountSyncDBSlots() int {
-	raw := strings.TrimSpace(os.Getenv(accountSyncDBSlotsEnv))
-	if raw == "" {
-		return defaultAccountSyncDBSlots
+// accountSyncDBSlots validates a configured fastsync.account_sync_db_slots.
+// Out of range → the default and ok=false. Time: O(1).
+func accountSyncDBSlots(configured int) (slots int, ok bool) {
+	if configured < 1 || configured > maxAccountSyncDBSlots {
+		return defaultAccountSyncDBSlots, false
 	}
-	v, err := strconv.Atoi(raw)
-	if err != nil || v < 1 || v > maxAccountSyncDBSlots {
-		return defaultAccountSyncDBSlots
-	}
-	return v
+	return configured, true
 }
 
-// accountSyncScan is shared by every immudbNonceIter in the process.
-var accountSyncScan = newScanLimiter(accountSyncDBSlots())
+// configuredAccountSyncDBSlots reads fastsync.account_sync_db_slots, or the
+// default when settings were never loaded (unit tests, offline tools).
+func configuredAccountSyncDBSlots() int {
+	if !settings.IsLoaded() {
+		return defaultAccountSyncDBSlots
+	}
+	return settings.Get().FastSync.AccountSyncDBSlots
+}
+
+var (
+	accountSyncScanOnce sync.Once
+	accountSyncScan     *scanLimiter
+)
+
+// accountSyncLimiter returns the limiter shared by every immudbNonceIter in
+// the process, sized on first use. It cannot be sized at package init: that
+// runs before main loads jmdn.yaml. The first account-sync scan happens when
+// a peer syncs, well after startup.
+func accountSyncLimiter() *scanLimiter {
+	accountSyncScanOnce.Do(func() {
+		configured := configuredAccountSyncDBSlots()
+		slots, ok := accountSyncDBSlots(configured)
+		if !ok {
+			log.Printf("[accountsync] fastsync.account_sync_db_slots=%d is outside 1-%d; using %d",
+				configured, maxAccountSyncDBSlots, slots)
+		}
+		log.Printf("[accountsync] account-sync accounts-DB connection limit: %d", slots)
+		accountSyncScan = newScanLimiter(slots)
+	})
+	return accountSyncScan
+}
 
 // listAccountsForSync is ListAccountsPaginatedFrom behind the bulkhead.
 // Time: O(limit) ImmuDB entries; Space: O(limit).
@@ -114,7 +140,7 @@ func listAccountsForSync(limit int, seekKey []byte) ([]*DB_OPs.Account, []byte, 
 		accs    []*DB_OPs.Account
 		lastKey []byte
 	)
-	err := accountSyncScan.do(func() error {
+	err := accountSyncLimiter().do(func() error {
 		var e error
 		accs, lastKey, e = DB_OPs.ListAccountsPaginatedFrom(nil, limit, seekKey, "")
 		return e

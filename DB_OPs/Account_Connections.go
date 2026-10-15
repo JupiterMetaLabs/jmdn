@@ -67,8 +67,22 @@ func InitAccountsPool() error {
 		}
 
 		// Now that the DB exists, initialize a dedicated pool for it.
+		// database.accounts_pool_max may raise the cap for this pool only.
 		poolCfg := config.DefaultConnectionPoolConfig()
-		poolCfg.MaxConnections = accountsPoolMax(poolCfg.MaxConnections)
+		configuredMax := settings.Get().Database.AccountsPoolMax
+		maxConns, ok := accountsPoolMax(poolCfg.MaxConnections, configuredMax)
+		if !ok {
+			loggerInstance.Warn(loggerCtx, "database.accounts_pool_max is out of range; using the default",
+				ion.Int("configured", configuredMax),
+				ion.Int("allowed_min", poolCfg.MaxConnections),
+				ion.Int("allowed_max", accountsPoolMaxCeiling),
+				ion.Int("using", maxConns),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.InitAccountsPool"))
+		}
+		poolCfg.MaxConnections = maxConns
 
 		poolingConfig := &config.PoolingConfig{
 			DBAddress:  config.DBAddress,
@@ -79,7 +93,7 @@ func InitAccountsPool() error {
 		}
 
 		accountsPool = config.NewConnectionPool(loggerCtx, poolCfg, loggerInstance, poolingConfig)
-		accountsPool.Logger.Debug(loggerCtx, "Accounts database connection pool initialized successfully",
+		accountsPool.Logger.Info(loggerCtx, "Accounts database connection pool initialized successfully",
 			ion.String("database", config.AccountsDBName),
 			ion.Int("max_connections", accountsPool.Config.MaxConnections),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gossipnode/config"
+	"gossipnode/config/settings"
 )
 
 // prodPoolErr reproduces the exact wrapping chain seen in the sequencer log:
@@ -120,12 +121,40 @@ func TestScanLimiter_ReleasesSlotOnError(t *testing.T) {
 	}
 }
 
-func TestAccountSyncDBSlots_Env(t *testing.T) {
-	cases := map[string]int{"": 4, "8": 8, "1": 1, "16": 16, "0": 4, "17": 4, "-3": 4, "abc": 4, " 6 ": 6}
-	for raw, want := range cases {
-		t.Setenv(accountSyncDBSlotsEnv, raw)
-		if got := accountSyncDBSlots(); got != want {
-			t.Errorf("%s=%q → %d, want %d", accountSyncDBSlotsEnv, raw, got, want)
+func TestAccountSyncDBSlots_Range(t *testing.T) {
+	cases := []struct {
+		configured int
+		want       int
+		ok         bool
+	}{
+		{4, 4, true}, {1, 1, true}, {8, 8, true}, {16, 16, true},
+		{0, 4, false}, {-3, 4, false}, {17, 4, false},
+	}
+	for _, c := range cases {
+		got, ok := accountSyncDBSlots(c.configured)
+		if got != c.want || ok != c.ok {
+			t.Errorf("accountSyncDBSlots(%d) = (%d, %v), want (%d, %v)", c.configured, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// The fallback default is duplicated here and in settings.DefaultConfig;
+// keep them equal so an out-of-range value falls back to the shipped default.
+func TestAccountSyncDBSlots_DefaultMatchesSettings(t *testing.T) {
+	if d := settings.DefaultConfig().FastSync.AccountSyncDBSlots; d != defaultAccountSyncDBSlots {
+		t.Fatalf("settings default %d != bulkhead default %d", d, defaultAccountSyncDBSlots)
+	}
+}
+
+// End to end through the real loader: the value the limiter will use comes
+// from fastsync.account_sync_db_slots (here via its auto-derived env name,
+// which outranks any jmdn.yaml present on the machine).
+func TestConfiguredAccountSyncDBSlots_FromSettings(t *testing.T) {
+	t.Setenv("JMDN_FASTSYNC_ACCOUNT_SYNC_DB_SLOTS", "7")
+	if _, err := settings.Load(); err != nil {
+		t.Fatalf("settings.Load: %v", err)
+	}
+	if got := configuredAccountSyncDBSlots(); got != 7 {
+		t.Fatalf("configuredAccountSyncDBSlots() = %d, want 7", got)
 	}
 }
