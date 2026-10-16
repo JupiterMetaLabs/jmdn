@@ -226,13 +226,15 @@ type ZKBlock struct {
 	// BlockHash — BlockHash stays the orchestrator's transactions-only identity.
 	//
 	// Unlike AccountNonces/StateFingerprint (purely advisory), ConsensusHash is
-	// consensus-COVERED: when set, the committee's v4 vote signs over it (see
-	// BLS_Signer.CanonicalVoteMessageV4), so Period/FeeRecipients/PrevAggCert
-	// cannot be rewritten post-commit without invalidating the certificate. Empty
-	// (zero hash) on blocks built without the consensus binding; v4 falls back to
-	// v3 (BlockHash-only) then, so mixed fleets during rollout still converge.
-	// Set by Block/consensus_fields.go's attachAVCConsensusFields; recomputed and
-	// checked on receive by messaging.checkConsensusBinding.
+	// consensus-COVERED: the committee's vote signs over it unconditionally (see
+	// BLS_Signer.CanonicalVoteMessageV3), so Period/FeeRecipients/PrevAggCert
+	// cannot be rewritten post-commit without invalidating the certificate.
+	// Empty (zero hash) ONLY on the genesis block (DB_OPs/genesis_block.go,
+	// written directly, never through attachAVCConsensusFields) — every other
+	// block is rejected on receive if it is missing (D-28,
+	// messaging.checkConsensusBinding), so a vote requiring it is not a
+	// rollout gap. Set by Block/consensus_fields.go's attachAVCConsensusFields;
+	// recomputed and checked on receive by messaging.checkConsensusBinding.
 	ConsensusHash common.Hash `json:"consensus_hash,omitempty"`
 }
 

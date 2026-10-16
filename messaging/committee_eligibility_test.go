@@ -55,19 +55,38 @@ func mustMintMember(peerID string, seed byte) blsMember {
 	panic("mint BLS member: no valid scalar found for seed")
 }
 
+// testBlockConsensusHash is the shared, fixed ConsensusHash this whole test
+// cluster's fabricated votes bind to. CanonicalVoteMessageV3 requires a
+// non-empty consensus hash and there is now exactly one accepted format, so
+// every test block a blockVote/blockVoteAt-signed vote is checked against
+// must carry this SAME value as its own ConsensusHash, or every vote fails to
+// verify — tests here don't exercise varying the ConsensusHash itself, only
+// committee/quorum/eligibility logic, so one fixed value kept consistent on
+// both the signing and verifying side is sufficient.
+const testBlockConsensusHash = "0x00000000000000000000000000000000000000000000000000000000000f0f0f"
+
 // blockVote returns a block-bound BLSresponse signed with THIS member's key
 // (canonical message identical to BLS_Signer.SignMessageForBlock).
-// blockVote signs a v3 block-bound vote at height 0 — the default for tests whose
+// blockVote signs a block-bound vote at height 0 — the default for tests whose
 // block carries an unset BlockNumber. Use blockVoteAt when the block has a height,
 // so the signature verifies at that block's BlockNumber.
 func (m blsMember) blockVote(t *testing.T, blockHashHex string, vote int8) BLS_Signer.BLSresponse {
 	return m.blockVoteAt(t, blockHashHex, vote, 0)
 }
 
-// blockVoteAt signs a v3 block-bound vote at an explicit height.
+// blockVoteAt signs a block-bound vote (bound to testBlockConsensusHash, see
+// its doc comment) at an explicit height.
 func (m blsMember) blockVoteAt(t *testing.T, blockHashHex string, vote int8, height uint64) BLS_Signer.BLSresponse {
+	return m.blockVoteAtWithHash(t, blockHashHex, testBlockConsensusHash, vote, height)
+}
+
+// blockVoteAtWithHash is blockVoteAt with an explicit ConsensusHash, for the
+// few tests whose block carries a REAL, independently-computed ConsensusHash
+// (e.g. via Security.RecomputeBlockHashWithConsensusFields, to also satisfy
+// checkConsensusBinding) rather than the shared fixed testBlockConsensusHash.
+func (m blsMember) blockVoteAtWithHash(t *testing.T, blockHashHex, consensusHashHex string, vote int8, height uint64) BLS_Signer.BLSresponse {
 	t.Helper()
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), height, blockHashHex, vote)
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), height, blockHashHex, consensusHashHex, vote)
 	if err != nil {
 		t.Fatalf("canonical vote message: %v", err)
 	}
@@ -112,7 +131,14 @@ func certData(t *testing.T, votes ...BLS_Signer.BLSresponse) map[string]string {
 }
 
 func blockMsg(hash common.Hash, data map[string]string) config.BlockMessage {
-	return config.BlockMessage{Block: &config.ZKBlock{BlockHash: hash}, Data: data}
+	// ConsensusHash must match testBlockConsensusHash: every vote in `data`
+	// was (or will be) signed by blockVote/blockVoteAt against that hash, and
+	// verifyBlockCertificate/VerifyCertificate now reject a vote whose
+	// signed ConsensusHash doesn't match this block's own.
+	return config.BlockMessage{
+		Block: &config.ZKBlock{BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)},
+		Data:  data,
+	}
 }
 
 // ---- eligibility-source fixtures ---------------------------------------------

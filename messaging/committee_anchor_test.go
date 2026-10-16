@@ -857,7 +857,7 @@ func TestVerifyCertificate_AnchoredPoolIsCappedForTheBlocksPeriod(t *testing.T) 
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, 885))
 	}
 
-	res, err := VerifyCertificate(votes, hash.Hex(), "", 885)
+	res, err := VerifyCertificate(votes, hash.Hex(), testBlockConsensusHash, 885)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -880,9 +880,9 @@ func TestVerifySyncedBlockCertificate_UnanchoredIsLegacy(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, 10))
 	}
-	block := &config.ZKBlock{BlockNumber: 10, BlockHash: hash}
+	block := &config.ZKBlock{BlockNumber: 10, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
-	want, wantErr := VerifyCertificate(votes, hash.Hex(), "", 10)
+	want, wantErr := VerifyCertificate(votes, hash.Hex(), testBlockConsensusHash, 10)
 	got, gotErr := VerifySyncedBlockCertificate(block, votes)
 	if (wantErr == nil) != (gotErr == nil) || want != got {
 		t.Fatalf("unanchored path diverged from the legacy verifier: want (%+v, %v), got (%+v, %v)", want, wantErr, got, gotErr)
@@ -920,8 +920,11 @@ func TestVerifySyncedBlockCertificate_AnchoredPeriodUsesSeatedCommittee(t *testi
 	var res, legacy CertificateResult
 	for i := 0; i < 64; i++ {
 		cand := &config.ZKBlock{
-			BlockNumber: 885, Slot: 885, Period: 0,
-			PrevHash: common.HexToHash(fmt.Sprintf("0x%064x", i+1)),
+			BlockNumber:   885,
+			Slot:          885,
+			Period:        0,
+			PrevHash:      common.HexToHash(fmt.Sprintf("0x%064x", i+1)),
+			ConsensusHash: common.HexToHash(testBlockConsensusHash),
 		}
 		rc, err := RoundContextForBlock(cand)
 		if err != nil {
@@ -997,6 +1000,7 @@ func TestVerifySyncedBlockCertificate_BoundaryAdoptsProofBeforeTally(t *testing.
 		BlockNumber: 890, Slot: EpochBoundarySlot(E), Period: 0,
 		PrevHash:  common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000bb1"),
 		SeedEpoch: E, VdfProof: []byte(`{"Y":1,"Pi":1,"T":5,"Group":"g"}`),
+		ConsensusHash: common.HexToHash(testBlockConsensusHash),
 	}
 
 	rc, err := RoundContextForBlock(block)

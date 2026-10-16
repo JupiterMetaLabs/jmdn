@@ -1809,9 +1809,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		roundReservedHere = fresh
 	}
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
-		// v4 when the request carried a ConsensusHash (binds the consensus fields),
-		// else v3. Verify sites try v4 then fall back to v3, so a buddy that got no
-		// ConsensusHash (older sequencer) still produces a verifying v3 signature.
+		// targetConsensusHash was resolved from this node's own cached block
+		// above (D-26c) and must be non-empty for any real (non-genesis) block
+		// — checkConsensusBinding rejects a received block with no
+		// ConsensusHash. SignMessageForBlock errors on an empty hash rather
+		// than silently signing an unbound vote; err is checked below.
 		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockNumber, targetBlockHash, targetConsensusHash)
 	} else {
 		blsResp, status, err = BLS_Signer.SignMessage(result)

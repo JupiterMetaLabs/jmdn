@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
-	"strings"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -18,14 +17,19 @@ func messageForVote(vote int8) ([]byte, error) {
 	return []byte("vote:" + strconv.Itoa(int(vote))), nil
 }
 
-// VerifyForBlock verifies a response's signature against the v3 block-bound vote
-// message: chain id + HEIGHT + block hash + vote. A signature that passes is an
-// attestation for THIS block, on THIS chain, at THIS height.
+// VerifyForBlock verifies a response's signature against the block-bound vote
+// message: chain id + HEIGHT + block hash + ConsensusHash + vote. A signature
+// that passes is an attestation for THIS block, on THIS chain, at THIS height,
+// committing to THESE consensus fields.
 //
-// v1 (block-only) and v2 (chain but not height-bound) formats are NO LONGER
-// accepted: the whole fleet emits v3, and accepting older formats reopens the
-// cross-chain / cross-height replay window. There is
-// exactly one accepted format now, so there is no downgrade path to disable.
+// There is exactly one accepted format (BLS_Signer.CanonicalVoteMessageV3,
+// which requires a non-empty consensusHash), so there is no downgrade path to
+// disable. An empty consensusHash is rejected here, by
+// CanonicalVoteMessageV3's own validation, rather than silently falling back
+// to a weaker format that doesn't bind the consensus fields — that fallback
+// was the vulnerability: a verifier willing to accept a no-ConsensusHash signature
+// could never catch a forged ConsensusHash, no matter how the hash-bearing
+// format was built.
 func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings, consensusHash string, vote int8) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)
 	if err != nil {
@@ -36,25 +40,14 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
 
-	// v4 first when a consensus hash is present (block hash + consensus hash),
-	// then fall back to v3 (block hash only) so a mixed fleet still verifies
-	// stragglers still emitting v3 during the coordinated rollout.
-	if strings.TrimSpace(consensusHash) != "" {
-		if msgV4, err4 := BLS_Signer.CanonicalVoteMessageV4(chainID, height, bindings, consensusHash, vote); err4 == nil {
-			if blssign.BLSVerify(pubBytes, msgV4, sigBytes) == nil {
-				return nil
-			}
-		}
-	}
-
-	msgV3, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, vote)
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, consensusHash, vote)
 	if err != nil {
-		return fmt.Errorf("build v3 vote message: %w", err)
+		return fmt.Errorf("build block-bound vote message: %w", err)
 	}
-	if blssign.BLSVerify(pubBytes, msgV3, sigBytes) == nil {
-		return nil
+	if blssign.BLSVerify(pubBytes, msg, sigBytes) != nil {
+		return fmt.Errorf("bls verify (block-bound) failed for peer %s", resp.PeerID)
 	}
-	return fmt.Errorf("bls verify (v4/v3 block-bound) failed for peer %s", resp.PeerID)
+	return nil
 }
 
 // Verify checks a single BLS response against the provided vote value.

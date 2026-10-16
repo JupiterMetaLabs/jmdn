@@ -154,10 +154,10 @@ func TestBuildVoteCertificate_AggregateVerifiesWithFastAggregateVerify(t *testin
 	}
 
 	// Same message both signed: stage5SignedRecord signs vote=1 for
-	// (stage5ChainID, stage5Height, stage5BlockHash) via SignMessageForBlock,
-	// so this reconstructs the identical v3 canonical bytes independently
-	// rather than trusting that buildVoteCertificate got it right.
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(stage5ChainID, stage5Height, stage5BlockHash, 1)
+	// (stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash) via
+	// SignMessageForBlock, so this reconstructs the identical canonical bytes
+	// independently rather than trusting that buildVoteCertificate got it right.
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash, 1)
 	if err != nil {
 		t.Fatalf("CanonicalVoteMessageV3: %v", err)
 	}

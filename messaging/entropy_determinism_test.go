@@ -11,7 +11,29 @@ import (
 	"testing"
 
 	"gossipnode/config"
+
+	"github.com/ethereum/go-ethereum/common"
 )
+
+// stubParentBlockForEntropy makes verifyCertAndAggregate resolve a parent
+// block without a live DB: it needs the REAL ConsensusHash the parent's
+// certifiers signed over (the signed message now binds it), and this
+// test harness has no DB_OPs-backed chain.
+func stubParentBlockForEntropy(t *testing.T, height uint64, blockHashHex, consensusHashHex string) {
+	t.Helper()
+	orig := getParentBlockForEntropy
+	getParentBlockForEntropy = func(_ *config.PooledConnection, h uint64) (*config.ZKBlock, error) {
+		if h != height {
+			return nil, nil
+		}
+		return &config.ZKBlock{
+			BlockNumber:   height,
+			BlockHash:     common.HexToHash(blockHashHex),
+			ConsensusHash: common.HexToHash(consensusHashHex),
+		}, nil
+	}
+	t.Cleanup(func() { getParentBlockForEntropy = orig })
+}
 
 func certFrom(t *testing.T, prevHash string, prevHeight uint64, peers ...string) []config.CertSigner {
 	t.Helper()
@@ -30,6 +52,7 @@ func certFrom(t *testing.T, prevHash string, prevHeight uint64, peers ...string)
 func TestFallbackCertificateFoldIgnoresLocalBlocklist(t *testing.T) {
 	const prevHeight = 777
 	prevHash := "0x" + fmt.Sprintf("%064x", 0xabc)
+	stubParentBlockForEntropy(t, prevHeight, prevHash, testBlockConsensusHash)
 	cert := certFrom(t, prevHash, prevHeight, "peerA", "peerB", "peerC")
 
 	fleet, err := verifyCertAndAggregate(cert, prevHeight, prevHash, EpochForHeight(prevHeight))
