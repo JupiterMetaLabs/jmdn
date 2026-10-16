@@ -8,18 +8,25 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	avctypes "github.com/JupiterMetaLabs/avc/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
-	stage5ChainID   = uint64(7000700)
-	stage5Height    = uint64(9000)
-	stage5BlockHash = "0xstage5"
+	stage5ChainID = uint64(7000700)
+	stage5Height  = uint64(9000)
+	// Canonical (common.Hash-representable) hex strings: verifyTallySignatures
+	// treats these as opaque bound strings, but TestProcessVotesFromCRDT_V2_*
+	// below also caches a ZKBlock keyed by BlockHash.String(), which only ever
+	// produces this canonical lower-case, 0x + 64-hex-digit shape.
+	stage5BlockHash     = "0x00000000000000000000000000000000000000000000000000000000055d4f52"
+	stage5ConsensusHash = "0x00000000000000000000000000000000000000000000000000000000055d60ae"
 )
 
 func stage5TestPeer(t *testing.T) peer.ID {
@@ -40,7 +47,7 @@ func stage5TestPeer(t *testing.T) peer.ID {
 // it rather than trivially accepting a fixture.
 func stage5SignedRecord(t *testing.T, peerID peer.ID, vote int8, height uint64, blockHash string) avcvotes.VoteRecord {
 	t.Helper()
-	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, height, blockHash, "")
+	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, height, blockHash, stage5ConsensusHash)
 	if err != nil || !signed {
 		t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
 	}
@@ -75,7 +82,7 @@ func TestVerifyTallySignatures_ValidVotesSurviveIntact(t *testing.T) {
 		},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 0 {
 		t.Fatalf("expected 0 dropped for two validly signed votes, got %d", dropped)
 	}
@@ -95,7 +102,7 @@ func TestVerifyTallySignatures_ForgedSignatureIsDroppedAndNotCounted(t *testing.
 	recA := stage5SignedRecord(t, peerA, 1, stage5Height, stage5BlockHash)
 	// Forged: a syntactically valid pubkey/signature pair, but the signature
 	// was never produced by that pubkey's private key for this message.
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", "")
+	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -119,7 +126,7 @@ func TestVerifyTallySignatures_ForgedSignatureIsDroppedAndNotCounted(t *testing.
 		},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 1 {
 		t.Fatalf("expected exactly 1 dropped (the forged vote), got %d", dropped)
 	}
@@ -147,7 +154,7 @@ func TestVerifyTallySignatures_GenuineEquivocationPairBothSurvive(t *testing.T) 
 		Signatures:            map[string][]avcvotes.VoteRecord{peerA.String(): {yes, no}},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 0 {
 		t.Fatalf("both halves of a genuine equivocation are validly signed, expected 0 dropped, got %d", dropped)
 	}
@@ -164,7 +171,7 @@ func TestVerifyTallySignatures_ForgedSecondValueDoesNotManufactureEquivocation(t
 	peerA := stage5TestPeer(t)
 
 	realYes := stage5SignedRecord(t, peerA, 1, stage5Height, stage5BlockHash)
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xelsewhere", "")
+	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -182,7 +189,7 @@ func TestVerifyTallySignatures_ForgedSecondValueDoesNotManufactureEquivocation(t
 		Signatures:            map[string][]avcvotes.VoteRecord{peerA.String(): {realYes, forgedNo}},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 1 {
 		t.Fatalf("expected exactly 1 dropped (the forged half), got %d", dropped)
 	}
@@ -216,7 +223,7 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 	// for an unrelated reason and this test would prove nothing.
 	chainID := BLS_Signer.DomainChainID()
 	sign := func(peerID peer.ID, vote int8) avcvotes.VoteRecord {
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, stage5Height, stage5BlockHash, "")
+		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 		if err != nil || !signed {
 			t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
 		}
@@ -237,7 +244,7 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 
 	// Inject a forged NO vote directly (bypassing AddVote's own signer, the
 	// way a malicious or buggy peer's raw CRDT merge would land it).
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(-1, chainID, stage5Height, "0xelsewhere", "")
+	otherSigner, _, err := BLS_Signer.SignMessageForBlock(-1, chainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -260,6 +267,17 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 			peerForgedNo.String(): otherSigner.PubKey,
 		}, nil
 	})
+
+	// processVotesFromCRDT_v2 now sources the ConsensusHash to verify against
+	// from this node's own consensus-message cache, the same way
+	// handleVoteResultRequest already does — it never trusts a hash carried on
+	// the wire. Seed that cache with the block this test's votes are signed
+	// against.
+	(&PubSubMessages.ConsensusMessage{ZKBlock: &config.ZKBlock{
+		BlockNumber:   stage5Height,
+		BlockHash:     common.HexToHash(stage5BlockHash),
+		ConsensusHash: common.HexToHash(stage5ConsensusHash),
+	}}).SetGloalVarCacheConsensusMessage()
 
 	listenerNode := &PubSubMessages.BuddyNode{VoteCRDTLayer: &voteEngine}
 	result, _, _, _, err := ProcessVotesFromCRDT(context.Background(), listenerNode, stage5BlockHash, stage5Height)

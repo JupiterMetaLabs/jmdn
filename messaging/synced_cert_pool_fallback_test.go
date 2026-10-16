@@ -45,9 +45,9 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackAcceptsSealingCommitteeOut
 	for i := 5; i < 10; i++ {
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
 	}
-	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash}
+	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
-	legacy, err := VerifyCertificate(votes, hash.Hex(), "", height)
+	legacy, err := VerifyCertificate(votes, hash.Hex(), testBlockConsensusHash, height)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackKeepsThreshold(t *testing.
 	for i := 6; i < 10; i++ {
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
 	}
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackIgnoresNonPoolSigners(t *t
 		outsider := mustMintMember("zz-outsider-"+itoa(i), byte(0xC0+i))
 		votes = append(votes, outsider.blockVoteAt(t, hash.Hex(), 1, height))
 	}
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackEnforcesKeyBinding(t *test
 	forged := members[0].blockVoteAt(t, hash.Hex(), 1, height)
 	forged.PeerID = members[9].peerID
 	votes = append(votes, forged)
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +147,8 @@ func TestVerifySyncedBlockCertificate_LegacyPassUnchanged(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
 	}
-	want, wantErr := VerifyCertificate(votes, hash.Hex(), "", height)
-	got, gotErr := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	want, wantErr := VerifyCertificate(votes, hash.Hex(), testBlockConsensusHash, height)
+	got, gotErr := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if (wantErr == nil) != (gotErr == nil) || want != got {
 		t.Fatalf("legacy-pass path diverged: want (%+v, %v), got (%+v, %v)", want, wantErr, got, gotErr)
 	}
@@ -175,7 +175,7 @@ func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002140")
 	const height = 2140
-	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash}
+	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
 	var votes []BLS_Signer.BLSresponse
 	for i := 7; i < 10; i++ { // signers outside the legacy alphabetical cap
@@ -200,7 +200,7 @@ func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	}
 	// The same helper the live receive path uses, fed a verifier error (e.g.
 	// round context unavailable): still accepted on the one real vote.
-	relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), "", height)
+	relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), testBlockConsensusHash, height)
 	if rerr != nil || !relaxed.Reached {
 		t.Fatalf("verifier error must be overridden by a real registered vote: (%+v, %v)", relaxed, rerr)
 	}
@@ -222,14 +222,14 @@ func TestTrustSequencerCertificate_NoRegisteredVoteStillRejects(t *testing.T) {
 		members[3].blockVoteAt(t, hash.Hex(), -1, height), // registered, but a NO
 		members[4].blockVoteAt(t, other.Hex(), 1, height), // registered, wrong block
 	}
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Reached {
 		t.Fatalf("no verifying registered +1 for this block must stay rejected even in trusted mode: %+v", got)
 	}
-	relaxed, rerr := relaxForTrustedSequencer("thebesync", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), "", height)
+	relaxed, rerr := relaxForTrustedSequencer("thebesync", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), testBlockConsensusHash, height)
 	if rerr == nil || relaxed.Reached {
 		t.Fatalf("a verifier error with no real vote must be preserved: (%+v, %v)", relaxed, rerr)
 	}

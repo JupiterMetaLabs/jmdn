@@ -204,6 +204,14 @@ func VerifyAndRecordPrevCert(block *config.ZKBlock) {
 	}
 }
 
+// getParentBlockForEntropy resolves the parent block verifyCertAndAggregate
+// needs its real ConsensusHash from. A package-level var, not a hardcoded
+// call, so tests can substitute a fake chain — the same seam pattern already
+// used elsewhere in this package (e.g. authorizedCommitteeFn) — instead of
+// requiring a live DB handle just to exercise this fail-closed path.
+// Production always uses the real DB_OPs lookup.
+var getParentBlockForEntropy = DB_OPs.GetZKBlockByNumber
+
 // verifyCertAndAggregate checks every signer against the eligible pool and the
 // previous block's vote message, then aggregates. Fail-closed throughout.
 func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHashHex string, epoch uint64) ([]byte, error) {
@@ -242,22 +250,27 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 	// policy; committed certificate data is judged against the fleet pool.
 
 	// The parent's certifier signatures are over the parent's canonical vote
-	// message. When the parent block carried a ConsensusHash (its committee voted
-	// v4), that message is v4 (chainID, prevHeight, prevHash, prevConsensusHash,
-	// vote=+1); otherwise v3. The whole certificate is one version — every buddy
-	// signed the same request's consensus_hash — so building ONE message keeps the
-	// BLS aggregate over a single message, which aggregate verification requires.
-	// Resolve the version from the parent block itself (its ConsensusHash).
-	prevConsensusHashHex := ""
-	if pblk, perr := DB_OPs.GetZKBlockByNumber(nil, prevHeight); perr == nil && pblk != nil {
-		prevConsensusHashHex = pblk.ConsensusHashHex()
+	// message (chainID, prevHeight, prevHash, prevConsensusHash, vote=+1).
+	// Every buddy that certified the parent signed over the SAME
+	// ConsensusHash — CanonicalVoteMessageV3 requires one — so this node must
+	// recompute the identical hash from the stored parent block to rebuild
+	// that message; there is no other source for it.
+	//
+	// The one known case where the parent has no ConsensusHash is the
+	// genesis block (DB_OPs/genesis_block.go: written directly, never through
+	// attachAVCConsensusFields), and VerifyAndRecordPrevCert already treats a
+	// failure here as fail-closed-and-expected (see its doc comment) — this
+	// just skips recording that one fallback-entropy contribution rather than
+	// signing over a hash the parent never had.
+	pblk, perr := getParentBlockForEntropy(nil, prevHeight)
+	if perr != nil || pblk == nil {
+		return nil, fmt.Errorf("entropy: loading parent block %d: %w", prevHeight, perr)
 	}
-	var msg []byte
-	if prevConsensusHashHex != "" {
-		msg, err = BLS_Signer.CanonicalVoteMessageV4(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, prevConsensusHashHex, 1)
-	} else {
-		msg, err = BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, 1)
+	prevConsensusHashHex := pblk.ConsensusHashHex()
+	if prevConsensusHashHex == "" {
+		return nil, fmt.Errorf("entropy: parent block %d has no consensus hash", prevHeight)
 	}
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), prevHeight, prevHashHex, prevConsensusHashHex, 1)
 	if err != nil {
 		return nil, fmt.Errorf("entropy: building parent vote message: %w", err)
 	}

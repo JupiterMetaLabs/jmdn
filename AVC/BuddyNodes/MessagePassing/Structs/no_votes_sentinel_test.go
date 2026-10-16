@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
+	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	avctypes "github.com/JupiterMetaLabs/avc/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // An empty vote CRDT (votes not replicated yet) is the normal transient state
@@ -23,6 +25,16 @@ func TestProcessVotesFromCRDT_V2_EmptyIsErrNoVotesInCRDT(t *testing.T) {
 
 	engine := avctypes.Controller{CRDTLayer: DataLayer.NewVoteCRDTLayer(nil).CRDTLayer}
 	listener := &PubSubMessages.BuddyNode{VoteCRDTLayer: &engine}
+
+	// This test is specifically about the EMPTY-VOTES transient, not the
+	// separate "this node has never seen the block at all" case that
+	// processVotesFromCRDT_v2 now also checks — seed that cache so the empty
+	// CRDT is the only thing under test here.
+	(&PubSubMessages.ConsensusMessage{ZKBlock: &config.ZKBlock{
+		BlockNumber:   stage5Height,
+		BlockHash:     common.HexToHash(stage5BlockHash),
+		ConsensusHash: common.HexToHash(stage5ConsensusHash),
+	}}).SetGloalVarCacheConsensusMessage()
 
 	result, _, cert, vcert, err := ProcessVotesFromCRDT(context.Background(), listener, stage5BlockHash, stage5Height)
 	if !errors.Is(err, ErrNoVotesInCRDT) {

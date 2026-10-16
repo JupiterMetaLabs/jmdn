@@ -99,46 +99,28 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 // from CanonicalVoteMessageV3, so they cannot drift.
 const BlockBoundVotePrefix = "zkvote:"
 
-// VoteDomainVersionV3 binds chain id, block HEIGHT and block hash:
-// "zkvote:v3:chain=<id>:h=<height>:<blockhash>:<vote>". Because the generator's
-// BlockHash does not commit to the block number, a v2 certificate is not tied to
-// a specific height; binding the height makes a certificate valid only at the
-// exact height its signers intended. Emitted when the height is known
-// (block_number threaded to the signer); falls back to v2 otherwise for a staged
-// rollout.
+// VoteDomainVersionV3 binds chain id, block HEIGHT, block hash and the block's
+// ConsensusHash (the consensus-fields digest — Slot/Period/PrevAggCert/
+// FeeRecipients/CommitteeSnapshotHash/tx contents):
+// "zkvote:v3:chain=<id>:h=<height>:<blockhash>:ch=<consensushash>:<vote>".
+// ConsensusHash is mandatory: checkConsensusBinding (messaging/consensus_hardening.go)
+// already rejects any received non-genesis block whose ConsensusHash is empty,
+// so every block a vote could legitimately be cast for already carries one.
+// This used to be two formats (v3 block-hash-only, v4 +ConsensusHash) with the
+// verifier falling back from v4 to v3; that fallback was the vulnerability — a
+// forged ConsensusHash could never be detected by a vote that didn't bind it,
+// as long as a verifier was still willing to accept the no-ConsensusHash
+// format. There is exactly one format now, and the tag keeps the "v3" name so
+// a stale binary emitting the old (pre-ConsensusHash) preimage produces a
+// diagnosable verification failure rather than silently downgrading.
 const VoteDomainVersionV3 = "v3"
 
-// CanonicalVoteMessageV3 builds the EXACT bytes signed and verified for a v3
-// height-bound vote. Both SignMessageForBlock and BLS_Verifier.VerifyForBlock
-// derive their bytes from here so signer and verifier cannot drift.
-func CanonicalVoteMessageV3(chainID, height uint64, bindings string, vote int8) ([]byte, error) {
-	if vote != -1 && vote != 1 {
-		return nil, fmt.Errorf("invalid vote: %d", vote)
-	}
-	bindings = normalizeBindings(bindings)
-	if bindings == "" {
-		return nil, fmt.Errorf("empty block bindings")
-	}
-	msg := BlockBoundVotePrefix + VoteDomainVersionV3 + ":chain=" +
-		strconv.FormatUint(chainID, 10) + ":h=" + strconv.FormatUint(height, 10) +
-		":" + bindings + ":" + strconv.Itoa(int(vote))
-	return []byte(msg), nil
-}
-
-// VoteDomainVersionV4 extends v3 by binding the block's ConsensusHash (the
-// consensus-fields digest) alongside the block hash:
-// "zkvote:v4:chain=<id>:h=<height>:<blockhash>:ch=<consensushash>:<vote>".
-// A v4 vote therefore attests to Slot/Period/PrevAggCert/FeeRecipients/
-// CommitteeSnapshotHash too, giving those tamper-evidence WITHOUT folding them
-// into BlockHash. Emitted only when a ConsensusHash is present; otherwise v3 is
-// used. Verifiers try v4 then fall back to v3 for a staged rollout.
-const VoteDomainVersionV4 = "v4"
-
-// CanonicalVoteMessageV4 builds the EXACT bytes signed and verified for a v4
-// height+consensus-bound vote. consensusHash must be non-empty (callers select
-// v3 when there is no ConsensusHash). Signer and verifier both derive their
-// bytes here so they cannot drift.
-func CanonicalVoteMessageV4(chainID, height uint64, bindings, consensusHash string, vote int8) ([]byte, error) {
+// CanonicalVoteMessageV3 builds the EXACT bytes signed and verified for a
+// block-bound vote: chain id, height, block hash, consensus hash and vote.
+// Signer and verifier both derive their bytes from here so they cannot drift.
+// consensusHash must be non-empty: a vote that does not commit to the
+// consensus fields is not a valid vote (see the doc comment above).
+func CanonicalVoteMessageV3(chainID, height uint64, bindings, consensusHash string, vote int8) ([]byte, error) {
 	if vote != -1 && vote != 1 {
 		return nil, fmt.Errorf("invalid vote: %d", vote)
 	}
@@ -150,7 +132,7 @@ func CanonicalVoteMessageV4(chainID, height uint64, bindings, consensusHash stri
 	if ch == "" {
 		return nil, fmt.Errorf("empty consensus hash")
 	}
-	msg := BlockBoundVotePrefix + VoteDomainVersionV4 + ":chain=" +
+	msg := BlockBoundVotePrefix + VoteDomainVersionV3 + ":chain=" +
 		strconv.FormatUint(chainID, 10) + ":h=" + strconv.FormatUint(height, 10) +
 		":" + bindings + ":ch=" + ch + ":" + strconv.Itoa(int(vote))
 	return []byte(msg), nil
@@ -173,23 +155,14 @@ func DomainChainID() uint64 {
 	return DefaultDomainChainID
 }
 
-// SignMessageForBlock signs a vote in the v3 domain: bound to the network chain
-// id, the block HEIGHT, and the block hash. `bindings` must uniquely identify the
-// block (the receiver uses the block hash hex). This ties a vote to a single
-// block on a single chain/fork at a single height, unlike the unbound constant
-// "vote:1" used by SignMessage. v2 (chain, no height) is no longer emitted — the
-// fleet is fully migrated to v3.
+// SignMessageForBlock signs a vote bound to the network chain id, the block
+// HEIGHT, the block hash and the block's ConsensusHash. `bindings` must
+// uniquely identify the block (the receiver uses the block hash hex). This
+// ties a vote to a single block on a single chain/fork at a single height,
+// unlike the unbound constant "vote:1" used by SignMessage. consensusHash must
+// be non-empty — see CanonicalVoteMessageV3's doc comment for why.
 func SignMessageForBlock(vote int8, chainID, height uint64, bindings, consensusHash string) (BLSresponse, bool, error) {
-	// Emit v4 (block hash + consensus hash) when a ConsensusHash is present,
-	// otherwise v3 (block hash only). The receiver's VerifyForBlock tries v4 then
-	// falls back to v3, so a mixed fleet during rollout still converges.
-	var msg []byte
-	var err error
-	if strings.TrimSpace(consensusHash) != "" {
-		msg, err = CanonicalVoteMessageV4(chainID, height, bindings, consensusHash, vote)
-	} else {
-		msg, err = CanonicalVoteMessageV3(chainID, height, bindings, vote)
-	}
+	msg, err := CanonicalVoteMessageV3(chainID, height, bindings, consensusHash, vote)
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}

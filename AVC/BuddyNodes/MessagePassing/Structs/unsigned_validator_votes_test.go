@@ -45,7 +45,7 @@ func TestVerifyTallySignatures_UnsignedRecordDropped(t *testing.T) {
 		Signatures:            map[string][]avcvotes.VoteRecord{validator.String(): {rec}},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 1 {
 		t.Fatalf("a record with no signature must be dropped, dropped=%d", dropped)
 	}
@@ -69,7 +69,7 @@ func TestVerifyTallySignatures_HalfSignedRecordStillVerifiedAndDropped(t *testin
 		Signatures:            map[string][]avcvotes.VoteRecord{sneaky.String(): {rec}},
 	}
 
-	_, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	_, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 1 {
 		t.Fatalf("a half-signed record must not bypass verification, dropped=%d", dropped)
 	}
@@ -87,7 +87,7 @@ func TestVerifyTallySignatures_ForgeryStillDetectedAlongsideValidSignedVote(t *t
 	buddyRec := stage5SignedRecord(t, buddy, 1, stage5Height, stage5BlockHash)
 
 	// Forged: real key material, but the signature covers a different message.
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", "")
+	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestVerifyTallySignatures_ForgeryStillDetectedAlongsideValidSignedVote(t *t
 		},
 	}
 
-	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if dropped != 1 {
 		t.Fatalf("expected exactly the forged vote dropped, got dropped=%d", dropped)
 	}
@@ -138,7 +138,7 @@ func TestVerifyTallySignatures_UpstreamCountersStillCopied(t *testing.T) {
 		MalformedSignatures:   5,
 	}
 
-	verified, _ := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, "")
+	verified, _ := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if verified.SkippedUnauthorized != 7 || verified.MalformedVotes != 3 || verified.MalformedSignatures != 5 {
 		t.Fatalf("upstream counters must pass through unchanged: skipped=%d malformed=%d malformedSigs=%d",
 			verified.SkippedUnauthorized, verified.MalformedVotes, verified.MalformedSignatures)
