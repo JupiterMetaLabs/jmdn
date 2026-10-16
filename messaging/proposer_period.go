@@ -11,8 +11,9 @@ import (
 // ProposerPeriods is the PROPOSER's per-height retry counter (R3): the Period
 // the next block proposed at a height is stamped with.
 //
-// Only the node that builds blocks reads it (Block/consensus_fields.go via
-// LiveSlotFor). Verifiers never do: a block carries its own Period, bound into
+// Only the node that builds blocks reads it (Block/consensus_fields.go). It
+// does not affect the slot: every attempt at a height sits in slot = height.
+// Verifiers never read it: a block carries its own Period, bound into
 // its ConsensusHash and so into every committee vote, and RoundContextForBlock
 // reads it from there. A node that was offline or restarted therefore needs
 // nothing from this store to verify a block.
@@ -131,13 +132,18 @@ func (p *ProposerPeriods) ForgetThrough(height uint64) {
 	}
 }
 
-// NoteHeightCommitted tells the per-round ledgers that height is committed
-// locally: the buddy signing ledger (roundlock) stops signing at or below it
-// and drops old records, and the proposer's period counter drops it. Call it
-// from every local commit point - the live receive path, the proposer's own
-// commit, ThebeSync, and the startup tip recovery - so pruning follows commits
-// rather than the heights of incoming requests.
+// NoteHeightCommitted records that height is committed locally - the one
+// place every local commit point reports to: the live receive path, the
+// proposer's own commit, ThebeSync, and startup/catch-up tip recovery. It
+//   - raises the slot store to height (slot == block number),
+//   - makes the buddy signing ledger (roundlock) stop signing at or below
+//     height and drop old records,
+//   - drops the proposer's period counter for height.
+//
+// Every effect only moves forward, so calls may repeat or arrive out of
+// order (a sync and a live commit racing) without leaving anything behind.
 func NoteHeightCommitted(height uint64) {
+	DefaultSlotStore.AdvanceOnCommit(height)
 	roundlock.Default.ForgetThrough(height)
 	DefaultProposerPeriods.ForgetThrough(height)
 }

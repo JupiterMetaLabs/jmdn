@@ -27,7 +27,7 @@ func withCommittedSlot(t *testing.T, slot uint64) {
 	t.Helper()
 	prev := messaging.DefaultSlotStore
 	messaging.DefaultSlotStore = messaging.NewSlotStore()
-	messaging.DefaultSlotStore.SeedFromCommittedTip(slot, slot)
+	messaging.DefaultSlotStore.AdvanceOnCommit(slot)
 	t.Cleanup(func() { messaging.DefaultSlotStore = prev })
 }
 

@@ -169,13 +169,11 @@ func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {
 		}
 		rec.ExtraData["consensus_hash"] = b.ConsensusHash.Hex()
 	}
-	// Slot/Period: persisted so a restarted node can recover its slot counter
-	// from the tip block instead of resetting to 0 - see
-	// messaging.SlotStore.SeedFromCommittedTip and
-	// docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8. Written unconditionally,
-	// including when both are legitimately 0 (genesis / first commit) - a
-	// value must always be present for the reseed to distinguish "no data
-	// persisted yet" from "this block's slot really is 0".
+	// Slot/Period: persisted with every block so a synced or replaying node
+	// reads back the exact values the committee signed (both are in the
+	// ConsensusHash preimage). Slot equals the block number by rule
+	// (messaging/slot_store.go). Written unconditionally, including when both
+	// are legitimately 0 (genesis).
 	if rec.ExtraData == nil {
 		rec.ExtraData = map[string]any{}
 	}

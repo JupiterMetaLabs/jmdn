@@ -325,7 +325,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.flags.enforce_body_binding", f.EnforceBodyBinding)
 	v.SetDefault("consensus.flags.agg_cert", f.AggCert)
 	v.SetDefault("consensus.flags.enforce_slot_recovery_gate", f.EnforceSlotRecoveryGate)
-	v.SetDefault("consensus.flags.slot_recovery_preslot_migration", f.SlotRecoveryPreslotMigration)
 	v.SetDefault("consensus.flags.enforce_sync_gate", f.EnforceSyncGate)
 	v.SetDefault("consensus.flags.emit_block_bound_votes", f.EmitBlockBoundVotes)
 	v.SetDefault("consensus.flags.validator_voter_set", f.ValidatorVoterSet)

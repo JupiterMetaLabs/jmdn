@@ -16,8 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// blkAt builds a block at num that follows the slot rule (slot = block number).
 func blkAt(num uint64, prev common.Hash) *config.ZKBlock {
-	return &config.ZKBlock{BlockNumber: num, PrevHash: prev, BlockHash: common.BytesToHash([]byte{byte(num)})}
+	return &config.ZKBlock{BlockNumber: num, Slot: num, PrevHash: prev, BlockHash: common.BytesToHash([]byte{byte(num)})}
 }
 
 // distinct, VALID, non-zero hashes (HexToHash on non-hex text silently yields
@@ -77,6 +78,7 @@ func TestBadStateRootRejected(t *testing.T) {
 	}
 	b := &config.ZKBlock{
 		BlockNumber: 21,
+		Slot:        21,
 		PrevHash:    parent.BlockHash,
 		BlockHash:   common.HexToHash("0xchild"),
 		StateRoot:   common.HexToHash("0xbogus"), // does not chain from parent
@@ -87,11 +89,11 @@ func TestBadStateRootRejected(t *testing.T) {
 	}
 }
 
-// TestSlotChain covers the slot axis: a block at Period p must sit exactly p+1
-// slots after its parent, and a parent with no slot (pre-slot history) skips
-// the check.
-func TestSlotChain(t *testing.T) {
-	parent := &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip, Slot: 100}
+// TestSlotRule covers the slot axis on the live path: a block's slot is its
+// block number whatever its Period, with no exception (every live block is
+// stamped by the current proposer), and the Period cap is checked first.
+func TestSlotRule(t *testing.T) {
+	parent := &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip, Slot: 30}
 	child := func(slot, period uint64) *config.ZKBlock {
 		b := blkAt(31, hashTip)
 		b.Slot, b.Period = slot, period
@@ -100,23 +102,20 @@ func TestSlotChain(t *testing.T) {
 	cases := []struct {
 		name       string
 		b          *config.ZKBlock
-		parent     *config.ZKBlock
 		wantReason string
 	}{
-		{"period 0, next slot", child(101, 0), parent, ""},
-		{"period 2, three slots on", child(103, 2), parent, ""},
-		{"period 2 but only one slot on", child(101, 2), parent, "bad_slot"},
-		{"period 0 but a slot skipped", child(102, 0), parent, "bad_slot"},
-		{"slot not ahead of parent", child(100, 0), parent, "bad_slot"},
-		{"slot behind parent", child(5, 0), parent, "bad_slot"},
-		{"huge period is stopped by the cap first", child(101, ^uint64(0)), parent, "period_too_high"},
-		{"parent predates slots: skipped", child(7, 3), &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip}, ""},
-		{"period at the cap", child(100+config.MaxPeriod+1, config.MaxPeriod), parent, ""},
-		{"period above the cap", child(100+config.MaxPeriod+2, config.MaxPeriod+1), parent, "period_too_high"},
+		{"first attempt: slot = height", child(31, 0), ""},
+		{"retry at period 2 keeps slot = height", child(31, 2), ""},
+		{"retry that moved the slot (old rule)", child(33, 2), "bad_slot"},
+		{"slot one ahead", child(32, 0), "bad_slot"},
+		{"slot behind", child(30, 0), "bad_slot"},
+		{"slot 0 on a live block", child(0, 0), "bad_slot"},
+		{"period at the cap", child(31, config.MaxPeriod), ""},
+		{"period above the cap is rejected first", child(31, config.MaxPeriod+1), "period_too_high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rej := linkageDecision(tc.b, 30, nil, tc.parent, nil)
+			rej := linkageDecision(tc.b, 30, nil, parent, nil)
 			if tc.wantReason == "" {
 				if rej != nil {
 					t.Fatalf("expected accept, got %s: %v", rej.reason, rej.err)

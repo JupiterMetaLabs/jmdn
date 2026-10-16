@@ -120,9 +120,8 @@ func RecordCommitCertificate(height uint64, responses []BLS_Signer.BLSresponse) 
 // that might need it. The range is shifted by +1 slot to account for the
 // one-block certificate lag: a block at slot S carries the certificate for
 // its PARENT, so to cover collection slots [K, K+MaxOffset) the certificates
-// ride on the blocks that follow them. With no timeouts the carrier sits at
-// S+1; after a timeout the parent is period+1 slots back, which
-// VerifyAndRecordPrevCert accounts for.
+// ride on the blocks that follow them: the carrier sits at S+1, since a
+// block's slot is its block number whatever its Period.
 //
 // Note this range can be wider than FallbackFoldBufferB slots — collection
 // stops as soon as B signers are found, wherever in the range that happens,
@@ -171,17 +170,10 @@ func VerifyAndRecordPrevCert(block *config.ZKBlock) {
 	if block.Slot == 0 || block.BlockNumber == 0 {
 		return
 	}
-	// The parent's slot is NOT block.Slot-1. SlotStore.AdvanceOnCommit does
-	// `slot += period + 1` (§7.1: a retried round burns a slot per failed
-	// round), so a block committed at period P sits P+1 slots after its parent,
-	// not one - verifiers enforce exactly that (linkageDecision's slot chain).
-	// Using Slot-1 would record the certificate against a slot that never had a
-	// block, silently poking a hole in the fold window on exactly the rounds
-	// that failed.
-	if block.Slot < block.Period+1 {
-		return // parent predates the slot counter; nothing to attribute
-	}
-	prevSlot := block.Slot - (block.Period + 1)
+	// The parent's slot is block.Slot-1: a block's slot is its block number
+	// (slot_store.go), whatever its Period, and verifiers enforce exactly that
+	// (linkageDecision, CheckSyncedSlot).
+	prevSlot := block.Slot - 1
 	prevHeight := block.BlockNumber - 1
 
 	// EpochForHeight(prevHeight), not EpochForSlot(prevSlot): this resolves

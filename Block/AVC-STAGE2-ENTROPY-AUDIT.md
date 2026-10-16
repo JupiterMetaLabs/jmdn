@@ -35,7 +35,7 @@ Everything downstream of that is a consequence.
 ```mermaid
 flowchart TB
     subgraph active["ACTIVE TODAY — verified in code"]
-        A["block commits"] --> B["SlotStore.AdvanceOnCommit<br/>slot += period+1"]
+        A["block commits"] --> B["NoteHeightCommitted<br/>slot = block number"]
         B --> C["foldBlockDeclaredReveals"]
         C --> D["VerifyAndRecordPrevCert<br/>gated JMDN_AVC_AGG_CERT (=1 on devnet)"]
         D --> E["maybeFinaliseCompletedEpochs<br/>at slot E·50+3"]
