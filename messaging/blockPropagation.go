@@ -15,7 +15,6 @@ import (
 	"gossipnode/config/GRO"
 	GROHelper "gossipnode/messaging/common"
 
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -549,18 +548,12 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			ion.Int("txn_count", len(msg.Block.Transactions)))
 	} else {
 		// Non-consensus message types have no validation gate here, so mark
-		// processed on receipt to preserve duplicate/loop suppression. Only
-		// zkblock caching is deferred behind validation.
+		// processed on receipt to preserve duplicate/loop suppression — but
+		// NEVER re-flood them. Forwarding an unvalidated, attacker-shaped
+		// message (arbitrary Type, Hops) to every peer was free amplification
+		// for anyone, not just the sequencer's own validated ZKBlock path
+		// above.
 		markMessageProcessed(messageID)
-
-		// Handle other message types (not our focus)
-		if forward && msg.Hops < config.MaxHops {
-			msg.Hops++
-			BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-				forwardBlock(globalHost, msg)
-				return nil
-			})
-		}
 	}
 
 	// Notify explorer or other UI components
@@ -880,11 +873,16 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Track forwarding metrics
 	var successCount int
 	var successMutex sync.Mutex
-	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block forwarding", err)
-		return
-	}
+
+	// A dedicated, local WaitGroup — NOT GRO.BlockPropagationForwardWG. That
+	// name is also used by sendBlockMessageDirect (broadcast.go), and
+	// NewFunctionWaitGroup returns the SAME *sync.WaitGroup for the same name
+	// on the same LocalManager (confirmed by reading the orchestrator's own
+	// implementation: it looks up an existing group by name before creating
+	// one): a peer that never drains its stream here could hold up the
+	// sequencer's own direct broadcast too. This path gets its own counter so
+	// a stuck relay peer can only ever stall this relay.
+	var wg sync.WaitGroup
 
 	// Send to each peer concurrently
 	for _, peerID := range peers {
@@ -895,15 +893,24 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 
 		peerIDForGoroutine := peerID // Capture peerID in closure to avoid race condition
 
+		wg.Add(1)
 		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
+			defer wg.Done()
+
+			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			stream, err := h.NewStream(dialCtx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
 				broadcastLogger().Debug(ctx, "Failed to open stream", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
 			defer stream.Close()
 
+			// Without a write deadline, a peer that accepts the stream and
+			// never reads can block this write indefinitely.
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			if _, err := stream.Write(msgBytes); err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Debug(ctx, "Failed to write message", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
@@ -914,7 +921,8 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 
 			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
 			return nil
-		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
+		}); err != nil {
+			wg.Done() // Go() never ran the func — balance the counter we pre-added.
 			broadcastLogger().Error(context.Background(), "Failed to start goroutine for block forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
 		}
 	}
