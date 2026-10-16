@@ -14,11 +14,14 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/Vote"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/config/settings"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/l1auth"
 	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging/BlockProcessing"
 	GROHelper "gossipnode/messaging/common"
@@ -26,6 +29,7 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -155,7 +159,7 @@ func HandleBroadcastStream(stream network.Stream) {
 
 	// Handle different message types
 	if msg.Type == voteTriggerBroadcastType {
-		handleVoteTriggerBroadcast(msg)
+		handleVoteTriggerBroadcast(msg, stream.Conn().RemotePeer())
 	}
 	// Timeout-certificate wiring (M0/§7.1c, timeout_gossip.go) — reuses this
 	// exact flood-broadcast transport with two new msg.Type values. Both
@@ -393,17 +397,42 @@ func BroadcastMessage(h host.Host, content string) error {
 }
 
 // handleVoteTriggerBroadcast processes vote trigger broadcast messages
-func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
+func handleVoteTriggerBroadcast(msg BroadcastMessageStruct, from peer.ID) {
 	broadcastLogger().Info(context.Background(), "Processing vote trigger broadcast",
 		ion.String("msg_id", msg.ID),
 		ion.String("sender", msg.Sender),
+		ion.String("from", from.String()),
 		ion.String("type", msg.Type))
+
+	// Only the pinned sequencer may ask this node to vote. `from` is the
+	// libp2p-authenticated stream peer (Noise/TLS handshake), not the
+	// self-declared msg.Sender, and vote triggers are delivered directly by the
+	// sequencer (never relayed), so this is a cryptographic sender check.
+	// Checked before anything is parsed or cached.
+	if ok, enforced := voteTriggerSenderAuthorized(from); !ok {
+		metrics.BlocksRejectedCounter.WithLabelValues("vote_trigger_unauthorized_sender", "remote").Inc()
+		broadcastLogger().Warn(context.Background(), "Dropping vote trigger from a peer that is not the pinned sequencer",
+			ion.String("from", from.String()), ion.String("msg_id", msg.ID))
+		return
+	} else if !enforced {
+		broadcastLogger().Warn(context.Background(), "Vote trigger sender NOT authenticated: consensus.sequencer_pinned_peer_id is unset (any peer can request a vote)",
+			ion.String("from", from.String()), ion.String("msg_id", msg.ID))
+	}
 
 	// Parse the consensus message data
 	var consensusMessage PubSubMessages.ConsensusMessage
 	if err := json.Unmarshal([]byte(msg.Data), &consensusMessage); err != nil {
 		broadcastLogger().Error(context.Background(), "Failed to unmarshal consensus message from vote trigger", err,
 			ion.String("msg_id", msg.ID))
+		return
+	}
+
+	// Validate the proposal's shape (block present, hash set, every transaction
+	// has a sender) before anything uses or caches it.
+	if err := validateVoteTriggerConsensusMessage(&consensusMessage); err != nil {
+		metrics.BlocksRejectedCounter.WithLabelValues("vote_trigger_malformed", "remote").Inc()
+		broadcastLogger().Warn(context.Background(), "Dropping malformed vote trigger",
+			ion.Err(err), ion.String("from", from.String()), ion.String("msg_id", msg.ID))
 		return
 	}
 
@@ -482,6 +511,51 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 }
 
 const voteTriggerBroadcastType = "vote_trigger"
+
+// voteTriggerPinnedSequencer returns the configured sequencer pin. A variable
+// so tests can set it without loading the settings file.
+var voteTriggerPinnedSequencer = func() string {
+	if !settings.IsLoaded() {
+		return ""
+	}
+	return settings.Get().Consensus.SequencerPinnedPeerID
+}
+
+// voteTriggerSenderAuthorized reports whether a vote trigger from the
+// transport-authenticated peer `from` may be acted on. Same contract as
+// l1finality.AuthorizeGossipSender: with consensus.sequencer_pinned_peer_id set
+// (required under production posture) only that peer is accepted
+// (enforced=true); with it unset, every sender is accepted and the caller must
+// WARN (enforced=false) — the pre-pin testnet behaviour.
+func voteTriggerSenderAuthorized(from peer.ID) (ok, enforced bool) {
+	pin := voteTriggerPinnedSequencer()
+	if !l1auth.Enforced(pin) {
+		return true, false
+	}
+	return l1auth.IsSequencer(from.String(), pin), true
+}
+
+// validateVoteTriggerConsensusMessage rejects a vote trigger whose proposal the
+// vote path would dereference unsafely: no block, a zero block hash, or a
+// transaction with no sender.
+func validateVoteTriggerConsensusMessage(cm *PubSubMessages.ConsensusMessage) error {
+	if cm == nil {
+		return errors.New("nil consensus message")
+	}
+	zk := cm.GetZKBlock()
+	if zk == nil {
+		return errors.New("vote trigger carries no block")
+	}
+	if zk.BlockHash == (common.Hash{}) {
+		return errors.New("vote trigger block has no hash")
+	}
+	for i := range zk.Transactions {
+		if err := Security.CheckTransactionShape(&zk.Transactions[i]); err != nil {
+			return fmt.Errorf("transaction %d: %w", i, err)
+		}
+	}
+	return nil
+}
 
 // voteTriggerDialTimeout bounds the dial to a committee member we are not yet
 // connected to. Short: the round has ConsensusTimeout to complete and a member

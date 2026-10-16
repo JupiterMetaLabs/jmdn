@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -231,7 +232,15 @@ func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error 
 	}
 	es.metrics.uniquePeersMu.Unlock()
 
-	// Process the message
+	// Process the message behind a panic boundary: a handler bug on one peer
+	// message must drop that message, not the subscription loop or the node.
+	return es.processMessageSafe(msg)
+}
+
+func (es *EnhancedSubscriber) processMessageSafe(msg *pubsub.Message) (err error) {
+	defer saferun.RecoverInto("pubsub.enhanced_subscriber", func(r any) {
+		err = fmt.Errorf("message handler panicked (recovered): %v", r)
+	})
 	return es.processMessageEnhanced(msg)
 }
 

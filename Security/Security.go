@@ -128,7 +128,11 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// Collect all unique addresses from transactions
 	accountsSet := DB_OPs.NewAccountsSet()
-	for _, tx := range zkBlock.Transactions {
+	for i := range zkBlock.Transactions {
+		tx := &zkBlock.Transactions[i]
+		if err := CheckTransactionShape(tx); err != nil {
+			return false, fmt.Errorf("transaction %d: %w", i, err)
+		}
 		accountsSet.Add(*tx.From)
 		if tx.To != nil {
 			accountsSet.Add(*tx.To)
@@ -245,6 +249,9 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 // This is a backward-compatible wrapper for standalone transaction validation.
 // For batch validation (e.g., ZKBlock), use allChecksWithConn for better performance.
 func AllChecks(tx *config.Transaction) (bool, error) {
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
+	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -353,6 +360,9 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 // This internal function enables connection reuse for batch validation (e.g., ZKBlock).
 // Connection lifecycle is managed by the caller.
 func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, _ *config.PooledConnection, traceCtx context.Context) (bool, error) {
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
+	}
 	loggerCtx, cancel := context.WithCancel(traceCtx)
 	defer cancel()
 
@@ -836,8 +846,8 @@ func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 // Returns (true,nil) only when every present numeric field is non-negative and
 // (for present EIP-1559 fields) MaxPriorityFee <= MaxFee.
 func CheckTransactionValues(tx *config.Transaction) (bool, error) {
-	if tx == nil {
-		return false, fmt.Errorf("nil transaction")
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
 	}
 	// Value: nil is treated as zero elsewhere (parseTransaction); a present value
 	// must be non-negative.
@@ -865,6 +875,20 @@ func CheckTransactionValues(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("gas_limit %d exceeds max %d", tx.GasLimit, config.MaxTxGasLimit)
 	}
 	return true, nil
+}
+
+// CheckTransactionShape rejects a transaction missing a field every validation
+// and apply path dereferences: the transaction itself and its sender. Call it
+// before touching tx.From on any ingress path (RPC submission, block and
+// proposal validation).
+func CheckTransactionShape(tx *config.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if tx.From == nil {
+		return fmt.Errorf("transaction %s has no sender (from)", tx.Hash.Hex())
+	}
+	return nil
 }
 
 // ethTxFromConfig reconstructs the go-ethereum transaction from a

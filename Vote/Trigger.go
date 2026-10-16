@@ -142,6 +142,12 @@ func (vt *VoteTrigger) SubmitVote() error {
 	defer span.End()
 
 	zkBlock := vt.ConsensusMessage.GetZKBlock()
+	// The broadcast handler validates the proposal first; this guards any other
+	// caller.
+	if zkBlock == nil {
+		span.SetAttributes(attribute.String("status", "no_block"))
+		return fmt.Errorf("consensus message carries no block")
+	}
 	blockHash := zkBlock.BlockHash.String()
 
 	// Add span attributes for tracing
