@@ -248,11 +248,23 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	// it or reports it as an equivocation, so a forged element can never be
 	// counted and can never manufacture a false equivocation charge against
 	// a real peer.
-	// consensusHash "" => v3 verification (block hash only). The v2 CRDT path
-	// operates on the block-hash string without the block, so it cannot source
-	// ConsensusHash yet; VerifyForBlock falls back to v3. Pass the real
-	// ConsensusHash here (threaded from the block/vote request) to activate v4.
-	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash, "")
+	// VerifyForBlock requires a non-empty ConsensusHash: a vote that
+	// doesn't commit to the consensus fields is not a valid vote. The v2 CRDT
+	// path only carries the block-hash string, not the block itself, so the
+	// hash is sourced here from this node's own consensus-message cache —
+	// the same cache handleVoteResultRequest already trusts for the identical
+	// purpose (D-26c). A block this node has never seen cannot be verified
+	// against (there is nothing to recompute the hash from), so that case
+	// fails closed rather than falling back to an unbound verification.
+	cm := PubSubMessages.LookupConsensusMessageByBlockHash(targetBlockHash)
+	if cm == nil || cm.ZKBlock == nil {
+		logger().Error(logger_ctx, "No local block for target hash — cannot verify vote signatures (v2 path)", nil,
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+		return 0, nil, nil, nil, fmt.Errorf("no local block for %s: cannot verify vote signatures", targetBlockHash)
+	}
+	consensusHash := cm.ZKBlock.ConsensusHashHex()
+	verified, droppedForgeries := verifyTallySignatures(tally, BLS_Signer.DomainChainID(), height, targetBlockHash, consensusHash)
 	if droppedForgeries > 0 {
 		logger().Error(logger_ctx, "Dropped votes with invalid BLS signatures (v2 path)", nil,
 			ion.Int("dropped", droppedForgeries),

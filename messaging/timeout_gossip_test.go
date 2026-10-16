@@ -179,7 +179,7 @@ func TestValidatorCannotSignBothTimeoutAndBlockVote(t *testing.T) {
 	t.Run("PartC_DomainsAreNonInterchangeable", func(t *testing.T) {
 		const chainID, height, period = uint64(7), uint64(900199), uint64(3)
 		timeoutMsg := CanonicalTimeoutVoteMessage(chainID, height, period)
-		blockMsg, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, "0xdeadbeef", 1)
+		blockMsg, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, "0xdeadbeef", testBlockConsensusHash, 1)
 		if err != nil {
 			t.Fatalf("CanonicalVoteMessageV3: %v", err)
 		}
