@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"io"
 	"log"
 	"sync"
@@ -63,9 +64,9 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*StructGossipPubSub,
 		return nil, fmt.Errorf("failed to create gossip pub/sub")
 	}
 	// Set up stream handler for gossip messages
-	host.SetStreamHandler(Protocol, func(s network.Stream) {
+	host.SetStreamHandler(Protocol, saferun.Stream(string(Protocol), func(s network.Stream) {
 		handleGossipStream(gps.GossipPubSub, s)
-	})
+	}))
 
 	// Close previous instance to prevent goroutine leaks
 	localGROMux.Lock()

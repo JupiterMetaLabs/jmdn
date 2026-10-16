@@ -32,6 +32,18 @@ func GetLibp2pRegisterer() prometheus.Registerer {
 }
 
 var (
+	// HandlerPanicsCounter counts panics recovered at a network-ingress boundary
+	// (libp2p stream handler, pubsub message handler, HTTP/RPC worker). Label
+	// "where" is a fixed handler name / protocol ID — bounded, never taken from
+	// a message.
+	HandlerPanicsCounter = factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jmdn_handler_panics_recovered_total",
+			Help: "Panics recovered at a network-ingress boundary, by handler",
+		},
+		[]string{"where"},
+	)
+
 	// Node connection metrics
 	ConnectedPeersGauge = factory.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_connected_peers_total",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"net/http"
 	"sync"
 	"time"
@@ -154,6 +155,11 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 			wg.Add(1)
 			go func(i int, req Request) {
 				defer wg.Done()
+				// This goroutine is outside gin.Recovery: recover a handler
+				// panic into a JSON-RPC internal error for this element only.
+				defer saferun.RecoverInto("rpc.batch", func(any) {
+					resps[i] = RespErr(req.ID, -32603, "Internal error")
+				})
 				resps[i], _ = s.h.Handle(c.Request.Context(), req)
 			}(i, req)
 		}
@@ -169,8 +175,19 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
-	resp, _ := s.h.Handle(c.Request.Context(), req)
+	resp := s.handleSafe(c, req)
 	write(c, resp)
+}
+
+// handleSafe runs one request behind a panic boundary so a handler bug answers
+// with a JSON-RPC internal error instead of a dropped connection (gin.Recovery
+// would also catch it on this goroutine, but with a non-JSON-RPC 500).
+func (s *HTTPServer) handleSafe(c *gin.Context, req Request) (resp Response) {
+	defer saferun.RecoverInto("rpc.single", func(any) {
+		resp = RespErr(req.ID, -32603, "Internal error")
+	})
+	resp, _ = s.h.Handle(c.Request.Context(), req)
+	return resp
 }
 
 func write(c *gin.Context, resp Response) {

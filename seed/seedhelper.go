@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"strings"
 	"time"
 
@@ -441,9 +442,9 @@ func (sn *SeedNode) SetupStreamHandler() {
 	// Register a custom protocol for peer registration
 	const RegisterProtocol = "/seednode/register/1.0.0"
 
-	sn.host.SetStreamHandler(RegisterProtocol, func(stream network.Stream) {
+	sn.host.SetStreamHandler(RegisterProtocol, saferun.Stream(string(RegisterProtocol), func(stream network.Stream) {
 		sn.RegisterPeer(stream)
-	})
+	}))
 
 	fmt.Println("Peer registration handler setup complete")
 }
