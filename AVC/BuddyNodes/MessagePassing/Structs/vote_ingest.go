@@ -36,10 +36,11 @@ var ValidatorVoteIngestEnabled = envOnStructs("JMDN_VALIDATOR_VOTE_INGEST", true
 
 // ErrUnsignedVote is returned when the wire vote carries no BLS signature /
 // public key. D1: every counted validator vote must be signed — there is no
-// unsigned-vote ingest path here (unlike Vote/Trigger.go's own-vote write,
-// which still has the avcvotes.AllowUnsignedValidatorVotes seam for a
-// buddy's OWN vote). A received vote with no signature cannot be verified at
-// tally time regardless, so there is no reason to spend a CRDT write on it.
+// unsigned-vote ingest path here. Vote/Trigger.go's own-vote write has no
+// such path either, since the unsigned normal-validator seam was removed
+// (D-38, commit 66c0e6c). A received vote with no signature cannot be
+// verified at tally time regardless, so there is no reason to spend a CRDT
+// write on it.
 var ErrUnsignedVote = errors.New("validator vote ingest: missing bls_signature/bls_pub_key")
 
 // IngestValidatorVote decodes raw (a JSON-encoded PubSubMessages.Vote, the
