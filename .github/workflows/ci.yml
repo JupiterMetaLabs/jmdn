@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "release/**"]
+    branches: ["main", "v3base", "release/**"]
   pull_request:
-    branches: ["main", "release/**"]
+    branches: ["main", "v3base", "release/**"]
 
 # Cancel any in-progress run for the same branch when a new push arrives.
 # This avoids wasting runner minutes on stale commits.
@@ -39,7 +39,8 @@ jobs:
       # will use this binary, so it is only installed once.
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+          # Installer fetched at the pinned release tag, not the moving HEAD.
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/${{ env.GOLANGCI_LINT_VERSION }}/install.sh \
             | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
 
       # ── Dependency Integrity ────────────────────────────────────────────

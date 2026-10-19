@@ -18,9 +18,35 @@ env:
   IMAGE_NAME: jupitermetalabs/jmdn
 
 jobs:
+  # ── Gate: nothing is published unless the tagged commit builds and passes
+  # the unit tests. Mirrors the CI quality gate's build + test steps.
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -short -race ./...
+
   build-and-push:
     name: Build & Push (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: read
       packages: write
@@ -58,13 +84,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Inputs reach the shell through env, never by template interpolation
+      # into the script, and must look like an image tag.
       - name: Resolve image tag
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            value="$INPUT_TAG"
           else
-            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            value="$REF_NAME"
+          fi
+          if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "invalid image tag: $value" >&2
+            exit 1
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          # Only a plain release (vX.Y.Z) moves :latest; rc/beta/dev tags never do.
+          if [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Extract metadata (labels, annotations)
@@ -74,7 +117,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ steps.tag.outputs.release == 'true' }}
             type=raw,value=${{ steps.tag.outputs.value }}
 
       - name: Build and push by digest
@@ -91,6 +134,9 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             GIT_BRANCH=${{ github.ref_name }}
             GIT_TAG=${{ steps.tag.outputs.value }}
+          # Build provenance and SBOM attestations attached to the image.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha,scope=${{ matrix.runner_arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.runner_arch }}
 
@@ -135,30 +181,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Inputs reach the shell through env, never by template interpolation
+      # into the script, and must look like an image tag.
       - name: Resolve image tag
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            value="$INPUT_TAG"
           else
-            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            value="$REF_NAME"
+          fi
+          if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "invalid image tag: $value" >&2
+            exit 1
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          # Only a plain release (vX.Y.Z) moves :latest; rc/beta/dev tags never do.
+          if [[ "$value" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create and push multi-arch manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.value }}
+          RELEASE: ${{ steps.tag.outputs.release }}
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          TAG="${{ steps.tag.outputs.value }}"
-
           # Build the list of per-arch digest references
           DIGESTS=$(ls /tmp/digests | sed "s|^|${IMAGE}@sha256:|" | tr '\n' ' ')
 
-          # Push versioned tag
-          docker buildx imagetools create \
-            --tag "${IMAGE}:${TAG}" \
-            --tag "${IMAGE}:latest" \
-            $DIGESTS
+          TAGS=(--tag "${IMAGE}:${TAG}")
+          if [ "$RELEASE" = "true" ]; then
+            TAGS+=(--tag "${IMAGE}:latest")
+          fi
+          docker buildx imagetools create "${TAGS[@]}" $DIGESTS
 
       - name: Inspect final manifest
-        run: |
-          docker buildx imagetools inspect \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.value }}
+        run: docker buildx imagetools inspect "${IMAGE}:${TAG}"
