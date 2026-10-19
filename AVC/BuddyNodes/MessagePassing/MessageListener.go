@@ -1,7 +1,6 @@
 package MessagePassing
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/internal/streamread"
 	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -49,8 +49,8 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		ion.String("topic", TOPIC),
 		ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 
-	reader := bufio.NewReader(s)
-	msg, err := reader.ReadString(config.Delimiter)
+	raw, err := streamread.Frame(s, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+	msg := string(raw)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "read_error"))
@@ -340,8 +340,8 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 
 	// If message is nil, read from the stream
 	if message == nil {
-		reader := bufio.NewReader(s)
-		responseMsg, err := reader.ReadString(config.Delimiter)
+		raw, err := streamread.Frame(s, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+		responseMsg := string(raw)
 		if err != nil {
 			responseSpan.RecordError(err)
 			responseSpan.SetAttributes(attribute.String("status", "read_error"))
@@ -522,8 +522,8 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.SendMessageToPeer"))
 
-		reader := bufio.NewReader(stream)
-		responseMsg, err := reader.ReadString(config.Delimiter)
+		raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+		responseMsg := string(raw)
 
 		if err != nil {
 			sendSpan.RecordError(err)
@@ -696,8 +696,8 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 	seedSpan.SetAttributes(attribute.String("message_sent", "true"))
 
 	// Read response after sending (for subscription requests)
-	reader := bufio.NewReader(stream)
-	responseMsg, err := reader.ReadString(config.Delimiter)
+	raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+	responseMsg := string(raw)
 	if err == nil && responseMsg != "" {
 		seedSpan.SetAttributes(attribute.String("response_received", "true"), attribute.Int("response_length", len(responseMsg)))
 

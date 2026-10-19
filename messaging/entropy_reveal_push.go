@@ -44,9 +44,9 @@ package messaging
 // The receiver verifies the reveal itself against the sender's self-certifying
 // peer ID, which authenticates the payload and the identity in one step.
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,6 +55,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/config"
+	"gossipnode/internal/streamread"
 )
 
 // revealPushTimeout bounds one push attempt. Short on purpose: a push is
@@ -90,8 +91,9 @@ func HandleRevealPushStream(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer()
 
-	line, err := bufio.NewReader(s).ReadString('\n')
-	if err != nil && line == "" {
+	raw, err := streamread.Frame(s, '\n', streamread.SmallMaxBytes, streamread.DefaultTimeout)
+	line := string(raw)
+	if err != nil && (line == "" || errors.Is(err, streamread.ErrFrameTooLarge)) {
 		log.Warn().Err(err).Str("from", remote.String()).
 			Msg("entropy: RevealPush stream read failed")
 		return

@@ -1,7 +1,6 @@
 package Sequencer
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +25,7 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/reputation"
+	"gossipnode/internal/streamread"
 	"gossipnode/messaging"
 	"gossipnode/seednode"
 
@@ -2066,10 +2066,11 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 	}
 	responseCh := make(chan string, 1)
 	errCh := make(chan error, 1)
-	reader := bufio.NewReader(stream)
-
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
-		response, err := reader.ReadString(config.Delimiter)
+		// Bounded size, and a read deadline matching the wait below so this
+		// goroutine ends when the wait does instead of blocking on a silent peer.
+		raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, 45*time.Second)
+		response := string(raw)
 		if err != nil {
 			errCh <- err
 			return err
