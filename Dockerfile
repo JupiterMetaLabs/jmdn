@@ -13,11 +13,11 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build
 # -----------------------------------------------------------------------------
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26.9-bookworm AS builder
 
-# Let Go fetch the exact toolchain go.mod requires if the base image drifts behind
-# (official golang images pin GOTOOLCHAIN=local, which otherwise fails the build).
-ENV GOTOOLCHAIN=auto
+# Build with exactly the toolchain the image provides; go.mod requires 1.26.9,
+# so a mismatched image fails the build instead of downloading a toolchain.
+ENV GOTOOLCHAIN=local
 
 # Install build dependencies (CGO_ENABLED=1 requires gcc)
 RUN apt-get update && apt-get install -y --no-install-recommends \

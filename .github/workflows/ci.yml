@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "release/**"]
+    branches: ["main", "release/**", "v3base"]
   pull_request:
-    branches: ["main", "release/**"]
+    branches: ["main", "release/**", "v3base"]
 
 # Cancel any in-progress run for the same branch when a new push arrives.
 # This avoids wasting runner minutes on stale commits.
@@ -58,6 +58,14 @@ jobs:
             echo "    Run 'go mod tidy' locally and commit the result."
             exit 1
           }
+
+      # ── Known vulnerabilities ───────────────────────────────────────────
+      # Fails on any known vulnerability reachable from this code, in the
+      # standard library (toolchain) or a dependency.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
       # ── Compilation ─────────────────────────────────────────────────────
       # Full compile of every package. Catches broken imports and type errors
