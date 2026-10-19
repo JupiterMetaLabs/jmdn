@@ -35,11 +35,8 @@ import (
 // audit RC-2, "no observe/shadow rung on two-state rollout flags" — the
 // fix here is to not have the second state at all).
 //
-// This restricts signing to committee members (∪ the pinned sequencer). It
-// does NOT by itself constrain a committee member from requesting (the
-// aggregate-over-partial-view and caller-supplied-hash concerns are a
-// separate, larger consensus change); see the residual noted on
-// handleVoteResultRequest.
+// This restricts signing requests to the pinned sequencer, or to committee
+// members when no sequencer is pinned (see AuthorizedRequesterSet).
 
 // voteRequesterAuthorizer, when non-nil, fully decides whether a requester peer
 // is authorized. Tests inject this to force allow/deny without a live source.
@@ -68,22 +65,25 @@ func SetAuthorizedRequesterSource(fn func() (map[peer.ID]struct{}, bool)) {
 	authorizedRequesterSource = fn
 }
 
-// AuthorizedRequesterSet composes the authoritative requester set from the
-// authenticated committee members and the pinned sequencer peer_id. Empty
-// pinnedSequencer ("") is omitted — that is the state of an unpinned
-// deployment (config.Consensus.SequencerPinnedPeerID == ""), which degrades
-// the authorized set to committee-only; see that field's doc comment for the
-// operational risk this carries and production_posture.go for the boot-time
-// warning.
+// AuthorizedRequesterSet returns the peers allowed to request this node's
+// signed vote result.
+//
+// With a pinned sequencer, that peer alone: only the sequencer collects vote
+// results (Sequencer CollectVoteResultsFromBuddies), so a committee member has
+// no reason to ask, and allowing it let any member obtain this node's
+// signature over a block it chose from the proposal cache. Without a pin
+// (config.Consensus.SequencerPinnedPeerID == "") the sequencer cannot be
+// identified, so the set falls back to the committee members, as before; see
+// production_posture.go for the boot-time warning on unpinned deployments.
 func AuthorizedRequesterSet(committee []peer.ID, pinnedSequencer peer.ID) map[peer.ID]struct{} {
-	set := make(map[peer.ID]struct{}, len(committee)+1)
+	if pinnedSequencer != "" {
+		return map[peer.ID]struct{}{pinnedSequencer: {}}
+	}
+	set := make(map[peer.ID]struct{}, len(committee))
 	for _, p := range committee {
 		if p != "" {
 			set[p] = struct{}{}
 		}
-	}
-	if pinnedSequencer != "" {
-		set[pinnedSequencer] = struct{}{}
 	}
 	return set
 }
