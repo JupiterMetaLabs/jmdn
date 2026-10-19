@@ -75,3 +75,26 @@ func TestValidateSyncedBlockContents_FillsMissingChainID(t *testing.T) {
 		t.Fatalf("stored tx without chain id rejected: %v", err)
 	}
 }
+
+// A synced block with no ConsensusHash at all must be rejected unconditionally
+// — not silently accepted because the field happens to be absent. This is the
+// D-28 contract checkConsensusBinding itself enforces (a missing ConsensusHash
+// was the dedup/equivocation collision bypass): the sync path must hold to the
+// same rule as the live receive path, with no "ConsensusHash present" escape
+// hatch. Everything else about the block is genuinely valid, so the rejection
+// can only come from the ConsensusHash check, not from a signature/content
+// failure.
+func TestValidateSyncedBlockContents_RejectsMissingConsensusHash(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	txs := []config.Transaction{signedTx(t, key, 0)}
+	b := &config.ZKBlock{
+		BlockHash:    RecomputeBlockHashFromTxs(txs),
+		TxnsRoot:     RecomputeTxnsRoot(txs),
+		BlockNumber:  15,
+		Transactions: txs,
+		// ConsensusHash deliberately left at its zero value.
+	}
+	if err := ValidateSyncedBlockContents(context.Background(), b); err == nil {
+		t.Fatal("a synced block with no ConsensusHash was accepted — D-28 bypass on the sync path")
+	}
+}

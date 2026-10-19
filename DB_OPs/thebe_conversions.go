@@ -301,6 +301,17 @@ func txRecordToTransaction(r *thebegateway.TransactionRecord) *config.Transactio
 		Nonce: func() uint64 { n, _ := strconv.ParseUint(r.Nonce, 10, 64); return n }(),
 	}
 
+	// Data (the call data / contract input) is part of what a transaction's
+	// hash and signature cover, same as AccessList below — a stored
+	// transaction must carry it back out, or a type-1/2/legacy transaction
+	// with non-empty Data re-hashes to a different value than it was signed
+	// with, and the sync content gate (ValidateSyncedBlockContents) rejects
+	// the honest block. The write side already persists it (toTransactionRecord,
+	// DB_OPs/backend/tx.go); this restores it on read.
+	if len(r.Data) > 0 {
+		tx.Data = r.Data
+	}
+
 	if r.FromAddr != "" {
 		a := common.HexToAddress(r.FromAddr)
 		tx.From = &a

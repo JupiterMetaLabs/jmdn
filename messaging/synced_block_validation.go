@@ -5,7 +5,6 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
 	"gossipnode/Security"
@@ -44,10 +43,13 @@ func ValidateSyncedBlockContents(ctx context.Context, b *config.ZKBlock) error {
 			return err
 		}
 	}
-	if (b.ConsensusHash != common.Hash{}) {
-		if rej := checkConsensusBinding(b); rej != nil {
-			return rej.err
-		}
+	// Unconditional, same as the live receive path: checkConsensusBinding
+	// itself rejects a missing ConsensusHash (D-28 — a missing hash was the
+	// dedup/equivocation collision bypass this check exists to close). Gating
+	// the call on a non-zero hash would let a synced block with no
+	// ConsensusHash skip this check entirely.
+	if rej := checkConsensusBinding(b); rej != nil {
+		return rej.err
 	}
 	return nil
 }
