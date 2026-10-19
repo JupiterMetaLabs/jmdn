@@ -10,7 +10,7 @@ func TestValidateAuthHeader_EmptyHeader(t *testing.T) {
 	cfg := testConfig()
 	policy := cfg.Services[settings.ServiceExplorerAPI]
 
-	_, err := ValidateAuthHeader("", policy, cfg)
+	_, err := ValidateAuthHeader("", settings.ServiceExplorerAPI, policy, cfg)
 	if err == nil {
 		t.Error("expected error for empty header")
 	}
@@ -20,7 +20,7 @@ func TestValidateAuthHeader_InvalidFormat(t *testing.T) {
 	cfg := testConfig()
 	policy := cfg.Services[settings.ServiceExplorerAPI]
 
-	_, err := ValidateAuthHeader("NotBearer token123", policy, cfg)
+	_, err := ValidateAuthHeader("NotBearer token123", settings.ServiceExplorerAPI, policy, cfg)
 	if err == nil {
 		t.Error("expected error for non-Bearer header")
 	}
@@ -32,7 +32,7 @@ func TestValidateAuthHeader_InvalidToken(t *testing.T) {
 	cfg.ResolveTokens() // Re-resolve after changing token
 	policy := cfg.Services[settings.ServiceExplorerAPI]
 
-	_, err := ValidateAuthHeader("Bearer wrong-token", policy, cfg)
+	_, err := ValidateAuthHeader("Bearer wrong-token", settings.ServiceExplorerAPI, policy, cfg)
 	if err == nil {
 		t.Error("expected error for wrong token")
 	}
@@ -44,7 +44,7 @@ func TestValidateAuthHeader_ValidStaticToken(t *testing.T) {
 	cfg.ResolveTokens()
 	policy := cfg.Services[settings.ServiceExplorerAPI]
 
-	result, err := ValidateAuthHeader("Bearer my-secret-key", policy, cfg)
+	result, err := ValidateAuthHeader("Bearer my-secret-key", settings.ServiceExplorerAPI, policy, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestValidateAuthHeader_CaseInsensitiveBearer(t *testing.T) {
 	policy := cfg.Services[settings.ServiceExplorerAPI]
 
 	// "bearer" (lowercase) should also work
-	result, err := ValidateAuthHeader("bearer my-secret-key", policy, cfg)
+	result, err := ValidateAuthHeader("bearer my-secret-key", settings.ServiceExplorerAPI, policy, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error for lowercase bearer: %v", err)
 	}

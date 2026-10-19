@@ -18,7 +18,7 @@ func TestValidateAuthHeader_EmptySecretsFailClosed(t *testing.T) {
 
 	// A syntactically valid bearer header whose token is anything at all.
 	for _, tok := range []string{"anything", "", "a.forged.jwt"} {
-		if _, err := ValidateAuthHeader("Bearer "+tok, policy, cfg); err == nil {
+		if _, err := ValidateAuthHeader("Bearer "+tok, settings.ServiceExplorerAPI, policy, cfg); err == nil {
 			t.Fatalf("empty secrets must reject bearer %q, but auth succeeded", tok)
 		}
 	}
@@ -27,10 +27,10 @@ func TestValidateAuthHeader_EmptySecretsFailClosed(t *testing.T) {
 	// only the EMPTY-secret case, not all auth).
 	cfg2 := &settings.SecurityConfig{ExplorerAPIKey: "s3cret"}
 	cfg2.ResolveTokens()
-	if _, err := ValidateAuthHeader("Bearer s3cret", policy, cfg2); err != nil {
+	if _, err := ValidateAuthHeader("Bearer s3cret", settings.ServiceExplorerAPI, policy, cfg2); err != nil {
 		t.Fatalf("a configured static token must authenticate, got %v", err)
 	}
-	if _, err := ValidateAuthHeader("Bearer wrong", policy, cfg2); err == nil {
+	if _, err := ValidateAuthHeader("Bearer wrong", settings.ServiceExplorerAPI, policy, cfg2); err == nil {
 		t.Fatal("a wrong static token must be rejected")
 	}
 }

@@ -92,20 +92,32 @@ func (m *GinMiddleware) enforcePolicy(c *gin.Context, serviceName string) error 
 	}
 
 	// Authentication
-	return m.authenticate(c, policy)
+	return m.authenticate(c, serviceName, policy)
 }
 
 // authenticate verifies credentials based on AuthType
-func (m *GinMiddleware) authenticate(c *gin.Context, policy settings.Policy) error {
+func (m *GinMiddleware) authenticate(c *gin.Context, serviceName string, policy settings.Policy) error {
 	// Case A: No Auth Required
 	if policy.AuthType == settings.AuthTypeNone {
+		return nil
+	}
+
+	// mTLS: a verified client certificate is required. Without TLS on the
+	// listener this can never pass — fail closed rather than fall through.
+	if policy.AuthType == settings.AuthTypeMTLS {
+		if !hasVerifiedClientCert(c.Request) {
+			return errMTLSRequired
+		}
+		return nil
+	}
+	if policy.AuthType == settings.AuthTypeHybrid && hasVerifiedClientCert(c.Request) {
 		return nil
 	}
 
 	// Case B: Token Auth (HTTP Header) — delegate to shared validator
 	if policy.AuthType == settings.AuthTypeToken || policy.AuthType == settings.AuthTypeHybrid {
 		authHeader := c.GetHeader("Authorization")
-		result, err := ValidateAuthHeader(authHeader, policy, m.config)
+		result, err := ValidateAuthHeader(authHeader, serviceName, policy, m.config)
 		if err != nil {
 			return err
 		}

@@ -89,18 +89,30 @@ func (m *NetHTTPMiddleware) enforcePolicy(r *http.Request, serviceName string) e
 	}
 
 	// Authentication
-	return m.authenticate(r, policy)
+	return m.authenticate(r, serviceName, policy)
 }
 
 // authenticate validates credentials based on the policy's AuthType.
-func (m *NetHTTPMiddleware) authenticate(r *http.Request, policy settings.Policy) error {
+func (m *NetHTTPMiddleware) authenticate(r *http.Request, serviceName string, policy settings.Policy) error {
 	if policy.AuthType == settings.AuthTypeNone {
+		return nil
+	}
+
+	// mTLS: a verified client certificate is required. Without TLS on the
+	// listener this can never pass — fail closed rather than fall through.
+	if policy.AuthType == settings.AuthTypeMTLS {
+		if !hasVerifiedClientCert(r) {
+			return errMTLSRequired
+		}
+		return nil
+	}
+	if policy.AuthType == settings.AuthTypeHybrid && hasVerifiedClientCert(r) {
 		return nil
 	}
 
 	if policy.AuthType == settings.AuthTypeToken || policy.AuthType == settings.AuthTypeHybrid {
 		authHeader := r.Header.Get("Authorization")
-		_, err := ValidateAuthHeader(authHeader, policy, m.config)
+		_, err := ValidateAuthHeader(authHeader, serviceName, policy, m.config)
 		return err
 	}
 
