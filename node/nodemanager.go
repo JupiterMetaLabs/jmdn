@@ -1204,7 +1204,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 				// )
 
 				failCount = 0
-				metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(latency)
+				metrics.HeartbeatLatency.WithLabelValues(metrics.PeerLabel(peerID.String())).Observe(latency)
 			}
 
 			// Update peer status

@@ -82,7 +82,7 @@ func HandleBroadcastStream(stream network.Stream) {
 	defer stream.Close()
 
 	// Record metrics
-	metrics.MessagesReceivedCounter.WithLabelValues("broadcast", stream.Conn().RemotePeer().String()).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("broadcast", metrics.PeerLabel(stream.Conn().RemotePeer().String())).Inc()
 
 	// Bound the read: cap the size (remote-OOM guard) and set a deadline so a
 	// slow/idle peer cannot hold the stream open forever. Mirrors the bounded
@@ -230,7 +230,7 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		successCount++
 
 		// Record metrics
-		metrics.MessagesSentCounter.WithLabelValues("broadcast", peerID.String()).Inc()
+		metrics.MessagesSentCounter.WithLabelValues("broadcast", metrics.PeerLabel(peerID.String())).Inc()
 	}
 
 	broadcastLogger().Info(context.Background(), "Broadcast forwarded to peers",
@@ -323,7 +323,7 @@ func BroadcastMessage(h host.Host, content string) error {
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", metrics.PeerLabel(peer.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BroadcastForwardWG))
 	}
@@ -745,7 +745,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", metrics.PeerLabel(peer.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BroadcastVoteTriggerWG))
 	}
@@ -1123,7 +1123,7 @@ func sendBlockMessageDirect(h host.Host, msg config.BlockMessage, peers []peer.I
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
-			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues(metrics.ProtocolLabel(msg.Type), metrics.PeerLabel(peer.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG))
 	}
