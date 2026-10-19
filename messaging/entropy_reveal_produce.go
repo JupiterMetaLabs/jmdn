@@ -173,6 +173,14 @@ var (
 	// protocol violation — not a transient condition.
 	ErrRevealDidNotVerify = errors.New("messaging: reveal failed ed25519 verification (fail closed)")
 
+	// ErrRevealEpochOutOfWindow means a reveal names an epoch too far from
+	// this node's current one to be useful.
+	ErrRevealEpochOutOfWindow = errors.New("messaging: reveal epoch outside the accepted window")
+
+	// ErrRevealInboxFull means the inbox is at its epoch or per-epoch bound
+	// and the reveal did not qualify for a slot.
+	ErrRevealInboxFull = errors.New("messaging: reveal inbox full")
+
 	// ErrConflictingReveal means a second, DIFFERENT reveal arrived for a peer
 	// that already has one this epoch. Exactly one signature can be valid per
 	// (peer, epoch), so two different valid-looking values means one is forged;
