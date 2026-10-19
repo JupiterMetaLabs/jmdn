@@ -18,8 +18,14 @@ func poolOf(t *testing.T, n, k int) []blsMember {
 	t.Helper()
 	c := settings.Get()
 	prev := c.Consensus.MaxValidators
+	prevEnv, prevStrict := c.Network.Environment, c.Security.StrictPosture
 	c.Consensus.MaxValidators = k
-	t.Cleanup(func() { c.Consensus.MaxValidators = prev })
+	// The pool-wide fallback is a non-production path.
+	c.Network.Environment, c.Security.StrictPosture = "testnet", false
+	t.Cleanup(func() {
+		c.Consensus.MaxValidators = prev
+		c.Network.Environment, c.Security.StrictPosture = prevEnv, prevStrict
+	})
 	members := make([]blsMember, n)
 	for i := 0; i < n; i++ {
 		members[i] = mustMintMember("p"+itoa(i), byte(0x40+i))
@@ -337,5 +343,30 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackClosedOnceAnchoringConfigu
 		}
 	} else {
 		t.Logf("the legacy or seated check already accepts these votes at this height; the gate was not exercised by this case (see the predicate test)")
+	}
+}
+
+// With a large pool, ceil(2k/3) over the seats is below f_pool+1: counting
+// over 22 pool members (f_pool = 7) needs 8 signers, so 7 cannot certify on
+// the pool-wide fallback.
+func TestVerifySyncedBlockCertificate_PoolWideFallbackRequiresPoolFPlusOne(t *testing.T) {
+	enableV2(t)
+	members := poolOf(t, 22, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002150")
+	const height = 2150
+	var votes []BLS_Signer.BLSresponse
+	for i := 15; i < 22; i++ { // seven signers outside the legacy alphabetical cap
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
+	}
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reached {
+		t.Fatalf("7 pool signers over a pool of 22 must not certify (need f_pool+1 = 8): %+v", got)
+	}
+	pool, perr := verifySyncedCertificatePoolWide(votes, hash.Hex(), "", height)
+	if perr != nil || pool.Threshold != 8 || pool.YesVotes != 7 {
+		t.Fatalf("pool-wide tally = %+v, %v; want threshold 8, yes 7", pool, perr)
 	}
 }

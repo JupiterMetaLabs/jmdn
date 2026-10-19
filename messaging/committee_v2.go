@@ -885,13 +885,28 @@ type poolWideResult struct {
 
 // verifySyncedCertificatePoolWide counts distinct verified +1 votes from ANY
 // member of the fleet-eligible pool (uncapped, no local blocklist — the
-// fleet-agreed set, so every node counts the same signers) against k =
-// consensus.max_validators (or the pool size when smaller) and ceil(2k/3).
-// Signature verification and the peer_id↔bls_pub binding are the shared
+// fleet-agreed set, so every node counts the same signers). Signature
+// verification and the peer_id↔bls_pub binding are the shared
 // countEligibleYes rules; only the membership set is wider.
+//
+// Threshold: the larger of ceil(2k/3) (k = consensus.max_validators, or the
+// pool size when smaller — what an honest seated committee produces) and
+// f_pool+1 with f_pool = (N-1)/3 over the whole pool. Counting over a wider
+// set than the seats means up to f_pool pool keys may be faulty; f_pool+1
+// guarantees at least one honest signer, so faulty pool members — including
+// keys that joined after the block — cannot certify a block on their own. When
+// f_pool+1 exceeds k the fallback cannot succeed and the block needs an
+// anchored committee instead.
+//
+// The pool is resolved for the block's own selection period when the source
+// can (pinned), else the current pool.
 func verifySyncedCertificatePoolWide(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (poolWideResult, error) {
 	var res poolWideResult
-	pool, err := FleetEligibleForEpoch(EpochForHeight(height), false)
+	epoch := EpochForHeight(height)
+	pool, err := FleetEligibleForEpoch(epoch, true)
+	if err != nil || len(pool) == 0 {
+		pool, err = FleetEligibleForEpoch(epoch, false)
+	}
 	if err != nil {
 		return res, err
 	}
@@ -905,6 +920,9 @@ func verifySyncedCertificatePoolWide(responses []BLS_Signer.BLSresponse, blockHa
 	res.PoolSize = len(pool)
 	res.CommitteeSize = k
 	res.Threshold = ByzantineQuorum(k)
+	if floor := (len(pool)-1)/3 + 1; floor > res.Threshold {
+		res.Threshold = floor
+	}
 	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
 	res.Reached = res.YesVotes >= res.Threshold
 	return res, nil
