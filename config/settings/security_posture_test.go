@@ -7,12 +7,13 @@ import "testing"
 func baseConfig() NodeConfig {
 	return NodeConfig{
 		Binds: BindSettings{
-			API:      "0.0.0.0",
-			Facade:   "0.0.0.0",
-			BlockGen: "127.0.0.1",
-			DID:      "0.0.0.0",
-			CLI:      "127.0.0.1",
-			Geth:     "127.0.0.1",
+			API:       "0.0.0.0",
+			Facade:    "0.0.0.0",
+			BlockGen:  "127.0.0.1",
+			DID:       "0.0.0.0",
+			CLI:       "127.0.0.1",
+			Geth:      "127.0.0.1",
+			BlockGRPC: "127.0.0.1",
 		},
 		Security: DefaultSecurityConfig(),
 	}

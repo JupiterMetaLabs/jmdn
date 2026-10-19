@@ -236,7 +236,7 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 			return fmt.Errorf("failed to initialize local gro: %v", err)
 		}
 	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lis, err := net.Listen("tcp", settings.ListenAddr(func(b settings.BindSettings) string { return b.BlockGRPC }, port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}

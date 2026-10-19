@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gossipnode/SmartContract/proto"
+	"gossipnode/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
@@ -62,7 +63,7 @@ func loopbackOnlyInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerIn
 
 // StartGRPC starts the SmartContract gRPC server
 func StartGRPC(ctx context.Context, port int, router *Router) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lis, err := net.Listen("tcp", settings.ListenAddr(func(b settings.BindSettings) string { return b.Smart }, port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
