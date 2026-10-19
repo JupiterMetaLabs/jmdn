@@ -1007,6 +1007,7 @@ func main() {
 		os.Exit(1)
 	}
 	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
+	Security.SetHeaderBindingFromHeight(cfg.Consensus.HeaderBindingFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first

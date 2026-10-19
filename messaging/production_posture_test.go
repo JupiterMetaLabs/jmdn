@@ -28,11 +28,14 @@ func withPassingPosture(t *testing.T) {
 	cfg := settings.Get()
 	prevPin := cfg.Consensus.SequencerPinnedPeerID
 	cfg.Consensus.SequencerPinnedPeerID = "pinned-peer"
+	prevHB := cfg.Consensus.HeaderBindingFromHeight
+	cfg.Consensus.HeaderBindingFromHeight = 1
 
 	t.Cleanup(func() {
 		RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = prevReject, prevRegistry, prevBody
 		avcvotes.AllowUnsignedValidatorVotes = prevUnsigned
 		cfg.Consensus.SequencerPinnedPeerID = prevPin
+		cfg.Consensus.HeaderBindingFromHeight = prevHB
 	})
 }
 

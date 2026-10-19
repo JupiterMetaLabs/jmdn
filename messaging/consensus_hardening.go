@@ -31,6 +31,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+	"gossipnode/execbridge"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -846,6 +847,15 @@ func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 		return reject("consensus_hash_mismatch",
 			"block %s: ConsensusHash %s does not match recomputed consensus fields %s (consensus field tampered?)",
 			b.BlockHash.Hex(), b.ConsensusHash.Hex(), want.Hex())
+	}
+	// From the header-binding height on, a finalized block must carry the
+	// producer's post-apply state fingerprint: it cannot be in ConsensusHash
+	// (it is computed after signing), so the receiver's recompute-and-halt
+	// check is its only binding, and that check is skipped when the field is
+	// absent.
+	if Security.HeaderBindingActive(b.BlockNumber) && execbridge.Enabled() && strings.TrimSpace(b.StateFingerprint) == "" {
+		return reject("state_fingerprint_missing",
+			"block %s carries no state fingerprint", b.BlockHash.Hex())
 	}
 	return nil
 }

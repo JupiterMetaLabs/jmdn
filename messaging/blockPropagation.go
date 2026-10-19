@@ -360,6 +360,11 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		if st := msg.Data["status"]; st != "" {
 			full.Status = st
 		}
+		// The proposal was cached before the sequencer applied it; the
+		// post-apply state fingerprint travels in the envelope's header.
+		if full.StateFingerprint == "" {
+			full.StateFingerprint = msg.Block.StateFingerprint
+		}
 		msg.Block = &full
 		msg.Type = "zkblock"
 		forward = false

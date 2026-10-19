@@ -100,6 +100,11 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id)")
 	}
+	// Without header binding, a relay can change a certified block's coinbase,
+	// fee recipients or account identities without invalidating its certificate.
+	if settings.Get().Consensus.HeaderBindingFromHeight == 0 {
+		off = append(off, "HeaderBindingFromHeight (consensus.header_binding_from_height)")
+	}
 	if len(off) == 0 {
 		return nil
 	}

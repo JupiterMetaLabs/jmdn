@@ -279,6 +279,14 @@ type ConsensusSettings struct {
 	// ValidateProductionConsensusPosture warns/fails on this being unset in
 	// a production posture — see that file.
 	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
+	// HeaderBindingFromHeight is the first block height whose ConsensusHash (and
+	// so the committee's vote) also covers the apply-affecting header fields:
+	// coinbase and zkVM addresses, timestamp, gas limit/used, state root,
+	// FeeRecipients and AccountNonces. It changes the ConsensusHash of every block
+	// from that height on, so every node in the fleet must run a build that
+	// supports it and use the same value before the chain reaches it. 1 for a
+	// new chain; 0 = off. Required under production posture.
+	HeaderBindingFromHeight uint64 `mapstructure:"header_binding_from_height" yaml:"header_binding_from_height"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	//

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/messaging/BlockProcessing"
 )
@@ -41,5 +42,9 @@ func stampProposalAccountNonces(ctx context.Context, block *config.ZKBlock) erro
 	if err := DB_OPs.EnrichBlockAccountNoncesWithPredicted(block, predicted); err != nil {
 		return fmt.Errorf("failed to enrich block with account nonces: %w", err)
 	}
+	// AccountNonces are part of the ConsensusHash preimage from the header-binding
+	// activation height on, and are only known now, so recompute it last. Below
+	// the activation height this reproduces the value attachAVCConsensusFields set.
+	block.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(block)
 	return nil
 }

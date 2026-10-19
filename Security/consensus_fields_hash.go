@@ -184,6 +184,12 @@ func consensusFieldsDigest(block *config.ZKBlock, txPart []byte) common.Hash {
 	// this file's header); it rides the Stage-2 enablement restart.
 	committee.WriteField(&buf, []byte(block.VdfParamsDigest))
 	committee.WriteField(&buf, txPart)
+	// Header fields, from the configured activation height on (see
+	// header_binding.go). Appended after txPart so the preimage of every block
+	// below the activation height is byte-for-byte unchanged.
+	if HeaderBindingActive(block.BlockNumber) {
+		writeHeaderFields(&buf, block)
+	}
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))
 }

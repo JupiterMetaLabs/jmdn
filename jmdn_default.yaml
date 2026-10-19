@@ -139,6 +139,11 @@ fastsync:
 #   exactly-1 "1"→on; anything else (even "true")→off
 #   not-0     "0"→off; anything else (even "false")→on
 consensus:
+  # First block height whose ConsensusHash also covers coinbase/zkVM address, timestamp,
+  # gas limit/used, state root, fee recipients and account nonces. Coordinated upgrade:
+  # every node must use the same value before the chain reaches it. 1 for a new chain;
+  # 0 = off. Required under production posture.
+  header_binding_from_height: 0
   flags:
     committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
     committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.
