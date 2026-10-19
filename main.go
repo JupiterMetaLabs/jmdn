@@ -948,6 +948,13 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	if cfg.DefaultDBCredentialInUse() {
+		log.Warn().Msg("thebe.sql_dsn uses a publicly known default password — set a unique Postgres password")
+	}
+	if err := cfg.ValidateDBCredentials(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 	// Buddy staking rewards: the reward address is optional, but a NON-empty one
 	// must be well-formed (a malformed address would be silently padded by
 	// common.HexToAddress and could mis-credit rewards). Fail closed at boot.

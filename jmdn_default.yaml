@@ -53,7 +53,8 @@ thebe:
   kv_path: "./storage/thebe-kv"
   # SEC-04: sslmode=require (no cleartext SQL). Postgres must have TLS enabled;
   # for a non-TLS local DB, override THEBE_SQL_DSN with sslmode=disable.
-  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
+  # No password is shipped: put it in the DSN here or in THEBE_SQL_DSN.
+  sql_dsn: "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
   redis_url: ""                # Env: THEBE_REDIS_URL
   stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
   max_len: 1000                # Env: THEBE_MAX_LEN

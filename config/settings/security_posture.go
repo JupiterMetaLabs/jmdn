@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -124,4 +125,34 @@ func (c *NodeConfig) ValidateSecurityPosture() error {
 		names[i] = v[i].String()
 	}
 	return fmt.Errorf("SEC-03 fail-closed (security.strict_posture=true): unauthenticated public service(s): %s — set auth_type token/mtls for each, or clear strict_posture to run open", strings.Join(names, "; "))
+}
+
+// knownDefaultDBPasswords are credentials that have shipped in this repository's
+// configs and scripts. A database reachable with one of them is open to anyone
+// who has read the repo.
+var knownDefaultDBPasswords = map[string]bool{
+	"jmdndefault": true, "thebedb": true, "jmdn": true, "postgres": true, "password": true,
+}
+
+// DefaultDBCredentialInUse reports whether thebe.sql_dsn carries a password
+// that has shipped publicly.
+func (c *NodeConfig) DefaultDBCredentialInUse() bool {
+	if !c.Thebe.Enabled || c.Thebe.SQLDSN == "" {
+		return false
+	}
+	u, err := url.Parse(c.Thebe.SQLDSN)
+	if err != nil || u.User == nil {
+		return false
+	}
+	pw, ok := u.User.Password()
+	return ok && knownDefaultDBPasswords[pw]
+}
+
+// ValidateDBCredentials refuses a publicly known database password when
+// security.strict_posture is set. Callers warn in the non-strict case.
+func (c *NodeConfig) ValidateDBCredentials() error {
+	if c.DefaultDBCredentialInUse() && c.Security.StrictPosture {
+		return fmt.Errorf("thebe.sql_dsn uses a publicly known default password; set a unique one (security.strict_posture=true)")
+	}
+	return nil
 }

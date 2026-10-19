@@ -71,7 +71,9 @@ func DefaultConfig() NodeConfig {
 			// SEC-04: require TLS by default (no cleartext SQL transport). The
 			// Postgres this points at MUST have TLS enabled; for a non-TLS local/
 			// dev DB, override THEBE_SQL_DSN with sslmode=disable explicitly.
-			SQLDSN:     "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=require",
+			// No password is compiled in: supply it via THEBE_SQL_DSN or
+			// thebe.sql_dsn (see DefaultDBCredentialInUse).
+			SQLDSN:     "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require",
 			RedisURL:   "",
 			StreamName: "",
 			MaxLen:     1000,
