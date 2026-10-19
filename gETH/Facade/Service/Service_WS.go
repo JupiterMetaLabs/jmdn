@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -28,6 +29,15 @@ var (
 		subscribers: make(map[string]*NewHeadsSubscription),
 	}
 
+	// newHeadsSeq numbers subscriptions.
+	newHeadsSeq atomic.Uint64
+
+	// newHeadsPollInterval is how often the poller checks for new blocks.
+	newHeadsPollInterval = 2 * time.Second
+
+	// activeNewHeadsPollers counts running pollers (at most one).
+	activeNewHeadsPollers atomic.Int32
+
 	// Block polling state
 	lastProcessedBlock uint64
 	blockMutex         sync.RWMutex
@@ -44,8 +54,8 @@ type NewHeadsSubscription struct {
 
 // SubscribeNewHeads creates a subscription to new block headers
 func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error) {
-	// Create a unique subscription ID
-	subscriptionID := fmt.Sprintf("newheads_%d", time.Now().UTC().UnixNano())
+	// Create a unique subscription ID (a time-based ID collides under load).
+	subscriptionID := fmt.Sprintf("newheads_%d", newHeadsSeq.Add(1))
 
 	// Create context with cancellation
 	subCtx, cancel := context.WithCancel(ctx)
@@ -70,17 +80,31 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 	// Log subscription creation
 	logger().Info(context.Background(), "New heads subscription created", ion.String("subscription_id", subscriptionID))
 
-	// Return channel and cleanup function
+	// Return channel and cleanup function. Idempotent: the caller's stop and
+	// the context watcher below may both call it. Removing the entry under the
+	// write lock means notifyNewBlock (which sends under the read lock) can
+	// never send on the closed channel.
+	var once sync.Once
 	cleanup := func() {
-		newHeadsSubscriptions.Lock()
-		delete(newHeadsSubscriptions.subscribers, subscriptionID)
-		newHeadsSubscriptions.Unlock()
+		once.Do(func() {
+			newHeadsSubscriptions.Lock()
+			delete(newHeadsSubscriptions.subscribers, subscriptionID)
+			newHeadsSubscriptions.Unlock()
 
-		cancel()
-		close(subscription.Channel)
+			cancel()
+			close(subscription.Channel)
 
-		logger().Info(context.Background(), "New heads subscription closed", ion.String("subscription_id", subscriptionID))
+			logger().Info(context.Background(), "New heads subscription closed", ion.String("subscription_id", subscriptionID))
+		})
 	}
+
+	// Release the subscription when the caller's context ends even if the
+	// caller never calls cleanup, so a dropped connection cannot leave an
+	// entry (and the poller) alive forever.
+	go func() {
+		<-subCtx.Done()
+		cleanup()
+	}()
 
 	return subscription.Channel, cleanup, nil
 }
@@ -121,7 +145,9 @@ func startBlockPollerIfNeeded() {
 
 // pollForNewBlocks continuously polls for new blocks and notifies subscribers
 func pollForNewBlocks(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second) // Poll every 2 seconds
+	activeNewHeadsPollers.Add(1)
+	defer activeNewHeadsPollers.Add(-1)
+	ticker := time.NewTicker(newHeadsPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -132,10 +158,13 @@ func pollForNewBlocks(ctx context.Context) {
 			// Check if we still have subscribers
 			newHeadsSubscriptions.Lock()
 			if len(newHeadsSubscriptions.subscribers) == 0 {
-				// No more subscribers, stop polling
+				// No more subscribers, stop polling. `return`, not `break`:
+				// break only left the select, so the loop kept polling while
+				// isPolling said otherwise, and the next subscriber started a
+				// second poller.
 				newHeadsSubscriptions.isPolling = false
 				newHeadsSubscriptions.Unlock()
-				break
+				return
 			}
 			newHeadsSubscriptions.Unlock()
 
