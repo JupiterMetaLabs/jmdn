@@ -105,6 +105,16 @@ func HandleBroadcastStream(stream network.Stream) {
 		return
 	}
 
+	// Envelope fields are sender-chosen; validate them before they drive dedup
+	// or relaying.
+	if reason := checkBroadcastEnvelope(&msg, stream.Conn().RemotePeer().String(), time.Now().UTC()); reason != "" {
+		broadcastLogger().Warn(context.Background(), "Dropping broadcast message",
+			ion.String("reason", reason),
+			ion.String("peer", stream.Conn().RemotePeer().String()),
+			ion.String("type", msg.Type))
+		return
+	}
+
 	// Check if we've already seen this message
 	if isMessageSeen(msg.ID) {
 		// We've already processed this message, ignore
@@ -130,7 +140,11 @@ func HandleBroadcastStream(stream network.Stream) {
 	// bytes crossed the wire (observed on testnet: 15 validators × 14 peers ≈ 560 MB
 	// of pure duplicates per block). The sender also sets Hops=MaxHops on these
 	// so that receivers running an older binary skip the re-flood too.
-	if msg.Type == voteTriggerBroadcastType {
+	// Only message types that need network-wide delivery are relayed. Anything
+	// else (vote triggers, plain operator messages, unknown types) is consumed
+	// by the direct recipient only, so a peer cannot use this node to flood
+	// arbitrary payloads.
+	if !broadcastRelayable(msg.Type) {
 		return
 	}
 	if msg.Hops < config.MaxHops {
@@ -157,6 +171,58 @@ func HandleBroadcastStream(stream network.Stream) {
 			ion.String("msg_id", msg.ID),
 			ion.Int("hops", msg.Hops))
 	}
+}
+
+// Accepted clock window for a broadcast's Timestamp. The past bound sits one
+// cleanup interval inside MessageExpiryTime, so a message is rejected as stale
+// before its ID can have been evicted from the seen-cache and replayed.
+const (
+	broadcastMaxAge    = config.MessageExpiryTime - time.Minute
+	broadcastMaxFuture = time.Minute
+)
+
+// broadcastRelayable reports whether a received message type is re-flooded.
+func broadcastRelayable(msgType string) bool {
+	switch msgType {
+	case timeoutVoteBroadcastType, timeoutRequestBroadcastType, timeoutCertBroadcastType:
+		return true
+	}
+	return false
+}
+
+// expectedBroadcastID recomputes the message ID the way each sender builds it.
+// Vote triggers hash Content only; every other sender hashes Content+Data.
+func expectedBroadcastID(msg *BroadcastMessageStruct) string {
+	if msg.Type == voteTriggerBroadcastType {
+		return generateMessageID(msg.Sender, msg.Content, msg.Timestamp)
+	}
+	return generateMessageID(msg.Sender, msg.Content+msg.Data, msg.Timestamp)
+}
+
+// checkBroadcastEnvelope validates the sender-controlled envelope fields.
+// Returns "" when the message may be processed, otherwise a short reason.
+func checkBroadcastEnvelope(msg *BroadcastMessageStruct, remotePeer string, now time.Time) string {
+	if msg.Hops < 0 || msg.Hops > config.MaxHops {
+		return "hops_out_of_range"
+	}
+	ts := time.Unix(msg.Timestamp, 0)
+	if now.Sub(ts) > broadcastMaxAge {
+		return "stale"
+	}
+	if ts.Sub(now) > broadcastMaxFuture {
+		return "future_timestamp"
+	}
+	// The ID is the dedup key. Binding it to the content stops a peer from
+	// re-sending one payload under fresh IDs to get it processed and relayed
+	// again.
+	if msg.ID != expectedBroadcastID(msg) {
+		return "id_mismatch"
+	}
+	// An un-relayed message must come from its stated origin.
+	if msg.Hops == 0 && msg.Sender != remotePeer {
+		return "sender_mismatch"
+	}
+	return ""
 }
 
 // Store a reference to the host for broadcast handling
