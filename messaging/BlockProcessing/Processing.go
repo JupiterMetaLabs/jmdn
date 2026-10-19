@@ -172,10 +172,7 @@ func adoptCarriedNonce(ctx context.Context, stage *txStage, addr *common.Address
 	)
 }
 
-// Global map to track processed transactions during block processing
 var (
-	processedTxs      = make(map[string]bool)
-	processedTxsMutex sync.Mutex
 	txProcessingLocks = make(map[string]*sync.Mutex)
 	txLocksGuard      = sync.Mutex{}
 
@@ -190,14 +187,6 @@ var (
 	DefaultGasPrice       = int64(1000000000) // 1 Gwei
 	CreateMissingAccounts = true              // Set to false to disable automatic DID creation
 )
-
-// ClearProcessedTransactions clears the processed transactions map
-// This should be called at the start of processing a new block
-func ClearProcessedTransactions() {
-	processedTxsMutex.Lock()
-	defer processedTxsMutex.Unlock()
-	processedTxs = make(map[string]bool)
-}
 
 // getTransactionLock gets or creates a mutex for a specific transaction
 func getTransactionLock(txHash string) *sync.Mutex {
@@ -392,7 +381,9 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		return nil
 	}
 
-	ClearProcessedTransactions()
+	// Per-call duplicate tracking. Blocks with different hashes apply
+	// concurrently, so this must not be shared between calls.
+	seenInBlock := make(map[string]bool, len(block.Transactions))
 
 	// Canonical ART identity nonces carried by the block (sequencer-stamped, see
 	// DB_OPs.EnrichBlockAccountNonces). Used below to (a) create accounts this
@@ -487,8 +478,7 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// If ANY fails, rollback ALL affected accounts
 	for i, tx := range block.Transactions {
 		// Check if this transaction was already processed within this block
-		processedTxsMutex.Lock()
-		if processedTxs[tx.Hash.Hex()] {
+		if seenInBlock[tx.Hash.Hex()] {
 			logger().Warn(span_ctx, "Duplicate transaction in block, skipping",
 				ion.String("tx_hash", tx.Hash.Hex()),
 				ion.Int("tx_index", i),
@@ -496,11 +486,9 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
-			processedTxsMutex.Unlock()
 			continue
 		}
-		processedTxs[tx.Hash.Hex()] = true
-		processedTxsMutex.Unlock()
+		seenInBlock[tx.Hash.Hex()] = true
 
 		// Check if this transaction was already processed in a previous block
 		// (or an earlier attempt at this one) — in-memory set from the

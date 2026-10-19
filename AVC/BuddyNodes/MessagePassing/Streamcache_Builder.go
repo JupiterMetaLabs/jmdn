@@ -130,6 +130,17 @@ func (sc *StructStreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
 	sc.StreamCache.Mutex.Lock()
 	defer sc.StreamCache.Mutex.Unlock()
 
+	// Another caller may have cached a stream for this peer while we were
+	// dialing. Keep theirs and close ours; overwriting the entry would leak the
+	// other stream and duplicate the peer in the LRU order.
+	if entry, exists := sc.StreamCache.Streams[peerID]; exists {
+		_ = stream.Close()
+		entry.LastUsed = time.Now().UTC()
+		entry.AccessCount++
+		sc.moveToEnd(peerID)
+		return entry.Stream, nil
+	}
+
 	// Add to cache
 	sc.addEntry(peerID, stream)
 	return stream, nil
