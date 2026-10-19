@@ -37,6 +37,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          if [ -n "$GO_MODULES_TOKEN" ]; then
+            git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
       - name: Build
         run: go build ./...
 
@@ -137,6 +146,9 @@ jobs:
           # Build provenance and SBOM attestations attached to the image.
           provenance: mode=max
           sbom: true
+          # Read access to the private JupiterMetaLabs Go modules (see Dockerfile).
+          secrets: |
+            go_modules_token=${{ secrets.GO_MODULES_TOKEN }}
           cache-from: type=gha,scope=${{ matrix.runner_arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.runner_arch }}
 

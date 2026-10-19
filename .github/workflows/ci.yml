@@ -35,6 +35,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          if [ -n "$GO_MODULES_TOKEN" ]; then
+            git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+
       # Install golangci-lint once. Both the format check and lint step below
       # will use this binary, so it is only installed once.
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
@@ -151,6 +160,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          if [ -n "$GO_MODULES_TOKEN" ]; then
+            git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
 
       # ── Known-vulnerability scan (hard gate) ────────────────────────────
       - name: Install govulncheck
