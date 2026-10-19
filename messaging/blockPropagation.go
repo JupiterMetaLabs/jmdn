@@ -646,6 +646,82 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
 	}
 
+	if rej := validateBlockContents(ctx, b); rej != nil {
+		return rej
+	}
+
+	// (Proof seam) Hook for ZK/STARK verification, ordered before the
+	// certificate check. See verifyBlockProof.
+	if err := verifyBlockProof(b); err != nil {
+		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
+	}
+
+	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
+	// (see checkLinkage).
+	if EnforceBlockLinkage {
+		if rej := checkLinkage(ctx, b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Consensus-field binding) When the block carries a ConsensusHash it must
+	// equal the recompute from its own consensus fields — binds Slot/Period/
+	// PrevAggCert/FeeRecipients/CommitteeSnapshotHash so a relay cannot rewrite
+	// them post-commit. Runs BEFORE certificate verification so the cert's v4
+	// signatures verify against a confirmed-honest ConsensusHash. D-28: a zero
+	// value is REJECTED, not skipped — attachAVCConsensusFields stamps one on
+	// every block regardless of Period, so an empty ConsensusHash is the
+	// dedup/equivocation bypass this fix closes.
+	if rej := checkConsensusBinding(b); rej != nil {
+		return rej
+	}
+
+	// (Committee anchor, W1) An anchor block must carry a seed-signed snapshot
+	// that hashes to its CommitteeSnapshotHash (bound by ConsensusHash just
+	// above) and never moves the membership epoch backwards; any other block
+	// must carry none. See committee_anchor.go.
+	if rej := checkCommitteeAnchor(b); rej != nil {
+		return rej
+	}
+
+	// (Committee certificate) MANDATORY and must reach quorum. Absent or empty
+	// bls_results is a rejection, not a pass.
+	if rej := verifyBlockCertificate(msg); rej != nil {
+		return rej
+	}
+
+	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
+	// is enabled, FeeRecipients must equal the value every node independently
+	// recomputes from the block's parent certifiers (PrevAggCert), the
+	// authenticated reward-address map, and parent-state balances — a pure function
+	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
+	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
+	// block (and its PrevAggCert, which the M2b hash covers) rides a
+	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
+	// is OFF this is skipped and the historical interlock above still applies.
+	if rewardSplitEnabled() {
+		if rej := checkFeeRecipients(b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Equivocation) Recorded LAST — only after the block is fully validated —
+	// so an unvalidated block cannot enter the height->hash map and cause the
+	// genuine block to be rejected. A second, DIFFERENT validated block at a
+	// height already seen is a signed fork → rejected.
+	// D-28: keyed on ConsensusHash, not BlockHash — see getBlockDedupID's
+	// comment above for why BlockHash alone cannot distinguish two forks
+	// sharing identical transactions.
+	return checkEquivocation(b.BlockNumber, b.ConsensusHashHex())
+}
+
+// validateBlockContents runs the stateless checks that bind a block's body to
+// its signed transaction contents: the FeeRecipients interlock, per-transaction
+// signature (sender recovery), tx-hash-over-contents and value checks, in-block
+// nonce ordering, and (with EnforceBodyBinding) BlockHash/TxnsRoot over the
+// transactions. Shared by the live receive path (validateRemoteBlock) and the
+// sync apply path (ValidateSyncedBlockContents) so the two cannot drift.
+func validateBlockContents(ctx context.Context, b *config.ZKBlock) *blockRejection {
 	// FeeRecipients handling (buddy staking rewards, docs/STAKING-REWARDS-DESIGN.md).
 	//   - reward-split DISABLED (default): the historical interlock. FeeRecipients
 	//     is not bound into the legacy block hash and the catch-up apply path does
@@ -728,70 +804,7 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 			return reject("block_hash_mismatch", "block %s hash does not match tx contents: %v", b.BlockHash.Hex(), err)
 		}
 	}
-
-	// (Proof seam) Hook for ZK/STARK verification, ordered before the
-	// certificate check. See verifyBlockProof.
-	if err := verifyBlockProof(b); err != nil {
-		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
-	}
-
-	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
-	// (see checkLinkage).
-	if EnforceBlockLinkage {
-		if rej := checkLinkage(ctx, b); rej != nil {
-			return rej
-		}
-	}
-
-	// (Consensus-field binding) When the block carries a ConsensusHash it must
-	// equal the recompute from its own consensus fields — binds Slot/Period/
-	// PrevAggCert/FeeRecipients/CommitteeSnapshotHash so a relay cannot rewrite
-	// them post-commit. Runs BEFORE certificate verification so the cert's v4
-	// signatures verify against a confirmed-honest ConsensusHash. D-28: a zero
-	// value is REJECTED, not skipped — attachAVCConsensusFields stamps one on
-	// every block regardless of Period, so an empty ConsensusHash is the
-	// dedup/equivocation bypass this fix closes.
-	if rej := checkConsensusBinding(b); rej != nil {
-		return rej
-	}
-
-	// (Committee anchor, W1) An anchor block must carry a seed-signed snapshot
-	// that hashes to its CommitteeSnapshotHash (bound by ConsensusHash just
-	// above) and never moves the membership epoch backwards; any other block
-	// must carry none. See committee_anchor.go.
-	if rej := checkCommitteeAnchor(b); rej != nil {
-		return rej
-	}
-
-	// (Committee certificate) MANDATORY and must reach quorum. Absent or empty
-	// bls_results is a rejection, not a pass.
-	if rej := verifyBlockCertificate(msg); rej != nil {
-		return rej
-	}
-
-	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
-	// is enabled, FeeRecipients must equal the value every node independently
-	// recomputes from the block's parent certifiers (PrevAggCert), the
-	// authenticated reward-address map, and parent-state balances — a pure function
-	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
-	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
-	// block (and its PrevAggCert, which the M2b hash covers) rides a
-	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
-	// is OFF this is skipped and the historical interlock above still applies.
-	if rewardSplitEnabled() {
-		if rej := checkFeeRecipients(b); rej != nil {
-			return rej
-		}
-	}
-
-	// (Equivocation) Recorded LAST — only after the block is fully validated —
-	// so an unvalidated block cannot enter the height->hash map and cause the
-	// genuine block to be rejected. A second, DIFFERENT validated block at a
-	// height already seen is a signed fork → rejected.
-	// D-28: keyed on ConsensusHash, not BlockHash — see getBlockDedupID's
-	// comment above for why BlockHash alone cannot distinguish two forks
-	// sharing identical transactions.
-	return checkEquivocation(b.BlockNumber, b.ConsensusHashHex())
+	return nil
 }
 
 // verifyBlockCertificate enforces a mandatory committee certificate that reaches

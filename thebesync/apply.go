@@ -56,6 +56,14 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 			block.BlockNumber, block.PrevHash.Hex(), prevHash.Hex())
 	}
 
+	// 2a. Contents: every transaction's signature recovers its sender for this
+	//     chain and its tx hash equals the hash of its contents, so BlockHash
+	//     (and the certificate signed over it) binds what the transactions
+	//     actually do — the same content gate the live receive path applies.
+	if cerr := messaging.ValidateSyncedBlockContents(ctx, block); cerr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d contents: %w", block.BlockNumber, cerr)
+	}
+
 	// 2b. Committee anchor (W1): same rule as the live receive path - an anchor
 	//     block must carry a seed-signed snapshot bound by CommitteeSnapshotHash.
 	if aerr := messaging.ValidateCommitteeAnchor(block); aerr != nil {
@@ -80,8 +88,14 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 				block.BlockNumber, res.YesVotes, res.Threshold, res.CommitteeSize)
 		}
 		hasCert = true
-	} else if requireCert {
+	} else if requireCert || certificateRequired(block.BlockNumber, prevNumber) {
 		return false, fmt.Errorf("thebesync apply: block %d missing required certificate (post-activation block cannot be legacy)", block.BlockNumber)
+	}
+
+	// 3b. Post-certificate checks shared with the live path: FeeRecipients
+	//     recomputation (reward split) and the durable equivocation record.
+	if ferr := messaging.FinalizeSyncedBlockChecks(block); ferr != nil {
+		return hasCert, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, ferr)
 	}
 
 	// 4. Apply + store atomically (D-858), then verify/repair projection. Process
@@ -173,5 +187,6 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//    See its doc comment.
 	messaging.RecordSyncedBlockEntropy(block)
 
+	noteApplied(block.BlockNumber, hasCert)
 	return hasCert, nil
 }

@@ -339,6 +339,7 @@ func txRecordToTransaction(r *thebegateway.TransactionRecord) *config.Transactio
 			tx.ChainID = c
 		}
 	}
+	tx.AccessList = config.AccessListFromRecord(r.AccessList)
 
 	tx.V = new(big.Int).SetUint64(r.SigV)
 	// SigR/SigS are stored as base-16 (no 0x) via big.Int.Text(16) and CHAR(66)

@@ -54,6 +54,17 @@ func rebuildSignerCache() {
 }
 
 // SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
+// ExpectedChainID returns a copy of the node's configured chain ID, or nil when
+// it has not been set.
+func ExpectedChainID() *big.Int {
+	signerMu.RLock()
+	defer signerMu.RUnlock()
+	if expectedChainID == nil {
+		return nil
+	}
+	return new(big.Int).Set(expectedChainID)
+}
+
 func SetExpectedChainID(id int) {
 	signerMu.Lock()
 	defer signerMu.Unlock()

@@ -139,6 +139,9 @@ fastsync:
 #   exactly-1 "1"→on; anything else (even "true")→off
 #   not-0     "0"→off; anything else (even "false")→on
 consensus:
+  # First block height that catch-up sync requires to carry a committee certificate
+  # (1 for a chain certified from genesis). 0 = unset. Required under production posture.
+  sync_certificate_required_from: 0
   flags:
     committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
     committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.

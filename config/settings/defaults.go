@@ -160,10 +160,11 @@ func DefaultConfig() NodeConfig {
 		// / fail-closed until an operator pins the seed authority key); epoch clock
 		// defaults to the seed's 3600s.
 		Consensus: ConsensusSettings{
-			BlockBuddy:            nil,
-			SeedAuthorityBLSPub:   "",
-			SequencerPinnedPeerID: "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
-			CommitteeEpochSeconds: 3600,
+			BlockBuddy:                  nil,
+			SeedAuthorityBLSPub:         "",
+			SequencerPinnedPeerID:       "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
+			SyncCertificateRequiredFrom: 0,  // set per network; required under production posture
+			CommitteeEpochSeconds:       3600,
 			// Selection-epoch length in BLOCKS (messaging.EpochForHeight).
 			//
 			// SET TO 1 (2026-08-27, operator decision): every height is its own

@@ -28,11 +28,14 @@ func withPassingPosture(t *testing.T) {
 	cfg := settings.Get()
 	prevPin := cfg.Consensus.SequencerPinnedPeerID
 	cfg.Consensus.SequencerPinnedPeerID = "pinned-peer"
+	prevCertFrom := cfg.Consensus.SyncCertificateRequiredFrom
+	cfg.Consensus.SyncCertificateRequiredFrom = 1
 
 	t.Cleanup(func() {
 		RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = prevReject, prevRegistry, prevBody
 		avcvotes.AllowUnsignedValidatorVotes = prevUnsigned
 		cfg.Consensus.SequencerPinnedPeerID = prevPin
+		cfg.Consensus.SyncCertificateRequiredFrom = prevCertFrom
 	})
 }
 
@@ -61,5 +64,14 @@ func TestValidateProductionConsensusPosture_FlagsUnsignedValidatorVotes(t *testi
 	}
 	if !strings.Contains(err.Error(), "AllowUnsignedValidatorVotes") {
 		t.Fatalf("error must name AllowUnsignedValidatorVotes so an operator knows which setting to fix, got: %v", err)
+	}
+}
+
+func TestValidateProductionConsensusPosture_RequiresSyncCertificateHeight(t *testing.T) {
+	withPassingPosture(t)
+	cfg := settings.Get()
+	cfg.Consensus.SyncCertificateRequiredFrom = 0
+	if err := ValidateProductionConsensusPosture(true); err == nil {
+		t.Fatal("production posture must require consensus.sync_certificate_required_from")
 	}
 }
