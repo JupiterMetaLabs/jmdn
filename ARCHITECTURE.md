@@ -31,7 +31,7 @@ The central orchestrator that initializes and coordinates all system components:
 **Command Line Flags:**
 - `-seed`: Run as a seed node for network bootstrapping
 - `-connect`: Connect to a seed node (multiaddr)
-- `-seednode`: Seed node gRPC URL for peer registration (e.g., 34.174.233.203:17002)
+- `-seednode`: Seed node gRPC URL for peer registration (e.g., <SEEDNODE_HOST>:17002)
 - `-heartbeat`: Heartbeat interval in seconds (default: 120)
 - `-metrics`: Port for Prometheus metrics (default: 8080)
 - `-ygg`: Enable Yggdrasil direct messaging (default: true)
