@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type HTTPServer struct {
 	cassata     *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
 	logger      *ion.Ion         // Add logger
 	syncMonitor *syncmonitor.Monitor
+	gate        *gatekeeper.GinMiddleware // set by ServeWithContext; charges batch members
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
@@ -83,6 +85,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	// Apply Gatekeeper Middleware
 	router.Use(middleware.Middleware(settings.ServiceEthRPC))
+	s.gate = middleware
 
 	// Register routes after middleware so protection applies consistently.
 	router.Any("/", s.handleJSONRPC)
@@ -148,6 +151,14 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		}
 		if len(reqs) > maxBatchSize {
 			write(c, RespErr(nil, -32600, fmt.Sprintf("batch too large: max %d requests", maxBatchSize)))
+			return
+		}
+		// The middleware charged one request for this HTTP call; charge the
+		// rest of the batch so batching does not multiply the client's rate.
+		if !s.gate.AllowAdditional(c, settings.ServiceEthRPC, len(reqs)-1) {
+			c.Header("Retry-After", strconv.Itoa(s.gate.RetryAfter(c, settings.ServiceEthRPC)))
+			c.JSON(http.StatusTooManyRequests,
+				RespErr(nil, -32005, fmt.Sprintf("rate limit exceeded: batch of %d requests", len(reqs))))
 			return
 		}
 		resps := make([]Response, len(reqs))
