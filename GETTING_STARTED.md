@@ -140,10 +140,15 @@ means. For anything other than a throwaway dev node, load the pre-built
 snapshot instead, same as the Docker path does with `jmdn-bootstrap`:
 
 ```bash
-sudo ./Scripts/bootstrap_sync.sh
+sudo SNAPSHOT_SHA256=<published archive sha256> ./Scripts/bootstrap_sync.sh
 ```
 
-Requires `curl`, `wget`, `awk`, `md5sum`, `tar`, `python3` on `PATH` — install
+`SNAPSHOT_SHA256` is the SHA-256 of the full snapshot archive, published by
+JupiterMeta separately from the bucket. The script refuses to install a
+snapshot that does not match it, and installs only the `storage/` and `DB/`
+chain-data directories from the archive.
+
+Requires `curl`, `wget`, `awk`, `md5sum`, `sha256sum`, `tar`, `python3` on `PATH` — install
 any that are missing (`sudo apt install -y wget python3`, most are already
 present on a stock Ubuntu/Debian image). Downloads and verifies the chain
 snapshot into `/opt/jmdn/data`, same location `install_services.sh` just

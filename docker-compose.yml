@@ -167,6 +167,8 @@ services:
       GCS_PREFIX: "${GCS_PREFIX:-bootstrap-26072026}"
       PARTS_PREFIX: "${PARTS_PREFIX:-data-patched.part}"
       CHECKSUM_FILE: "${CHECKSUM_FILE:-checksums.md5}"
+      # Published SHA-256 of the snapshot archive; required to install it.
+      SNAPSHOT_SHA256: "${SNAPSHOT_SHA256:-}"
 
     # Resource governance — short-lived, but a stalled/corrupt download
     # shouldn't be able to consume unbounded host CPU/RAM either. Env-tunable
@@ -277,6 +279,10 @@ services:
 
       # Redis container reads REDIS_PASSWORD directly; jmdn reads it here via Viper.
       JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"
+
+      # First-run snapshot bootstrap (entrypoint): installs only when the
+      # archive matches this published SHA-256; otherwise the node syncs from peers.
+      SNAPSHOT_SHA256: "${SNAPSHOT_SHA256:-}"
 
       # Explorer API key — forwarded into the container so the health check curl
       # can include the Bearer token. Set JMDN_SECURITY_EXPLORER_API_KEY in .env.

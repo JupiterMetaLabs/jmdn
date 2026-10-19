@@ -35,7 +35,11 @@ if [ -f "$SENTINEL" ]; then
     log "Bootstrap sentinel found — node state already populated."
 else
     log "Running bootstrap sync..."
-    if ! /usr/local/bin/bootstrap_sync.sh; then
+    rc=0
+    /usr/local/bin/bootstrap_sync.sh || rc=$?
+    if [ "$rc" -eq 3 ]; then
+        log "Snapshot bootstrap skipped (no SNAPSHOT_SHA256) — starting without it."
+    elif [ "$rc" -ne 0 ]; then
         log "ERROR: Bootstrap failed — aborting."
         exit 1
     fi
