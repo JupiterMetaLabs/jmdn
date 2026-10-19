@@ -330,6 +330,16 @@ func ProcessBlockTransactionsAndStore(logger_ctx context.Context, block *config.
 }
 
 func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection, store func() error) error {
+	// Every transaction credits the coinbase and zkVM addresses; a block that
+	// carries transactions without them cannot be applied. Checked before any
+	// state is touched (the apply loop dereferences both).
+	if block == nil {
+		return fmt.Errorf("apply: nil block")
+	}
+	if len(block.Transactions) > 0 && (block.CoinbaseAddr == nil || block.ZKVMAddr == nil) {
+		return fmt.Errorf("apply: block %d (%s) has transactions but no coinbase or zkVM address",
+			block.BlockNumber, block.BlockHash.Hex())
+	}
 	// Serialize concurrent applies of the SAME block so it is applied exactly
 	// once no matter how many copies arrive (multi-transport delivery, re-flood,
 	// or live delivery racing catch-up). Held across the already-processed check
