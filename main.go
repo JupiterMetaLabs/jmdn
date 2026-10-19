@@ -1385,6 +1385,14 @@ func main() {
 		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
+		// Finish any tx apply that was interrupted by the previous shutdown
+		// before anything can process blocks against that state.
+		if recovered, rerr := DB_OPs.RecoverPendingTxApply(); rerr != nil {
+			log.Fatal().Err(rerr).Msg("thebedb: interrupted tx apply could not be completed; refusing to start")
+		} else if recovered != "" {
+			log.Warn().Str("tx_hash", recovered).Msg("thebedb: completed tx apply interrupted by previous shutdown")
+		}
+
 		// One-shot ThebeSync backfill: retro-stamp ZKBlock.AccountNonces onto blocks
 		// written before that advisory field was persisted, so catch-up can create
 		// new accounts (contract deploys, first-time receivers) from historical

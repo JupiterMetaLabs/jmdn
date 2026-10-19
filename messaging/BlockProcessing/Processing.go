@@ -893,6 +893,13 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 	rollbackStartTime := time.Now().UTC()
 	rollbackSpan.SetAttributes(attribute.Int("accounts_to_rollback", len(snapshots)))
 
+	// Drop any in-flight apply record before restoring, so boot recovery can
+	// never roll the failed tx forward over the restored balances.
+	if err := DB_OPs.DiscardPendingTxApply(); err != nil {
+		rollbackSpan.RecordError(err)
+		return fmt.Errorf("rollback: %w", err)
+	}
+
 	rollbackCount := 0
 	for addr, snap := range snapshots {
 		doc, err := DB_OPs.GetAccount(accountsClient, addr)
@@ -1443,13 +1450,10 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// Commit the tx's staged effect: accounts first (raw authoritative batch),
 	// then the tx_processed marker LAST.
 	//
-	// NOTE (audit STO-26): on ThebeDB this is NOT one atomic ExecAll. Account
-	// writes go through BatchPutAccountsAuthoritative (a per-entry loop) and the
-	// marker through the sync-state KV — two separate writes. A crash between
-	// them re-applies the tx on replay (marker absent -> not skipped): a bounded
-	// double-apply for one tx's accounts. Single-write atomicity returns with
-	// the ThebeDB builder-2PC task. Returning an error on failure is still
-	// mandatory so the block rolls back.
+	// Account writes and the marker are separate store commits; ApplyTxAtomic
+	// brackets them with a redo record that boot recovery rolls forward, so a
+	// crash between them cannot re-apply the tx on a mutated base. Returning
+	// an error on failure is still mandatory so the block rolls back.
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "atomic_commit_failed"))
