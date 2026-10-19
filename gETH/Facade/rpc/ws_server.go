@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -15,9 +16,11 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
+	"gossipnode/config/settings"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/gETH/common"
+	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"
@@ -63,13 +66,74 @@ type WSServer struct {
 	h   *Handlers
 	be  Service.Service
 	upg websocket.Upgrader
+
+	// gate rate-limits upgrades and every message; nil disables limiting.
+	gate  *gatekeeper.NetHTTPMiddleware
+	conns *connLimiter
+}
+
+// Connection caps for the public WS endpoint. Each connection holds a reader
+// goroutine plus one forwarder per subscription, so the count is bounded both
+// overall and per client IP.
+const (
+	maxWSConns      = 1000
+	maxWSConnsPerIP = 20
+)
+
+// connLimiter tracks open connections overall and per client IP.
+type connLimiter struct {
+	mu       sync.Mutex
+	total    int
+	perIP    map[string]int
+	maxTotal int
+	maxPerIP int
+}
+
+func newConnLimiter(maxTotal, maxPerIP int) *connLimiter {
+	return &connLimiter{perIP: map[string]int{}, maxTotal: maxTotal, maxPerIP: maxPerIP}
+}
+
+// acquire reserves a slot for ip, returning false when a cap is reached.
+func (l *connLimiter) acquire(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.total >= l.maxTotal || l.perIP[ip] >= l.maxPerIP {
+		return false
+	}
+	l.total++
+	l.perIP[ip]++
+	return true
+}
+
+func (l *connLimiter) release(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.total--
+	if l.perIP[ip] <= 1 {
+		delete(l.perIP, ip)
+	} else {
+		l.perIP[ip]--
+	}
 }
 
 func NewWSServer(h *Handlers, be Service.Service) *WSServer {
 	return &WSServer{
 		h: h, be: be,
-		upg: websocket.Upgrader{CheckOrigin: allowedWSOrigin},
+		upg:   websocket.Upgrader{CheckOrigin: allowedWSOrigin},
+		conns: newConnLimiter(maxWSConns, maxWSConnsPerIP),
 	}
+}
+
+// clientIP resolves the caller's IP the same way the gatekeeper does, falling
+// back to the socket address when no gatekeeper is configured.
+func (s *WSServer) clientIP(r *http.Request) string {
+	if s.gate != nil {
+		return s.gate.ClientIP(r)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (s *WSServer) Serve(addr string) error {
@@ -80,8 +144,7 @@ func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWS)
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr: addr,
 		// Pre-upgrade hardening, mirroring http_server.go's own timeouts
 		// (JMDN-V3-013): without these, this listener had no connection-level
 		// bound at all -- a slowloris-style client could hold the handshake
@@ -102,9 +165,19 @@ func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MiB, matching http_server.go
 	}
+	// Same security policy as the HTTP JSON-RPC endpoint (eth_rpc): rate
+	// limits, auth type and TLS. The middleware sees the upgrade request;
+	// handleWS charges each subsequent message.
+	tlsEnabled, gate, err := gatekeeper.ConfigureNetHTTPServer(srv, settings.ServiceEthRPC, &settings.Get().Security, nil)
+	if err != nil {
+		return fmt.Errorf("ws: configure security: %w", err)
+	}
+	s.gate = gate
+	srv.Handler = gate.Wrap(settings.ServiceEthRPC, mux)
+
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
 	}()
 
 	select {
@@ -140,6 +213,13 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	ip := s.clientIP(r)
+	if !s.conns.acquire(ip) {
+		http.Error(w, "too many websocket connections", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.conns.release(ip)
+
 	rawConn, err := s.upg.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -176,8 +256,12 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// Log incoming WebSocket message
-		log.Printf("🔌 WS Message: %s", string(data))
+		// Every message counts against the client's eth_rpc rate limit, the
+		// same budget as an HTTP JSON-RPC call.
+		if !s.gate.AllowRequest(ctx, settings.ServiceEthRPC, ip) {
+			_ = conn.WriteJSON(RespErr(nil, -32005, "rate limit exceeded"))
+			continue
+		}
 
 		var req Request
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -274,7 +358,6 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 		// regular RPC via WS
 		resp, _ := s.h.Handle(ctx, req)
-		log.Printf("📤 WS Response: %s -> %+v", req.Method, resp)
 		_ = conn.WriteJSON(resp)
 	}
 }

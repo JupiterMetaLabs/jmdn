@@ -1,6 +1,7 @@
 package gatekeeper
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -39,6 +40,22 @@ func NewNetHTTPMiddleware(cfg *settings.SecurityConfig, rl Limiter, l *ion.Ion) 
 		ipExtractor: NewIPExtractor(cfg),
 		logger:      l,
 	}
+}
+
+// ClientIP returns the client IP for r using the configured proxy trust rules.
+func (m *NetHTTPMiddleware) ClientIP(r *http.Request) string {
+	return m.ipExtractor.GetClientIPFromRequest(r)
+}
+
+// AllowRequest charges one request from clientIP against serviceName's
+// limits. Long-lived connections (WebSocket) use it per message, since the
+// middleware itself only sees the upgrade request. Returns true when
+// limiting is disabled.
+func (m *NetHTTPMiddleware) AllowRequest(ctx context.Context, serviceName, clientIP string) bool {
+	if m == nil || m.rateLimiter == nil || (m.config != nil && !m.config.Enabled) {
+		return true
+	}
+	return m.rateLimiter.Allow(ctx, serviceName, clientIP)
 }
 
 // Wrap returns an http.Handler that enforces security policy for the given service,
