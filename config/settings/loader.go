@@ -179,6 +179,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("network.mempool", d.Network.Mempool)
 	v.SetDefault("network.yggdrasil", d.Network.Yggdrasil)
 	v.SetDefault("network.heartbeat_interval", d.Network.HeartbeatInterval)
+	// Registered so JMDN_NETWORK_ENVIRONMENT reaches it (AutomaticEnv only
+	// covers keys viper already knows).
+	v.SetDefault("network.environment", d.Network.Environment)
 
 	// Ports
 	v.SetDefault("ports.api", d.Ports.API)

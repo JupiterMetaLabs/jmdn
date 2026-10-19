@@ -1,6 +1,6 @@
 # JMDN Node Configuration
 # Place at ./jmdn.yaml or /etc/jmdn/jmdn.yaml
-# Env vars override with JMDN_ prefix (e.g. JMDN_NODE_CHAIN_ID=7000700)
+# Env vars override with JMDN_ prefix (e.g. JMDN_NETWORK_CHAIN_ID=7000700)
 
 # ── Node Identity ────────────────────────────────────────
 node:
@@ -8,8 +8,12 @@ node:
 
 # ── Networking ───────────────────────────────────────────
 network:
-  chain_id: 7000700
-  seednode: ""
+  chain_id: 7000700           # mainnet. Testnet is 8000800 (see jmdn_testnet.yaml).
+  # mainnet turns on the production safety locks (consensus and security
+  # posture checks refuse to boot on fail-open settings). A non-mainnet
+  # environment on chain_id 7000700 refuses to boot.
+  environment: mainnet
+  seednode: ""                # REQUIRED: seed node address (host:port)
   mempool: ""
   yggdrasil: true
   heartbeat_interval: 10  # seconds
@@ -143,6 +147,12 @@ consensus:
   # First block height that catch-up sync requires to carry a committee certificate
   # (1 for a chain certified from genesis). 0 = unset. Required under production posture.
   sync_certificate_required_from: 0
+  # REQUIRED: the seed authority dela/bls public key (hex), distributed out of
+  # band. Pins the committee snapshot signer; the sequencer peer ID is learned
+  # from the same signed snapshot once the seed signs it.
+  seed_authority_bls_pub: ""
+  # Optional: pin the sequencer peer ID explicitly (wins over the seed value).
+  sequencer_pinned_peer_id: ""
   flags:
     committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
     committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.
@@ -180,9 +190,11 @@ security:
   cert_dir: "certs"
   ip_cache_size: 10000
 
-  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense)
-  global_rate_limit: 0
-  global_burst: 0
+  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense).
+  # The public JSON-RPC is unauthenticated by design, so this is its abuse
+  # control; 0 disables it and fails the production security posture check.
+  global_rate_limit: 50
+  global_burst: 100
 
   # Cloud Native / Load Balancer Support
   trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
@@ -212,8 +224,8 @@ security:
     eth_rpc:
       tls: false            # Public endpoint
       auth_type: "none"
-      rate_limit: 0
-      burst: 0
+      rate_limit: 20        # per IP, req/s
+      burst: 40
 
     # 3. Block Ingest/Sequencer (Internal - Token Auth)
     block_ingest_http:
