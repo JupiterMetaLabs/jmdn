@@ -37,6 +37,7 @@ func poolOf(t *testing.T, n, k int) []blsMember {
 // over k=7 → threshold 5 → quorum.
 func TestVerifySyncedBlockCertificate_PoolWideFallbackAcceptsSealingCommitteeOutsideLegacyCap(t *testing.T) {
 	enableV2(t)
+	pinTrustSequencer(t, false)
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002128")
 	const height = 2128
@@ -72,6 +73,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackAcceptsSealingCommitteeOut
 // verifier's (what the operator sees in the apply error).
 func TestVerifySyncedBlockCertificate_PoolWideFallbackKeepsThreshold(t *testing.T) {
 	enableV2(t)
+	pinTrustSequencer(t, false)
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002129")
 	const height = 2129
@@ -95,6 +97,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackKeepsThreshold(t *testing.
 // valid block-bound signatures from unregistered keys stay at 0.
 func TestVerifySyncedBlockCertificate_PoolWideFallbackIgnoresNonPoolSigners(t *testing.T) {
 	enableV2(t)
+	pinTrustSequencer(t, false)
 	_ = poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002130")
 	const height = 2130
@@ -116,6 +119,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackIgnoresNonPoolSigners(t *t
 // pool-wide either (same binding rule as the live verifier).
 func TestVerifySyncedBlockCertificate_PoolWideFallbackEnforcesKeyBinding(t *testing.T) {
 	enableV2(t)
+	pinTrustSequencer(t, false)
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002131")
 	const height = 2131
@@ -140,6 +144,7 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackEnforcesKeyBinding(t *test
 // to before (the fallbacks are never consulted).
 func TestVerifySyncedBlockCertificate_LegacyPassUnchanged(t *testing.T) {
 	enableV2(t)
+	pinTrustSequencer(t, false)
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002132")
 	const height = 2132
@@ -159,10 +164,15 @@ func TestVerifySyncedBlockCertificate_LegacyPassUnchanged(t *testing.T) {
 
 // ── trust_sequencer_certificate (testnet stopgap) ───────────────────────────────
 
-func trustSequencer(t *testing.T) {
+func trustSequencer(t *testing.T) { pinTrustSequencer(t, true) }
+
+// pinTrustSequencer fixes TrustSequencerCertificate for one test. Its compiled
+// default is ON (testnet), so a test that is about the real quorum check must
+// pin it OFF; otherwise one valid vote passes and the test proves nothing.
+func pinTrustSequencer(t *testing.T, on bool) {
 	t.Helper()
 	prev := TrustSequencerCertificate
-	TrustSequencerCertificate = true
+	TrustSequencerCertificate = on
 	t.Cleanup(func() { TrustSequencerCertificate = prev })
 }
 
@@ -253,5 +263,79 @@ func TestTrustSequencerCertificate_OffIsPassThrough(t *testing.T) {
 	got, err = relaxForTrustedSequencer("x", CertificateResult{}, errVerifierUnavailable, nil, "", "", 1)
 	if err == nil || got.Reached {
 		t.Fatalf("flag off must not swallow verifier errors: (%+v, %v)", got, err)
+	}
+}
+
+// The gate is a pure function of whether committee anchoring is configured.
+// This is the deterministic check: it does not depend on any seat draw.
+func TestPoolWideSyncFallbackAllowed_FollowsAnchoringConfig(t *testing.T) {
+	withAnchorSettings(t, 0, 20)
+	if !poolWideSyncFallbackAllowed() {
+		t.Fatal("anchoring off: the pool-wide bridge must stay available (testnet behaviour is unchanged)")
+	}
+	withAnchorSettings(t, 20, 20)
+	if poolWideSyncFallbackAllowed() {
+		t.Fatal("anchoring configured: the pool-wide bridge must be closed")
+	}
+	withAnchorSettings(t, 20, 0)
+	if !poolWideSyncFallbackAllowed() {
+		t.Fatal("a zero epoch length leaves anchoring off, so the bridge stays available")
+	}
+}
+
+// End to end at an UNANCHORED height (activation far above it), so the anchored
+// branch of the verifier is not taken and only the fallbacks differ. Turning
+// anchoring on must leave exactly the legacy-then-seated result: the pool-wide
+// tally may not add acceptance.
+//
+// The expected value is computed independently from the same two checks the
+// verifier runs before the fallback, so the test never depends on which voters
+// the seat draw happens to favour: no skip, no coincidence. If those two checks
+// already accept the votes, the gate is not exercised by this case and the test
+// says so in its log; the predicate test above still covers the gate.
+func TestVerifySyncedBlockCertificate_PoolWideFallbackClosedOnceAnchoringConfigured(t *testing.T) {
+	enableV2(t)
+	pinTrustSequencer(t, false)
+	members := poolOf(t, 10, 7)
+	const height = 2150
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002150")
+	testBlockConsensusHash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000f0f").Hex()
+	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
+
+	// p5..p9: outside the legacy alphabetical cap (p0..p6) for four of five signers.
+	var votes []BLS_Signer.BLSresponse
+	for i := 5; i < 10; i++ {
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
+	}
+
+	// Anchoring off (default settings): the existing bridge behaviour.
+	off, err := VerifySyncedBlockCertificate(block, votes)
+	if err != nil || !off.Reached {
+		t.Fatalf("precondition: with anchoring off these five pool signers must be accepted: (%+v, %v)", off, err)
+	}
+
+	// Anchoring configured, activation far above this height.
+	withAnchorSettings(t, 5000, 20)
+	if periodIsAnchored(EpochForHeight(height)) {
+		t.Fatal("test setup: height must stay below the anchored start")
+	}
+
+	legacy, lerr := VerifyCertificate(votes, hash.Hex(), testBlockConsensusHash, height)
+	want, werr := legacy, lerr
+	rc := RoundContextForBlock(block)
+	if seated, serr := VerifyCertificateForRound(votes, hash.Hex(), testBlockConsensusHash, height, rc); serr == nil && seated.Reached {
+		want, werr = seated, nil
+	}
+
+	got, gerr := VerifySyncedBlockCertificate(block, votes)
+	if (werr == nil) != (gerr == nil) || got != want {
+		t.Fatalf("with anchoring configured the result must be exactly legacy-then-seated: want (%+v, %v), got (%+v, %v)", want, werr, got, gerr)
+	}
+	if !want.Reached {
+		if got.Reached {
+			t.Fatalf("pool-wide fallback accepted with anchoring configured: %+v", got)
+		}
+	} else {
+		t.Logf("the legacy or seated check already accepts these votes at this height; the gate was not exercised by this case (see the predicate test)")
 	}
 }

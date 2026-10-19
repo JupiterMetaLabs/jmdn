@@ -69,6 +69,13 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if TrustSequencerCertificate {
 		off = append(off, "TrustSequencerCertificate (consensus.flags.trust_sequencer_certificate / JMDN_TRUST_SEQUENCER_CERT) — validators skip the 2f+1 re-check")
 	}
+	// Without a committee anchor a node cannot reproduce the committee a past
+	// block was sealed under, so catch-up has nothing exact to verify against.
+	// Production refuses to boot in that state rather than rely on a weaker
+	// certificate check for synced blocks.
+	if CommitteeV2Enabled && !CommitteeAnchoringEnabled() {
+		off = append(off, "committee anchoring (consensus.committee_anchor_activation_height is 0 or consensus.committee_epoch_blocks is 0) — a synced block's committee cannot be proven without an anchor")
+	}
 	if !RejectLegacyVotes {
 		off = append(off, "RejectLegacyVotes (JMDN_REJECT_LEGACY_VOTES)")
 	}
