@@ -274,7 +274,7 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 	// jmdn has no explicit "production" flag; Network.Environment == "mainnet"
 	// is the safe default (see config/settings). Reflection exposes the full
 	// service/method surface, so restrict it to non-mainnet environments.
-	if settings.Get().Network.Environment != "mainnet" {
+	if settings.GRPCReflectionAllowed() {
 		reflection.Register(grpcServer)
 	}
 

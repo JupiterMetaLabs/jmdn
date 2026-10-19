@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"gossipnode/config/settings"
 	"net"
 	"strings"
 
@@ -88,8 +89,10 @@ func StartGRPC(ctx context.Context, port int, router *Router) error {
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Enable reflection for debugging
-	reflection.Register(grpcServer)
+	// Reflection lists every method; never on mainnet.
+	if settings.GRPCReflectionAllowed() {
+		reflection.Register(grpcServer)
+	}
 
 	// Handle shutdown when context is cancelled
 	go func() {

@@ -33,7 +33,8 @@ ports:
   api: 8090        # Explorer HTTP API (internal monitoring — see Security below)
   blockgen: 0      # Disabled — sequencer only
   blockgrpc: 0     # Disabled — sequencer only
-  cli: 15053       # CLI admin (localhost only — see binds below)
+  cli: 0           # CLI admin — disabled: it has no authentication. Enable only for
+                   # local maintenance (e.g. 15053) and keep binds.cli on 127.0.0.1.
   did: 15052       # DID service
   facade: 8545     # Ethereum JSON-RPC
   ws: 8546         # WebSocket RPC
