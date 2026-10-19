@@ -211,6 +211,15 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 			}
 		}
 
+		// The payload's node_id is self-declared. Accept only messages whose
+		// publisher is authenticated (signed GossipSub envelope) and equals
+		// node_id, so one peer cannot submit sync data in another buddy's
+		// name. Messages from the custom gossip transport carry a
+		// self-declared sender and are not accepted here.
+		if !gossipMsg.SenderAuthenticated || crdtSyncMsg.NodeID != gossipMsg.Sender.String() {
+			return
+		}
+
 		// Skip our own messages
 		if crdtSyncMsg.NodeID == listenerNode.PeerID.String() {
 			return

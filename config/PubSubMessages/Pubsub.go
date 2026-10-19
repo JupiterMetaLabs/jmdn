@@ -20,6 +20,11 @@ type GossipMessage struct {
 	Timestamp int64             `json:"timestamp"`          // Unix timestamp
 	TTL       int               `json:"ttl"`                // Time to live (hop count)
 	Metadata  map[string]string `json:"metadata,omitempty"` // Additional metadata
+
+	// SenderAuthenticated is true only when Sender was taken from a signed
+	// libp2p GossipSub envelope (msg.GetFrom under StrictSign). Never
+	// serialized, so a message decoded from the wire always starts false.
+	SenderAuthenticated bool `json:"-"`
 }
 
 // ChannelAccess represents access control for a channel

@@ -9,6 +9,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
@@ -132,6 +133,30 @@ func (equivocationReputationReporter) ReportEquivocation(peerID, blockHash strin
 	triggerImmediateReputationPush()
 }
 
+// verifiedEquivocationReporter forwards an equivocation verdict only after
+// confirming it from signature-verified votes. ConvergeAndCompact reports
+// before it compacts, so the votes are still in the CRDT at this point.
+// An unconfirmed verdict is logged and dropped: it means the CRDT held vote
+// records for the peer whose signatures do not verify, i.e. records someone
+// else wrote under that peer's name.
+type verifiedEquivocationReporter struct {
+	inner  avcvotes.EquivocationReporter
+	verify func(peerID, blockHash string, height uint64) bool
+}
+
+func (r verifiedEquivocationReporter) ReportEquivocation(peerID, blockHash string, height uint64, values []int8) {
+	if !r.verify(peerID, blockHash, height) {
+		log.Warn().
+			Str("peer_id", peerID).
+			Str("block_hash", blockHash).
+			Uint64("height", height).
+			Interface("values", values).
+			Msg("[VoteCRDTCompaction] equivocation not confirmed by verified signatures — not reported")
+		return
+	}
+	r.inner.ReportEquivocation(peerID, blockHash, height, values)
+}
+
 // startVoteCRDTCompactionHook launches the background compactor with the
 // production debounce window and K, and returns the fire-and-forget hook to
 // chain into DB_OPs.SetLatestBlockAdvanceHook alongside the seed pusher.
@@ -203,8 +228,14 @@ func compactConvergedVotes(ctx context.Context, tip, k uint64) {
 	// A4-COMPLETION-LLD.md §2: reporter is live (was nil through Stage 6's
 	// initial rollout — see equivocationReputationReporter's doc comment
 	// for the confirmation this follow-up step refers to).
+	reporter := verifiedEquivocationReporter{
+		inner: equivocationReputationReporter{},
+		verify: func(peerID, blockHash string, height uint64) bool {
+			return Structs.SignedEquivocation(listenerNode.VoteCRDTLayer, height, blockHash, peerID, authorized)
+		},
+	}
 	evaluated, deleted, err := avcvotes.DefaultWatermark.ConvergeAndCompact(
-		listenerNode.VoteCRDTLayer, tip, k, authorized, equivocationReputationReporter{})
+		listenerNode.VoteCRDTLayer, tip, k, authorized, reporter)
 	if err != nil {
 		log.Warn().Err(err).Uint64("tip", tip).Uint64("k", k).Msg("[VoteCRDTCompaction] ConvergeAndCompact failed")
 		return

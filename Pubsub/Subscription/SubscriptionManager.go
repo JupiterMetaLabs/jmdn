@@ -251,12 +251,13 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 
 			// Convert to GossipMessage format
 			gossipMsg := &PubSubMessages.GossipMessage{
-				ID:        msg.ID,
-				Topic:     topic,
-				Data:      &messageData,
-				Sender:    msg.GetFrom(),
-				Timestamp: time.Now().UTC().UnixNano(),
-				TTL:       0,
+				ID:                  msg.ID,
+				Topic:               topic,
+				Data:                &messageData,
+				Sender:              msg.GetFrom(),
+				SenderAuthenticated: true,
+				Timestamp:           time.Now().UTC().UnixNano(),
+				TTL:                 0,
 			}
 
 			messageCount++

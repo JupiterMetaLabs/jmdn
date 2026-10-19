@@ -297,12 +297,13 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 
 	// Convert to our GossipMessage format
 	gossipMsg := &PubSubMessages.GossipMessage{
-		ID:        msg.ID,
-		Topic:     "", // Will be set by caller
-		Data:      &messageData,
-		Sender:    msg.GetFrom(),
-		Timestamp: time.Now().UTC().UnixNano(),
-		TTL:       0,
+		ID:                  msg.ID,
+		Topic:               "", // Will be set by caller
+		Data:                &messageData,
+		Sender:              msg.GetFrom(),
+		SenderAuthenticated: true,
+		Timestamp:           time.Now().UTC().UnixNano(),
+		TTL:                 0,
 	}
 
 	// Call the handler
