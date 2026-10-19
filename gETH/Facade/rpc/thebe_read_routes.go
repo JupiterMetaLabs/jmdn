@@ -55,7 +55,7 @@ func (s *HTTPServer) thebeListAccounts(c *gin.Context) {
 	defer cancel()
 	rows, err := s.cassata.ListAccounts(ctx, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, rows)
@@ -79,7 +79,7 @@ func (s *HTTPServer) thebeGetAccount(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, a)
@@ -99,7 +99,7 @@ func (s *HTTPServer) thebeGetAccountNonce(c *gin.Context) {
 	defer cancel()
 	nonce, err := s.cassata.GetNextNonceByAddress(ctx, addr)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -126,7 +126,7 @@ func (s *HTTPServer) thebeAccountTransactions(c *gin.Context) {
 	defer cancel()
 	rows, err := s.cassata.ListTransactionsByAddress(ctx, addr, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, rows)
@@ -145,7 +145,7 @@ func (s *HTTPServer) thebeListBlocks(c *gin.Context) {
 	defer cancel()
 	rows, err := s.cassata.ListBlocks(ctx, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, rows)
@@ -168,7 +168,7 @@ func (s *HTTPServer) thebeGetBlock(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, b)
@@ -187,7 +187,7 @@ func (s *HTTPServer) thebeBlockTransactions(c *gin.Context) {
 	defer cancel()
 	rows, err := s.cassata.ListTransactionsByBlock(ctx, n)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, rows)
@@ -210,7 +210,7 @@ func (s *HTTPServer) thebeBlockZKProof(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, z)
@@ -233,7 +233,7 @@ func (s *HTTPServer) thebeBlockSnapshot(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, snap)
@@ -257,7 +257,7 @@ func (s *HTTPServer) thebeGetTx(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, t)
@@ -276,7 +276,7 @@ func (s *HTTPServer) thebeListSnapshots(c *gin.Context) {
 	defer cancel()
 	rows, err := s.cassata.ListSnapshots(ctx, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalErrorMessage(c.Request.Context(), err)})
 		return
 	}
 	c.JSON(http.StatusOK, rows)

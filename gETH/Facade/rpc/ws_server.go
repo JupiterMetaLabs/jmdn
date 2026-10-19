@@ -291,7 +291,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			case "newHeads":
 				ch, stop, err := s.be.SubscribeNewHeads(ctx)
 				if err != nil {
-					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
+					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
 				storeSub(subs, &mu, sid, stop)
@@ -311,7 +311,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				ch, stop, err := s.be.SubscribeLogs(ctx, &q)
 				if err != nil {
-					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
+					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
 				storeSub(subs, &mu, sid, stop)
@@ -324,7 +324,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 			case "newPendingTransactions":
 				ch, stop, err := s.be.SubscribePendingTxs(ctx)
 				if err != nil {
-					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
+					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
 				storeSub(subs, &mu, sid, stop)

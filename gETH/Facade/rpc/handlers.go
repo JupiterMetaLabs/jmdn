@@ -720,7 +720,7 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 
 func finish(req Request, v any, err error) (Response, error) {
 	if err != nil {
-		return RespErr(req.ID, -32000, err.Error()), nil
+		return RespErr(req.ID, -32000, publicErrorMessage(context.Background(), err)), nil
 	}
 	return RespOK(req.ID, v), nil
 }
