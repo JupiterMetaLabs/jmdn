@@ -3,11 +3,13 @@ package compiler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -21,6 +23,48 @@ type CompiledContract struct {
 	Name             string   `json:"name"`
 	Path             string   `json:"path"`
 	Errors           []string `json:"errors,omitempty"`
+}
+
+// Limits on solc invocations. Compilation is reachable from the public
+// JSON-RPC (solc_compile), and each call forks a solc process that can run
+// for a long time on crafted input.
+const (
+	// MaxSourceBytes bounds the Solidity source accepted for one compile.
+	MaxSourceBytes = 512 << 10
+	// MaxConcurrentSolc bounds solc processes running at once.
+	MaxConcurrentSolc = 2
+	// SolcTimeout bounds a single solc run; the process is killed after it.
+	SolcTimeout = 30 * time.Second
+)
+
+// ErrCompilerBusy is returned when every solc slot is in use.
+var ErrCompilerBusy = errors.New("compiler busy: too many concurrent compilations, retry later")
+
+var solcSlots = make(chan struct{}, MaxConcurrentSolc)
+
+// solcCommand is the executable invoked; overridable in tests.
+var solcCommand = "solc"
+
+// runSolc runs solc on a standard-json input file under the concurrency and
+// time limits. It fails fast with ErrCompilerBusy instead of queueing, so a
+// burst of requests cannot pile up waiting goroutines.
+func runSolc(inputPath string) ([]byte, error) {
+	select {
+	case solcSlots <- struct{}{}:
+	default:
+		return nil, ErrCompilerBusy
+	}
+	defer func() { <-solcSlots }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), SolcTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, solcCommand, "--standard-json", inputPath)
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("solc timed out after %s", SolcTimeout)
+	}
+	return out, err
 }
 
 // CompileSolidity compiles Solidity source files
@@ -38,6 +82,9 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	sourceCode, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read source file: %w", err)
+	}
+	if len(sourceCode) > MaxSourceBytes {
+		return nil, fmt.Errorf("source too large: %d bytes (max %d)", len(sourceCode), MaxSourceBytes)
 	}
 
 	// Create a standard JSON input.
@@ -107,8 +154,7 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	}
 
 	// Run solc compiler with standard JSON input
-	cmd := exec.Command("solc", "--standard-json", inputFile.Name())
-	output, err := cmd.CombinedOutput()
+	output, err := runSolc(inputFile.Name())
 	if err != nil {
 		logger().Error(context.Background(), "Solc execution failed", err,
 			ion.String("output", string(output)))

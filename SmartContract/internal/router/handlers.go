@@ -33,6 +33,9 @@ import (
 // CompileContract compiles Solidity source code
 func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract, error) {
 	logger().Debug(context.Background(), "Compiling Solidity contract")
+	if len(sourceCode) > compiler.MaxSourceBytes {
+		return nil, fmt.Errorf("source too large: %d bytes (max %d)", len(sourceCode), compiler.MaxSourceBytes)
+	}
 
 	// Write source to temp file
 	tmpFile, err := os.CreateTemp("", "contract-*.sol")
