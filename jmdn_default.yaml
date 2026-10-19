@@ -160,6 +160,7 @@ consensus:
     allow_new_receiver_accounts: true       # JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS (lenient). Create unknown receivers at apply.
     block_gossip: true                      # JMDN_BLOCK_GOSSIP (lenient). Block propagation over gossipsub.
     finalize_cert_only: false               # JMDN_FINALIZE_CERT_ONLY (lenient). Committee receives header+certificate at finalize instead of the full block (it already holds the proposal). Enable only once every validator runs a build with this flag.
+    trust_sequencer_certificate: false     # JMDN_TRUST_SEQUENCER_CERT (lenient). Accept a received block below 2f+1 when >= f+1 eligible votes verify. Testnet stopgap only; refused under production posture.
     vote_crdt_compact_k: 3                  # JMDN_VOTE_CRDT_COMPACT_K (uint). Rounds kept behind tip; floored at 2.
 
 # ── Reputation (observe-only) ───────────────────────────

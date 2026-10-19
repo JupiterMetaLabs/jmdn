@@ -277,7 +277,7 @@ func DefaultConfig() NodeConfig {
 				EmitCommitteeBLS:             true,
 				AllowNewReceiverAccounts:     true,
 				BlockGossip:                  true,
-				TrustSequencerCertificate:    true,
+				TrustSequencerCertificate:    false,
 				FinalizeCertOnly:             false, // committee gets header+certificate instead of the full block; needs the whole committee on this build
 				VoteCRDTCompactK:             3,
 			},

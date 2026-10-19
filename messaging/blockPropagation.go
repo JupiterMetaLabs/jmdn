@@ -310,6 +310,19 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
+	// With block gossip on, validators never relay blocks over this stream, so
+	// the only legitimate direct sender is the sequencer. Enforced when a
+	// sequencer is pinned. With gossip off, validators forward blocks here and
+	// the sender is a relay; the certificate gate below still applies.
+	if EnableBlockGossip {
+		if ok, _ := AuthorizeBlockSender(remotePeer); !ok {
+			metrics.BlocksRejectedCounter.WithLabelValues("sender_not_sequencer", "direct").Inc()
+			broadcastLogger().Warn(context.Background(), "Dropping direct block message not sent by the pinned sequencer",
+				ion.String("peer", remotePeer), ion.String("type", msg.Type))
+			return
+		}
+	}
+
 	HandleReceivedBlockMessage(msg, remotePeer, true)
 }
 
@@ -836,9 +849,6 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		// Fail closed - most likely this node hasn't processed the
 		// TimeoutCertificate that advanced Period for this height yet. See
 		// ErrPeriodNotSynced's doc comment.
-		if relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, rcErr, responses, blockHashHex, consensusHashHex, height); rerr == nil && relaxed.Reached {
-			return nil
-		}
 		return reject("period_not_synced",
 			"round context unavailable (fail closed): %v", rcErr)
 	}

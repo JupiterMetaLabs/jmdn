@@ -61,12 +61,13 @@ var (
 
 	// TrustSequencerCertificate — TESTNET STOPGAP, FAIL-OPEN. See
 	// settings.ConsensusFlags.TrustSequencerCertificate. When true a validator
-	// accepts a received block's certificate without re-checking the 2f+1
-	// quorum, provided at least one block-bound +1 from a seed-registered
-	// validator verifies. Applied ONLY on the receiving paths
-	// (verifyBlockCertificate, ProcessBlockLocally, VerifySyncedBlockCertificate);
-	// the sequencer's own gate (Sequencer.Consensus) never consults it.
-	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", true)
+	// accepts a received block's certificate below the 2f+1 quorum, provided at
+	// least f+1 block-bound +1 votes from eligible (non-blocklisted) validators
+	// verify. Never applied when the verifier itself errored. Applied ONLY on
+	// the receiving paths (verifyBlockCertificate, ProcessBlockLocally,
+	// VerifySyncedBlockCertificate); the sequencer's own gate
+	// (Sequencer.Consensus) never consults it. Default OFF.
+	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", false)
 
 	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
 	// members count, and an eligibility source MUST be configured. FAIL CLOSED:
@@ -608,44 +609,43 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consens
 
 // relaxForTrustedSequencer is the single place TrustSequencerCertificate takes
 // effect. Given a receive-path verifier outcome (res, err) for a block's
-// certificate, it returns that outcome unchanged when the flag is off or the
-// quorum was reached. Otherwise it re-counts the certificate against the whole
-// fleet-eligible pool (uncapped, no local blocklist; shared signature and
-// peer_id↔bls_pub rules) and, if at least ONE block-bound +1 verifies, marks
-// the certificate Reached and logs the override at WARN with both tallies.
-//
-// Why one real vote: it proves a registered validator saw and signed exactly
-// this block hash/height/chain in a real round, so arbitrary peers cannot
-// inject blocks — the trust extended is to the sequencer's quorum DECISION,
-// not to the block's existence. Zero verifying votes stays a rejection.
+// certificate, it returns that outcome unchanged when the flag is off, the
+// quorum was reached, or the verifier returned an error (an error means the
+// committee could not be resolved — accepting then would trust a certificate
+// nobody checked). Otherwise it re-counts the certificate against the
+// eligible pool for the block's selection period, with the local blocklist
+// applied, and accepts only if at least f+1 distinct block-bound +1 votes
+// verify, where f is derived from the committee size the verifier used. f+1
+// guarantees at least one honest signer under the BFT assumption, so a single
+// (or f colluding) validator keys cannot finalize a block on their own.
 func relaxForTrustedSequencer(path string, res CertificateResult, err error, responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
 	if !TrustSequencerCertificate {
 		return res, err
 	}
-	if err == nil && res.Reached {
-		return res, nil
+	if err != nil || res.Reached {
+		return res, err
 	}
-	pool, perr := FleetEligibleForEpoch(EpochForHeight(height), false)
+	pool, perr := eligibleMembersUncappedForEpoch(EpochForHeight(height), false)
 	if perr != nil || len(pool) == 0 {
 		return res, err
 	}
+	n := res.CommitteeSize
+	if n <= 0 {
+		n = committeeSizeLimit()
+	}
+	if n <= 0 || n > len(pool) {
+		n = len(pool)
+	}
+	need := (n-1)/3 + 1 // f+1
 	yes := countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
-	if yes < 1 {
+	if yes < need {
 		return res, err
 	}
-	k := committeeSizeLimit()
-	if k <= 0 || k > len(pool) {
-		k = len(pool)
-	}
-	out := CertificateResult{CommitteeSize: k, Threshold: ByzantineQuorum(k), YesVotes: yes, Reached: true}
-	evt := log.Warn().Str("path", path).Uint64("height", height).
-		Int("pool_verified_yes", yes).Int("pool_size", len(pool)).Int("threshold_not_enforced", out.Threshold)
-	if err != nil {
-		evt = evt.Str("verifier_error", err.Error())
-	} else {
-		evt = evt.Int("verifier_yes", res.YesVotes).Int("verifier_threshold", res.Threshold).Int("verifier_committee", res.CommitteeSize)
-	}
-	evt.Msg("certificate accepted on SEQUENCER TRUST (trust_sequencer_certificate): 2f+1 quorum NOT re-verified on this node")
+	out := CertificateResult{CommitteeSize: n, Threshold: ByzantineQuorum(n), YesVotes: yes, Reached: true}
+	log.Warn().Str("path", path).Uint64("height", height).
+		Int("pool_verified_yes", yes).Int("required_f_plus_1", need).Int("pool_size", len(pool)).
+		Int("verifier_yes", res.YesVotes).Int("verifier_threshold", res.Threshold).Int("verifier_committee", res.CommitteeSize).
+		Msg("certificate accepted on SEQUENCER TRUST (trust_sequencer_certificate): f+1 verified, 2f+1 quorum NOT re-verified on this node")
 	return out, nil
 }
 

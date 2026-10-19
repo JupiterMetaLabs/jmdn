@@ -822,12 +822,9 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			// Fail closed - most likely this node hasn't processed the
 			// TimeoutCertificate that advanced Period for this height yet. See
 			// ErrPeriodNotSynced's doc comment.
-			res, err = relaxForTrustedSequencer("process_block_locally", CertificateResult{}, rcErr, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
-			if err != nil || !res.Reached {
-				broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
-					ion.String("block_hash", block.BlockHash.Hex()))
-				return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
-			}
+			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
+				ion.String("block_hash", block.BlockHash.Hex()))
+			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
 		} else {
 			res, err = VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
 			res, err = relaxForTrustedSequencer("process_block_locally", res, err, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)

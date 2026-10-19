@@ -165,28 +165,51 @@ func trustSequencer(t *testing.T) {
 	t.Cleanup(func() { TrustSequencerCertificate = prev })
 }
 
-// With the flag on, ONE verifying block-bound +1 from a registered validator is
-// enough for a received block's certificate: the quorum is the sequencer's call.
-func TestTrustSequencerCertificate_SingleRegisteredVoteAccepts(t *testing.T) {
+// With the flag on, a below-quorum certificate is accepted only with f+1
+// verifying block-bound +1 votes from eligible validators (k=7 → f=2 → 3). One
+// or two keys cannot finalize a block, and a verifier error is never relaxed.
+func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	enableV2(t)
 	trustSequencer(t)
 	members := poolOf(t, 10, 7)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002140")
 	const height = 2140
-	votes := []BLS_Signer.BLSresponse{members[9].blockVoteAt(t, hash.Hex(), 1, height)}
+	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash}
 
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	var votes []BLS_Signer.BLSresponse
+	for i := 7; i < 10; i++ { // signers outside the legacy alphabetical cap
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
+	}
+
+	for n := 1; n <= 2; n++ {
+		got, err := VerifySyncedBlockCertificate(block, votes[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Reached {
+			t.Fatalf("%d vote(s) must not be accepted (need f+1=3): %+v", n, got)
+		}
+	}
+	got, err := VerifySyncedBlockCertificate(block, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Reached || got.YesVotes != 1 {
-		t.Fatalf("trusted-sequencer mode must accept one registered block-bound vote: %+v", got)
+	if !got.Reached || got.YesVotes != 3 {
+		t.Fatalf("f+1=3 verifying votes must be accepted in trusted mode: %+v", got)
 	}
-	// The same helper the live receive path uses, fed a verifier error (e.g.
-	// round context unavailable): still accepted on the one real vote.
+
+	// A verifier error (e.g. round context unavailable) is preserved even
+	// with enough votes: nothing was verified, so nothing is trusted.
 	relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, ErrPeriodNotSynced, votes, hash.Hex(), "", height)
-	if rerr != nil || !relaxed.Reached {
-		t.Fatalf("verifier error must be overridden by a real registered vote: (%+v, %v)", relaxed, rerr)
+	if rerr == nil || relaxed.Reached {
+		t.Fatalf("a verifier error must never be relaxed: (%+v, %v)", relaxed, rerr)
+	}
+}
+
+// The compiled default is OFF.
+func TestTrustSequencerCertificate_DefaultOff(t *testing.T) {
+	if settings.DefaultConfig().Consensus.Flags.TrustSequencerCertificate {
+		t.Fatal("trust_sequencer_certificate must default to false")
 	}
 }
 

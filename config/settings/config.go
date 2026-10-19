@@ -222,9 +222,10 @@ type ConsensusFlags struct {
 	// validator does NOT re-verify the 2f+1 committee quorum of a block it
 	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the
 	// sequencer's commit decision is trusted once the certificate carries at
-	// least one cryptographically valid block-bound +1 from a seed-registered
-	// validator. The sequencer's OWN quorum gate is unaffected — it still needs
-	// 2f+1 votes before it commits. Exists only because an unanchored node
+	// least f+1 cryptographically valid block-bound +1 votes from eligible,
+	// non-blocklisted validators (so at least one honest validator signed it).
+	// A verifier error is never relaxed. The sequencer's OWN quorum gate is
+	// unaffected — it still needs 2f+1 votes before it commits. Exists only because an unanchored node
 	// cannot reproduce a past block's seated committee (six "3/5 over committee
 	// 7" incidents, 2026-10-13..15); remove once committee anchoring is active.
 	// Refused under production posture.
