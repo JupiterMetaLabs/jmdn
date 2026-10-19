@@ -19,6 +19,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/roundlock"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -1793,14 +1794,20 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// both existing for one round. See internal/roundlock.
 	roundReservedHere := false
 	if targetBlockHash != "" {
-		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod)
+		// Bind the reservation to the block only for an ACCEPT result: a
+		// reject result does not attest to the block.
+		lockHash := ""
+		if result == 1 {
+			lockHash = roundlock.BoundHash(targetBlockHash)
+		}
+		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod, lockHash)
 		if err != nil {
-			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for a round this node already timed out",
+			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result: this node already signed a timeout or a different block for this round",
 				ion.Uint64("block_number", targetBlockNumber),
 				ion.Uint64("period", targetPeriod),
 				ion.String("error", err.Error()),
 				ion.String("function", "MessagePassing.handleVoteResultRequest"))
-			writeRawError(s, `{"error":"round timed out: this node signed a timeout vote for this round","vote_result":0}`, config.Delimiter)
+			writeRawError(s, `{"error":"round already signed: this node signed a timeout vote or a different block for this round","vote_result":0}`, config.Delimiter)
 			return
 		}
 		// F-9: only a reservation THIS call created may be released below. A

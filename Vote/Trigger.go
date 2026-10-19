@@ -14,6 +14,7 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/consensus/adapters"
+	"gossipnode/internal/roundlock"
 	"gossipnode/internal/votecheck"
 
 	"time"
@@ -120,6 +121,23 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 // import messaging: messaging imports Vote). Nil = no catch-up nudge.
 var GapCatchUpHook func(fromBlock uint64)
 
+// reserveAcceptVote records that this node is voting ACCEPT for blockHash at
+// (height, period), refusing if it already accepted a different block there.
+func reserveAcceptVote(height, period uint64, blockHash string) error {
+	if !roundlock.HashBindingEnabled {
+		return nil
+	}
+	ok, _, takenHash, _, err := roundlock.Votes.TryLockHash(
+		roundlock.Round{Height: height, Period: period}, roundlock.Block, blockHash)
+	if err != nil {
+		return fmt.Errorf("vote lock: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("vote lock: already voted for block %s at height %d period %d", takenHash, height, period)
+	}
+	return nil
+}
+
 func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
@@ -172,6 +190,17 @@ func (vt *VoteTrigger) SubmitVote() error {
 		if posErr := checkVoteChainPosition(zkBlock); posErr != nil {
 			status = false
 			err = posErr
+		}
+	}
+
+	// One ACCEPT per round: never vote for two different blocks at the same
+	// (height, period), even if each one individually extends the tip. The
+	// reservation is durable, so a restart does not reopen the round. A store
+	// error abstains (rejects), like the chain-position guard above.
+	if status && err == nil {
+		if lockErr := reserveAcceptVote(zkBlock.BlockNumber, zkBlock.Period, blockHash); lockErr != nil {
+			status = false
+			err = lockErr
 		}
 	}
 

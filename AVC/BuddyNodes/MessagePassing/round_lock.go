@@ -21,9 +21,15 @@ var roundLedger = roundlock.Default
 // whose signing attempt then FAILS must call unlockBlockResultRound below ONLY
 // when fresh is true - on a re-entry an earlier attempt owns the reservation
 // and may already have shipped a signature (F-9). See TryLockFresh.
-func lockBlockResultRound(height, period uint64) (fresh bool, err error) {
-	ok, taken, fresh := roundLedger.TryLockFresh(roundlock.Round{Height: height, Period: period}, roundlock.Block)
+func lockBlockResultRound(height, period uint64, blockHash string) (fresh bool, err error) {
+	ok, taken, takenHash, fresh, lerr := roundLedger.TryLockHash(roundlock.Round{Height: height, Period: period}, roundlock.Block, blockHash)
+	if lerr != nil {
+		return false, lerr
+	}
 	if !ok {
+		if taken == roundlock.Block {
+			return false, fmt.Errorf("round (height %d, period %d) already signed for block %s", height, period, takenHash)
+		}
 		return false, fmt.Errorf("round (height %d, period %d) already signed as %s", height, period, taken)
 	}
 	return fresh, nil

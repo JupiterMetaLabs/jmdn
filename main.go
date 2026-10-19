@@ -65,6 +65,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/roundlock"
 	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -867,6 +868,8 @@ func main() {
 	// component (and before ValidateProductionConsensusPosture) reads the
 	// package-level flag variables. A SET legacy env var still wins.
 	applyConsensusFlags(cfg)
+	// One-block-per-round binding is safe only when rounds can advance.
+	roundlock.HashBindingEnabled = messaging.TimeoutCertWiringEnabled
 
 	// Apply CLI flag overrides (only flags explicitly passed on command line)
 	flag.Visit(func(f *flag.Flag) {
@@ -1311,6 +1314,12 @@ func main() {
 		// without going through a PooledConnection.
 		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
+
+		// Per-round signing reservations (block result / timeout, and this
+		// node's ACCEPT votes) persist in the sync-state KV so a restart cannot
+		// be used to sign a round twice.
+		roundlock.Default.SetStore(DB_OPs.ConsensusLockStore{}, "roundlock:")
+		roundlock.Votes.SetStore(DB_OPs.ConsensusLockStore{}, "votelock:")
 
 		// One-shot ThebeSync backfill: retro-stamp ZKBlock.AccountNonces onto blocks
 		// written before that advisory field was persisted, so catch-up can create

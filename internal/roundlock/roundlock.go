@@ -28,13 +28,22 @@
 // TimeoutVote with Period p+1 is the claim "round p timed out", so the
 // timeout signer locks round p.
 //
-// Scope: in-memory. A process restart forgets the locks. That matches the
-// PeriodStore and SlotStore it sits beside (also in-memory, documented in
-// messaging/slot_store.go); durable persistence belongs with that task.
-// Memory is bounded by pruning rounds far below the highest height seen.
+// A Block reservation is also bound to the block hash being signed, so a node
+// never signs two different blocks for the same round.
+//
+// Scope: in memory, plus a durable Store when SetStore is called (main wires
+// the node's sync-state KV), so a restart cannot be used to sign a round a
+// second time. Memory is bounded by pruning rounds far below the highest
+// height seen; pruned rounds are re-read from the store.
 package roundlock
 
-import "sync"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+)
 
 // Side is what a node signed for a round.
 type Side uint8
@@ -69,18 +78,116 @@ type Round struct {
 // window; a round that old has long since committed or been superseded.
 const retainHeights = 1024
 
-// Ledger records, per round, which side this node has signed.
-type Ledger struct {
-	mu        sync.Mutex
-	signed    map[Round]Side
-	maxHeight uint64
+// entry is what this node signed for one round: the side and, for a block
+// signature, which block.
+type entry struct {
+	side Side
+	hash string
 }
 
-// NewLedger returns an empty ledger.
-func NewLedger() *Ledger { return &Ledger{signed: make(map[Round]Side)} }
+// Store persists ledger entries so a restart cannot be used to sign a round
+// twice. Get returns (nil, nil) for an absent key.
+type Store interface {
+	Get(key string) ([]byte, error)
+	Put(key string, value []byte) error
+}
+
+// Ledger records, per round, which side this node has signed and, for a
+// block, which block hash.
+type Ledger struct {
+	mu        sync.Mutex
+	signed    map[Round]entry
+	maxHeight uint64
+
+	store  Store  // nil: in-memory only
+	prefix string // store key namespace
+}
+
+// NewLedger returns an empty in-memory ledger.
+func NewLedger() *Ledger { return &Ledger{signed: make(map[Round]entry)} }
 
 // Default is the process-wide ledger both signing sites use.
 var Default = NewLedger()
+
+// HashBindingEnabled turns on block-hash binding for Block reservations and
+// the Votes ledger. It must only be on when rounds can advance (timeout
+// certificates move Period): the sequencer re-proposes a rejected height with
+// a new block, and without a new Period every node that signed the rejected
+// candidate would refuse the replacement and the chain would stop at that
+// height. main sets it from the timeout-certificate wiring flag.
+var HashBindingEnabled = false
+
+// BoundHash returns hash when hash binding is enabled, and "" otherwise.
+func BoundHash(hash string) string {
+	if HashBindingEnabled {
+		return hash
+	}
+	return ""
+}
+
+// Votes is a separate ledger for this node's individual ACCEPT votes (one
+// block hash per round). It is independent of Default on purpose: a node
+// that voted for a block that then failed to certify must still be able to
+// sign a timeout vote for that round, or the timeout quorum could stall.
+var Votes = NewLedger()
+
+// SetStore makes the ledger durable: every reservation is written to store
+// (under prefix) before it is granted, and rounds not in memory are looked up
+// there. Call once at startup, before any signing.
+func (l *Ledger) SetStore(store Store, prefix string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.store, l.prefix = store, prefix
+}
+
+func (l *Ledger) key(r Round) string {
+	return fmt.Sprintf("%s%d:%d", l.prefix, r.Height, r.Period)
+}
+
+func encodeEntry(e entry) []byte { return []byte(fmt.Sprintf("%d:%s", e.side, e.hash)) }
+
+func decodeEntry(raw []byte) (entry, bool) {
+	s := string(raw)
+	i := strings.IndexByte(s, ':')
+	if i <= 0 {
+		return entry{}, false
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil || (Side(n) != Block && Side(n) != Timeout) {
+		return entry{}, false
+	}
+	return entry{side: Side(n), hash: s[i+1:]}, true
+}
+
+// lookupLocked returns the entry for r from memory, falling back to the
+// store. Caller holds l.mu.
+func (l *Ledger) lookupLocked(r Round) (entry, bool, error) {
+	if e, ok := l.signed[r]; ok {
+		return e, true, nil
+	}
+	if l.store == nil {
+		return entry{}, false, nil
+	}
+	raw, err := l.store.Get(l.key(r))
+	if err != nil {
+		return entry{}, false, err
+	}
+	if len(raw) == 0 {
+		return entry{}, false, nil
+	}
+	e, ok := decodeEntry(raw)
+	if !ok {
+		// An unreadable record is treated as "something was signed": refuse
+		// rather than risk signing a round twice.
+		return entry{side: Block, hash: "\x00unreadable"}, true, nil
+	}
+	l.signed[r] = e
+	return e, true, nil
+}
+
+// ErrStore is returned when a reservation could not be read or persisted.
+// The caller must not sign.
+var ErrStore = errors.New("roundlock: store unavailable")
 
 // TryLock records that this node is about to sign side for round r. It
 // returns ok=true when the node may sign (nothing signed yet for r, or the
@@ -116,25 +223,74 @@ func (l *Ledger) TryLock(r Round, side Side) (ok bool, taken Side) {
 // compare-and-delete cannot catch it because the side matches; only knowing
 // that step 3 was a re-entry can.
 func (l *Ledger) TryLockFresh(r Round, side Side) (ok bool, taken Side, fresh bool) {
+	ok, taken, _, fresh, _ = l.TryLockHash(r, side, "")
+	return ok, taken, fresh
+}
+
+// TryLockHash is TryLockFresh that also binds a block reservation to one
+// block hash: a second Block reservation for the same round with a different
+// non-empty hash is refused, so this node never signs two different blocks
+// for one round. hash is ignored for the Timeout side. On a store error the
+// reservation is refused (ok=false, err=ErrStore-wrapped).
+func (l *Ledger) TryLockHash(r Round, side Side, hash string) (ok bool, taken Side, takenHash string, fresh bool, err error) {
+	if side != Block {
+		hash = ""
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if prev, exists := l.signed[r]; exists {
-		return prev == side, prev, false
+	prev, exists, lerr := l.lookupLocked(r)
+	if lerr != nil {
+		return false, 0, "", false, fmt.Errorf("%w: %v", ErrStore, lerr)
 	}
-	l.signed[r] = side
+	if exists {
+		if prev.side != side {
+			return false, prev.side, prev.hash, false, nil
+		}
+		if side == Block && hash != "" && prev.hash != "" && prev.hash != hash {
+			return false, prev.side, prev.hash, false, nil
+		}
+		if side == Block && prev.hash == "" && hash != "" {
+			// An unbound reservation (taken before hashes were recorded) is
+			// bound to the first hash that asks.
+			prev.hash = hash
+			if perr := l.persistLocked(r, prev); perr != nil {
+				return false, 0, "", false, perr
+			}
+			l.signed[r] = prev
+		}
+		return true, prev.side, prev.hash, false, nil
+	}
+	e := entry{side: side, hash: hash}
+	if perr := l.persistLocked(r, e); perr != nil {
+		return false, 0, "", false, perr
+	}
+	l.signed[r] = e
 	if r.Height > l.maxHeight {
 		l.maxHeight = r.Height
 		l.pruneLocked()
 	}
-	return true, side, true
+	return true, side, hash, true, nil
+}
+
+func (l *Ledger) persistLocked(r Round, e entry) error {
+	if l.store == nil {
+		return nil
+	}
+	if err := l.store.Put(l.key(r), encodeEntry(e)); err != nil {
+		return fmt.Errorf("%w: %v", ErrStore, err)
+	}
+	return nil
 }
 
 // Signed reports which side, if any, this node has signed for r.
 func (l *Ledger) Signed(r Round) (Side, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	s, ok := l.signed[r]
-	return s, ok
+	e, ok, err := l.lookupLocked(r)
+	if err != nil {
+		return 0, false
+	}
+	return e.side, ok
 }
 
 // Release undoes a lock this node itself acquired via TryLock(r, side) but
@@ -177,8 +333,13 @@ func (l *Ledger) Signed(r Round) (Side, bool) {
 func (l *Ledger) Release(r Round, side Side) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if prev, exists := l.signed[r]; exists && prev == side {
+	if prev, exists := l.signed[r]; exists && prev.side == side {
 		delete(l.signed, r)
+		if l.store != nil {
+			// Best effort: if this fails the round stays reserved on disk,
+			// which only costs liveness for this round, never safety.
+			_ = l.store.Put(l.key(r), []byte{})
+		}
 	}
 }
 

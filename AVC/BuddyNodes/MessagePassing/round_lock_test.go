@@ -19,18 +19,18 @@ func TestLockBlockResultRound_RefusedAfterTimeout(t *testing.T) {
 	l := withFreshRoundLedger(t)
 	l.TryLock(roundlock.Round{Height: 848, Period: 0}, roundlock.Timeout)
 
-	if _, err := lockBlockResultRound(848, 0); err == nil {
+	if _, err := lockBlockResultRound(848, 0, "0xaa"); err == nil {
 		t.Fatalf("a buddy must not sign a block result for a round it already timed out")
 	}
 	// The next period is a new round and must be signable.
-	if _, err := lockBlockResultRound(848, 1); err != nil {
+	if _, err := lockBlockResultRound(848, 1, "0xaa"); err != nil {
 		t.Fatalf("block result for the next period must be allowed: %v", err)
 	}
 }
 
 func TestLockBlockResultRound_BlocksLaterTimeoutAndIsIdempotent(t *testing.T) {
 	l := withFreshRoundLedger(t)
-	fresh, err := lockBlockResultRound(900, 2)
+	fresh, err := lockBlockResultRound(900, 2, "0xaa")
 	if err != nil {
 		t.Fatalf("first block result must be allowed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestLockBlockResultRound_BlocksLaterTimeoutAndIsIdempotent(t *testing.T) {
 	// F-9: a retry is allowed, but must NOT report fresh - the reservation
 	// belongs to the first attempt, which may already have shipped a
 	// signature. Only fresh=true callers may release on a sign failure.
-	retryFresh, err := lockBlockResultRound(900, 2)
+	retryFresh, err := lockBlockResultRound(900, 2, "0xaa")
 	if err != nil {
 		t.Fatalf("a retried vote-result request for the same round must be allowed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestRoundLedger_DefaultIsSharedWithTimeoutSigner(t *testing.T) {
 func TestUnlockBlockResultRound_FreesTheRoundAfterAFailedSign(t *testing.T) {
 	l := withFreshRoundLedger(t)
 
-	if _, err := lockBlockResultRound(848, 0); err != nil {
+	if _, err := lockBlockResultRound(848, 0, "0xaa"); err != nil {
 		t.Fatalf("first reservation must succeed: %v", err)
 	}
 
@@ -107,13 +107,13 @@ func TestUnlockBlockResultRound_DoesNotClearAGenuineTimeoutLock(t *testing.T) {
 func TestF9_RetryFailureMustNotReopenTheRound(t *testing.T) {
 	l := withFreshRoundLedger(t)
 
-	fresh1, err := lockBlockResultRound(777, 0) // first request
+	fresh1, err := lockBlockResultRound(777, 0, "0xaa") // first request
 	if err != nil || !fresh1 {
 		t.Fatalf("setup: fresh1=%v err=%v", fresh1, err)
 	}
 	// its BLS sign SUCCEEDS - a signature ships.
 
-	fresh2, err := lockBlockResultRound(777, 0) // retried request
+	fresh2, err := lockBlockResultRound(777, 0, "0xaa") // retried request
 	if err != nil {
 		t.Fatalf("setup: retry must be allowed: %v", err)
 	}
