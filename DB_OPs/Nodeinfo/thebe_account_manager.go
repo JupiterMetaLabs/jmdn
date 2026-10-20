@@ -335,17 +335,26 @@ func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountN
 // ─── thebeNonceIter ─────────────────────────────────────────────────────────
 
 // MODULE: DB_OPs/Nodeinfo (thebeNonceIter)
-// PURPOSE: offset-based iterator that pages all accounts from SQL (ThebeDB) in ascending created_at order.
+// PURPOSE: keyset iterator that pages all accounts from SQL (ThebeDB) in the
+// canonical ascending LOWER(address) order, for serving FastSync AccountSync.
 //
 // CORE DATA STRUCTURES:
-//   - offset int: SQL OFFSET counter — advances by len(batch) on each NextBatch call.
+//   - after string: keyset cursor — the last address returned; "" = start.
+//     Each page is an index range scan (idx_accounts_address_lower), so a full
+//     listing is O(N). The previous OFFSET cursor re-sorted the whole table on
+//     every page (O(N^2) per sync session) and could skip or repeat accounts
+//     inserted mid-listing; a keyset cursor cannot repeat a row.
+//
+// POOL: every query runs on the SYNC task pool (DB_OPs.TaskConn(TaskSync)), so
+// however many peers sync concurrently, serving them can never take the
+// connections JSON-RPC and block apply use (accountsdb-pool-exhaustion RCA).
 //
 // DO NOT:
 //   - Add an in-memory account cache on this struct — 2.7M entries exhaust heap during sync.
 
 type thebeNonceIter struct {
 	batchSize int
-	offset    int
+	after     string
 	done      bool
 }
 
@@ -354,10 +363,10 @@ type thebeNonceIter struct {
 func (it *thebeNonceIter) TotalAccounts() (uint64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return DB_OPs.CountAccountsCtx(ctx)
+	return DB_OPs.CountAccountsConn(ctx, DB_OPs.TaskConn(DB_OPs.TaskSync))
 }
 
-// Time: O(batchSize) SQL rows; Space: O(batchSize)
+// Time: O(batchSize) SQL rows (index range scan); Space: O(batchSize)
 func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 	if it.done {
 		return nil, nil
@@ -366,7 +375,7 @@ func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	accs, err := DB_OPs.ListAccountsPaginatedCtx(ctx, it.batchSize, it.offset)
+	accs, err := DB_OPs.ListAccountsAfterCtx(ctx, DB_OPs.TaskConn(DB_OPs.TaskSync), it.after, it.batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("account nonce iterator: %w", err)
 	}
@@ -374,6 +383,9 @@ func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 		it.done = true
 		return nil, nil
 	}
+
+	// Advance the cursor from the SQL (address) order BEFORE re-sorting by nonce.
+	it.after = accs[len(accs)-1].Address.Hex()
 
 	result := make([]*types.Account, len(accs))
 	for i, acc := range accs {
@@ -384,7 +396,6 @@ func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 		return result[i].Nonce < result[j].Nonce
 	})
 
-	it.offset += len(accs)
 	if len(accs) < it.batchSize {
 		it.done = true
 	}
@@ -392,7 +403,7 @@ func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 }
 
 // GetAccountsByNonces returns accounts matching any of the given nonces via ThebeDB.
-// Time: O(|nonces|) SQL query; Space: O(|nonces|)
+// Time: O(|nonces| log N) — idx_accounts_nonce lookups; Space: O(|nonces|)
 func (it *thebeNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
 	if len(nonces) == 0 {
 		return nil, nil
@@ -401,7 +412,7 @@ func (it *thebeNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	accs, err := DB_OPs.GetAccountsByNonces(ctx, nonces)
+	accs, err := DB_OPs.GetAccountsByNoncesConn(ctx, DB_OPs.TaskConn(DB_OPs.TaskSync), nonces)
 	if err != nil {
 		return nil, fmt.Errorf("GetAccountsByNonces: %w", err)
 	}

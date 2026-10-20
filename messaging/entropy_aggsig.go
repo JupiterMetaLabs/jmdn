@@ -65,8 +65,8 @@ import (
 
 // AggCertEnabled gates the whole B1 path. Default OFF.
 //
-// Same discipline as Security.M2bHashEnabled: this adds a hash-covered field to
-// blocks, so turning it on is a coordinated fleet rollout, not a per-node
+// This adds a ConsensusHash-covered field to blocks, so turning it on is a
+// coordinated fleet rollout, not a per-node
 // choice. With it off, producers attach no certificate and verifiers ignore
 // any they receive, so a mixed fleet cannot split.
 var AggCertEnabled = os.Getenv("JMDN_AVC_AGG_CERT") == "1"

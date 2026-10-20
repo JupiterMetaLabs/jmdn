@@ -146,6 +146,20 @@ func (b *thebeBackend) ListAccountsPaginated(ctx context.Context, limit, offset 
 	return out, nil
 }
 
+// ListAccountsAfter returns a keyset page of accounts strictly after `after` in
+// canonical ascending LOWER(address) order ("" = from the start).
+func (b *thebeBackend) ListAccountsAfter(ctx context.Context, after string, limit int) ([]*store.Account, error) {
+	recs, err := b.r.ListAccountsAfter(ctx, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("backend.ListAccountsAfter(%q,%d): %w", after, limit, err)
+	}
+	out := make([]*store.Account, len(recs))
+	for i, rec := range recs {
+		out[i] = toStoreAccount(rec)
+	}
+	return out, nil
+}
+
 // CountAccounts returns the total number of account rows.
 func (b *thebeBackend) CountAccounts(ctx context.Context) (uint64, error) {
 	return b.r.CountAccounts(ctx)

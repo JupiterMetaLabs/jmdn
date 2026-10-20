@@ -948,17 +948,12 @@ func main() {
 	// import config/settings) so it is stamped onto — and signed into — the peer
 	// record when this node registers with the seed. Empty = no reward claim.
 	seednode.SetRewardAddress(cfg.Consensus.RewardAddress)
-	// Reward-split safety coupling (fail-closed): the receive-path validator
-	// recomputes FeeRecipients from the block's PrevAggCert. That is only
-	// tamper-evident when PrevAggCert is bound into the block hash, which happens
-	// ONLY under M2b hash binding. With M2b off, a relay could rewrite
-	// (PrevAggCert, FeeRecipients) consistently and the split would be accepted —
-	// letting a relay running a registered buddy inflate its own share. So refuse
-	// to start with reward-split on but M2b off. See docs/STAKING-REWARDS-DESIGN.md.
-	if cfg.Consensus.RewardSplitEnabled && !Security.M2bHashEnabled {
-		fmt.Println("Refusing to start: consensus.reward_split_enabled requires M2b block-hash binding (set JMDN_M2B_HASH=1) so PrevAggCert/FeeRecipients are tamper-evident; enable them together, network-wide.")
-		os.Exit(1)
-	}
+	// Reward-split safety has no boot-time flag coupling. On the gossip receive
+	// path (messaging.validateRemoteBlock) checkFeeRecipients recomputes
+	// FeeRecipients from the stored parent block's certificate and rejects a
+	// mismatch; FeeRecipients is NOT part of the ConsensusHash preimage, so that
+	// recompute is its only defence there. (D-40: the former JMDN_M2B_HASH gate
+	// checked nothing and was removed.)
 
 	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
 	// any fail-open consensus hardening flag has been disabled. "Production" here
@@ -1173,11 +1168,52 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "thebedb: kv store OK")
 
-		sqlEngine, err := thebeSql.NewSQLEngine(cfg.Thebe.SQLDSN)
+		// Task-wise Postgres pools (DB_OPs/task_pools.go): write / read / sync each
+		// get their own *sql.DB and budget, so peer-sync serving cannot exhaust the
+		// connections JSON-RPC and block apply need (accountsdb-pool-exhaustion RCA).
+		// The write pool replaces thebeSql.NewSQLEngine's internal pool (same
+		// open+ping), now sized by thebe.pools.write instead of PG_MAX_OPEN_CONNS.
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		writeDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskWrite, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Write})
 		if err != nil {
+			poolCancel()
 			fmt.Fprintf(os.Stderr, "FATAL thebedb: sql engine init failed: %v\n", err)
 			os.Exit(1)
 		}
+		readDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskRead, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Read})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: read pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		syncDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskSync, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Sync})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: sync pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		poolTotal := cfg.Thebe.Pools.Write + cfg.Thebe.Pools.Read + cfg.Thebe.Pools.Sync
+		if berr := DB_OPs.CheckServerConnectionBudget(poolCtx, writeDB, poolTotal); berr != nil {
+			// Warn, not fatal: the check cannot see other clients' real usage, and
+			// pools open lazily — but a shortfall means a task can hit "too many
+			// connections" under load.
+			fmt.Fprintf(os.Stderr, "WARN thebedb: %v — lower thebe.pools.* or raise Postgres max_connections\n", berr)
+		}
+		poolCancel()
+		defer readDB.Close()
+		defer syncDB.Close()
+		fmt.Fprintf(os.Stderr, "thebedb: task pools OK — write=%d read=%d sync=%d (total %d)\n",
+			cfg.Thebe.Pools.Write, cfg.Thebe.Pools.Read, cfg.Thebe.Pools.Sync, poolTotal)
+		metrics.RegisterDBTaskPools(func() []metrics.DBTaskPoolSample {
+			stats := DB_OPs.TaskPoolStats()
+			out := make([]metrics.DBTaskPoolSample, len(stats))
+			for i, st := range stats {
+				out[i] = metrics.DBTaskPoolSample{Task: string(st.Task), MaxOpen: st.MaxOpen, Stats: st.Stats}
+			}
+			return out
+		})
+
+		sqlEngine := thebeSql.NewSQLEngineFromDB(writeDB)
 		fmt.Fprintln(os.Stderr, "thebedb: sql engine OK")
 
 		db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
@@ -1298,11 +1334,18 @@ func main() {
 		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
 		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
 		// before the first GetConnection is sufficient.
-		reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
+		// Reads go to the READ task pool, not the write engine's pool.
+		reader := thebegateway.NewThebeReader(readDB, db.KV, nil)
 		// EVM event logs: KV-backed store so eth_getLogs works (it returned
 		// "LogWriter not configured" while this was nil) and so the apply path
 		// can index logs at commit time (BlockProcessing.applyContractTx).
-		thebeHandleBackend := backend.New(gw, reader, logstore.New(db.KV))
+		logStore := logstore.New(db.KV)
+		thebeHandleBackend := backend.New(gw, reader, logStore)
+		// SYNC task handle: identical backend over the sync pool. Peer-sync serving
+		// paths select it with DB_OPs.TaskConn(DB_OPs.TaskSync); writes made through
+		// it still go via the gateway (write pool).
+		syncReader := thebegateway.NewThebeReader(syncDB, db.KV, nil)
+		DB_OPs.SetTaskHandle(DB_OPs.TaskSync, backend.NewComposite(backend.New(gw, syncReader, logStore), nil))
 		config.SetGlobalHandleFactory(func() (io.Closer, error) {
 			return backend.NewComposite(thebeHandleBackend, nil), nil
 		})

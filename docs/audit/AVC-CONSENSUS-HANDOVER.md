@@ -146,7 +146,7 @@ Enabling the beacon before D-24 *used to* convert a silent divergence into a val
 - **D-39 — difficulty `T` has no fleet-agreement check.** Setting `JMDN_AVC_VDF_DIFFICULTY_T` differently on one node is undetectable: it rejects every honest peer proof *and* publishes divergent entropy into its own sink, seating committees no peer agrees with. Nothing gossips, persists or hashes `T`; `beacon.Pipeline.Difficulty()` has **zero jmdn callers**. Treat `T` as a chain parameter, not a per-host env var.
 - **D-54 — the VDF group itself is bound only implicitly.** Fix with D-39, not after it: binding `T` alone leaves two nodes on different *sourced* moduli passing `enforceModulusChainPolicy` and then rejecting each other's proofs with nothing naming the group as the cause. One fleet-checked identity = group name + modulus digest + `T`.
 
-**No longer a gate:** ~~D-38~~ — its `ConsensusHashV3Enabled` limb closed when 8872912 **deleted the flag** rather than flipping its default (the resolution this section argued for, reached by a better route). D-38's surviving limb — `AllowUnsignedValidatorVotes` absent from `ValidateProductionConsensusPosture` — is real but does not gate Stage 2.
+**No longer a gate:** ~~D-38~~ — its `ConsensusHashV3Enabled` limb closed when 8872912 **deleted the flag** rather than flipping its default (the resolution this section argued for, reached by a better route). D-38's surviving limb — `AllowUnsignedValidatorVotes` absent from `ValidateProductionConsensusPosture` — is now closed the same way: avc removed the flag entirely (commit `66c0e6c`), jmdn removed every call site alongside it, and there is no longer a capability for the posture check to guard against.
 
 Everything else in the register is independent and parallelisable.
 
@@ -222,7 +222,8 @@ DECISION  No-Go for mainnet.
           tracked as D-59.
 
           MAINNET IS UNAFFECTED by PR #135 and stays No-Go: D-26 (SEV-1),
-          D-51 (SEV-2) and the D-28 / D-38 partials are untouched by it.
+          D-51 (SEV-2) and the D-28 partial are untouched by it. (D-38 has
+          since closed in full, both limbs — see its row.)
 
 TALLY (recounted merging feat/v2-vote-crdt-cutover (#155, merged) with
 fix/d58-persist-epoch-entropy — 2026-09-24. Reflects all landed PRs up through
@@ -234,16 +235,16 @@ s.Cancel() before delete, not yet execution-verified — see that row).
 Recount whenever a row moves: Appendix C.2's
 "a register decays fastest in its summary layer".)
 
-  57 rows = 37 Fixed · 4 Partial · 1 Decided-no-change · 15 Open
+  57 rows = 38 Fixed · 3 Partial · 1 Decided-no-change · 15 Open
   (2026-10-05: +D-78/D-79/D-80 from the PR #183 review, all Fixed in its
-  follow-up commit. Recounted from the table: 57 `| **D-` rows, no duplicates.)
+  follow-up commit. Recounted from the table: 57 `| **D-` rows, no duplicates.
+  2026-10-12: D-38 moved Partial -> Fixed, both limbs closed by removal.)
 
-  Fixed (37)    D-24 D-25 D-26 D-27 D-29 D-30 D-31 D-32 D-33 D-34 D-35 D-36
-                D-37 D-39 D-41 D-51 D-54 D-57 D-58 D-60 D-61 D-62 D-63 D-64
-                D-65 D-66 D-67 D-68 D-69 D-70 D-71 D-73 D-74 D-77 D-78 D-79
-                D-80
-  Partial (4)   D-28  cert replay CLOSED, equivocation DETECTION open
-                D-38  flag deleted (a) CLOSED; posture-check gap (b) open
+  Fixed (38)    D-24 D-25 D-26 D-27 D-29 D-30 D-31 D-32 D-33 D-34 D-35 D-36
+                D-37 D-38 D-39 D-41 D-51 D-54 D-57 D-58 D-60 D-61 D-62 D-63
+                D-64 D-65 D-66 D-67 D-68 D-69 D-70 D-71 D-73 D-74 D-77 D-78
+                D-79 D-80
+  Partial (3)   D-28  cert replay CLOSED, equivocation DETECTION open
                 D-46  (b) s.cancelled honoured in Start CLOSED (#153);
                       (a) T unbounded / WithCancel not WithTimeout open
                 D-48  responder gate CLOSED (PR #154); rate limit,
@@ -256,8 +257,8 @@ Recount whenever a row moves: Appendix C.2's
 BY SEVERITY   5 + 14 + 28 + 9 + 1 = 57
   SEV-1   5   D-24✓ D-25✓ D-26✓ D-35✓ D-36✓ | ALL CLOSED — D-26 closed across
               #154 ((c)/(d)) and #155 ((a) + (b) + D-71).
-  SEV-2  14   D-27✓ D-29✓ D-37✓ D-39✓ D-51✓ D-64✓ D-67✓ D-68✓ D-70✓ D-74✓ D-77✓ D-78✓
-              | OPEN: D-28(detection), D-38(b)
+  SEV-2  14   D-27✓ D-29✓ D-37✓ D-38✓ D-39✓ D-51✓ D-64✓ D-67✓ D-68✓ D-70✓ D-74✓ D-77✓ D-78✓
+              | OPEN: D-28(detection)
   SEV-3  28   D-30✓ D-31✓ D-32✓ D-34✓ D-41✓ D-54✓ D-57✓ D-58✓ D-60✓ D-61✓ D-62✓ D-65✓ D-66✓
               D-71✓ D-73✓ D-79✓ D-56(decided) | PARTIAL: D-46 | OPEN: D-40 D-42 D-43 D-44 D-45 D-52 D-53 D-59 D-72 D-75
   SEV-4   9   D-63✓ D-69✓ D-80✓ | PARTIAL: D-48 | OPEN: D-47 D-49 D-50 D-55 D-76
@@ -400,9 +401,9 @@ SCOPE
 | **D-36** | 1 | `jmdn` | Fallback fold's Byzantine denominator taken from the block_buddy-FILTERED pool, so one operator's local blocklist moves the threshold (n=6/q=4 vs fleet n=7/q=5) → different fold subset → different seed → **different committee** | `TestAggCertQuorumIsIndependentOfLocalBlocklist` | S | `Fixed (PR #125, fleetCommitteeSnapshotFor)` |
 | **D-37** | 2 | `jmdn` | `RecoverAggSigStoreAtStartup` called ~400 lines before the committee eligibility source is wired — always returned 0, neither call-site branch printed, and the only symptom was up to 512 "parent certificate failed verification" errors that read as tampering | `TestRecoveryRefusesWhenEligibilitySourceIsUnwired` | S | `Fixed (PR #125, relocated + up-front probe)` |
 
-| **D-38** | 2 | `jmdn` | **D-28's fix ships inert.** `ConsensusHashV3Enabled` defaults FALSE on `v3base`, so `BlockNumber`/`PrevHash` are absent from the `ConsensusHash` preimage on a default node — the original D-28 exposure verbatim — and `ValidateProductionConsensusPosture` does not check the flag, so a `strict_posture`/mainnet node boots with no signal. Same gap for `avcvotes.AllowUnsignedValidatorVotes` | — | S | **(a) `Fixed` — resolved better than this row proposed.** The contested default-flip (ffdeaf7) was superseded by **8872912, which DELETED the flag entirely**: `ConsensusHashV3Enabled` now has **0 occurrences** tree-wide and the preimage is unconditional (`consensus_fields_hash.go:110-111` writes `BlockNumber` then `PrevHash`), pinned by `TestConsensusHashPreimageIsPinned`. This moots the BLOCKER-1 objection — there is no flag left to forget. The rolling-restart fork risk it warned about is **not** gone but is now a known hard cutover: a coordinated fleet restart is mandatory (see D-56, which rides on the same restart). **(b) `Open` — the second limb is untouched.** `ValidateProductionConsensusPosture` (`messaging/production_posture.go:55`) gates exactly three flags — `RejectLegacyVotes`, `EnforceCommitteeRegistry`, `EnforceBodyBinding` — and still does **not** check `avcvotes.AllowUnsignedValidatorVotes`, which is fail-open when on. Fix remains as originally recommended: add it to the posture validator and log its state at startup |
+| **D-38** | 2 | `jmdn` | **D-28's fix ships inert.** `ConsensusHashV3Enabled` defaults FALSE on `v3base`, so `BlockNumber`/`PrevHash` are absent from the `ConsensusHash` preimage on a default node — the original D-28 exposure verbatim — and `ValidateProductionConsensusPosture` does not check the flag, so a `strict_posture`/mainnet node boots with no signal. Same gap for `avcvotes.AllowUnsignedValidatorVotes` | — | S | **(a) `Fixed` — resolved better than this row proposed.** The contested default-flip (ffdeaf7) was superseded by **8872912, which DELETED the flag entirely**: `ConsensusHashV3Enabled` now has **0 occurrences** tree-wide and the preimage is unconditional (`consensus_fields_hash.go:110-111` writes `BlockNumber` then `PrevHash`), pinned by `TestConsensusHashPreimageIsPinned`. This moots the BLOCKER-1 objection — there is no flag left to forget. The rolling-restart fork risk it warned about is **not** gone but is now a known hard cutover: a coordinated fleet restart is mandatory (see D-56, which rides on the same restart). **(b) `Fixed` — closed by removal, not by adding the check.** avc deleted the unsigned normal-validator vote seam outright (commit `66c0e6c`): `AllowUnsignedValidatorVotes`, `IsUnsignedValidatorVote`, and `BlockTally.UnsignedValidatorVotes` no longer exist. jmdn removed every call site alongside it (`Vote/Trigger.go`, `Structs/Utils.go`'s `verifyTallySignatures`/`tallySigTask`, and the posture-check line this row originally asked for in `production_posture.go`). There is no longer a fail-open condition for the posture validator to guard against, so the three flags it still gates (`RejectLegacyVotes`, `EnforceCommitteeRegistry`, `EnforceBodyBinding`) are the complete, correct set again |
 | **D-39** | 2 | `jmdn` | **Difficulty `T` has no fleet-agreement check.** Validated only as non-zero; `beacon.Pipeline.Difficulty()` has **zero jmdn callers**, so `T` is never gossiped, persisted, or hashed into genesis. A node with `T′ ≠ T` rejects every honest peer proof AND publishes its own divergent value into its own sink, seating committees from entropy no peer holds — with nothing naming `T` as the cause | — | M | `Fixed (feat/vdf-fleet-identity 95bf076…49e1b66; landed WITH D-54)` — `T` is now a chain parameter: `networkPinPolicy.PinnedDifficultyT` (rsa-2048-testnet-ephemeral=476510), `InstallAVCBeaconFromEnv` refuses a divergent `T` on a pinned group, and `T` is folded into `messaging.VDFIdentityDigest` which is stamped on the boundary block, compared on adoption (`entropy_vdf_accept.go` CHECK 0, names the cause), AND hash-covered in the M2b `ConsensusHash` preimage (`Security/consensus_fields_hash.go`) so a wrong-`T` node forks fleet-wide. Tests: `messaging/vdf_identity_test.go`, `entropy_vdf_accept_identity_test.go`, `Security/consensus_fields_hash_fork_test.go` (golden regenerated, verified against a standalone go-ethereum reproduction of the old pin). **CONSENSUS FORMAT CHANGE — coordinated fleet restart** (rides Stage-2 enablement). Build gate outstanding: full `go build ./...` on a host with the dep graph (sandbox disk-limited) | |
-| **D-40** | 3 | `jmdn` | `Security.M2bHashEnabled` gates no validation anywhere (`CheckBlockHash` and `checkBodyBinding` both ignore it, by their own comments) yet `main.go:963` `os.Exit(1)`s reward-split without it — a config-triggerable hard exit whose precondition is meaningless, granting a false assurance that `PrevAggCert`/`FeeRecipients` are hash-bound. They are defended, but by the reward-split interlock and an independent recompute, not by `ConsensusHash` | — | S | `Open` |
+| **D-40** | 3 | `jmdn` | `Security.M2bHashEnabled` gates no validation anywhere (`CheckBlockHash` and `checkBodyBinding` both ignore it, by their own comments) yet `main.go:963` `os.Exit(1)`s reward-split without it — a config-triggerable hard exit whose precondition is meaningless, granting a false assurance that `PrevAggCert`/`FeeRecipients` are hash-bound. They are defended, but by the reward-split interlock and an independent recompute, not by `ConsensusHash` | — | S | `Resolved` (fix/remove-m2b-gate: gate and `M2bHashEnabled` removed) |
 | **D-41** | 3 | `jmdn` | **`resolvePendingFallbacks` still double-finalises.** D-31's claim-under-lock fix covers the decide path only; this path snapshots under the lock, releases it, then uses `delete(pendingFallback, e)` — a silent no-op on an absent key, so it removes rather than claims. Two commit hooks can both reach `notifyEpochFinalised` for one epoch and, with different seeds, trip the mix-conflict branch — emitting a false SEV-1-shaped alarm for an in-process race | — | S | `Fixed (PR #129 3d01e89, v3base 2026-09-15)` — **re-verified rev 6:** `entropy_finalise.go` now claims (deletes) before computing the seed, with a re-check that makes a second racing hook `continue`. All four error branches preserve prior retry semantics. ⚠ Commit is labelled `JMDN-V3-009`, **not D-41** — an ID search will miss it |
 | **D-42** | 3 | `jmdn` | The post-D-31 claim loop calls `epochsWithClosedRevealWindow` **once per epoch** and uses only `toDecide[0]`, rebuilding the whole list each iteration. `lastDecidedEpoch` is in-memory only, so the first block after every restart starts at 0: at 500k slots ≈ 5×10⁷ `uint64` written, synchronously inside the block-commit hook | — | S | `Open` |
 | **D-43** | 3 | `jmdn` | **A proposer can disable pull-recovery fleet-wide.** `PersistVDFProof` stores the caller's RAW bytes; `vdf.Proof.UnmarshalBinary` is `json.Unmarshal`, which ignores unknown fields. ~6.8 KB of padding clears `MaxVDFProofBytes` *after* verification succeeds, so every adopting node keeps its entropy but stores no proof and answers `Found:false` — switching off the mechanism `entropy_vdf_persist.go` exists to serve, at zero attacker cost | — | S | `Open` |
@@ -1036,7 +1037,7 @@ GATE 5 — structural (RC remedies, after the instances)
 
 **`D-26` next, and it needs the most senior reviewer.** Split it; start with the legacy ingest path (a), where the defect actually lives — and note rev 6's sharpening: that path is **default-live and ungated**, `msg.Data.Sender` is an unauthenticated JSON field, and `RejectLegacyVotes` does not cover it despite the name.
 
-**`D-38` limb (b)** is the cheapest remaining safety win and needs a decision, not much code: add `AllowUnsignedValidatorVotes` to `ValidateProductionConsensusPosture` and log its state at boot. *(Limb (a) resolved itself when 8872912 deleted the flag — this row's original recommendation, reached by a better route.)*
+**`D-38` limb (b)** is closed, the same way limb (a) was: avc deleted `AllowUnsignedValidatorVotes` outright (commit `66c0e6c`) rather than jmdn adding a check for it, and jmdn removed the now-dangling call sites alongside it. *(Limb (a) resolved itself when 8872912 deleted the flag — this row's original recommendation, reached by a better route; limb (b) follows the identical pattern.)*
 
 **`D-58`** is an easy, high-value starter for someone new: two call sites, stop discarding `PersistEpochEntropy`'s error. Durability that silently no-ops is not durability.
 

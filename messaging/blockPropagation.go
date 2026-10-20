@@ -310,6 +310,19 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
+	// With block gossip on, validators never relay blocks over this stream, so
+	// the only legitimate direct sender is the sequencer. Enforced when a
+	// sequencer is pinned. With gossip off, validators forward blocks here and
+	// the sender is a relay; the certificate gate below still applies.
+	if EnableBlockGossip {
+		if ok, _ := AuthorizeBlockSender(remotePeer); !ok {
+			metrics.BlocksRejectedCounter.WithLabelValues("sender_not_sequencer", "direct").Inc()
+			broadcastLogger().Warn(context.Background(), "Dropping direct block message not sent by the pinned sequencer",
+				ion.String("peer", remotePeer), ion.String("type", msg.Type))
+			return
+		}
+	}
+
 	HandleReceivedBlockMessage(msg, remotePeer, true)
 }
 
@@ -772,11 +785,12 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 
 	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
 	// is enabled, FeeRecipients must equal the value every node independently
-	// recomputes from the block's parent certifiers (PrevAggCert), the
-	// authenticated reward-address map, and parent-state balances — a pure function
-	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
-	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
-	// block (and its PrevAggCert, which the M2b hash covers) rides a
+	// recomputes from the STORED parent block's certifiers (PrevBlockCertSigners),
+	// the authenticated reward-address map, and parent-state balances — a pure
+	// function of already-agreed inputs. Rejecting a mismatch closes the redirect
+	// attack (a sequencer pointing fees at itself). FeeRecipients is not part of
+	// the ConsensusHash preimage, so this recompute is its only defence on this
+	// path. Placed AFTER verifyBlockCertificate so the block rides a
 	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
 	// is OFF this is skipped and the historical interlock above still applies.
 	if rewardSplitEnabled() {

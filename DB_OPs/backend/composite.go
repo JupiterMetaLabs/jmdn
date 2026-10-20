@@ -139,6 +139,10 @@ func (h *compositeHandle) ListAccountsPaginated(ctx context.Context, limit, offs
 	return h.accounts.ListAccountsPaginated(ctx, limit, offset)
 }
 
+func (h *compositeHandle) ListAccountsAfter(ctx context.Context, after string, limit int) ([]*store.Account, error) {
+	return h.accounts.ListAccountsAfter(ctx, after, limit)
+}
+
 func (h *compositeHandle) CountAccounts(ctx context.Context) (uint64, error) {
 	return h.accounts.CountAccounts(ctx)
 }

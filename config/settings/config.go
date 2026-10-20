@@ -220,9 +220,10 @@ type ConsensusFlags struct {
 	// validator does NOT re-verify the 2f+1 committee quorum of a block it
 	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the
 	// sequencer's commit decision is trusted once the certificate carries at
-	// least one cryptographically valid block-bound +1 from a seed-registered
-	// validator. The sequencer's OWN quorum gate is unaffected — it still needs
-	// 2f+1 votes before it commits. Exists only because an unanchored node
+	// least f+1 cryptographically valid block-bound +1 votes from eligible,
+	// non-blocklisted validators (so at least one honest validator signed it).
+	// A verifier error is never relaxed. The sequencer's OWN quorum gate is
+	// unaffected — it still needs 2f+1 votes before it commits. Exists only because an unanchored node
 	// cannot reproduce a past block's seated committee (six "3/5 over committee
 	// 7" incidents, 2026-10-13..15); remove once committee anchoring is active.
 	// Refused under production posture.
@@ -532,6 +533,22 @@ type ThebeConfig struct {
 	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
 	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+	// Pools are the task-wise Postgres connection budgets (DB_OPs/task_pools.go).
+	// Each task gets its own pool, so one task exhausting its budget cannot take
+	// connections from another. The sum must fit the server's max_connections.
+	Pools ThebePoolsConfig `mapstructure:"pools" yaml:"pools"`
+}
+
+// ThebePoolsConfig sizes each task's dedicated Postgres pool (max open
+// connections). Env: JMDN_THEBE_POOLS_WRITE / _READ / _SYNC.
+type ThebePoolsConfig struct {
+	// Write: ThebeDB engine — 2PC writes, outbox drain, contract-state reads.
+	Write int `mapstructure:"write" yaml:"write"`
+	// Read: process-wide reads — JSON-RPC, consensus apply, explorer, CLI.
+	Read int `mapstructure:"read" yaml:"read"`
+	// Sync: serving peers' FastSync/ThebeSync requests (account, block, header
+	// pages). Bounded small: sync is bulk, retried, and must never starve the rest.
+	Sync int `mapstructure:"sync" yaml:"sync"`
 }
 
 type ThebeCDCConfig struct {
