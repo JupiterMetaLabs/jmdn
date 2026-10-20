@@ -20,9 +20,9 @@ package messaging
 //
 // # Why it is expressed in SLOTS and not seconds
 //
-// A slot is one completed consensus round (SlotStore.AdvanceOnCommit does
-// slot += period+1); there is no wall clock in it, and a round that burned
-// timeouts advances the counter without doing more work. Deriving this
+// A slot is one committed block (slot == block number); there is no wall
+// clock in it, and failed rounds at a height cost time without advancing it,
+// which only ever gives the VDF more time, never less. Deriving this
 // deadline from an estimate of VDF runtime would therefore be both unreliable
 // AND would make a consensus-adjacent decision depend on machine speed. It
 // deliberately does neither: the node does not PREDICT whether it will finish,

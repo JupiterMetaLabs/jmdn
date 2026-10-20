@@ -729,7 +729,7 @@ func TestCheckCommitteeAnchor_BindsOnTheStoredShapeWithTypedTransactions(t *test
 	snap := signedSnapshot(t, env.auth, 500, 29, 0)
 	body, _ := json.Marshal(snap)
 	h := AnchorSnapshotHash(snap)
-	live := &config.ZKBlock{BlockNumber: 860, Slot: 900, Transactions: []config.Transaction{tx},
+	live := &config.ZKBlock{BlockNumber: 860, Slot: 860, Transactions: []config.Transaction{tx},
 		CommitteeSnapshotAnchor: string(body), CommitteeSnapshotHash: h[:]}
 	live.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(live) // the proposer's contents-based value
 

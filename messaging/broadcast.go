@@ -904,12 +904,9 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.Uint64("block_number", block.BlockNumber))
 	}
 
-	// M0.1 (Architecture §7.1) — fold this now-committed height into the
-	// live slot counter, using its OWN final Period (how many certified
-	// timeouts it burned before committing). Producer-side commit hook; see
-	// slot_store.go's header comment for the receiver-side twin and the
-	// documented live-only/no-persistence limitation.
-	DefaultSlotStore.AdvanceOnCommit(block.BlockNumber, block.Period)
+	// Producer-side commit hook: record the committed height (slot store and
+	// per-round signing ledgers). The receiver-side twin is in
+	// blockPropagation.go.
 	NoteHeightCommitted(block.BlockNumber)
 
 	// M4 §C/§D + B1 + Stage-F receive side, in one place so the live path and

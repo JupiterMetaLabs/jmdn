@@ -199,23 +199,22 @@ type EntropyBootstrapSettings struct {
 //
 // Consensus-critical flags must be identical fleet-wide; coordinate flips.
 type ConsensusFlags struct {
-	CommitteeSnapshotAnchor      bool `mapstructure:"committee_snapshot_anchor" yaml:"committee_snapshot_anchor"`             // JMDN_COMMITTEE_SNAPSHOT_ANCHOR, lenient, default off
-	CommitteeV2                  bool `mapstructure:"committee_v2" yaml:"committee_v2"`                                       // JMDN_COMMITTEE_V2, lenient, default ON (testnet fleet value)
-	RejectLegacyVotes            bool `mapstructure:"reject_legacy_votes" yaml:"reject_legacy_votes"`                         // JMDN_REJECT_LEGACY_VOTES, lenient, default on
-	EnforceCommitteeRegistry     bool `mapstructure:"enforce_committee_registry" yaml:"enforce_committee_registry"`           // JMDN_ENFORCE_COMMITTEE_REGISTRY, lenient, default on
-	EnforceBlockLinkage          bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`                     // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
-	EnforceBodyBinding           bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`                       // JMDN_ENFORCE_BODY_BINDING, lenient, default on
-	AggCert                      bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
-	EnforceSlotRecoveryGate      bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`           // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
-	SlotRecoveryPreslotMigration bool `mapstructure:"slot_recovery_preslot_migration" yaml:"slot_recovery_preslot_migration"` // JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION, exactly-1, default off
-	EnforceSyncGate              bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                             // JMDN_ENFORCE_SYNC_GATE, not-0, default on
-	EmitBlockBoundVotes          bool `mapstructure:"emit_block_bound_votes" yaml:"emit_block_bound_votes"`                   // JMDN_EMIT_BLOCK_BOUND_VOTES, not-0, default on
-	ValidatorVoterSet            bool `mapstructure:"validator_voter_set" yaml:"validator_voter_set"`                         // JMDN_VALIDATOR_VOTER_SET, lenient, default on
-	ValidatorVoteIngest          bool `mapstructure:"validator_vote_ingest" yaml:"validator_vote_ingest"`                     // JMDN_VALIDATOR_VOTE_INGEST, lenient, default on
-	EmitCommitteeBLS             bool `mapstructure:"emit_committee_bls" yaml:"emit_committee_bls"`                           // JMDN_EMIT_COMMITTEE_BLS, not-0, default on
-	AllowNewReceiverAccounts     bool `mapstructure:"allow_new_receiver_accounts" yaml:"allow_new_receiver_accounts"`         // JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS, lenient, default on
-	BlockGossip                  bool `mapstructure:"block_gossip" yaml:"block_gossip"`                                       // JMDN_BLOCK_GOSSIP, lenient, default on
-	FinalizeCertOnly             bool `mapstructure:"finalize_cert_only" yaml:"finalize_cert_only"`                           // JMDN_FINALIZE_CERT_ONLY, lenient, default off
+	CommitteeSnapshotAnchor  bool `mapstructure:"committee_snapshot_anchor" yaml:"committee_snapshot_anchor"`     // JMDN_COMMITTEE_SNAPSHOT_ANCHOR, lenient, default off
+	CommitteeV2              bool `mapstructure:"committee_v2" yaml:"committee_v2"`                               // JMDN_COMMITTEE_V2, lenient, default ON (testnet fleet value)
+	RejectLegacyVotes        bool `mapstructure:"reject_legacy_votes" yaml:"reject_legacy_votes"`                 // JMDN_REJECT_LEGACY_VOTES, lenient, default on
+	EnforceCommitteeRegistry bool `mapstructure:"enforce_committee_registry" yaml:"enforce_committee_registry"`   // JMDN_ENFORCE_COMMITTEE_REGISTRY, lenient, default on
+	EnforceBlockLinkage      bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`             // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
+	EnforceBodyBinding       bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`               // JMDN_ENFORCE_BODY_BINDING, lenient, default on
+	AggCert                  bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                       // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
+	EnforceSlotRecoveryGate  bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`   // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
+	EnforceSyncGate          bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                     // JMDN_ENFORCE_SYNC_GATE, not-0, default on
+	EmitBlockBoundVotes      bool `mapstructure:"emit_block_bound_votes" yaml:"emit_block_bound_votes"`           // JMDN_EMIT_BLOCK_BOUND_VOTES, not-0, default on
+	ValidatorVoterSet        bool `mapstructure:"validator_voter_set" yaml:"validator_voter_set"`                 // JMDN_VALIDATOR_VOTER_SET, lenient, default on
+	ValidatorVoteIngest      bool `mapstructure:"validator_vote_ingest" yaml:"validator_vote_ingest"`             // JMDN_VALIDATOR_VOTE_INGEST, lenient, default on
+	EmitCommitteeBLS         bool `mapstructure:"emit_committee_bls" yaml:"emit_committee_bls"`                   // JMDN_EMIT_COMMITTEE_BLS, not-0, default on
+	AllowNewReceiverAccounts bool `mapstructure:"allow_new_receiver_accounts" yaml:"allow_new_receiver_accounts"` // JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS, lenient, default on
+	BlockGossip              bool `mapstructure:"block_gossip" yaml:"block_gossip"`                               // JMDN_BLOCK_GOSSIP, lenient, default on
+	FinalizeCertOnly         bool `mapstructure:"finalize_cert_only" yaml:"finalize_cert_only"`                   // JMDN_FINALIZE_CERT_ONLY, lenient, default off
 	// TrustSequencerCertificate — TESTNET STOPGAP, fail-open. When on, a
 	// validator does NOT re-verify the 2f+1 committee quorum of a block it
 	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the
