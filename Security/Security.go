@@ -935,20 +935,6 @@ func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 	return common.BytesToHash(crypto.Keccak256(buf))
 }
 
-// M2bHashEnabled gates whether CheckBlockHash (and messaging.checkBodyBinding,
-// which reads this same flag) validates against the M2b six-field hash
-// (RecomputeBlockHashWithConsensusFields) instead of the legacy
-// transactions-only hash. Defaults FALSE, same rollout pattern as
-// messaging.CommitteeV2Enabled (JMDN_COMMITTEE_V2): with the flag off,
-// behavior is byte-identical to before M2b existed.
-//
-// Do NOT flip this until the block generator (JMDT-Sequencer-Orchestrator)
-// also computes BlockHash via RecomputeBlockHashWithConsensusFields. Flipping
-// only the validator side makes every real block fail this check - the
-// generator and validator must agree on the hash formula, which is exactly
-// why this is a flag (a coordinated flip) and not an automatic cutover.
-var M2bHashEnabled = envOn("JMDN_M2B_HASH", false)
-
 // CheckBlockHash recomputes the block hash and compares it to block.BlockHash.
 // Returns (true,nil) only on match. Call on the block receive path so a block
 // cannot claim a BlockHash that does not correspond to what it actually
@@ -956,14 +942,13 @@ var M2bHashEnabled = envOn("JMDN_M2B_HASH", false)
 //
 // ALWAYS transaction CONTENTS only (Keccak256 over each transaction's content
 // hash), independent of whether the per-transaction tx.Hash fields were
-// pre-verified, and independent of M2bHashEnabled.
+// pre-verified.
 //
-// This comment previously said M2bHashEnabled switched it to the six-field
-// hash. It does not, and has not since the M2b cutover was abandoned: binding
-// the consensus fields into BlockHash changed block identity and broke every
-// tx-only validator, so that binding moved to its own ConsensusHash field that
-// the v4 vote signs (Block/consensus_fields.go, Security/consensus_fields_hash.go).
-// See the inline comment in the body.
+// BlockHash is the orchestrator's transactions-only identity. The consensus
+// fields are bound by a SEPARATE field, ConsensusHash, which the v4 vote signs
+// (Block/consensus_fields.go, Security/consensus_fields_hash.go). The former
+// JMDN_M2B_HASH switch that once chose between the two formulas was removed
+// (D-40). See the inline comment in the body.
 func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")

@@ -44,10 +44,12 @@ func committedSlotHighWater() uint64 {
 }
 
 // nextPossibleSlotFn returns the lowest slot any block still to be committed
-// after tip can occupy: committed slot + the next height's certified timeouts
-// + 1 (§7.1: slot only grows). Seam for tests.
+// after tip can occupy: committed slot + 1 (§7.1: slot only grows). A failed
+// round at the next height only pushes that slot higher, so this is a lower
+// bound on every node - it can only make the finality check wait, never pass
+// early. Seam for tests.
 var nextPossibleSlotFn = func(tip uint64) uint64 {
-	return committedSlotHighWater() + DefaultPeriodStore.PeriodFor(tip+1) + 1
+	return committedSlotHighWater() + 1
 }
 
 // EntropyBoundaryCommitted reports whether this node has already committed a

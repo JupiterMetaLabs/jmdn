@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -51,33 +52,59 @@ func testBlock(n uint64) *config.ZKBlock {
 	}
 }
 
-// voteTriggerTargets must return only the committee (Buddies), never every
-// connected peer, when a committee is present — and must fall back to all
-// peers, labelled as such, only when the message carries no committee.
-func TestVoteTriggerTargets_CommitteeOnly(t *testing.T) {
+// withVoters injects the voter set voteTriggerTargets resolves for the test.
+func withVoters(t *testing.T, voters map[string]string, err error) {
+	t.Helper()
+	prev := voteTriggerVoters
+	voteTriggerVoters = func(uint64) (map[string]string, error) { return voters, err }
+	t.Cleanup(func() { voteTriggerVoters = prev })
+}
+
+// The trigger reaches every eligible validator (they VOTE) plus the committee
+// (it AGGREGATES) — and nobody else: a connected non-validator peer is skipped.
+func TestVoteTriggerTargets_VotersPlusCommittee(t *testing.T) {
 	seq := newLoopbackHost(t)
-	member := newLoopbackHost(t)
-	bystander := newLoopbackHost(t)
+	member := newLoopbackHost(t)    // committee
+	voter := newLoopbackHost(t)     // eligible validator, not seated
+	bystander := newLoopbackHost(t) // connected, not a validator
 	connect(t, seq, member)
+	connect(t, seq, voter)
 	connect(t, seq, bystander)
+	withVoters(t, map[string]string{member.ID().String(): "", voter.ID().String(): ""}, nil)
 
 	cm := PubSubMessages.NewConsensusMessageBuilder(nil).
 		SetZKBlock(testBlock(1)).
 		SetBuddies([]PubSubMessages.Buddy_PeerMultiaddr{{PeerID: member.ID(), Multiaddr: member.Addrs()[0]}})
 
 	targets, scope := voteTriggerTargets(seq, cm)
-	if scope != "committee" {
-		t.Fatalf("scope = %q, want committee", scope)
+	if scope != "committee+voters" {
+		t.Fatalf("scope = %q, want committee+voters", scope)
 	}
-	if len(targets) != 1 || targets[0] != member.ID() {
-		t.Fatalf("targets = %v, want exactly the committee member %s", targets, member.ID())
+	got := map[peer.ID]bool{}
+	for _, p := range targets {
+		got[p] = true
 	}
+	if len(targets) != 2 || !got[member.ID()] || !got[voter.ID()] {
+		t.Fatalf("targets = %v, want exactly the committee member and the voter", targets)
+	}
+	if got[bystander.ID()] {
+		t.Fatal("a non-validator peer must not receive the vote trigger")
+	}
+}
 
-	// No committee → legacy all-peers behaviour, explicitly labelled.
-	none := PubSubMessages.NewConsensusMessageBuilder(nil).SetZKBlock(testBlock(1))
-	targets, scope = voteTriggerTargets(seq, none)
-	if scope != "all-peers(no-committee)" || len(targets) != 2 {
-		t.Fatalf("fallback: scope=%q targets=%d, want all-peers(no-committee) and 2", scope, len(targets))
+// No resolvable voter set → every connected peer plus the committee (fail-open
+// delivery; who is COUNTED is enforced at tally).
+func TestVoteTriggerTargets_NoVoterSetFallsBackToAllPeers(t *testing.T) {
+	seq := newLoopbackHost(t)
+	a := newLoopbackHost(t)
+	b := newLoopbackHost(t)
+	connect(t, seq, a)
+	connect(t, seq, b)
+	withVoters(t, nil, errors.New("no snapshot"))
+	cm := PubSubMessages.NewConsensusMessageBuilder(nil).SetZKBlock(testBlock(1))
+	targets, scope := voteTriggerTargets(seq, cm)
+	if scope != "all-peers(no-voter-set)" || len(targets) != 2 {
+		t.Fatalf("fallback: scope=%q targets=%d, want all-peers(no-voter-set) and 2", scope, len(targets))
 	}
 }
 
@@ -93,6 +120,7 @@ func TestVoteTriggerTargets_DialsUnconnectedMember(t *testing.T) {
 		SetZKBlock(testBlock(1)).
 		SetBuddies([]PubSubMessages.Buddy_PeerMultiaddr{{PeerID: member.ID(), Multiaddr: member.Addrs()[0]}})
 
+	withVoters(t, map[string]string{member.ID().String(): ""}, nil)
 	targets, _ := voteTriggerTargets(seq, cm)
 	if len(targets) != 1 || targets[0] != member.ID() {
 		t.Fatalf("targets = %v, want the dialled member", targets)
@@ -161,6 +189,7 @@ func TestBroadcastVoteTrigger_StampsMaxHops(t *testing.T) {
 	cm := PubSubMessages.NewConsensusMessageBuilder(nil).
 		SetZKBlock(testBlock(7)).
 		SetBuddies([]PubSubMessages.Buddy_PeerMultiaddr{{PeerID: member.ID(), Multiaddr: member.Addrs()[0]}})
+	withVoters(t, map[string]string{member.ID().String(): ""}, nil)
 	if err := BroadcastVoteTrigger(seq, cm); err != nil {
 		t.Fatalf("BroadcastVoteTrigger: %v", err)
 	}

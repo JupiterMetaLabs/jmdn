@@ -1,8 +1,9 @@
 package messaging
 
 // M0.1 - monotonic slot counter (Architecture §7.1/§7.1b, build order M0 in
-// §9.1, distinct sub-item from M0.2 - period/timeout certificates, already
-// landed in timeout_certificates.go). M3 - EpochForSlot, the pure function
+// §9.1). A height's period - its count of failed rounds - is stamped on the
+// block by the proposer (proposer_period.go) and read back from the block
+// everywhere else. M3 - EpochForSlot, the pure function
 // that turns a slot into the selection epoch RANDAO keys on (§3.1).
 //
 // `slot` is a DIFFERENT counter from `height` and `period`:
@@ -103,13 +104,11 @@ func (s *SlotStore) Current() uint64 {
 
 // AdvanceOnCommit folds one resolved height into the slot counter. Call this
 // once, at the moment a height is durably committed, with that height's OWN
-// number and its OWN final Period value (config.ZKBlock.Period - already
-// correct thanks to M0.2's PeriodStore, which tracks exactly how many
-// certified timeouts this height burned before committing). The advance
-// amount is period+1: one unit for every timeout this height survived, plus
-// one for the commit itself - matching the §7.1 state diagram exactly,
-// without needing a second, separate live hook into the timeout-certificate
-// path (which would risk double-counting during any future catch-up work).
+// number and its OWN final Period value (config.ZKBlock.Period - the number
+// of failed rounds this height burned before committing, stamped by the
+// proposer and bound into the block's ConsensusHash). The advance amount is
+// period+1: one unit for every failed round, plus one for the commit itself -
+// matching the §7.1 state diagram, read entirely from the committed block.
 //
 // Returns (newSlot, true) if this height was newer than the last one folded
 // in and the counter advanced; (currentSlot, false) if height was equal to
@@ -145,10 +144,9 @@ func (s *SlotStore) AdvanceOnCommit(height, period uint64) (uint64, bool) {
 //
 // Call this ONCE at startup, before any commit hook can fire, with the tip
 // block's own Slot and BlockNumber. Deliberately does not touch
-// DefaultPeriodStore: the live in-flight period for whatever height hasn't
-// committed yet is correctly re-derived from scratch as the node resyncs
-// timeout certificates over gossip, not from anything that needs recovering
-// here.
+// DefaultProposerPeriods: the proposer's in-flight period for the next height
+// is not recovered from history - after a restart it starts at 0 and resumes
+// above already-signed rounds from the buddies' refusals (proposer_period.go).
 func (s *SlotStore) SeedFromCommittedTip(tipSlot, tipHeight uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,8 +162,8 @@ func (s *SlotStore) SeedFromCommittedTip(tipSlot, tipHeight uint64) bool {
 
 // DefaultSlotStore is the process-wide store the two commit hooks
 // (messaging/broadcast.go, messaging/blockPropagation.go) both advance -
-// same package-level-default pattern as DefaultPeriodStore
-// (timeout_certificates.go) and SetEquivocationStore (consensus_hardening.go).
+// same package-level-default pattern as DefaultProposerPeriods
+// (proposer_period.go) and SetEquivocationStore (consensus_hardening.go).
 var DefaultSlotStore = NewSlotStore()
 
 // LiveSlotFor returns the slot number the CURRENTLY-ACTIVE attempt at height
@@ -174,35 +172,28 @@ var DefaultSlotStore = NewSlotStore()
 //
 //   - DefaultSlotStore.Current(): every PAST height's contribution, folded in
 //     only once each height actually committed.
-//   - DefaultPeriodStore.PeriodFor(height): height's OWN already-accepted
-//     timeout certificates, live, even though none of them have committed
-//     yet - each one already advanced slot per the state diagram
-//     (TimedOut -> Cert -> slot+1, period+1) but SlotStore only folds a
-//     height's total in at its eventual commit, not per intermediate
-//     timeout. This term is exactly the part SlotStore hasn't seen yet.
+//   - DefaultProposerPeriods.PeriodFor(height): the failed rounds this
+//     height has burned so far on the proposer, live, even though the height
+//     has not committed - each one burned a slot, but SlotStore only folds a
+//     height's total in at its eventual commit (AdvanceOnCommit).
 //
-// Plus one: entering a fresh InSlot state (whether from a commit's NextNew
-// or a timeout's NextSame) always sets slot to (last resolved slot)+1 - the
-// diagram never shows a same-slot re-entry.
+// Plus one: entering a fresh round always sets slot to (last resolved
+// slot)+1 - the diagram never shows a same-slot re-entry.
 //
-// This is NOT the same as CurrentEpoch's composition by accident - both read
-// the identical two stores for the identical reason (SlotStore is
-// commit-lagged; PeriodStore is not); CurrentEpoch stops at dividing by N,
-// this stops one step earlier at the raw slot number a producer needs to
-// stamp on the block it is building RIGHT NOW for `height`.
+// Proposer-only: it stamps the block being built RIGHT NOW. Verifiers check
+// the result against the parent instead (Slot == parent.Slot + Period + 1,
+// see linkageDecision), so they never need the proposer's counter.
 func LiveSlotFor(height uint64) uint64 {
-	return DefaultSlotStore.Current() + DefaultPeriodStore.PeriodFor(height) + 1
+	return DefaultSlotStore.Current() + DefaultProposerPeriods.PeriodFor(height) + 1
 }
 
-// CurrentEpoch returns the selection epoch that is live RIGHT NOW, including
-// any in-flight (not-yet-committed) timeout churn at the next height -
-// composed from DefaultSlotStore (committed history) and DefaultPeriodStore
-// (M0.2, the live period counter for whichever height hasn't committed yet).
-// This matters because a single height can burn enough certified timeouts to
-// cross an epoch boundary before it ever commits (§3.1/§7.1) - a caller that
-// only read DefaultSlotStore.Current() would under-report the epoch until
-// the next commit finally lands. nextHeight is the height not yet committed
-// (i.e. current chain tip + 1).
+// CurrentEpoch returns the selection epoch that is live RIGHT NOW on the
+// proposer, including the failed rounds the next height has burned so far -
+// composed from DefaultSlotStore (committed history) and
+// DefaultProposerPeriods (the proposer's in-flight retry counter). A single
+// height can burn enough failed rounds to cross an epoch boundary before it
+// ever commits (§3.1/§7.1). nextHeight is the height not yet committed (i.e.
+// current chain tip + 1).
 //
 // Deliberately NOT built on LiveSlotFor's "+1": CurrentEpoch answers "what
 // epoch is live if nextHeight committed AT ITS CURRENT PERIOD right now",
@@ -210,6 +201,5 @@ func LiveSlotFor(height uint64) uint64 {
 // is for stamping the block IN FLIGHT, a slot that hasn't resolved yet and
 // so must not be counted as already-elapsed epoch progress.
 func CurrentEpoch(nextHeight uint64) uint64 {
-	pendingPeriod := DefaultPeriodStore.PeriodFor(nextHeight)
-	return EpochForSlot(DefaultSlotStore.Current() + pendingPeriod)
+	return EpochForSlot(DefaultSlotStore.Current() + DefaultProposerPeriods.PeriodFor(nextHeight))
 }

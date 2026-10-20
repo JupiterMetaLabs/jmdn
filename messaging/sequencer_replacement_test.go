@@ -20,35 +20,6 @@ import (
 // anchored at block 880, A dies, operators change sequencer_pinned_peer_id to
 // B, B (which ran as a validator until now) restarts and takes over.
 
-// 1. The timeout authority (#159) follows the pin: after the change, A can no
-// longer drive timeouts and B can.
-func TestSequencerReplacement_TimeoutAuthorityFollowsThePin(t *testing.T) {
-	privA, idA := libp2pIdentity(t)
-	privB, idB := libp2pIdentity(t)
-	const chain = 8000800
-	reqA, err := SignTimeoutRequest(privA, idA, chain, 905, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reqB, err := SignTimeoutRequest(privB, idB, chain, 905, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := VerifyTimeoutRequest(reqA, idA, chain); err != nil {
-		t.Fatalf("before the change A must be accepted: %v", err)
-	}
-	if err := VerifyTimeoutRequest(reqB, idA, chain); err == nil {
-		t.Fatalf("before the change B must be refused")
-	}
-	// operators set sequencer_pinned_peer_id = B on every node
-	if err := VerifyTimeoutRequest(reqB, idB, chain); err != nil {
-		t.Fatalf("after the change B must be accepted: %v", err)
-	}
-	if err := VerifyTimeoutRequest(reqA, idB, chain); err == nil {
-		t.Fatalf("after the change a (revived) A must be refused")
-	}
-}
-
 // 2 + 3. B recovers Period 45's pool from its own chain state, never from the
 // seed, and seats exactly the committee A would have seated for 905..919.
 func TestSequencerReplacement_BContinuesPeriod45OnTheAnchoredPool(t *testing.T) {
