@@ -358,10 +358,6 @@ func TestAnchoredPool_EveryConsumerAgreesWhateverTheSeedSays(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(tally, wantPool) {
 			t.Fatalf("buddy tally must use the anchored pool (err=%v)", err)
 		}
-		size, _, err := timeoutVotingPool(890)
-		if err != nil || size != 29 {
-			t.Fatalf("timeout pool size = %d (err=%v), want 29", size, err)
-		}
 		fleet, err := fleetCommitteeSnapshotFor(44)
 		if err != nil || len(fleet.Members) != 29 {
 			t.Fatalf("fleet snapshot must hold the 29 anchored members (err=%v)", err)
@@ -668,10 +664,6 @@ func TestAnchoredPool_HeightScopedConsumersFollowTheHeightNotTheTip(t *testing.T
 	if err != nil || len(tally) != 23 {
 		t.Fatalf("tally for height 905 must use period 45's anchored pool (23), got %d err=%v", len(tally), err)
 	}
-	size, _, err := timeoutVotingPool(905)
-	if err != nil || size != 23 {
-		t.Fatalf("timeout quorum for height 905 must be sized on period 45's pool (23), got %d err=%v", size, err)
-	}
 	fleet, err := fleetCommitteeSnapshotFor(45)
 	if err != nil || len(fleet.Members) != 23 {
 		t.Fatalf("fleet snapshot for period 45 must be its anchored pool (23), got %d err=%v", len(fleet.Members), err)
@@ -923,10 +915,7 @@ func TestVerifySyncedBlockCertificate_AnchoredPeriodUsesSeatedCommittee(t *testi
 			BlockNumber: 885, Slot: 885, Period: 0,
 			PrevHash: common.HexToHash(fmt.Sprintf("0x%064x", i+1)),
 		}
-		rc, err := RoundContextForBlock(cand)
-		if err != nil {
-			t.Fatalf("RoundContextForBlock: %v", err)
-		}
+		rc := RoundContextForBlock(cand)
 		seated, err := SelectCommittee(rc)
 		if err != nil {
 			t.Fatalf("SelectCommittee: %v", err)
@@ -999,10 +988,7 @@ func TestVerifySyncedBlockCertificate_BoundaryAdoptsProofBeforeTally(t *testing.
 		SeedEpoch: E, VdfProof: []byte(`{"Y":1,"Pi":1,"T":5,"Group":"g"}`),
 	}
 
-	rc, err := RoundContextForBlock(block)
-	if err != nil {
-		t.Fatalf("RoundContextForBlock: %v", err)
-	}
+	rc := RoundContextForBlock(block)
 	if _, err := SelectCommittee(rc); !errors.Is(err, ErrBeaconEpochUnavailable) {
 		t.Fatalf("precondition: SelectCommittee must still fail closed before adoption, got %v", err)
 	}

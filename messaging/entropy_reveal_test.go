@@ -240,7 +240,7 @@ func TestFoldBlockDeclaredReveals_RejectsBadReveals(t *testing.T) {
 func TestFoldBlockDeclaredReveals_EpochComesFromBlockSlot_NotLiveStores(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
 	priv, id := newTestIdentity(t)
-	// Deliberately leave DefaultSlotStore/DefaultPeriodStore wherever other
+	// Deliberately leave DefaultSlotStore/DefaultProposerPeriods wherever other
 	// tests left them — the epoch must come only from block.Slot.
 	withBeaconEntropy(t, map[uint64][]byte{7: fakeEntropy(0xEE, 32)})
 	wireEligibilityWithPeers(t, []string{id})

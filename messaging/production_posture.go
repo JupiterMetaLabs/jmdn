@@ -31,8 +31,6 @@ import (
 	"strings"
 
 	"gossipnode/config/settings"
-
-	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
 // IsProductionPosture reports whether this node should be treated as
@@ -80,13 +78,11 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if !EnforceBodyBinding {
 		off = append(off, "EnforceBodyBinding (JMDN_ENFORCE_BODY_BINDING)")
 	}
-	// D-38(b): avcvotes.AllowUnsignedValidatorVotes is fail-open when on — a
-	// validator's tally vote counts even without a BLS signature. It
-	// defaults off in every shipped config, but nothing stopped a production
-	// node from booting with it enabled, same shape as the three flags above.
-	if avcvotes.AllowUnsignedValidatorVotes {
-		off = append(off, "AllowUnsignedValidatorVotes (avcvotes.AllowUnsignedValidatorVotes)")
-	}
+	// D-38(b): closed by removal, not by adding this check — the unsigned
+	// normal-validator vote seam this would have guarded against
+	// (avcvotes.AllowUnsignedValidatorVotes) was removed outright in avc
+	// (commit 66c0e6c), so there is no longer a fail-open condition here to
+	// check for.
 	// D-26(d)/CON-03: the vote-result-requester gate
 	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) is always
 	// enforced now — there is no flag to be "off" for it. What CAN still be
@@ -99,6 +95,12 @@ func ValidateProductionConsensusPosture(production bool) error {
 	// worth catching at boot rather than at incident time.
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id)")
+	}
+	// Catch-up sync needs a durable height from which every block must carry a
+	// committee certificate; without it a fresh node can be served a
+	// certificate-less chain.
+	if settings.Get().Consensus.SyncCertificateRequiredFrom == 0 {
+		off = append(off, "SyncCertificateRequiredFrom (consensus.sync_certificate_required_from)")
 	}
 	if len(off) == 0 {
 		return nil

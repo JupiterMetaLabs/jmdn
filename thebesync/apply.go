@@ -59,10 +59,25 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 			block.BlockNumber, block.PrevHash.Hex(), prevHash.Hex())
 	}
 
+	// 2a. Contents: every transaction's signature recovers its sender for this
+	//     chain and its tx hash equals the hash of its contents, so BlockHash
+	//     (and the certificate signed over it) binds what the transactions
+	//     actually do — the same content gate the live receive path applies.
+	if cerr := messaging.ValidateSyncedBlockContents(ctx, block); cerr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d contents: %w", block.BlockNumber, cerr)
+	}
+
 	// 2b. Committee anchor (W1): same rule as the live receive path - an anchor
 	//     block must carry a seed-signed snapshot bound by CommitteeSnapshotHash.
 	if aerr := messaging.ValidateCommitteeAnchor(block); aerr != nil {
 		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, aerr)
+	}
+
+	// 2c. Period binding: the certificate below is checked against the
+	//     committee of the block's own Period, so a non-zero Period must be
+	//     bound by the block's ConsensusHash first.
+	if perr := messaging.CheckSyncedPeriodBinding(block); perr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, perr)
 	}
 
 	// 3. Certificate (hybrid trust). A persisted committee certificate is verified
@@ -83,8 +98,14 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 				block.BlockNumber, res.YesVotes, res.Threshold, res.CommitteeSize)
 		}
 		hasCert = true
-	} else if requireCert {
+	} else if requireCert || certificateRequired(block.BlockNumber, prevNumber) {
 		return false, fmt.Errorf("thebesync apply: block %d missing required certificate (post-activation block cannot be legacy)", block.BlockNumber)
+	}
+
+	// 3b. Post-certificate checks shared with the live path: FeeRecipients
+	//     recomputation (reward split) and the durable equivocation record.
+	if ferr := messaging.FinalizeSyncedBlockChecks(block); ferr != nil {
+		return hasCert, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, ferr)
 	}
 
 	// 4. Apply + store atomically (D-858), then verify/repair projection. Process
@@ -100,6 +121,8 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	}); perr != nil {
 		return hasCert, fmt.Errorf("thebesync apply: block %d process+store: %w", block.BlockNumber, perr)
 	}
+	// Committed: the per-round signing ledgers stop at this height.
+	messaging.NoteHeightCommitted(block.BlockNumber)
 	// B (D-65): defensive check against a PARTIALLY-projected store.
 	//
 	// NOTE (corrected post-C6): StoreZKBlock does NOT return nil on a projection
@@ -176,5 +199,6 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//    See its doc comment.
 	messaging.RecordSyncedBlockEntropy(block)
 
+	noteApplied(block.BlockNumber, hasCert)
 	return hasCert, nil
 }

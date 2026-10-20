@@ -206,8 +206,6 @@ type ConsensusFlags struct {
 	EnforceBlockLinkage          bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`                     // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
 	EnforceBodyBinding           bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`                       // JMDN_ENFORCE_BODY_BINDING, lenient, default on
 	AggCert                      bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
-	TimeoutCertWiring            bool `mapstructure:"timeout_cert_wiring" yaml:"timeout_cert_wiring"`                         // JMDN_TIMEOUT_CERT_WIRING, lenient, default off
-	TimeoutCertRejoin            bool `mapstructure:"timeout_cert_rejoin" yaml:"timeout_cert_rejoin"`                         // JMDN_TIMEOUT_CERT_REJOIN, exactly-1, default off
 	EnforceSlotRecoveryGate      bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`           // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
 	SlotRecoveryPreslotMigration bool `mapstructure:"slot_recovery_preslot_migration" yaml:"slot_recovery_preslot_migration"` // JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION, exactly-1, default off
 	EnforceSyncGate              bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                             // JMDN_ENFORCE_SYNC_GATE, not-0, default on
@@ -279,6 +277,12 @@ type ConsensusSettings struct {
 	// ValidateProductionConsensusPosture warns/fails on this being unset in
 	// a production posture — see that file.
 	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
+	// SyncCertificateRequiredFrom is the first block height that catch-up sync
+	// requires to carry a committee certificate. 1 for a chain certified from
+	// genesis; the first certified height for a chain with an older,
+	// certificate-less prefix; 0 = not set (only the parent-carries-a-certificate
+	// rule applies). Required under production posture.
+	SyncCertificateRequiredFrom uint64 `mapstructure:"sync_certificate_required_from" yaml:"sync_certificate_required_from"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	//
@@ -535,6 +539,22 @@ type ThebeConfig struct {
 	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
 	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+	// Pools are the task-wise Postgres connection budgets (DB_OPs/task_pools.go).
+	// Each task gets its own pool, so one task exhausting its budget cannot take
+	// connections from another. The sum must fit the server's max_connections.
+	Pools ThebePoolsConfig `mapstructure:"pools" yaml:"pools"`
+}
+
+// ThebePoolsConfig sizes each task's dedicated Postgres pool (max open
+// connections). Env: JMDN_THEBE_POOLS_WRITE / _READ / _SYNC.
+type ThebePoolsConfig struct {
+	// Write: ThebeDB engine — 2PC writes, outbox drain, contract-state reads.
+	Write int `mapstructure:"write" yaml:"write"`
+	// Read: process-wide reads — JSON-RPC, consensus apply, explorer, CLI.
+	Read int `mapstructure:"read" yaml:"read"`
+	// Sync: serving peers' FastSync/ThebeSync requests (account, block, header
+	// pages). Bounded small: sync is bulk, retried, and must never starve the rest.
+	Sync int `mapstructure:"sync" yaml:"sync"`
 }
 
 type ThebeCDCConfig struct {

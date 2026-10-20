@@ -33,6 +33,17 @@ const (
 	ConsensusTimeout = 90 * time.Second
 )
 
+// MaxPeriod is the highest Period any block may carry. The proposer chooses a
+// height's Period (one more after each failed round) and every other node
+// takes it from the block, so this cap is what stops a buggy or compromised
+// proposer from stamping an absurd value - which would also push the block's
+// Slot, and with it the entropy epoch, arbitrarily far ahead. At roughly one
+// minute per failed round, 1024 is about 17 hours of continuous failure at a
+// single height. Enforced by the proposer (ProposerPeriods), the buddy signer,
+// the live receive path (linkageDecision) and ThebeSync
+// (CheckSyncedPeriodBinding); changing it is a fleet-wide consensus change.
+const MaxPeriod uint64 = 1024
+
 // MaxBlockMessageBytes is the single source of truth for the maximum size of a
 // propagated block message. BOTH transports MUST use it or they silently diverge:
 // the direct libp2p stream (messaging.HandleBlockStream, io.LimitReader) and the
@@ -93,25 +104,12 @@ const (
 	RevealPushProtocol   protocol.ID = "/p2p/randao/reveal/1.0.0"
 	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/3.0.0" // v3 protocol: signed PREPARE/COMMIT + ConsensusHash/v4-vote rollout isolation
 
-	// TimeoutCertRejoinProtocol carries the rejoin/catch-up request-response
-	// RPC for M0/§7.1c's timeout certificates: a node that just synced (or
-	// restarted) asks a peer "what's your latest accepted TimeoutCertificate
-	// for height H", instead of waiting to observe one over gossip live.
-	// Added 2026-08-24 — closes the scope note in messaging/timeout_gossip.go
-	// ("a real network fetch-on-rejoin RPC ... is NOT built here"). One
-	// request, one response, both JSON+newline over a direct stream — same
-	// shape as RevealPushProtocol above, its own protocol ID for the same
-	// reason: a node that doesn't speak it fails the connection rather than
-	// silently mis-routing into another handler.
-	TimeoutCertRejoinProtocol protocol.ID = "/p2p/timeout-cert/rejoin/1.0.0"
-
 	// VDFProofRequestProtocol carries the entropy-epoch VDF proof pull: "do you
 	// have the VDF proof for entropy epoch E?".
 	//
-	// Same request-response shape and same rationale as
-	// TimeoutCertRejoinProtocol above — a node that missed the epoch-boundary
-	// block, restarted, or joined late has no other way to obtain a proof,
-	// because the proof only ever travels inside that one block.
+	// Request-response over a direct stream, JSON+newline: a node that missed
+	// the epoch-boundary block, restarted, or joined late has no other way to
+	// obtain a proof, because the proof only ever travels inside that one block.
 	//
 	// The response carries the PROOF ONLY, never entropy and never a mix: the
 	// requester verifies against its OWN independently held mix, so a lying

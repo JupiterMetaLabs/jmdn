@@ -46,8 +46,6 @@ func applyConsensusFlags(cfg *settings.NodeConfig) {
 		{"JMDN_ENFORCE_BLOCK_LINKAGE", f.EnforceBlockLinkage, func() bool { return messaging.EnforceBlockLinkage }, func(b bool) { messaging.EnforceBlockLinkage = b }},
 		{"JMDN_ENFORCE_BODY_BINDING", f.EnforceBodyBinding, func() bool { return messaging.EnforceBodyBinding }, func(b bool) { messaging.EnforceBodyBinding = b }},
 		{"JMDN_AVC_AGG_CERT", f.AggCert, func() bool { return messaging.AggCertEnabled }, func(b bool) { messaging.AggCertEnabled = b }},
-		{"JMDN_TIMEOUT_CERT_WIRING", f.TimeoutCertWiring, func() bool { return messaging.TimeoutCertWiringEnabled }, func(b bool) { messaging.TimeoutCertWiringEnabled = b }},
-		{"JMDN_TIMEOUT_CERT_REJOIN", f.TimeoutCertRejoin, func() bool { return messaging.TimeoutCertRejoinEnabled }, func(b bool) { messaging.TimeoutCertRejoinEnabled = b }},
 		// One env, two readers (messaging + MessagePassing): keep them equal.
 		{"JMDN_ENFORCE_SLOT_RECOVERY_GATE", f.EnforceSlotRecoveryGate, func() bool { return messaging.EnforceSlotRecoveryGate }, func(b bool) {
 			messaging.EnforceSlotRecoveryGate = b

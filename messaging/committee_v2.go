@@ -147,30 +147,6 @@ type RoundContext struct {
 // Round context from a block
 // ---------------------------------------------------------------------------
 
-// ErrPeriodNotSynced is returned by RoundContextForBlock when this node's
-// locally-derived Period (DefaultPeriodStore.PeriodFor) disagrees with the
-// Period the block itself claims (config.ZKBlock.Period, stamped by whoever
-// proposed it).
-//
-// This is not a cosmetic mismatch: Period feeds DeriveSeed's SeedInput, so
-// two nodes that silently used different Period values for the same height
-// would compute two different committees for the same round - the exact
-// failure PeriodStore's own struct-level comment warns about ("if any two
-// nodes ever disagreed on a height's period, they would compute two
-// different committees for the same round"). Fail closed instead: refuse to
-// build a RoundContext rather than guess which side is right.
-//
-// This is a LOCAL READINESS signal, not evidence the block is wrong - the
-// far more common case is this node simply hasn't yet processed/verified the
-// TimeoutCertificate that advanced Period for this height (gossip lag, a
-// node that just rejoined, a certificate still in flight). The fix on the
-// caller's side is to catch up - e.g. via the existing multi-peer
-// RequestLatestTimeoutCertificateFromPeers rejoin RPC (timeout_rejoin.go),
-// which independently re-verifies whatever it fetches before trusting it -
-// and retry, not to fall back to either side's claimed value unverified.
-var ErrPeriodNotSynced = errors.New(
-	"committee: local Period disagrees with the block's stamped Period (fail closed; this node may not have processed the certifying TimeoutCertificate yet)")
-
 // RoundContextForBlock is the ONE place a RoundContext is built from a block.
 //
 // Every certificate call site goes through it, for the same reason
@@ -181,37 +157,23 @@ var ErrPeriodNotSynced = errors.New(
 // because every field is read from the block itself. Nothing is read from the
 // clock. See EpochForHeight for why that matters.
 //
-// Returns ErrPeriodNotSynced (fail closed, see its own doc comment) instead
-// of a RoundContext when the block's own stamped b.Period disagrees with
-// this node's locally-verified DefaultPeriodStore value. b.Period == 0 is
-// treated as "caller doesn't track timeouts yet" (unchanged, pre-existing
-// convention - see RoundContext.Period's own doc comment) and is never
-// compared. The VALUE actually used, on a match, is still the local
-// DefaultPeriodStore read, never the block's bare claim - b.Period is
-// consulted only as a consistency check, never as the trusted source, so a
-// block cannot steer its own committee seed by lying about its Period.
-func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
+// Period is the block's own stamped b.Period. It needs no local store and no
+// catch-up: the proposer stamps it (Block/consensus_fields.go), it is part of
+// the ConsensusHash preimage (Security/consensus_fields_hash.go, enforced by
+// checkConsensusBinding), and committee votes are bound to that hash. A
+// rewritten Period therefore breaks the hash or the certificate, so a node
+// that was offline or just restarted can verify a block at any period from
+// the block alone.
+func RoundContextForBlock(b *config.ZKBlock) RoundContext {
 	if b == nil {
-		return RoundContext{}, nil
-	}
-	localPeriod := DefaultPeriodStore.PeriodFor(b.BlockNumber)
-	if b.Period != 0 && b.Period != localPeriod {
-		return RoundContext{}, fmt.Errorf("%w: height %d, local period %d, block claims period %d",
-			ErrPeriodNotSynced, b.BlockNumber, localPeriod, b.Period)
+		return RoundContext{}
 	}
 	rc := RoundContext{
 		SelectionPeriod: SelectionPeriod(EpochForHeight(b.BlockNumber)),
 		EntropyEpoch:    committee.EntropyEpoch(EpochForSlot(b.Slot)),
 		PrevHash:        b.PrevHash.Bytes(),
 		Height:          b.BlockNumber,
-		// Period is chain-derived via DefaultPeriodStore (M0,
-		// timeout_certificates.go): it advances only when a quorum-certified
-		// TimeoutCertificate lands for this height, never from a local guess.
-		// A height with no certificate yet reads back 0, matching the
-		// pre-M0 behavior for the common case where a round never times out.
-		// Cross-checked against the block's own stamped Period above -
-		// this is the verified local value, not the block's bare claim.
-		Period: localPeriod,
+		Period:          b.Period,
 	}
 
 	// Cross-node determinism check (operator-facing, not debug-only): every
@@ -228,12 +190,12 @@ func RoundContextForBlock(b *config.ZKBlock) (RoundContext, error) {
 	log.Info().
 		Uint64("height", b.BlockNumber).
 		Uint64("slot", b.Slot).
-		Uint64("period", localPeriod).
+		Uint64("period", b.Period).
 		Uint64("entropy_epoch", uint64(rc.EntropyEpoch)).
 		Uint64("selection_period", uint64(rc.SelectionPeriod)).
 		Msg("committee: round context built")
 
-	return rc, nil
+	return rc
 }
 
 // EpochForHeight maps a block height to the selection epoch.
@@ -852,10 +814,7 @@ func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_S
 		// against this node's own mix(E-1) and the pinned group and T, so a valid
 		// proof is the one correct value whoever relays it, and Publish is idempotent.
 		adoptSyncedBoundaryProof(block)
-		rc, err := RoundContextForBlock(block)
-		if err != nil {
-			return CertificateResult{}, err
-		}
+		rc := RoundContextForBlock(block)
 		return VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
 	}
 
@@ -867,14 +826,13 @@ func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_S
 	// Fallback 1: the live receive path's check.
 	if CommitteeV2Enabled {
 		adoptSyncedBoundaryProof(block)
-		if rc, rcErr := RoundContextForBlock(block); rcErr == nil {
-			if round, verr := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc); verr == nil && round.Reached {
-				log.Warn().Uint64("height", height).
-					Int("legacy_yes", legacy.YesVotes).Int("legacy_threshold", legacy.Threshold).
-					Int("seated_yes", round.YesVotes).Int("seated_threshold", round.Threshold).
-					Msg("thebesync: certificate accepted on the seated-committee check; legacy alphabetical cap fell short (unanchored period)")
-				return round, nil
-			}
+		rc := RoundContextForBlock(block)
+		if round, verr := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc); verr == nil && round.Reached {
+			log.Warn().Uint64("height", height).
+				Int("legacy_yes", legacy.YesVotes).Int("legacy_threshold", legacy.Threshold).
+				Int("seated_yes", round.YesVotes).Int("seated_threshold", round.Threshold).
+				Msg("thebesync: certificate accepted on the seated-committee check; legacy alphabetical cap fell short (unanchored period)")
+			return round, nil
 		}
 	}
 

@@ -29,8 +29,6 @@ import (
 	"gossipnode/messaging"
 	"gossipnode/seednode"
 
-	avcdatalayer "github.com/JupiterMetaLabs/avc/buddynodes/datalayer"
-	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -240,10 +238,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		if zkblock == nil {
 			return fmt.Errorf("CONSENSUSERROR.SEATORDER: nil block, cannot derive the round context (fail-closed)")
 		}
-		roundCtx, rcErr := messaging.RoundContextForBlock(zkblock)
-		if rcErr != nil {
-			return fmt.Errorf("CONSENSUSERROR.SEATORDER: round context unavailable (fail-closed): %w", rcErr)
-		}
+		roundCtx := messaging.RoundContextForBlock(zkblock)
 		seated, selErr := messaging.SelectCommittee(roundCtx)
 		if selErr != nil {
 			return fmt.Errorf("CONSENSUSERROR.SEATORDER: committee selection failed (fail-closed): %w", selErr)
@@ -1784,67 +1779,46 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	return nil
 }
 
-// voterPeerIDsForBlock returns the union of:
+// committeePeerIDsForRound returns the peers whose signed vote RESULT the
+// sequencer requests: the round's committee and nobody else.
 //
-//	a) listenerNode.BuddyNodes.Buddies_Nodes (the pre-selected committee)
-//	b) every peer whose v2 vote for (height, targetBlockHash) is already
-//	   stored — avcvotes.BlockVoteKey, a single key lookup
+// CONSENSUS DESIGN: every eligible validator VOTES (the vote trigger reaches the
+// whole voter set); only the seated committee (buddies) AGGREGATES — each buddy
+// tallies every validator vote it holds and returns its own block-bound BLS
+// signature over that tally. Those signatures form the persisted
+// CommitteeCertificate, which is also the reward source (PrevBlockCertSigners ->
+// FeeRecipients). So results must be requested from the committee only.
 //
-// This ensures CollectVoteResultsFromBuddies queries every peer that actually
-// voted, not just the peers that were enrolled at consensus-start time.
-// selfID is excluded from the result.
+// This replaces voterPeerIDsForBlock, which also queried "any peer whose vote is
+// in the CRDT". Once all validators vote again, that would ask non-committee
+// voters for results, put their signatures into the certificate and pay them a
+// committee reward. (VerifyCertificateForRound already counted only seated
+// members toward 2f+1, so the decision was unaffected — the certificate and the
+// reward were not.)
 //
-// Phase 4 (legacy-CRDT migration): this used to scan the legacy CRDT
-// (GetAllCRDTs + per-key GetSet + JSON parse over every stored peer) instead
-// of this one-key lookup — ported, not deleted outright. Whether the
-// augmentation itself is load-bearing in practice was never actually
-// measured (the legacy function had no observability on it, no log line,
-// no metric), but porting is safe regardless of that unknown: if the
-// rescue never actually fires, this costs one cheap key lookup that
-// returns nothing; if it does fire, it is now O(1) instead of O(every
-// legacy key) and correct. Bounded by v2's own compaction window
-// (JMDN_VOTE_CRDT_COMPACT_K, default 3 blocks) — a peer whose vote is
-// older than that would not be rescued, a limitation the legacy scan never
-// had but the v2 migration accepts fleet-wide.
-func voterPeerIDsForBlock(
-	listenerNode *PubSubMessages.BuddyNode,
-	height uint64,
-	targetBlockHash string,
-	selfID peer.ID,
-) []peer.ID {
+// Source: the committee carried in the round's ConsensusMessage (Buddies) — the
+// list the vote trigger and SetZKBlockData used, i.e. the seated set under
+// committee_v2. Falls back to the listener's committee list when the message
+// carries none. selfID is excluded.
+func committeePeerIDsForRound(cm *PubSubMessages.ConsensusMessage, listenerNode *PubSubMessages.BuddyNode, selfID peer.ID) []peer.ID {
 	seen := make(map[peer.ID]bool)
 	var result []peer.ID
-
-	// Always include the pre-selected committee first.
-	for _, id := range listenerNode.BuddyNodes.Buddies_Nodes {
-		if id == selfID || seen[id] {
-			continue
+	add := func(id peer.ID) {
+		if id == "" || id == selfID || seen[id] {
+			return
 		}
 		seen[id] = true
 		result = append(result, id)
 	}
-
-	// Augment with any peer whose v2 vote for this exact (height, blockHash)
-	// is already stored. Elements are "<peerID>:<vote>" (avcvotes.AddVote's
-	// own format), so a plain split suffices — no JSON parse needed.
-	if listenerNode.VoteCRDTLayer == nil {
-		return result
-	}
-	elems, ok := avcdatalayer.GetSet(listenerNode.VoteCRDTLayer, avcvotes.BlockVoteKey(height, targetBlockHash))
-	if !ok {
-		return result
-	}
-	for _, e := range elems {
-		pidStr, _, found := strings.Cut(e, ":")
-		if !found {
-			continue
+	if cm != nil {
+		for _, b := range cm.GetBuddies() {
+			add(b.PeerID)
 		}
-		pid, err := peer.Decode(pidStr)
-		if err != nil || pid == selfID || seen[pid] {
-			continue
+	}
+	if len(result) == 0 && listenerNode != nil {
+		for _, id := range listenerNode.BuddyNodes.Buddies_Nodes {
+			add(id)
 		}
-		seen[pid] = true
-		result = append(result, pid)
 	}
 	return result
 }
@@ -1873,13 +1847,11 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 		}
 	}
 
-	// Build expanded peer set: committee + any CRDT voter for this block.
-	// Peers that voted but weren't enrolled in MainPeers at consensus start
-	// would never be queried without this expansion.
+	// Committee only: buddies aggregate and sign; other validators vote but
+	// are never asked for a result (see committeePeerIDsForRound).
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	blockHeight := consensus.ZKBlockData.GetZKBlock().BlockNumber
 	selfID := consensus.Host.ID()
-	buddySet := voterPeerIDsForBlock(listenerNode, blockHeight, blockHash, selfID)
+	buddySet := committeePeerIDsForRound(consensus.ZKBlockData, listenerNode, selfID)
 
 	logger().Info(trace_ctx, "Requesting vote aggregation results from buddy nodes",
 		ion.Int("buddy_nodes", len(buddySet)),
@@ -1903,6 +1875,17 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	for _, buddyID := range buddySet {
 		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
+			// The response's PeerID is self-reported. It becomes the certificate
+			// entry and, through PrevBlockCertSigners, the reward recipient — so a
+			// committee member must not be able to answer under another peer's
+			// identity. Keep only answers that name the peer we actually asked.
+			if blsResult != nil && blsResult.PeerID != buddyID.String() {
+				logger().Warn(trace_ctx, "Dropping vote result whose PeerID does not match the queried committee member",
+					ion.String("queried", buddyID.String()),
+					ion.String("claimed", blsResult.PeerID),
+					ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
+				blsResult = nil
+			}
 			if blsResult != nil {
 				blsResultsMu.Lock()
 				blsResults = append(blsResults, *blsResult)
@@ -2139,6 +2122,25 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 }
 
 // parseVoteResultResponse parses vote result response and extracts BLS result
+// noteRoundRefusal records a buddy's refusal to sign this round (roundlock R1
+// or R2). Such a refusal is a raw error object carrying highest_period, the
+// highest period the buddy has signed at this height; the proposer's period
+// counter uses those reports when the round fails (R3). Anything else is
+// ignored. peerID is the authenticated remote of the response stream.
+func (consensus *Consensus) noteRoundRefusal(response string, peerID peer.ID) {
+	var refusal struct {
+		HighestPeriod *uint64 `json:"highest_period"`
+	}
+	if err := json.Unmarshal([]byte(response), &refusal); err != nil || refusal.HighestPeriod == nil {
+		return
+	}
+	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
+		return
+	}
+	messaging.DefaultProposerPeriods.NoteRefusal(
+		consensus.ZKBlockData.GetZKBlock().BlockNumber, peerID.String(), *refusal.HighestPeriod)
+}
+
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
 	logger_ctx := context.Background()
 	tracer := logger().Tracer("Consensus")
@@ -2154,6 +2156,8 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 	logger().Info(trace_ctx, "Parsing vote result response",
 		ion.String("peer_id", peerID.String()),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
+
+	consensus.noteRoundRefusal(response, peerID)
 
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
@@ -2355,20 +2359,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	var roundCtx messaging.RoundContext
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 		blk := consensus.ZKBlockData.GetZKBlock()
-		rc, rcErr := messaging.RoundContextForBlock(blk)
-		if rcErr != nil {
-			// Fail closed - most likely this node hasn't processed the
-			// TimeoutCertificate that advanced Period for this height yet
-			// (messaging.ErrPeriodNotSynced). Proceeding with a stale local
-			// Period would silently compute the wrong committee seed for
-			// this round, which is the exact bug this check exists to catch.
-			logger().Error(trace_ctx, "refusing consensus (fail closed): round context unavailable", rcErr,
-				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
-			consensus.setRejectSummary(
-				"round context unavailable (this node may not have caught up to the certified period for this height yet)",
-				rcErr.Error())
-			return false
-		}
+		rc := messaging.RoundContextForBlock(blk)
 		blockHashHex = blk.BlockHash.Hex()
 		consensusHashHex = blk.ConsensusHashHex()
 		blockHeight = blk.BlockNumber

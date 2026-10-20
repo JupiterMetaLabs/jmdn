@@ -21,7 +21,7 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 	var headers []*block.Header
 
 	for _, num := range blocknumbers {
-		b, err := DB_OPs.GetZKBlockByNumber(nil, num)
+		b, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), num)
 		if err != nil || b == nil {
 			continue
 		}
@@ -56,7 +56,7 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 // Time Complexity: O(N) where N is the end - start range
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockHeaderIterator) GetBlockHeadersRange(start, end uint64) ([]*block.Header, error) {
-	blocks, err := DB_OPs.GetBlocksRange(nil, start, end)
+	blocks, err := DB_OPs.GetBlocksRange(DB_OPs.TaskConn(DB_OPs.TaskSync), start, end)
 	if err != nil {
 		return nil, err
 	}

@@ -65,8 +65,8 @@ import (
 
 // AggCertEnabled gates the whole B1 path. Default OFF.
 //
-// Same discipline as Security.M2bHashEnabled: this adds a hash-covered field to
-// blocks, so turning it on is a coordinated fleet rollout, not a per-node
+// This adds a ConsensusHash-covered field to blocks, so turning it on is a
+// coordinated fleet rollout, not a per-node
 // choice. With it off, producers attach no certificate and verifiers ignore
 // any they receive, so a mixed fleet cannot split.
 var AggCertEnabled = os.Getenv("JMDN_AVC_AGG_CERT") == "1"
@@ -172,12 +172,12 @@ func VerifyAndRecordPrevCert(block *config.ZKBlock) {
 		return
 	}
 	// The parent's slot is NOT block.Slot-1. SlotStore.AdvanceOnCommit does
-	// `slot += period + 1` (§7.1: a retried round burns a slot per timeout), so
-	// a block committed at period P sits P+1 slots after its parent, not one.
+	// `slot += period + 1` (§7.1: a retried round burns a slot per failed
+	// round), so a block committed at period P sits P+1 slots after its parent,
+	// not one - verifiers enforce exactly that (linkageDecision's slot chain).
 	// Using Slot-1 would record the certificate against a slot that never had a
 	// block, silently poking a hole in the fold window on exactly the rounds
-	// that timed out. Latent while Period is pinned at 0; real the moment M0's
-	// timeout certificates start incrementing it.
+	// that failed.
 	if block.Slot < block.Period+1 {
 		return // parent predates the slot counter; nothing to attribute
 	}
