@@ -814,15 +814,16 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 
 // checkConsensusBinding verifies the SEPARATE consensus-fields digest. Unlike
 // checkBodyBinding (which binds BlockHash to transactions only), this binds the
-// six AVC consensus fields + PrevAggCert + CommitteeSnapshotHash + FeeRecipients
-// via block.ConsensusHash. It runs BEFORE certificate verification so the cert's
-// v4 signatures (which sign over ConsensusHash) are checked against a
-// confirmed-honest value, closing the post-commit rewrite of Period/FeeRecipients.
+// consensus fields (see Security.consensusFieldsDigest for the exact preimage:
+// BlockNumber, PrevHash, Slot, Period, reveals, VdfProof, epochs, PrevAggCert,
+// CommitteeSnapshotHash, VdfParamsDigest, tx content hashes) via block.ConsensusHash.
+// FeeRecipients is NOT in that preimage; checkFeeRecipients recomputes it. This
+// runs BEFORE certificate verification so the cert's v4 signatures (which sign
+// over ConsensusHash) are checked against a confirmed-honest value, closing the
+// post-commit rewrite of Period and the other hashed fields.
 //
-// Leniency for rollout: a block with a zero ConsensusHash predates the field
-// (v3/older builds). Those are not bindable on this axis and the v4 vote path
-// falls back to v3 (BlockHash-only), so a zero value is skipped, not rejected —
-// exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
+// A zero ConsensusHash is REJECTED unconditionally (consensus_hash_missing); a
+// non-zero value MUST match the recomputed digest.
 func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	if (b.ConsensusHash == common.Hash{}) {
 		// D-28: a missing ConsensusHash is REJECTED unconditionally, not just

@@ -68,11 +68,8 @@ func TestAttachAVCConsensusFields_SetsSlotAndPeriodFromLiveStores(t *testing.T) 
 	}
 }
 
-func TestAttachAVCConsensusFields_FlagOff_DoesNotTouchBlockHash(t *testing.T) {
+func TestAttachAVCConsensusFields_DoesNotTouchBlockHash(t *testing.T) {
 	resetSlotAndPeriodStores(t)
-	saved := Security.M2bHashEnabled
-	Security.M2bHashEnabled = false
-	t.Cleanup(func() { Security.M2bHashEnabled = saved })
 
 	original := common.HexToHash("0xdeadbeef")
 	block := &config.ZKBlock{BlockNumber: 0, BlockHash: original}
