@@ -41,6 +41,13 @@ CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
 CREATE INDEX IF NOT EXISTS idx_accounts_did_address
     ON accounts(did_address);
 
+-- Mirrors DB_OPs/thebeprofile/schema.go (the DDL actually executed at startup).
+CREATE INDEX IF NOT EXISTS idx_accounts_address_lower
+    ON accounts(LOWER(address), address);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_nonce
+    ON accounts(nonce);
+
 -- Safety-net only: fill updated_at with NOW() ONLY when the caller left it unset
 -- (epoch/zero). A block-derived updated_at from the consensus apply path is
 -- preserved, so the LWW gate stays deterministic across nodes. Kept in sync with

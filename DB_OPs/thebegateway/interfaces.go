@@ -93,6 +93,7 @@ type ThebeReader interface {
 	BulkGetAccounts(ctx context.Context, addresses []string) ([]*AccountRecord, error)
 	ListAccounts(ctx context.Context, limit int) ([]*AccountRecord, error)
 	ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*AccountRecord, error)
+	ListAccountsAfter(ctx context.Context, after string, limit int) ([]*AccountRecord, error)
 	CountAccounts(ctx context.Context) (uint64, error)
 	GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*AccountRecord, error)
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*TransactionRecord, error)
