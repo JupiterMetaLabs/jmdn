@@ -32,7 +32,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			continue
 		}
 
-		b, err := DB_OPs.GetZKBlockByNumber(nil, nh.BlockNumber)
+		b, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), nh.BlockNumber)
 		if err != nil {
 			b = &config.ZKBlock{BlockNumber: nh.BlockNumber}
 			if nh.Snapshot != nil && len(nh.Snapshot.BlockHash) > 0 {

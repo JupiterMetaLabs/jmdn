@@ -54,8 +54,8 @@ var EnforceSlotRecoveryGate = os.Getenv("JMDN_ENFORCE_SLOT_RECOVERY_GATE") != "0
 //
 // When set, a slotless tip at height H is seeded as slot = H. That is exact,
 // not a guess, for any pre-slot chain: AdvanceOnCommit folds (period+1) per
-// commit, the pre-slot era had no slot-tracked timeout certificates (period
-// was always effectively 0), and the slot clock starts at 0 at genesis, so the
+// commit, every pre-slot block has Period 0 (no failed round ever burned a
+// period then), and the slot clock starts at 0 at genesis, so the
 // fully-folded slot at height H is exactly H. Every node migrating the SAME
 // chain derives the SAME value (§7.1b fleet agreement holds), and while
 // H < N it lands in epoch 0 regardless — consistent with committee_epoch_blocks=0.
@@ -152,6 +152,7 @@ func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 		}
 		log.Warn().Uint64("tip_height", tip.BlockNumber).Uint64("seeded_slot", tip.BlockNumber).
 			Msg("slot recovery: PRE-SLOT MIGRATION — tip carries no persisted slot/period; seeding slot = height (one-time, JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1). Unset this flag after the next block commits.")
+		NoteHeightCommitted(tip.BlockNumber)
 		MarkSlotStoreReady()
 		return nil
 	}
@@ -161,6 +162,7 @@ func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 	}
 	log.Info().Uint64("tip_height", tip.BlockNumber).Uint64("tip_slot", tip.Slot).Uint64("tip_period", tip.Period).
 		Msg("slot recovery: SlotStore seeded from local committed tip")
+	NoteHeightCommitted(tip.BlockNumber)
 	MarkSlotStoreReady()
 	return nil
 }

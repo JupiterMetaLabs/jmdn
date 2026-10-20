@@ -1,8 +1,10 @@
 package MessagePassing
 
 import (
+	"errors"
 	"testing"
 
+	"gossipnode/config"
 	"gossipnode/internal/roundlock"
 )
 
@@ -15,114 +17,116 @@ func withFreshRoundLedger(t *testing.T) *roundlock.Ledger {
 	return l
 }
 
-func TestLockBlockResultRound_RefusedAfterTimeout(t *testing.T) {
-	l := withFreshRoundLedger(t)
-	l.TryLock(roundlock.Round{Height: 848, Period: 0}, roundlock.Timeout)
-
-	if _, err := lockBlockResultRound(848, 0); err == nil {
-		t.Fatalf("a buddy must not sign a block result for a round it already timed out")
+func refusalOf(t *testing.T, err error) *roundRefusal {
+	t.Helper()
+	var rr *roundRefusal
+	if !errors.As(err, &rr) {
+		t.Fatalf("want a *roundRefusal, got %v", err)
 	}
-	// The next period is a new round and must be signable.
-	if _, err := lockBlockResultRound(848, 1); err != nil {
-		t.Fatalf("block result for the next period must be allowed: %v", err)
+	return rr
+}
+
+// R1: a buddy signs one block per round; a retry of the same block is allowed.
+func TestLockBlockResultRound_OneBlockPerRound(t *testing.T) {
+	withFreshRoundLedger(t)
+	if _, err := lockBlockResultRound(848, 0, "0xaa", "0xc0"); err != nil {
+		t.Fatalf("first block: %v", err)
+	}
+	if fresh, err := lockBlockResultRound(848, 0, "0xaa", "0xc0"); err != nil || fresh {
+		t.Fatalf("retried request for the same block: fresh=%v err=%v, want false,nil", fresh, err)
+	}
+	rr := refusalOf(t, func() error { _, err := lockBlockResultRound(848, 0, "0xbb", "0xc1"); return err }())
+	if rr.Reason != roundlock.Conflict || rr.Highest != 0 {
+		t.Fatalf("second block in the round: reason=%v highest=%d, want conflict,0", rr.Reason, rr.Highest)
 	}
 }
 
-func TestLockBlockResultRound_BlocksLaterTimeoutAndIsIdempotent(t *testing.T) {
-	l := withFreshRoundLedger(t)
-	fresh, err := lockBlockResultRound(900, 2)
-	if err != nil {
-		t.Fatalf("first block result must be allowed: %v", err)
+// The same transactions at a new period share a BlockHash but not a
+// ConsensusHash; that is a new round and must be signable.
+func TestLockBlockResultRound_SameTxsNextPeriodIsANewRound(t *testing.T) {
+	withFreshRoundLedger(t)
+	if _, err := lockBlockResultRound(848, 0, "0xaa", "0xc0"); err != nil {
+		t.Fatal(err)
 	}
-	if !fresh {
-		t.Fatal("the first acquire must report fresh=true")
-	}
-	// F-9: a retry is allowed, but must NOT report fresh - the reservation
-	// belongs to the first attempt, which may already have shipped a
-	// signature. Only fresh=true callers may release on a sign failure.
-	retryFresh, err := lockBlockResultRound(900, 2)
-	if err != nil {
-		t.Fatalf("a retried vote-result request for the same round must be allowed: %v", err)
-	}
-	if retryFresh {
-		t.Fatal("F-9: a retried request must report fresh=false, or its failure path " +
-			"would release the reservation standing behind the first attempt's signature")
-	}
-	if ok, _ := l.TryLock(roundlock.Round{Height: 900, Period: 2}, roundlock.Timeout); ok {
-		t.Fatalf("after signing a block result, a timeout vote for the same round must be refused")
+	if _, err := lockBlockResultRound(848, 1, "0xaa", "0xc1"); err != nil {
+		t.Fatalf("same transactions at the next period: %v", err)
 	}
 }
 
-func TestRoundLedger_DefaultIsSharedWithTimeoutSigner(t *testing.T) {
-	// The rule only holds if the buddy signer and the timeout signer consult
-	// ONE ledger. Production must use roundlock.Default.
+// R2: never sign backwards, and report the highest period for the sequencer.
+func TestLockBlockResultRound_StalePeriodReportsHighest(t *testing.T) {
+	withFreshRoundLedger(t)
+	if _, err := lockBlockResultRound(900, 2, "0xaa", "0xc2"); err != nil {
+		t.Fatal(err)
+	}
+	rr := refusalOf(t, func() error { _, err := lockBlockResultRound(900, 0, "0xbb", "0xc0"); return err }())
+	if rr.Reason != roundlock.Stale || rr.Highest != 2 {
+		t.Fatalf("stale period: reason=%v highest=%d, want stale_period,2", rr.Reason, rr.Highest)
+	}
+}
+
+func TestRoundLedger_DefaultIsTheProcessLedger(t *testing.T) {
 	if roundLedger != roundlock.Default {
-		t.Fatalf("MessagePassing must use roundlock.Default in production")
+		t.Fatalf("production must use roundlock.Default")
 	}
 }
 
-// TestUnlockBlockResultRound_FreesTheRoundAfterAFailedSign is F-3's regression
-// test at this call site: handleVoteResultRequest reserves the round via
-// lockBlockResultRound BEFORE it actually BLS-signs, so a signing failure
-// AFTER a successful lock must not leave the round permanently claimed - see
-// unlockBlockResultRound's doc comment.
+// F-3: a failed sign releases its fresh reservation, so the node can still
+// sign a block for the round.
 func TestUnlockBlockResultRound_FreesTheRoundAfterAFailedSign(t *testing.T) {
-	l := withFreshRoundLedger(t)
-
-	if _, err := lockBlockResultRound(848, 0); err != nil {
-		t.Fatalf("first reservation must succeed: %v", err)
+	withFreshRoundLedger(t)
+	fresh, err := lockBlockResultRound(848, 0, "0xaa", "0xc0")
+	if err != nil || !fresh {
+		t.Fatalf("precondition: fresh=%v err=%v", fresh, err)
 	}
-
-	// Simulate what handleVoteResultRequest now does on the BLS.SignMessage*
-	// error path: the reservation is released because no signature was
-	// actually produced.
-	unlockBlockResultRound(848, 0)
-
-	if _, signed := l.Signed(roundlock.Round{Height: 848, Period: 0}); signed {
-		t.Fatalf("round must be completely unlocked after unlockBlockResultRound")
-	}
-	if ok, _ := l.TryLock(roundlock.Round{Height: 848, Period: 0}, roundlock.Timeout); !ok {
-		t.Fatalf("fixed: a timeout vote must now be signable, since no block signature was ever actually produced")
+	unlockBlockResultRound(848, 0, "0xaa", "0xc0")
+	if _, err := lockBlockResultRound(848, 0, "0xbb", "0xc1"); err != nil {
+		t.Fatalf("after a failed sign the round must be signable again: %v", err)
 	}
 }
 
-// TestUnlockBlockResultRound_DoesNotClearAGenuineTimeoutLock guards against
-// unlockBlockResultRound (called only on OUR OWN failed sign, always with
-// side=Block) accidentally clearing a legitimate Timeout reservation that
-// happens to share the same round - Release is a strict compare-and-delete.
-func TestUnlockBlockResultRound_DoesNotClearAGenuineTimeoutLock(t *testing.T) {
-	l := withFreshRoundLedger(t)
-	l.TryLock(roundlock.Round{Height: 5, Period: 0}, roundlock.Timeout)
-
-	unlockBlockResultRound(5, 0) // this node never held the Block side here
-
-	side, signed := l.Signed(roundlock.Round{Height: 5, Period: 0})
-	if !signed || side != roundlock.Timeout {
-		t.Fatalf("a real Timeout reservation must survive an unrelated unlockBlockResultRound call, got signed=%v side=%v", signed, side)
-	}
-}
-
-// TestF9_RetryFailureMustNotReopenTheRound is the adapter-level F-9 regression:
-// the production sequence in handleVoteResultRequest, with the fresh guard.
+// F-9: a retry whose sign fails must not reopen a round an earlier attempt
+// already signed - its reservation is not fresh, so the caller never unlocks.
 func TestF9_RetryFailureMustNotReopenTheRound(t *testing.T) {
+	withFreshRoundLedger(t)
+	if _, err := lockBlockResultRound(848, 0, "0xaa", "0xc0"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := lockBlockResultRound(848, 0, "0xaa", "0xc0")
+	if err != nil || fresh {
+		t.Fatalf("retry: fresh=%v err=%v, want false,nil", fresh, err)
+	}
+	// The caller sees fresh=false and does not unlock; a second block stays refused.
+	if _, err := lockBlockResultRound(848, 0, "0xbb", "0xc1"); err == nil {
+		t.Fatalf("round must remain closed to a different block")
+	}
+}
+
+// A buddy never signs at or below its committed tip, even a block it has no
+// record of (the records for old heights are pruned on commit).
+func TestLockBlockResultRound_RefusesCommittedHeight(t *testing.T) {
 	l := withFreshRoundLedger(t)
-
-	fresh1, err := lockBlockResultRound(777, 0) // first request
-	if err != nil || !fresh1 {
-		t.Fatalf("setup: fresh1=%v err=%v", fresh1, err)
+	l.ForgetThrough(848)
+	rr := refusalOf(t, func() error { _, err := lockBlockResultRound(848, 0, "0xaa", "0xc0"); return err }())
+	if rr.Reason != roundlock.Committed {
+		t.Fatalf("height at the committed tip: reason=%v, want height_committed", rr.Reason)
 	}
-	// its BLS sign SUCCEEDS - a signature ships.
-
-	fresh2, err := lockBlockResultRound(777, 0) // retried request
-	if err != nil {
-		t.Fatalf("setup: retry must be allowed: %v", err)
+	if _, err := lockBlockResultRound(849, 0, "0xaa", "0xc0"); err != nil {
+		t.Fatalf("the next height must be signable: %v", err)
 	}
-	// its BLS sign FAILS - the handler releases only when its own lock was fresh.
-	if fresh2 {
-		unlockBlockResultRound(777, 0)
-	}
+}
 
-	if ok, _ := l.TryLock(roundlock.Round{Height: 777, Period: 0}, roundlock.Timeout); ok {
-		t.Fatal("F-9: timeout admitted for a round already block-signed")
+// A buddy never signs a block above the Period cap, and the refusal reserves
+// nothing.
+func TestLockBlockResultRound_RefusesAboveThePeriodCap(t *testing.T) {
+	l := withFreshRoundLedger(t)
+	if _, err := lockBlockResultRound(848, config.MaxPeriod+1, "0xaa", "0xc0"); err == nil {
+		t.Fatal("a buddy must not sign above config.MaxPeriod")
+	}
+	if _, ok := l.Highest(848); ok {
+		t.Fatal("a refused over-cap request must not be recorded")
+	}
+	if _, err := lockBlockResultRound(848, config.MaxPeriod, "0xaa", "0xc0"); err != nil {
+		t.Fatalf("a block at the cap must be signable: %v", err)
 	}
 }

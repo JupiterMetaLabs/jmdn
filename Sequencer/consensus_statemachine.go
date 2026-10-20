@@ -20,6 +20,7 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
 	"gossipnode/config/settings"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging"
 	"gossipnode/seednode"
 	seedcommittee "gossipnode/seednode/committee"
@@ -354,14 +355,7 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 	// dropped from the wire list but still counts toward n, which is the correct
 	// BFT reading: quorum is 2f+1 of the committee, not of whoever was reachable.
 	if messaging.CommitteeV2Enabled {
-		rc, rcErr := messaging.RoundContextForBlock(zkblock)
-		if rcErr != nil {
-			// Fail closed. Most likely this node hasn't yet processed the
-			// TimeoutCertificate that advanced Period for this height - see
-			// messaging.ErrPeriodNotSynced's own doc comment for the fix
-			// (catch up via the rejoin RPC), not a fallback here.
-			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
-		}
+		rc := messaging.RoundContextForBlock(zkblock)
 		seated, selErr := messaging.SeatedPeerIDs(rc)
 		if selErr != nil {
 			// Fail closed. Falling back to the shuffle here would reintroduce the
@@ -465,6 +459,10 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 				Label("block_hash", block.BlockHash.Hex()).
 				Send()
+			// The certified block was never committed, so the retry at this
+			// height is a new round (R3). ProcessBlockLocally has already
+			// released the height's proposal claim.
+			consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, "local apply failed")
 			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
 		}
 
@@ -500,19 +498,6 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// Broadcast the "rejected" status so nodes discard the block; it is never
 		// applied locally. The alert from VerifyConsensusWithBLS already notifies
 		// about the failed vote, so a broadcast error here is not propagated.
-
-		// M0/§7.1c timeout-certificate wiring — the integration point named
-		// in timeout_certificates.go's own doc comment. blockVoters is every
-		// peer that returned ANY vote this round (Agree or Reject) — used so
-		// the mutual-exclusion rule (§7.1b: a validator cannot sign both a
-		// block vote and a timeout vote for the same height/period) has real
-		// data, not an assumed-empty set. No-op end-to-end unless
-		// JMDN_TIMEOUT_CERT_WIRING=1.
-		blockVoters := make(map[string]bool, len(blsResults))
-		for _, r := range blsResults {
-			blockVoters[r.PeerID] = true
-		}
-		messaging.MaybeStartTimeoutFlow(consensus.Host, block.BlockNumber, blockVoters)
 
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
 			logger().Warn(ctx, "Failed to broadcast rejected-block notice to peers",
@@ -559,9 +544,50 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// unless orchestrator.url + orchestrator.api_key are configured, and it
 		// can never block or fail this round.
 		RejectionReport.Send(block, reason, detail)
+
+		// R3: the retry at this height is a new round. Advance the period
+		// first, then free the height's proposal claim - the consensus
+		// terminal that normally releases it (ProcessBlockLocally) never runs
+		// on this path, so without this a resubmission would be refused as
+		// height_in_flight until the claim's TTL expires.
+		consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, reason)
+		proposalguard.Default.Release(block.BlockNumber)
 	}
 
 	return nil
+}
+
+// advancePeriodAfterFailedRound moves height to its next period (R3) after a
+// round ended without the block being committed, so the next proposal at the
+// height is a new round: buddies may sign it (they sign one block per round),
+// and under committee v2 with a pool larger than the committee it seats a
+// different committee. Buddy refusals collected during the round
+// (parseVoteResultResponse) lift the period above rounds this process does
+// not remember, e.g. after a restart.
+func (consensus *Consensus) advancePeriodAfterFailedRound(ctx context.Context, height uint64, reason string) {
+	next, capped := messaging.DefaultProposerPeriods.AdvanceAfterFailure(height, config.MaxMainPeers)
+	if capped {
+		logger().Error(ctx, "Height reached the period cap; it cannot commit without operator attention",
+			fmt.Errorf("period cap %d reached at height %d", config.MaxPeriod, height),
+			ion.Uint64("block_number", height),
+			ion.Uint64("period", next),
+			ion.String("reason", reason),
+			ion.String("function", "Consensus.advancePeriodAfterFailedRound"))
+		Alerts.NewAlertBuilder(ctx).
+			AlertName("Consensus: Period Cap Reached").
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(fmt.Sprintf("Height %d failed %d rounds and reached the period cap; it cannot commit until the cause is fixed", height, config.MaxPeriod)).
+			Label("block_number", fmt.Sprintf("%d", height)).
+			Label("reason", reason).
+			Send()
+		return
+	}
+	logger().Info(ctx, "Round failed; next proposal at this height uses a new period",
+		ion.Uint64("block_number", height),
+		ion.Uint64("next_period", next),
+		ion.String("reason", reason),
+		ion.String("function", "Consensus.advancePeriodAfterFailedRound"))
 }
 
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks

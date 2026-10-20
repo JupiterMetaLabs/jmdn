@@ -17,9 +17,9 @@ import (
 )
 
 // withFreshWatermark swaps avcvotes.DefaultWatermark for an isolated one for
-// the duration of the test, restoring the original afterward — the same
-// save/swap/restore-on-cleanup pattern timeout_certificates_test.go uses for
-// DefaultPeriodStore. Required because DefaultWatermark is process-wide
+// the duration of the test, restoring the original afterward — the
+// save/swap/restore-on-cleanup pattern used for the package-level stores.
+// Required because DefaultWatermark is process-wide
 // state shared across every test in this binary, and Watermark.Set refuses
 // to move backward, so a test that raises it could never put it back.
 func withFreshWatermark(t *testing.T) {

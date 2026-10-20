@@ -8,7 +8,7 @@ package messaging
 // trusting whoever served it.
 //
 // Gated OFF by default (JMDN_COMMITTEE_SNAPSHOT_ANCHOR) - same coordinated
-// fleet-wide rollout pattern as JMDN_M2B_HASH and JMDN_AVC_AGG_CERT. With the
+// fleet-wide rollout pattern as JMDN_AVC_AGG_CERT. With the
 // flag off, maybeFreezeUpcomingSnapshot and frozenSnapshotHashFor are no-ops
 // and attachAVCConsensusFields leaves the new ZKBlock field empty - today's
 // behaviour, unchanged.

@@ -62,6 +62,13 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, aerr)
 	}
 
+	// 2c. Period binding: the certificate below is checked against the
+	//     committee of the block's own Period, so a non-zero Period must be
+	//     bound by the block's ConsensusHash first.
+	if perr := messaging.CheckSyncedPeriodBinding(block); perr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, perr)
+	}
+
 	// 3. Certificate (hybrid trust). A persisted committee certificate is verified
 	//    through the single shared verifier (2f+1, fail-closed). A cert-less block
 	//    is accepted only while still in the legacy prefix (requireCert=false); once
@@ -97,6 +104,8 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	}); perr != nil {
 		return hasCert, fmt.Errorf("thebesync apply: block %d process+store: %w", block.BlockNumber, perr)
 	}
+	// Committed: the per-round signing ledgers stop at this height.
+	messaging.NoteHeightCommitted(block.BlockNumber)
 	// B (D-65): defensive check against a PARTIALLY-projected store.
 	//
 	// NOTE (corrected post-C6): StoreZKBlock does NOT return nil on a projection

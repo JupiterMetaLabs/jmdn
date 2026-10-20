@@ -157,20 +157,6 @@ func HandleBroadcastStream(stream network.Stream) {
 	if msg.Type == voteTriggerBroadcastType {
 		handleVoteTriggerBroadcast(msg)
 	}
-	// Timeout-certificate wiring (M0/§7.1c, timeout_gossip.go) — reuses this
-	// exact flood-broadcast transport with two new msg.Type values. Both
-	// handlers no-op unless TimeoutCertWiringEnabled is set.
-	if msg.Type == timeoutVoteBroadcastType {
-		handleTimeoutVoteBroadcast(getHostInstance(), msg)
-	}
-	// Fix 3: the sequencer's signed "round failed" request, on which every
-	// eligible node signs its own timeout vote (timeout_request.go).
-	if msg.Type == timeoutRequestBroadcastType {
-		handleTimeoutRequestBroadcast(getHostInstance(), msg)
-	}
-	if msg.Type == timeoutCertBroadcastType {
-		handleTimeoutCertificateBroadcast(getHostInstance(), msg)
-	}
 
 	// Only rebroadcast if we haven't reached max hops. A vote_trigger is NEVER
 	// re-flooded: it carries the full proposed block (2+ MB with the proof) and the
@@ -881,23 +867,9 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
 		// authenticated committee size (never a simple majority of whoever
 		// responded).
-		var res CertificateResult
-		var err error
-		rc, rcErr := RoundContextForBlock(block)
-		if rcErr != nil {
-			// Fail closed - most likely this node hasn't processed the
-			// TimeoutCertificate that advanced Period for this height yet. See
-			// ErrPeriodNotSynced's doc comment.
-			res, err = relaxForTrustedSequencer("process_block_locally", CertificateResult{}, rcErr, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
-			if err != nil || !res.Reached {
-				broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
-					ion.String("block_hash", block.BlockHash.Hex()))
-				return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
-			}
-		} else {
-			res, err = VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
-			res, err = relaxForTrustedSequencer("process_block_locally", res, err, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
-		}
+		rc := RoundContextForBlock(block)
+		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
+		res, err = relaxForTrustedSequencer("process_block_locally", res, err, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
 		if err != nil {
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): committee eligibility source invalid", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
@@ -1004,6 +976,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// slot_store.go's header comment for the receiver-side twin and the
 	// documented live-only/no-persistence limitation.
 	DefaultSlotStore.AdvanceOnCommit(block.BlockNumber, block.Period)
+	NoteHeightCommitted(block.BlockNumber)
 
 	// M4 §C/§D + B1 + Stage-F receive side, in one place so the live path and
 	// the sync path (thebesync) cannot diverge. See entropy_block_effects.go

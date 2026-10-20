@@ -77,10 +77,7 @@ func TestChildLogCommitteeSelection(t *testing.T) {
 	wireEligibility(t, pool)
 
 	block := &config.ZKBlock{BlockNumber: height, Slot: slot}
-	rc, err := RoundContextForBlock(block)
-	if err != nil {
-		t.Fatalf("child: RoundContextForBlock: %v", err)
-	}
+	rc := RoundContextForBlock(block)
 
 	members, err := SelectCommitteeWithSize(rc, seats)
 	if err != nil {
