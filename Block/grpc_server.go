@@ -128,7 +128,8 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		return nil, status.Errorf(codes.AlreadyExists, "height %d already in consensus: height_in_flight", block.BlockNumber)
 	}
 	// Release on any early return before consensus is handed to its async flow; once
-	// consensus.Start succeeds the terminal (ProcessBlockLocally) owns the release,
+	// consensus.Start succeeds the terminal (ProcessBlockLocally, or the rejected-round
+	// branch) owns the release,
 	// with proposalguard's TTL as backstop.
 	consensusHandedOff := false
 	defer func() {
@@ -195,8 +196,8 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		return nil, status.Errorf(codes.Internal, "failed to start consensus process: %v", err)
 	}
 
-	// Consensus now runs async; its terminal (ProcessBlockLocally) owns the in-flight
-	// claim release. Suppress the defer's early-return release.
+	// Consensus now runs async; its terminal (ProcessBlockLocally, or the rejected-round
+	// branch) owns the in-flight claim release. Suppress the defer's early-return release.
 	consensusHandedOff = true
 
 	// Log transactions

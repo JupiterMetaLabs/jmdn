@@ -1,16 +1,9 @@
 package messaging
 
-// D-38(b): avcvotes.AllowUnsignedValidatorVotes was fail-open in production —
-// a production node could boot with it enabled, same class of gap as the
-// three flags ValidateProductionConsensusPosture already checked.
-
 import (
-	"strings"
 	"testing"
 
 	"gossipnode/config/settings"
-
-	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
 // withPassingPosture sets every OTHER posture input to its safe value and
@@ -19,9 +12,7 @@ import (
 func withPassingPosture(t *testing.T) {
 	t.Helper()
 	prevReject, prevRegistry, prevBody := RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding
-	prevUnsigned := avcvotes.AllowUnsignedValidatorVotes
 	RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = true, true, true
-	avcvotes.AllowUnsignedValidatorVotes = false
 
 	// TestMain (blockPropagation_test.go) already loads settings once for
 	// the whole package test run.
@@ -33,7 +24,6 @@ func withPassingPosture(t *testing.T) {
 
 	t.Cleanup(func() {
 		RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = prevReject, prevRegistry, prevBody
-		avcvotes.AllowUnsignedValidatorVotes = prevUnsigned
 		cfg.Consensus.SequencerPinnedPeerID = prevPin
 		cfg.Consensus.SyncCertificateRequiredFrom = prevCertFrom
 	})
@@ -47,8 +37,6 @@ func TestValidateProductionConsensusPosture_AllPassing(t *testing.T) {
 }
 
 func TestValidateProductionConsensusPosture_NonProductionSkipsEntirely(t *testing.T) {
-	avcvotes.AllowUnsignedValidatorVotes = true
-	defer func() { avcvotes.AllowUnsignedValidatorVotes = false }()
 	if err := ValidateProductionConsensusPosture(false); err != nil {
 		t.Fatalf("non-production posture must never fail, got: %v", err)
 	}

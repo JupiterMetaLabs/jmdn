@@ -220,6 +220,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
 	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
 	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
+	v.SetDefault("thebe.pools.write", d.Thebe.Pools.Write)
+	v.SetDefault("thebe.pools.read", d.Thebe.Pools.Read)
+	v.SetDefault("thebe.pools.sync", d.Thebe.Pools.Sync)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -325,8 +328,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.flags.enforce_block_linkage", f.EnforceBlockLinkage)
 	v.SetDefault("consensus.flags.enforce_body_binding", f.EnforceBodyBinding)
 	v.SetDefault("consensus.flags.agg_cert", f.AggCert)
-	v.SetDefault("consensus.flags.timeout_cert_wiring", f.TimeoutCertWiring)
-	v.SetDefault("consensus.flags.timeout_cert_rejoin", f.TimeoutCertRejoin)
 	v.SetDefault("consensus.flags.enforce_slot_recovery_gate", f.EnforceSlotRecoveryGate)
 	v.SetDefault("consensus.flags.slot_recovery_preslot_migration", f.SlotRecoveryPreslotMigration)
 	v.SetDefault("consensus.flags.enforce_sync_gate", f.EnforceSyncGate)

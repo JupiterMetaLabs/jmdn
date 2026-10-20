@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"strings"
 	"sync"
 	"time"
@@ -226,7 +227,7 @@ func createNodeManager(node *config.Node) (*NodeManager, error) {
 		ion.String("topic", TOPIC),
 		ion.String("function", "node.NewNodeManager"),
 	)
-	node.Host.SetStreamHandler(config.HeartbeatProtocol, manager.handleHeartbeat)
+	node.Host.SetStreamHandler(config.HeartbeatProtocol, saferun.Stream(string(config.HeartbeatProtocol), manager.handleHeartbeat))
 
 	// NodeManagerInterface is set in NewNodeManagerWithLogger via sync.Once
 	return manager, nil

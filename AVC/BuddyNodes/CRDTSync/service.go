@@ -229,8 +229,13 @@ func (s *SyncService) receiveCRDTMessage() error {
 		return nil
 	}
 
-	// Store message
-	key := fmt.Sprintf("%s-%d", crdtMsg.NodeID[:8], crdtMsg.Timestamp.UnixNano())
+	// Store message. NodeID comes from the peer's payload: slicing [:8] on a
+	// shorter value used to panic the receive loop on one gossip message.
+	nodePrefix := crdtMsg.NodeID
+	if len(nodePrefix) > 8 {
+		nodePrefix = nodePrefix[:8]
+	}
+	key := fmt.Sprintf("%s-%d", nodePrefix, crdtMsg.Timestamp.UnixNano())
 	s.msgStore.Add(key, crdtMsg)
 
 	// Handle sync messages

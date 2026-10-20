@@ -415,31 +415,25 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		return "", fmt.Errorf("failed to decode hex string: %w", err)
 	}
 
-	// Try to parse as JSON first (for test compatibility)
-	var tx config.Transaction
-	err = json.Unmarshal(rawBytes, &tx)
-	if err != nil {
-		// If JSON parsing fails, try to parse as RLP-encoded transaction
-		logger().Debug(opCtx, "JSON parsing failed, trying RLP parsing")
-
-		// Parse transaction — UnmarshalBinary handles all types:
-		// legacy (no prefix), EIP-2930 (0x01), EIP-1559 (0x02).
-		// rlp.DecodeBytes cannot handle typed transactions (0x01/0x02 prefix).
-		var ethTx ethtypes.Transaction
-		err = ethTx.UnmarshalBinary(rawBytes)
-		if err != nil {
-			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
-				logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
-			}
-			return "", fmt.Errorf("failed to parse RLP transaction: %w", err)
+	// eth_sendRawTransaction takes a SIGNED, RLP/typed-envelope transaction only,
+	// as in the Ethereum JSON-RPC spec. The sender is always recovered from the
+	// signature; no field is taken on the caller's word.
+	//
+	// UnmarshalBinary handles legacy (no prefix), EIP-2930 (0x01) and EIP-1559
+	// (0x02); rlp.DecodeBytes cannot handle the typed envelopes.
+	var ethTx ethtypes.Transaction
+	if err := ethTx.UnmarshalBinary(rawBytes); err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
+			logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
 		}
-
-		// Convert Ethereum transaction to our config.Transaction format
-		tx = convertEthTxToConfigTx(&ethTx)
-		logger().Debug(opCtx, "Converted RLP transaction")
-	} else {
-		logger().Debug(opCtx, "JSON transaction parsed")
+		return "", fmt.Errorf("failed to parse RLP transaction: %w", err)
 	}
+	// convertEthTxToConfigTx ignores a sender-recovery error (it would fill
+	// From with the zero address), so recover the sender here and reject.
+	if _, err := ethtypes.Sender(ethtypes.LatestSignerForChainID(ethTx.ChainId()), &ethTx); err != nil {
+		return "", fmt.Errorf("invalid transaction signature: %w", err)
+	}
+	tx := convertEthTxToConfigTx(&ethTx)
 
 	// Public eth JSON-RPC surface: never eligible for the unsigned-deployment
 	// bypass (audit SEC-02). A legitimately signed tx still passes AllChecks.

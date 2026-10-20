@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -1785,22 +1786,27 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// disabled or the block hash is unavailable.
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
-	// Fix 3 / §7.1b mutual exclusion: never sign a block result for a round
-	// this node has already declared timed out (and, via the same ledger,
-	// never sign a timeout for a round it has signed a block result for).
-	// A block certificate (seated 2f+1) and a timeout certificate (pool 2/3)
-	// are quorums over different sets, so this per-node refusal is what stops
-	// both existing for one round. See internal/roundlock.
+	// R1/R2 (internal/roundlock): sign at most one block per (height, period),
+	// and never a lower period of a height than one already signed. A refusal
+	// carries this node's highest signed period for the height, which a
+	// sequencer that restarted mid-height uses to resume above every round it
+	// already burned (messaging.ProposerPeriods).
 	roundReservedHere := false
 	if targetBlockHash != "" {
-		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod)
+		fresh, err := lockBlockResultRound(targetBlockNumber, targetPeriod, targetBlockHash, targetConsensusHash)
 		if err != nil {
-			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for a round this node already timed out",
+			var highest uint64
+			var rr *roundRefusal
+			if errors.As(err, &rr) {
+				highest = rr.Highest
+			}
+			logger().Warn(voteResultSpanCtx, "Refusing to sign a block result for this round",
 				ion.Uint64("block_number", targetBlockNumber),
 				ion.Uint64("period", targetPeriod),
+				ion.Uint64("highest_signed_period", highest),
 				ion.String("error", err.Error()),
 				ion.String("function", "MessagePassing.handleVoteResultRequest"))
-			writeRawError(s, `{"error":"round timed out: this node signed a timeout vote for this round","vote_result":0}`, config.Delimiter)
+			writeRawError(s, fmt.Sprintf(`{"error":%q,"vote_result":0,"highest_period":%d}`, err.Error(), highest), config.Delimiter)
 			return
 		}
 		// F-9: only a reservation THIS call created may be released below. A
@@ -1817,16 +1823,14 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}
 	if err != nil || !status {
-		// F-3: lockBlockResultRound above already reserved this round as
-		// Block-signed on INTENT, before this signing attempt ran. No valid
-		// signature was actually produced, so release that reservation now -
-		// otherwise this node can never sign a timeout vote for the round
-		// either (roundlock refuses the other side based on the reservation,
-		// not on an actual signature), stranding it from both certificates
-		// for the rest of this process's life. See
-		// unlockBlockResultRound's doc comment (round_lock.go).
+		// F-3: lockBlockResultRound above already reserved this round on
+		// INTENT, before this signing attempt ran. No valid signature was
+		// actually produced, so release that reservation now - otherwise this
+		// node could never sign a block for the round for the rest of this
+		// process's life. See unlockBlockResultRound's doc comment
+		// (round_lock.go).
 		if roundReservedHere {
-			unlockBlockResultRound(targetBlockNumber, targetPeriod)
+			unlockBlockResultRound(targetBlockNumber, targetPeriod, targetBlockHash, targetConsensusHash)
 		}
 		errMsg := "unknown error"
 		if err != nil {
