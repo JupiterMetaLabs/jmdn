@@ -312,6 +312,38 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)
 	v.SetDefault("consensus.reward_address", d.Consensus.RewardAddress)
 	v.SetDefault("consensus.reward_split_enabled", d.Consensus.RewardSplitEnabled)
+	// Consensus flags (YAML home for the former env-only switches). Registering
+	// them also makes the viper-derived JMDN_CONSENSUS_FLAGS_<KEY> env names
+	// work; the LEGACY names (JMDN_COMMITTEE_V2 etc.) are honoured by
+	// applyConsensusFlags with their original parsers and take precedence.
+	f := d.Consensus.Flags
+	v.SetDefault("consensus.flags.committee_snapshot_anchor", f.CommitteeSnapshotAnchor)
+	v.SetDefault("consensus.flags.committee_v2", f.CommitteeV2)
+	v.SetDefault("consensus.flags.reject_legacy_votes", f.RejectLegacyVotes)
+	v.SetDefault("consensus.flags.enforce_committee_registry", f.EnforceCommitteeRegistry)
+	v.SetDefault("consensus.flags.enforce_block_linkage", f.EnforceBlockLinkage)
+	v.SetDefault("consensus.flags.enforce_body_binding", f.EnforceBodyBinding)
+	v.SetDefault("consensus.flags.agg_cert", f.AggCert)
+	v.SetDefault("consensus.flags.timeout_cert_wiring", f.TimeoutCertWiring)
+	v.SetDefault("consensus.flags.timeout_cert_rejoin", f.TimeoutCertRejoin)
+	v.SetDefault("consensus.flags.enforce_slot_recovery_gate", f.EnforceSlotRecoveryGate)
+	v.SetDefault("consensus.flags.slot_recovery_preslot_migration", f.SlotRecoveryPreslotMigration)
+	v.SetDefault("consensus.flags.enforce_sync_gate", f.EnforceSyncGate)
+	v.SetDefault("consensus.flags.emit_block_bound_votes", f.EmitBlockBoundVotes)
+	v.SetDefault("consensus.flags.validator_voter_set", f.ValidatorVoterSet)
+	v.SetDefault("consensus.flags.validator_vote_ingest", f.ValidatorVoteIngest)
+	v.SetDefault("consensus.flags.emit_committee_bls", f.EmitCommitteeBLS)
+	v.SetDefault("consensus.flags.allow_new_receiver_accounts", f.AllowNewReceiverAccounts)
+	v.SetDefault("consensus.flags.block_gossip", f.BlockGossip)
+	v.SetDefault("consensus.flags.trust_sequencer_certificate", f.TrustSequencerCertificate)
+	v.SetDefault("consensus.flags.finalize_cert_only", f.FinalizeCertOnly)
+	v.SetDefault("consensus.flags.vote_crdt_compact_k", f.VoteCRDTCompactK)
+
+	// Reputation
+	v.SetDefault("reputation.observe", d.Reputation.Observe)
+	v.SetDefault("reputation.push_interval_seconds", d.Reputation.PushIntervalSeconds)
+	v.SetDefault("reputation.push_suspend", d.Reputation.PushSuspend)
+	v.SetDefault("reputation.store_path", d.Reputation.StorePath)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)

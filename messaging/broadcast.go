@@ -29,6 +29,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // BroadcastMessage represents a message that is broadcast through the network
@@ -153,7 +154,7 @@ func HandleBroadcastStream(stream network.Stream) {
 		ion.String("content", msg.Content))
 
 	// Handle different message types
-	if msg.Type == "vote_trigger" {
+	if msg.Type == voteTriggerBroadcastType {
 		handleVoteTriggerBroadcast(msg)
 	}
 	// Timeout-certificate wiring (M0/§7.1c, timeout_gossip.go) — reuses this
@@ -171,7 +172,16 @@ func HandleBroadcastStream(stream network.Stream) {
 		handleTimeoutCertificateBroadcast(getHostInstance(), msg)
 	}
 
-	// Only rebroadcast if we haven't reached max hops
+	// Only rebroadcast if we haven't reached max hops. A vote_trigger is NEVER
+	// re-flooded: it carries the full proposed block (2+ MB with the proof) and the
+	// sequencer already delivers it directly to every committee member, so every
+	// re-flooded copy was being dropped by isMessageSeen on arrival AFTER the
+	// bytes crossed the wire (observed on testnet: 15 validators × 14 peers ≈ 560 MB
+	// of pure duplicates per block). The sender also sets Hops=MaxHops on these
+	// so that receivers running an older binary skip the re-flood too.
+	if msg.Type == voteTriggerBroadcastType {
+		return
+	}
 	if msg.Hops < config.MaxHops {
 		// Forward to our peers
 		msg.Hops++
@@ -253,13 +263,14 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 			continue
 		}
 
-		// Write the message
+		// Write the message (bounded: a peer that stops reading must not wedge us)
+		_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 		_, err = stream.Write(msgBytes)
 		if err != nil {
 			broadcastLogger().Warn(context.Background(), "Failed to write broadcast message",
 				ion.Err(err),
 				ion.String("peer", peerID.String()))
-			stream.Close()
+			_ = stream.Reset()
 			continue
 		}
 
@@ -344,9 +355,11 @@ func BroadcastMessage(h host.Host, content string) error {
 			}
 			defer stream.Close()
 
-			// Send the message
+			// Send the message (bounded: a peer that stops reading must not wedge us)
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			_, err = stream.Write(msgBytes)
 			if err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Warn(context.Background(), "Failed to send broadcast message",
 					ion.Err(err),
 					ion.String("peer", peer.String()))
@@ -468,8 +481,71 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 		ion.String("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()))
 }
 
-// BroadcastVoteTrigger sends a vote trigger message to all connected peers
+const voteTriggerBroadcastType = "vote_trigger"
+
+// voteTriggerDialTimeout bounds the dial to a committee member we are not yet
+// connected to. Short: the round has ConsensusTimeout to complete and a member
+// that cannot be reached in a few seconds is treated like a non-responder.
+const voteTriggerDialTimeout = 5 * time.Second
+
+// voteTriggerTargets returns the peers that must receive the proposal: the
+// committee selected for this round (ConsensusMessage.Buddies). Members that are
+// not currently connected are dialled using the multiaddr carried in Buddies, so
+// a committee member is never silently skipped merely because the sequencer had
+// no open connection to it. Falls back to every connected peer (the legacy
+// behaviour) only when the message carries no committee at all, and says so in
+// the returned scope label.
+func voteTriggerTargets(h host.Host, cm *PubSubMessages.ConsensusMessage) ([]peer.ID, string) {
+	all := h.Network().Peers()
+	buddies := cm.GetBuddies()
+	if len(buddies) == 0 {
+		return all, "all-peers(no-committee)"
+	}
+	connected := make(map[peer.ID]struct{}, len(all))
+	for _, p := range all {
+		connected[p] = struct{}{}
+	}
+	self := h.ID()
+	seen := make(map[peer.ID]struct{}, len(buddies))
+	targets := make([]peer.ID, 0, len(buddies))
+	for _, b := range buddies {
+		pid := b.PeerID
+		if pid == "" || pid == self {
+			continue
+		}
+		if _, dup := seen[pid]; dup {
+			continue
+		}
+		seen[pid] = struct{}{}
+		if _, ok := connected[pid]; !ok {
+			ai := peer.AddrInfo{ID: pid}
+			if b.Multiaddr != nil {
+				ai.Addrs = []multiaddr.Multiaddr{b.Multiaddr}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), voteTriggerDialTimeout)
+			err := h.Connect(ctx, ai)
+			cancel()
+			if err != nil {
+				broadcastLogger().Warn(context.Background(), "Committee member not reachable for vote trigger",
+					ion.Err(err), ion.String("peer", pid.String()))
+				continue
+			}
+		}
+		targets = append(targets, pid)
+	}
+	return targets, "committee"
+}
+
+// BroadcastVoteTrigger sends a vote trigger message to the round's committee
 func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.ConsensusMessage) error {
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			broadcastLogger().Error(context.Background(), "Failed to initialize BroadcastLocalGRO", err)
+			return err
+		}
+	}
 	if consensusMessage == nil {
 		return fmt.Errorf("consensus message cannot be nil")
 	}
@@ -502,9 +578,11 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		Sender:    h.ID().String(),
 		Content:   "Vote trigger broadcast - initiate voting process",
 		Timestamp: now.Unix(),
-		Hops:      0,
-		Type:      "vote_trigger",
-		Data:      string(consensusData),
+		// Hops=MaxHops: receivers (including ones on an older binary, whose only
+		// check is Hops < MaxHops) must not re-flood a block-bearing message.
+		Hops: config.MaxHops,
+		Type: voteTriggerBroadcastType,
+		Data: string(consensusData),
 	}
 
 	// Generate a unique ID based on content and timestamp
@@ -523,14 +601,16 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	// Get all connected peers
-	peers := h.Network().Peers()
+	// Target the committee, not every connected peer. Only committee members can
+	// vote; everyone else receives the FINALIZED block over gossip after 2f+1.
+	peers, scope := voteTriggerTargets(h, consensusMessage)
 	if len(peers) == 0 {
 		return fmt.Errorf("no connected peers to broadcast vote trigger to")
 	}
 
 	broadcastLogger().Info(context.Background(), "Starting vote trigger broadcast to peers",
 		ion.String("msg_id", msg.ID),
+		ion.String("scope", scope),
 		ion.Int("peers", len(peers)))
 
 	// Send message to all peers
@@ -558,9 +638,14 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			}
 			defer stream.Close()
 
-			// Send the message
+			// Send the message. Bounded write: the sequencer's consensus thread
+			// blocks on this WaitGroup, so one peer whose yamux receive window
+			// is full (stopped reading, half-dead connection) must not stall the
+			// whole round. Observed on testnet 2026-10-13: Write parked 6+ min.
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			_, err = stream.Write(msgBytes)
 			if err != nil {
+				_ = stream.Reset()
 				broadcastLogger().Warn(context.Background(), "Failed to send vote trigger broadcast message",
 					ion.Err(err),
 					ion.String("peer", peer.String()))
@@ -656,12 +741,42 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
 	markMessageProcessed(getBlockDedupID(msg))
 
+	// A rejection notice is discarded by every receiver without applying
+	// anything (HandleReceivedBlockMessage, status == "rejected"), so it never
+	// needs the proof. Send the header-only copy: same hashes, no StarkProof.
+	if !result {
+		msg.Block = stripProof(block)
+		return sendBlockMessageDirect(h, msg, peers, "rejected-notice")
+	}
+
 	// Additively fan the finalized, certified block out over the gossip mesh so it
 	// reaches the whole fleet, not only directly-connected peers. Receivers run the
 	// same fail-closed admitZKBlock gate. No-op when disabled/unwired; the
 	// direct-stream broadcast below is unchanged. The sender already marked this
 	// message processed above, so it will not re-ingest its own gossiped copy.
 	PublishBlockGossip(msg)
+
+	// Certificate-only finalize (JMDN_FINALIZE_CERT_ONLY / consensus.flags.
+	// finalize_cert_only): committee members already hold the full proposal from
+	// the vote trigger, so they only need the certificate to apply it. Send them a
+	// small zkblock_cert message instead of the 2+ MB block; everyone else gets
+	// the full block over gossip. Requires gossip, otherwise non-committee peers
+	// would have no path to the block. A receiver on an older binary ignores the
+	// unknown type and still applies the gossiped copy, so this is safe to enable
+	// on a mixed fleet; it is OFF by default until the fleet runs this code.
+	if FinalizeCertOnly && EnableBlockGossip {
+		certMsg := msg
+		certMsg.Type = blockCertMessageType
+		certMsg.Block = stripProof(block)
+		targets := finalizeCommitteeTargets(h, block, bls)
+		if len(targets) > 0 {
+			if err := sendBlockMessageDirect(h, certMsg, targets, "cert-only"); err != nil {
+				broadcastLogger().Warn(context.Background(), "cert-only finalize direct send failed; gossip still carries the block",
+					ion.Err(err))
+			}
+		}
+		return nil
+	}
 
 	// Direct + gossip both run by default (consensus.p2p defaults to 1); dedup and
 	// the per-block-hash apply lock make the double delivery safe. Skip the direct
@@ -673,56 +788,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		return nil
 	}
 
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal block message: %w", err)
-	}
-	msgBytes = append(msgBytes, '\n')
-
-	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block propagation forwarding", err)
-		return fmt.Errorf("failed to create waitgroup for block propagation forwarding: %w", err)
-	}
-
-	var successCount int
-	var successMutex sync.Mutex
-
-	for _, peerID := range peers {
-		peer := peerID
-		BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-			ctxWithTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			stream, err := h.NewStream(ctxWithTimeout, peer, config.BlockPropagationProtocol)
-			if err != nil {
-				broadcastLogger().Debug(context.Background(), "Failed to open stream",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
-				return err
-			}
-			defer stream.Close()
-			if _, err := stream.Write(msgBytes); err != nil {
-				broadcastLogger().Debug(context.Background(), "Failed to write message",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
-				return err
-			}
-			successMutex.Lock()
-			successCount++
-			successMutex.Unlock()
-			metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
-			return nil
-		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG))
-	}
-
-	wg.Wait()
-
-	broadcastLogger().Info(context.Background(), "Block broadcast complete (with extra data)",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)))
-
-	return nil
+	return sendBlockMessageDirect(h, msg, peers, "full")
 }
 
 // ProcessBlockLocally processes a block locally after consensus is verified.
@@ -749,6 +815,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
 		// authenticated committee size (never a simple majority of whoever
 		// responded).
+		var res CertificateResult
+		var err error
 		rc, rcErr := RoundContextForBlock(block)
 		if rcErr != nil {
 			// Fail closed - most likely this node hasn't processed the
@@ -757,8 +825,10 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): round context unavailable", rcErr,
 				ion.String("block_hash", block.BlockHash.Hex()))
 			return fmt.Errorf("round context unavailable (fail closed): %w", rcErr)
+		} else {
+			res, err = VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
+			res, err = relaxForTrustedSequencer("process_block_locally", res, err, blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
 		}
-		res, err := VerifyCertificateForRound(blsResults, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
 		if err != nil {
 			broadcastLogger().Error(context.Background(), "refusing consensus participation (fail closed): committee eligibility source invalid", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
@@ -883,6 +953,111 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)))
+
+	return nil
+}
+
+// blockCertMessageType is the certificate-only finalize envelope: Block carries
+// the header fields (hashes, number, status) but no StarkProof; Data carries the
+// committee certificate. The receiver substitutes the proposal it cached at
+// vote-trigger time (HandleReceivedBlockMessage).
+const blockCertMessageType = "zkblock_cert"
+
+// stripProof returns a shallow copy of block with the StarkProof removed. Hashes
+// (BlockHash, ConsensusHash) are stored fields and are unaffected.
+func stripProof(block *config.ZKBlock) *config.ZKBlock {
+	if block == nil {
+		return nil
+	}
+	cp := *block
+	cp.StarkProof = nil
+	return &cp
+}
+
+// finalizeCommitteeTargets is the set of connected peers known to hold the
+// proposal: the voters in the certificate plus the round's committee if the
+// sequencer cached the consensus message. Anyone else gets the block via gossip.
+func finalizeCommitteeTargets(h host.Host, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) []peer.ID {
+	want := make(map[peer.ID]struct{}, len(bls))
+	for _, r := range bls {
+		if pid, err := peer.Decode(r.PeerID); err == nil {
+			want[pid] = struct{}{}
+		}
+	}
+	if cm := PubSubMessages.LookupConsensusMessageByBlockHash(block.BlockHash.Hex()); cm != nil {
+		for _, b := range cm.GetBuddies() {
+			if b.PeerID != "" {
+				want[b.PeerID] = struct{}{}
+			}
+		}
+	}
+	self := h.ID()
+	targets := make([]peer.ID, 0, len(want))
+	for _, p := range h.Network().Peers() {
+		if p == self {
+			continue
+		}
+		if _, ok := want[p]; ok {
+			targets = append(targets, p)
+		}
+	}
+	return targets
+}
+
+// sendBlockMessageDirect writes msg to each peer over BlockPropagationProtocol,
+// one bounded goroutine per peer, and logs the fan-out size under scope.
+func sendBlockMessageDirect(h host.Host, msg config.BlockMessage, peers []peer.ID, scope string) error {
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal block message: %w", err)
+	}
+	msgBytes = append(msgBytes, '\n')
+
+	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
+	if err != nil {
+		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block propagation forwarding", err)
+		return fmt.Errorf("failed to create waitgroup for block propagation forwarding: %w", err)
+	}
+
+	var successCount int
+	var successMutex sync.Mutex
+
+	for _, peerID := range peers {
+		peer := peerID
+		BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
+			ctxWithTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			stream, err := h.NewStream(ctxWithTimeout, peer, config.BlockPropagationProtocol)
+			if err != nil {
+				broadcastLogger().Debug(context.Background(), "Failed to open stream",
+					ion.Err(err),
+					ion.String("peer", peer.String()))
+				return err
+			}
+			defer stream.Close()
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
+			if _, err := stream.Write(msgBytes); err != nil {
+				_ = stream.Reset()
+				broadcastLogger().Debug(context.Background(), "Failed to write message",
+					ion.Err(err),
+					ion.String("peer", peer.String()))
+				return err
+			}
+			successMutex.Lock()
+			successCount++
+			successMutex.Unlock()
+			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG))
+	}
+
+	wg.Wait()
+
+	broadcastLogger().Info(context.Background(), "Block broadcast complete (with extra data)",
+		ion.String("block_hash", msg.Block.BlockHash.Hex()),
+		ion.String("scope", scope),
+		ion.Int("success", successCount),
+		ion.Int("total", len(peers)))
 
 	return nil
 }

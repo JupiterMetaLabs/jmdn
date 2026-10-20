@@ -125,6 +125,51 @@ fastsync:
                           # Set to bootstrapTip+1 after bootstrap to avoid rescanning
                           # the already-complete bootstrap range on every catchup.
 
+# ── Consensus feature flags ─────────────────────────────
+# YAML home for the rollout switches that used to be env-only. Precedence per
+# key: legacy env var (if SET, with its original parser) > this file > default.
+# Defaults are the historical env defaults, except committee_v2 and agg_cert
+# which default ON to match the testnet fleet (every node sets them; they must
+# be ON together fleet-wide). Leaving this section out = fleet posture. Consensus-critical flags must be identical fleet-wide —
+# coordinate every flip. The effective values are printed once at boot
+# ("consensus flags (env > yaml > default): ...").
+#
+# Legacy env parsers (apply only when the env var is set):
+#   lenient   unset→default; 0/false/no/off→off; anything else→on
+#   exactly-1 "1"→on; anything else (even "true")→off
+#   not-0     "0"→off; anything else (even "false")→on
+consensus:
+  flags:
+    committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
+    committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.
+    reject_legacy_votes: true               # JMDN_REJECT_LEGACY_VOTES (lenient). Production posture locks this ON.
+    enforce_committee_registry: true        # JMDN_ENFORCE_COMMITTEE_REGISTRY (lenient). Production posture locks this ON.
+    enforce_block_linkage: true             # JMDN_ENFORCE_BLOCK_LINKAGE (lenient). Parent/height contiguity on receive.
+    enforce_body_binding: true              # JMDN_ENFORCE_BODY_BINDING (lenient). Production posture locks this ON.
+    agg_cert: true                          # JMDN_AVC_AGG_CERT (exactly-1). Aggregate BLS certificates. Fleet-wide ON.
+    timeout_cert_wiring: false              # JMDN_TIMEOUT_CERT_WIRING (lenient). Timeout-certificate gossip.
+    timeout_cert_rejoin: false              # JMDN_TIMEOUT_CERT_REJOIN (exactly-1). Rejoin via timeout certificates.
+    enforce_slot_recovery_gate: true        # JMDN_ENFORCE_SLOT_RECOVERY_GATE (not-0). Applies to BOTH readers (messaging + vote path).
+    slot_recovery_preslot_migration: false  # JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION (exactly-1). One-time migration aid.
+    enforce_sync_gate: true                 # JMDN_ENFORCE_SYNC_GATE (not-0). A validator behind the head abstains.
+                                            # Devnet genesis bootstrap sets this false; re-enable once blocks flow.
+    emit_block_bound_votes: true            # JMDN_EMIT_BLOCK_BOUND_VOTES (not-0). Block-bound BLS vote domain.
+    validator_voter_set: true               # JMDN_VALIDATOR_VOTER_SET (lenient).
+    validator_vote_ingest: true             # JMDN_VALIDATOR_VOTE_INGEST (lenient).
+    emit_committee_bls: true                # JMDN_EMIT_COMMITTEE_BLS (not-0). Seed signs committee snapshots.
+    allow_new_receiver_accounts: true       # JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS (lenient). Create unknown receivers at apply.
+    block_gossip: true                      # JMDN_BLOCK_GOSSIP (lenient). Block propagation over gossipsub.
+    finalize_cert_only: false               # JMDN_FINALIZE_CERT_ONLY (lenient). Committee receives header+certificate at finalize instead of the full block (it already holds the proposal). Enable only once every validator runs a build with this flag.
+    trust_sequencer_certificate: false     # JMDN_TRUST_SEQUENCER_CERT (lenient). Accept a received block below 2f+1 when >= f+1 eligible votes verify. Testnet stopgap only; refused under production posture.
+    vote_crdt_compact_k: 3                  # JMDN_VOTE_CRDT_COMPACT_K (uint). Rounds kept behind tip; floored at 2.
+
+# ── Reputation (observe-only) ───────────────────────────
+reputation:
+  observe: true                 # JMDN_REPUTATION_OBSERVE (lenient). Score peers; never feeds the quorum tally.
+  push_interval_seconds: 300    # JMDN_REPUTATION_PUSH_INTERVAL_SECONDS. 0 = never push scores to the seednode.
+  push_suspend: true            # JMDN_REPUTATION_PUSH_SUSPEND (not-0). Suspend pushes while self-faulted (D-61).
+  store_path: ""                # JMDN_REPUTATION_STORE_PATH. Durable score file; empty = in-memory only.
+
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)
 # Prefer env vars for secrets: JMDN_SECURITY_EXPLORER_API_KEY, JMDN_SECURITY_JWT_SECRET

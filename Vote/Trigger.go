@@ -104,10 +104,21 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 		tipHash = parent.BlockHash
 	}
 	if err := votecheck.ExtendsTip(zkBlock.BlockNumber, zkBlock.PrevHash, tip, tipHash); err != nil {
+		// A proposal AHEAD of our tip means we missed at least one finalized
+		// block. Refusing to vote is correct, but on its own it deadlocks the
+		// chain: the sequencer cannot advance without our votes, and the sync
+		// monitor dismisses a 1-block gap as propagation lag. Ask for catch-up.
+		if zkBlock.BlockNumber > tip+1 && GapCatchUpHook != nil {
+			GapCatchUpHook(tip + 1)
+		}
 		return fmt.Errorf("vote position: %w", err)
 	}
 	return nil
 }
+
+// GapCatchUpHook is wired by main.go to messaging.RequestCatchUp (Vote cannot
+// import messaging: messaging imports Vote). Nil = no catch-up nudge.
+var GapCatchUpHook func(fromBlock uint64)
 
 func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node

@@ -18,6 +18,13 @@ const MaxConsensusLagBlocks uint64 = 2
 // JMDN_ENFORCE_SYNC_GATE=0 to disable (revert to always-permit) during rollout.
 var enforceConsensusSyncGate = os.Getenv("JMDN_ENFORCE_SYNC_GATE") != "0"
 
+// SetEnforceConsensusSyncGate / SetEnforceSlotRecoveryGate let the YAML
+// configuration (consensus.flags.*) override the package-init env reads above.
+// Called once at boot by applyConsensusFlags, only when the legacy env var is
+// unset; never from runtime paths.
+func SetEnforceConsensusSyncGate(on bool) { enforceConsensusSyncGate = on }
+func SetEnforceSlotRecoveryGate(on bool)  { enforceSlotRecoveryGate = on }
+
 // enforceSlotRecoveryGate additionally requires slotStoreReadyFn() before a
 // vote is cast — closing the "slot state is not fail-closed after restart"
 // finding (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node whose
@@ -139,3 +146,8 @@ func GateDecision(localTipKnown bool, localHead, sequencerHead uint64, headKnown
 	}
 	return ConsensusVoteEligible(localHead, sequencerHead, headKnown)
 }
+
+// EnforceConsensusSyncGateForTest / EnforceSlotRecoveryGateForTest expose the
+// gate values to the root package's wiring test.
+func EnforceConsensusSyncGateForTest() bool { return enforceConsensusSyncGate }
+func EnforceSlotRecoveryGateForTest() bool  { return enforceSlotRecoveryGate }

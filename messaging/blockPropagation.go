@@ -27,6 +27,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
@@ -86,6 +87,10 @@ const (
 	// cap so the two transports can never silently diverge on block size.
 	maxBlockStreamBytes    = config.MaxBlockMessageBytes
 	blockStreamReadTimeout = 30 * time.Second
+	// broadcastWriteTimeout bounds every direct-stream write in broadcast.go.
+	// Without it a peer that stops draining its yamux receive window parks the
+	// writer forever, and BroadcastVoteTrigger's WaitGroup never returns.
+	broadcastWriteTimeout = 20 * time.Second
 )
 
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
@@ -305,6 +310,19 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
+	// With block gossip on, validators never relay blocks over this stream, so
+	// the only legitimate direct sender is the sequencer. Enforced when a
+	// sequencer is pinned. With gossip off, validators forward blocks here and
+	// the sender is a relay; the certificate gate below still applies.
+	if EnableBlockGossip {
+		if ok, _ := AuthorizeBlockSender(remotePeer); !ok {
+			metrics.BlocksRejectedCounter.WithLabelValues("sender_not_sequencer", "direct").Inc()
+			broadcastLogger().Warn(context.Background(), "Dropping direct block message not sent by the pinned sequencer",
+				ion.String("peer", remotePeer), ion.String("type", msg.Type))
+			return
+		}
+	}
+
 	HandleReceivedBlockMessage(msg, remotePeer, true)
 }
 
@@ -316,6 +334,37 @@ func HandleBlockStream(stream network.Stream) {
 // direct-stream re-flood; the fail-closed security gate is identical regardless
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
+	// Certificate-only finalize (sender: BroadcastBlockToEveryNodeWithExtraData
+	// with FinalizeCertOnly): the envelope carries the header + committee
+	// certificate but no proof. Substitute the full proposal this node cached at
+	// vote-trigger time and continue down the normal, fail-closed zkblock path.
+	// The cached proposal is the block the certificate was signed over (same
+	// BlockHash / ConsensusHash), so admitZKBlock verifies it exactly as it would
+	// the full envelope. If this node never saw the proposal (not on the
+	// committee, restarted mid-round) it simply waits for the gossiped full copy;
+	// a cert-only envelope is never forwarded.
+	if msg.Type == blockCertMessageType {
+		if msg.Block == nil {
+			return
+		}
+		cm := PubSubMessages.LookupConsensusMessageByBlockHash(msg.Block.BlockHash.Hex())
+		if cm == nil || cm.ZKBlock == nil || cm.ZKBlock.ConsensusHashHex() != msg.Block.ConsensusHashHex() {
+			metrics.BlocksRejectedCounter.WithLabelValues("cert_only_no_proposal", "local").Inc()
+			broadcastLogger().Info(context.Background(), "cert-only finalize for a block without a cached proposal; waiting for gossip copy",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber),
+				ion.String("from", remotePeer))
+			return
+		}
+		full := *cm.ZKBlock
+		if st := msg.Data["status"]; st != "" {
+			full.Status = st
+		}
+		msg.Block = &full
+		msg.Type = "zkblock"
+		forward = false
+	}
+
 	// Check for duplicates
 	messageID := getBlockDedupID(msg)
 	if isMessageProcessed(messageID) {
@@ -386,11 +435,12 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		}
 
 		// Block validated and marked processed → forwarding is now safe. The direct
-		// re-flood is OFF by default (gossip-only): the pubsub mesh re-propagates,
-		// and gossip-delivered blocks already pass forward=false. It only runs when
-		// direct propagation is explicitly re-enabled (consensus.p2p >= 1), so a
-		// gossip-only node never re-floods a block it received over a direct stream.
-		if forward && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
+		// re-flood runs ONLY when gossip is off: with gossip on (the default) the
+		// pubsub mesh already re-propagates with its own dedup, and every validator
+		// also received the block directly from the sequencer, so a direct re-flood
+		// to all peers was pure duplication (testnet: 15 validators × 14 peers ×
+		// 2.66 MB ≈ 560 MB per block, every copy dropped by dedup on arrival).
+		if forward && !EnableBlockGossip && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
 				broadcastLogger().Info(context.Background(), "Forwarding validated ZK block to peers",
@@ -793,6 +843,7 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	// otherwise a node that missed the certificate gossip fails closed on
 	// every block of the new period. Re-verified; no-op when wiring is off.
 	ensurePeriodForBlock(getHostInstance(), msg.Block)
+	blockHashHex, consensusHashHex, height := msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber
 	rc, rcErr := RoundContextForBlock(msg.Block)
 	if rcErr != nil {
 		// Fail closed - most likely this node hasn't processed the
@@ -801,7 +852,8 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("period_not_synced",
 			"round context unavailable (fail closed): %v", rcErr)
 	}
-	res, err := VerifyCertificateForRound(responses, msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber, rc)
+	res, err := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
+	res, err = relaxForTrustedSequencer("block_propagation", res, err, responses, blockHashHex, consensusHashHex, height)
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

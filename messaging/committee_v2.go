@@ -806,24 +806,122 @@ func VerifyCertificateForRound(
 	return TallyAgainst(responses, seated, blockHashHex, consensusHashHex, height)
 }
 
-// VerifySyncedBlockCertificate is ThebeSync's certificate check. For anchored
-// periods under committee-v2 it is the live path's check (the block's seated
-// committee); everything else keeps the legacy verifier, unchanged.
+// VerifySyncedBlockCertificate is ThebeSync's certificate check.
+//
+// Anchored period under committee-v2: the live path's check, against the
+// block's SEATED committee from the chain-anchored pool. Exact and deterministic.
+//
+// Everything else (today's testnet: committee-v2 on, committee_anchor_activation_height
+// 0): the legacy verifier first — byte-identical to before when it passes — and,
+// ONLY when that falls short of quorum, two wider tallies before giving up:
+//
+//  1. the live receive path's check (SelectCommittee over the current pool), the
+//     same thing every peer that accepted this block live ran;
+//  2. a POOL-WIDE tally: distinct verified +1 votes from ANY member of the
+//     fleet-eligible pool, against the fixed committee size k
+//     (consensus.max_validators) and threshold ceil(2k/3).
+//
+// WHY (2026-10-13/15, six incidents): without an anchor nothing on this node can
+// reproduce the committee a past block was sealed under. The legacy verifier
+// counts only the alphabetically-first k of the CURRENT pool, the round check
+// re-draws from the CURRENT pool; both drift from the sealing committee as the
+// seed snapshot changes, and then every block sealed by a different seven is
+// "3/5 over committee 7" forever — a node one block behind can never rejoin
+// (node-1 at 1761, all 8 WAN nodes at 2127). Pool membership itself is stable
+// and seed-authenticated, and every vote is block-bound (chain id, height, hash,
+// consensus hash), so "≥ 2f+1 distinct registered validators signed exactly
+// this block" is the strongest statement this node CAN verify for an
+// unanchored past block. It is only reachable on the catch-up path — never on
+// live acceptance, never on the sequencer's own finalisation — and it is
+// superseded, per period, the moment an anchor exists. Accepting on a fallback
+// is logged at WARN with the counts so the frequency is visible.
 func VerifySyncedBlockCertificate(block *config.ZKBlock, responses []BLS_Signer.BLSresponse) (CertificateResult, error) {
-	if !CommitteeV2Enabled || !periodIsAnchored(EpochForHeight(block.BlockNumber)) {
-		return VerifyCertificate(responses, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber)
+	blockHashHex, consensusHashHex, height := block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber
+	res, err := verifySyncedBlockCertificateStrict(block, responses)
+	return relaxForTrustedSequencer("thebesync", res, err, responses, blockHashHex, consensusHashHex, height)
+}
+
+// verifySyncedBlockCertificateStrict is VerifySyncedBlockCertificate without
+// the TrustSequencerCertificate override.
+func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_Signer.BLSresponse) (CertificateResult, error) {
+	blockHashHex, consensusHashHex, height := block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber
+	if CommitteeV2Enabled && periodIsAnchored(EpochForHeight(height)) {
+		// Stage 2: this block's committee is seeded by ENTROPY(EpochForSlot(slot)).
+		// On a boundary block that entropy arrives in the block's own VdfProof, so
+		// adopt the proof first. Safe before the certificate: the proof is checked
+		// against this node's own mix(E-1) and the pinned group and T, so a valid
+		// proof is the one correct value whoever relays it, and Publish is idempotent.
+		adoptSyncedBoundaryProof(block)
+		rc, err := RoundContextForBlock(block)
+		if err != nil {
+			return CertificateResult{}, err
+		}
+		return VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
 	}
-	// Stage 2: this block's committee is seeded by ENTROPY(EpochForSlot(slot)).
-	// On a boundary block that entropy arrives in the block's own VdfProof, so
-	// adopt the proof first. Safe before the certificate: the proof is checked
-	// against this node's own mix(E-1) and the pinned group and T, so a valid
-	// proof is the one correct value whoever relays it, and Publish is idempotent.
-	adoptSyncedBoundaryProof(block)
-	rc, err := RoundContextForBlock(block)
+
+	legacy, err := VerifyCertificate(responses, blockHashHex, consensusHashHex, height)
+	if err != nil || legacy.Reached {
+		return legacy, err
+	}
+
+	// Fallback 1: the live receive path's check.
+	if CommitteeV2Enabled {
+		adoptSyncedBoundaryProof(block)
+		if rc, rcErr := RoundContextForBlock(block); rcErr == nil {
+			if round, verr := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc); verr == nil && round.Reached {
+				log.Warn().Uint64("height", height).
+					Int("legacy_yes", legacy.YesVotes).Int("legacy_threshold", legacy.Threshold).
+					Int("seated_yes", round.YesVotes).Int("seated_threshold", round.Threshold).
+					Msg("thebesync: certificate accepted on the seated-committee check; legacy alphabetical cap fell short (unanchored period)")
+				return round, nil
+			}
+		}
+	}
+
+	// Fallback 2: pool-wide tally.
+	pool, perr := verifySyncedCertificatePoolWide(responses, blockHashHex, consensusHashHex, height)
+	if perr == nil && pool.Reached {
+		log.Warn().Uint64("height", height).
+			Int("legacy_yes", legacy.YesVotes).Int("legacy_threshold", legacy.Threshold).
+			Int("pool_yes", pool.YesVotes).Int("pool_threshold", pool.Threshold).Int("pool_size", pool.PoolSize).
+			Msg("thebesync: certificate accepted on the pool-wide tally; this block's seated committee is not reproducible without an anchor")
+		return pool.CertificateResult, nil
+	}
+	return legacy, nil
+}
+
+// poolWideResult is a CertificateResult plus the size of the pool the +1
+// votes were counted over (CommitteeSize stays k, the threshold base).
+type poolWideResult struct {
+	CertificateResult
+	PoolSize int
+}
+
+// verifySyncedCertificatePoolWide counts distinct verified +1 votes from ANY
+// member of the fleet-eligible pool (uncapped, no local blocklist — the
+// fleet-agreed set, so every node counts the same signers) against k =
+// consensus.max_validators (or the pool size when smaller) and ceil(2k/3).
+// Signature verification and the peer_id↔bls_pub binding are the shared
+// countEligibleYes rules; only the membership set is wider.
+func verifySyncedCertificatePoolWide(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (poolWideResult, error) {
+	var res poolWideResult
+	pool, err := FleetEligibleForEpoch(EpochForHeight(height), false)
 	if err != nil {
-		return CertificateResult{}, err
+		return res, err
 	}
-	return VerifyCertificateForRound(responses, block.BlockHash.Hex(), block.ConsensusHashHex(), block.BlockNumber, rc)
+	if len(pool) == 0 {
+		return res, fmt.Errorf("pool-wide certificate check: fleet-eligible pool is empty (fail closed)")
+	}
+	k := committeeSizeLimit()
+	if k <= 0 || k > len(pool) {
+		k = len(pool)
+	}
+	res.PoolSize = len(pool)
+	res.CommitteeSize = k
+	res.Threshold = ByzantineQuorum(k)
+	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
+	res.Reached = res.YesVotes >= res.Threshold
+	return res, nil
 }
 
 // TallyAgainst counts a certificate against an explicitly supplied committee.

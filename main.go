@@ -54,6 +54,7 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/SmartContract"
 	"gossipnode/SmartContract/evmexec"
+	"gossipnode/Vote"
 	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -862,6 +863,10 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", cfgErr)
 		os.Exit(1)
 	}
+	// consensus.flags.* / reputation.* from YAML. Must run before any consensus
+	// component (and before ValidateProductionConsensusPosture) reads the
+	// package-level flag variables. A SET legacy env var still wins.
+	applyConsensusFlags(cfg)
 
 	// Apply CLI flag overrides (only flags explicitly passed on command line)
 	flag.Visit(func(f *flag.Flag) {
@@ -1870,8 +1875,11 @@ func main() {
 							return
 						}
 						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
-						go localMonitor.TriggerCheck(context.Background())
+						go localMonitor.TriggerGapCatchUp(context.Background())
 					})
+					// The vote path sees the gap first on a node that missed a
+					// broadcast (it never receives a block, only vote requests).
+					Vote.GapCatchUpHook = messaging.RequestCatchUp
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {
