@@ -277,6 +277,12 @@ type ConsensusSettings struct {
 	// ValidateProductionConsensusPosture warns/fails on this being unset in
 	// a production posture — see that file.
 	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
+	// SyncCertificateRequiredFrom is the first block height that catch-up sync
+	// requires to carry a committee certificate. 1 for a chain certified from
+	// genesis; the first certified height for a chain with an older,
+	// certificate-less prefix; 0 = not set (only the parent-carries-a-certificate
+	// rule applies). Required under production posture.
+	SyncCertificateRequiredFrom uint64 `mapstructure:"sync_certificate_required_from" yaml:"sync_certificate_required_from"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	//

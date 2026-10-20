@@ -96,6 +96,12 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id)")
 	}
+	// Catch-up sync needs a durable height from which every block must carry a
+	// committee certificate; without it a fresh node can be served a
+	// certificate-less chain.
+	if settings.Get().Consensus.SyncCertificateRequiredFrom == 0 {
+		off = append(off, "SyncCertificateRequiredFrom (consensus.sync_certificate_required_from)")
+	}
 	if len(off) == 0 {
 		return nil
 	}
