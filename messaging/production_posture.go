@@ -31,8 +31,6 @@ import (
 	"strings"
 
 	"gossipnode/config/settings"
-
-	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
 // IsProductionPosture reports whether this node should be treated as
@@ -68,6 +66,9 @@ func ValidateProductionConsensusPosture(production bool) error {
 		return nil
 	}
 	var off []string
+	if TrustSequencerCertificate {
+		off = append(off, "TrustSequencerCertificate (consensus.flags.trust_sequencer_certificate / JMDN_TRUST_SEQUENCER_CERT) — validators skip the 2f+1 re-check")
+	}
 	if !RejectLegacyVotes {
 		off = append(off, "RejectLegacyVotes (JMDN_REJECT_LEGACY_VOTES)")
 	}
@@ -77,13 +78,11 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if !EnforceBodyBinding {
 		off = append(off, "EnforceBodyBinding (JMDN_ENFORCE_BODY_BINDING)")
 	}
-	// D-38(b): avcvotes.AllowUnsignedValidatorVotes is fail-open when on — a
-	// validator's tally vote counts even without a BLS signature. It
-	// defaults off in every shipped config, but nothing stopped a production
-	// node from booting with it enabled, same shape as the three flags above.
-	if avcvotes.AllowUnsignedValidatorVotes {
-		off = append(off, "AllowUnsignedValidatorVotes (avcvotes.AllowUnsignedValidatorVotes)")
-	}
+	// D-38(b): closed by removal, not by adding this check — the unsigned
+	// normal-validator vote seam this would have guarded against
+	// (avcvotes.AllowUnsignedValidatorVotes) was removed outright in avc
+	// (commit 66c0e6c), so there is no longer a fail-open condition here to
+	// check for.
 	// D-26(d)/CON-03: the vote-result-requester gate
 	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) is always
 	// enforced now — there is no flag to be "off" for it. What CAN still be

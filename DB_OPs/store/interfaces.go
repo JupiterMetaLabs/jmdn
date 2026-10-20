@@ -62,6 +62,10 @@ type AccountStore interface {
 	BulkGetAccounts(ctx context.Context, addresses []string) ([]*Account, error)
 	ListAccounts(ctx context.Context, limit int) ([]*Account, error)
 	ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*Account, error)
+	// ListAccountsAfter is the keyset form of ListAccountsPaginated: same
+	// canonical order, cursor = last row's address ("" = start). Prefer it for
+	// full scans — OFFSET paging is O(N^2) over a whole listing.
+	ListAccountsAfter(ctx context.Context, after string, limit int) ([]*Account, error)
 	CountAccounts(ctx context.Context) (uint64, error)
 	GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, error)
 }

@@ -76,6 +76,9 @@ func DefaultConfig() NodeConfig {
 			StreamName: "",
 			MaxLen:     1000,
 			GroupName:  "",
+			// Write keeps the pre-split ThebeDB default (PG_MAX_OPEN_CONNS=10).
+			// 10+10+4 = 24 per node, well inside Postgres' default 100.
+			Pools: ThebePoolsConfig{Write: 10, Read: 10, Sync: 4},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
@@ -253,6 +256,40 @@ func DefaultConfig() NodeConfig {
 			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
 			RewardAddress:      "",
 			RewardSplitEnabled: false,
+			// Legacy env defaults, except CommitteeV2 and AggCert which are ON:
+			// the testnet fleet runs JMDN_COMMITTEE_V2=1 / JMDN_AVC_AGG_CERT=1 on
+			// every node and the runbook requires them ON together fleet-wide —
+			// a node that forgot the env line silently ran the old path, which
+			// is the failure mode default-on removes. (2026-10-14, /etc/jmdn/jmdn-seq.env)
+			Flags: ConsensusFlags{
+				CommitteeSnapshotAnchor:      false,
+				CommitteeV2:                  true,
+				RejectLegacyVotes:            true,
+				EnforceCommitteeRegistry:     true,
+				EnforceBlockLinkage:          true,
+				EnforceBodyBinding:           true,
+				AggCert:                      true,
+				TimeoutCertWiring:            false,
+				TimeoutCertRejoin:            false,
+				EnforceSlotRecoveryGate:      true,
+				SlotRecoveryPreslotMigration: false,
+				EnforceSyncGate:              true,
+				EmitBlockBoundVotes:          true,
+				ValidatorVoterSet:            true,
+				ValidatorVoteIngest:          true,
+				EmitCommitteeBLS:             true,
+				AllowNewReceiverAccounts:     true,
+				BlockGossip:                  true,
+				TrustSequencerCertificate:    false,
+				FinalizeCertOnly:             false, // committee gets header+certificate instead of the full block; needs the whole committee on this build
+				VoteCRDTCompactK:             3,
+			},
+		},
+		Reputation: ReputationSettings{
+			Observe:             true,
+			PushIntervalSeconds: 300, // reputationPushDefaultIntervalSeconds
+			PushSuspend:         true,
+			StorePath:           "",
 		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below
