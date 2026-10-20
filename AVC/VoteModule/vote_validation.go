@@ -55,7 +55,9 @@ func VoteAggregation(weights map[string]float64, votes map[string]int8) (bool, e
 // Untested: no Go toolchain was available in the environment this was
 // written in (avc repo has no build/test run backing this specific
 // function yet). Validate with:
-//   cd avc && go test ./crdt/votes/... ./AVC/VoteModule/... 2>&1 | tee /tmp/stage4.log
+//
+//	cd avc && go test ./crdt/votes/... ./AVC/VoteModule/... 2>&1 | tee /tmp/stage4.log
+//
 // (adjust the second path to wherever this package resolves under
 // go.work) and add a table test asserting: ties (equal yes/no) return
 // (false, nil) — reject on tie, matching "yes > no" below, not "yes >=

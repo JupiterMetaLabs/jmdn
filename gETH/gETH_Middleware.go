@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -179,24 +180,9 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
 }
 
-// __DEAD_CODE_AUDIT__
-func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
-	// Get the Mempool Client
-	RoutingClient, err := block.ReturnMempoolObject()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mempool client: %v", err)
-	}
+// Get the Mempool Client
 
-	// Get the Fee Stats
-	feeStats, err := RoutingClient.WrapperGetFeeStatistics()
-	if err != nil {
-		return nil, err
-	}
-
-	return &proto.EstimateResp{
-		GasEstimate: feeStats.RecommendedFees.Standard,
-	}, nil
-}
+// Get the Fee Stats
 
 func _GetChainID(ctx context.Context, req *proto.Empty, chainID int) (*proto.Quantity, error) {
 	return &proto.Quantity{Value: uint64(chainID)}, nil

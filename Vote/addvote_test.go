@@ -10,11 +10,11 @@ package Vote
 // end-to-end, and building one is out of scope for this stage.
 //
 // What IS tested directly, without needing SubmitVote's surrounding
-// machinery: the flag itself, and the exact sign-then-write-then-verify
-// sequence the new code block performs (BLS_Signer.SignMessageForBlock ->
+// machinery: the exact sign-then-write-then-verify sequence the v2 write
+// block performs (BLS_Signer.SignMessageForBlock ->
 // avcvotes.AddVote -> independent BLS_Verifier check against what was
 // written). That covers exit criterion 4 for real. Criteria 2 and 3 (full
-// behavior through SubmitVote, flag on and off) are NOT verified here —
+// behavior through SubmitVote) are NOT verified here —
 // stated plainly rather than glossed over.
 
 import (
@@ -29,44 +29,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-func TestEnvOn_DefaultsAndOverrides(t *testing.T) {
-	const key = "JMDN_VOTE_CRDT_V2_TEST_ONLY"
-
-	if got := envOn(key, false); got != false {
-		t.Errorf("unset var: got %v, want default false", got)
-	}
-	if got := envOn(key, true); got != true {
-		t.Errorf("unset var: got %v, want default true", got)
-	}
-
-	for _, off := range []string{"0", "false", "False", "no", "off", " OFF "} {
-		t.Setenv(key, off)
-		if got := envOn(key, true); got != false {
-			t.Errorf("value %q: got %v, want false", off, got)
-		}
-	}
-	for _, on := range []string{"1", "true", "yes", "anything-else"} {
-		t.Setenv(key, on)
-		if got := envOn(key, false); got != true {
-			t.Errorf("value %q: got %v, want true", on, got)
-		}
-	}
-}
-
-func TestVoteCRDTDualWrite_PermanentlyOn(t *testing.T) {
-	// D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): this used to
-	// assert VoteCRDTDualWrite defaulted to false, matching every other
-	// envOn-based rollout flag in this codebase. It is now permanently true
-	// and no longer env-gated at all — see the package doc comment in
-	// vote_crdt_v2.go for why (the legacy no-signature tally path is the
-	// actual D-26(a) defect; finishing this cutover is the fix). Inverted
-	// deliberately, not a regression: a future change that makes this false
-	// again would silently reopen D-26(a)/D-51 and must fail this test.
-	if !VoteCRDTDualWrite {
-		t.Fatal("VoteCRDTDualWrite must stay permanently true post-D-26(a)-cutover — see vote_crdt_v2.go")
-	}
-}
 
 // This is exit criterion 4 from the Stage 2 spec, exercised directly: sign a
 // vote the same way the new SubmitVote block does, write it with AddVote,

@@ -49,8 +49,8 @@ func TestWriteBlock(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		if out.enqueueCalls != 1 {
-			t.Errorf("want 1 outbox.Enqueue, got %d", out.enqueueCalls)
+		if n := out.enqueueCount(); n != 1 {
+			t.Errorf("want 1 outbox.Enqueue, got %d", n)
 		}
 		if c.setCallCount() != 0 {
 			t.Errorf("cache.Set must not be called on appender failure")

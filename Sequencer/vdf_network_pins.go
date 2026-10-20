@@ -99,6 +99,24 @@ var networkPinPolicies = map[string]networkPinPolicy{
 // pinned group refuses to start Stage 2 on any other T.
 var ErrVDFDifficultyNotChainPinned = errors.New("entropy: VDF difficulty T disagrees with the fleet-pinned value for this group")
 
+// maxVDFDifficultyTCeiling bounds JMDN_AVC_VDF_DIFFICULTY_T at install time
+// (audit D-46a). Only reachable for an UNPINNED group — a pinned group's T is
+// already locked to an exact value by pinnedDifficultyFor above. Set two
+// orders of magnitude above the largest T pinned today (476510, this file's
+// rsa-2048-testnet-ephemeral entry): generous enough for a real, deliberately
+// calibrated production value, while still refusing an obviously-wrong one
+// (a typo, a copy-paste of the wrong unit) before it reaches the sealer.
+// Raise it deliberately, alongside a new network pin, if a legitimate
+// calibration ever needs more.
+const maxVDFDifficultyTCeiling = 50_000_000
+
+// ErrVDFDifficultyExceedsCeiling reports JMDN_AVC_VDF_DIFFICULTY_T above
+// maxVDFDifficultyTCeiling (audit D-46a). Distinct from
+// ErrVDFDifficultyNotChainPinned: that one fires for a pinned group with the
+// wrong T; this one fires for ANY group (pinned or not) whose T is simply too
+// large to be a sane calibration.
+var ErrVDFDifficultyExceedsCeiling = errors.New("entropy: VDF difficulty T exceeds the configured ceiling")
+
 // pinnedDifficultyFor returns the fleet-pinned T for a group, if one is declared.
 func pinnedDifficultyFor(groupName string) (uint64, bool) {
 	pol, ok := networkPinPolicies[groupName]

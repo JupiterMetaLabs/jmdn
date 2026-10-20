@@ -3,8 +3,6 @@ package messaging
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -77,19 +75,6 @@ func ensureContractLocalGRO() error {
 		ContractLocalGRO, contractGROInitErr = GROHelper.InitializeGRO(GRO.ContractPropagationLocal)
 	})
 	return contractGROInitErr
-}
-
-// generateContractMessageID creates a deterministic, short ID for a contract gossip message.
-func generateContractMessageID(sender string, addr common.Address, blockNumber uint64) string {
-	hasher := sha256.New()
-	hasher.Write([]byte(sender))
-	hasher.Write(addr.Bytes())
-	hasher.Write([]byte{
-		byte(blockNumber >> 56), byte(blockNumber >> 48), byte(blockNumber >> 40), byte(blockNumber >> 32),
-		byte(blockNumber >> 24), byte(blockNumber >> 16), byte(blockNumber >> 8), byte(blockNumber),
-	})
-	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
-	return hash[:16]
 }
 
 func isContractMessageProcessed(id string) bool {

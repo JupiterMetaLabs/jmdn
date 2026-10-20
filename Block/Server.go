@@ -733,12 +733,22 @@ func processZKBlock(c *gin.Context) {
 	// Fail-closed: without carried identities the fleet falls back to per-node nonce
 	// minting (the exact divergence this prevents), so a failed enrichment rejects the
 	// block (the orchestrator retries/requeues the batch).
-	if err := DB_OPs.EnrichBlockAccountNonces(&block); err != nil {
+	//
+	//
+	// Contract txs can also create accounts DURING execution (internal CALL{value}
+	// to a fresh address, SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2);
+	// stampProposalAccountNonces predicts those too. It is the SAME step the gRPC
+	// ingress (grpc_server.go) runs — do not inline it here.
+	if err := stampProposalAccountNonces(spanCtx, &block); err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "account_nonce_enrichment_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to enrich block with account nonces — block rejected",
+		code, stat := http.StatusInternalServerError, "account_nonce_enrichment_failed"
+		if errors.Is(err, errProposalPrediction) {
+			code, stat = http.StatusServiceUnavailable, "execution_prediction_failed"
+		}
+		span.SetAttributes(attribute.String("status", stat))
+		logger().Error(spanCtx, "Failed to stamp block account nonces — block rejected",
 			err,
 			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
@@ -746,7 +756,7 @@ func processZKBlock(c *gin.Context) {
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
 			ion.String("function", "BlockServer.processZKBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enrich block with account nonces: " + err.Error()})
+		c.JSON(code, gin.H{"error": err.Error()})
 		return
 	}
 

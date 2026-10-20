@@ -91,6 +91,16 @@ type Vote struct {
 	// messages from nodes that predate this field; callers on the new path
 	// must treat Height==0 as "unknown" rather than a real genesis vote.
 	Height uint64 `json:"height,omitempty"`
+
+	// BLSSignature/BLSPubKeyHex carry the per-vote BLS signature Vote/Trigger.go
+	// already produces for its own avcvotes.VoteRecord (Vote/Trigger.go's
+	// SignMessageForBlock call), so a buddy receiving this vote over pubsub or
+	// direct-stream can build the identical signed VoteRecord and ingest it
+	// into VoteCRDTLayer — the only keyspace the tally reads. omitempty: a vote
+	// from a node that cannot sign (or predates this field) carries neither,
+	// and is not countable by the v2 tally (see Structs.IngestValidatorVote).
+	BLSSignature string `json:"bls_signature,omitempty"` // hex
+	BLSPubKeyHex string `json:"bls_pub_key,omitempty"`   // hex, lowercase
 }
 
 // BlockResult represents the result of block validation

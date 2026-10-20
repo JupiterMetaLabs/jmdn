@@ -45,10 +45,10 @@ func drainOnce(spy *spyOutbox, gw *spyGateway) {
 	time.Sleep(20 * time.Millisecond)
 	w.Stop()
 
-	// copy observed call slices back so callers can assert on them
-	spy.ackCalls = oso.ackCalls
-	spy.incrCalls = oso.incrCalls
-	spy.enqueueCalls = oso.enqueueCalls
+	// Copy observed calls back so callers can assert on them. Both sides go
+	// through the mutex: the worker goroutine wrote these and Stop() does not
+	// wait for it, so a direct field copy here is a data race.
+	spy.setCalls(oso.ackIDs(), oso.incrIDs(), oso.enqueueCount())
 }
 
 // TestDrainBatch_Success verifies Ack is called with the correct ID on dispatch success.
@@ -69,8 +69,8 @@ func TestDrainBatch_Success(t *testing.T) {
 	if store.incrCount() != 0 {
 		t.Errorf("want 0 IncrementAttempts, got %d", store.incrCount())
 	}
-	if store.ackCalls[0] != 101 {
-		t.Errorf("Ack ID: want 101, got %d", store.ackCalls[0])
+	if ids := store.ackIDs(); len(ids) == 0 || ids[0] != 101 {
+		t.Errorf("Ack ID: want [101], got %v", ids)
 	}
 }
 
@@ -92,8 +92,8 @@ func TestDrainBatch_Failure(t *testing.T) {
 	if store.ackCount() != 0 {
 		t.Errorf("want 0 Ack calls, got %d", store.ackCount())
 	}
-	if store.incrCalls[0] != 202 {
-		t.Errorf("IncrementAttempts ID: want 202, got %d", store.incrCalls[0])
+	if ids := store.incrIDs(); len(ids) == 0 || ids[0] != 202 {
+		t.Errorf("IncrementAttempts ID: want [202], got %v", ids)
 	}
 }
 

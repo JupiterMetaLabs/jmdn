@@ -25,6 +25,7 @@ import (
 	"errors"
 	"testing"
 
+	"gossipnode/Security"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -60,14 +61,17 @@ func (f *errEquivStore) RecordFirstSeen(height uint64, hashHex string) error {
 
 // failClosedBlock mirrors p6Block in equivocation_persist_test.go: a block whose
 // BlockHash is the canonical hash of its txs, so body binding passes and
-// validation reaches checkEquivocation (which runs last).
+// validation reaches checkEquivocation (which runs last). ConsensusHash is set
+// too (D-28: checkConsensusBinding now rejects a missing one unconditionally).
 func failClosedBlock(num uint64, txs ...config.Transaction) *config.ZKBlock {
-	return &config.ZKBlock{
+	b := &config.ZKBlock{
 		BlockHash:    RecomputeBlockHashFromTxs(txs),
 		TxnsRoot:     RecomputeTxnsRoot(txs),
 		BlockNumber:  num,
 		Transactions: txs,
 	}
+	b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
+	return b
 }
 
 // TestEquivocationReadErrorFailsClosed — CON-08.

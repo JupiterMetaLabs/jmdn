@@ -4,19 +4,21 @@ import (
 	"context"
 	"encoding/hex"
 
+	"gossipnode/DB_OPs"
+
 	log "gossipnode/logging"
 
 	"errors"
 	"fmt"
-	"github.com/JupiterMetaLabs/ion"
 	"math/big"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
+
 	"encoding/json"
 
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
@@ -29,6 +31,15 @@ type Handlers struct{ service Service.Service }
 
 func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: service} }
 
+// logRPCResponse marshals resp so its *json.RawMessage Result field prints
+// its actual contents. fmt.Sprintf("%+v", resp) printed Result's pointer
+// address instead (D-8) — the request side already avoided this with
+// json.Marshal above; this does the same for the response.
+func logRPCResponse(ctx context.Context, method string, resp Response) {
+	respJSON, _ := json.Marshal(resp)
+	logger().Info(ctx, "RPC Response", ion.String("method", method), ion.String("response", string(respJSON)))
+}
+
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
 	reqJSON, _ := json.Marshal(req)
@@ -38,7 +49,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "web3_clientVersion":
 		v, err := handler.service.ClientVersion(ctx)
 		resp, _ := finish(req, v, err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "solc_compile":
 		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
@@ -62,39 +73,39 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		result, err := handler.service.CompileSolidity(ctx, compileReq.Source, compileReq.Optimize, compileReq.Runs)
 		resp, _ := finish(req, result, err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "net_version":
 		id, err := handler.service.ChainID(ctx)
 		resp, _ := finish(req, id.String(), err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "eth_accounts", "eth_requestAccounts":
 		accounts, err := handler.service.Accounts(ctx)
 		resp, _ := finish(req, accounts, err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "eth_chainId":
 		id, err := handler.service.ChainID(ctx)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+id.Text(16), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_blockNumber":
 		n, err := handler.service.BlockNumber(ctx)
 		resp, _ := finish(req, "0x"+n.Text(16), err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	case "eth_getTransactionCount":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			// logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
@@ -102,12 +113,12 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			// logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
 		logger().Debug(ctx, "Called RPC Call", ion.String("method", "eth_getTransactionCount"))
-		// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		// logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getBlockByNumber":
@@ -116,7 +127,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// L1 commit data (L1TxHash != ""), not the absolute chain tip.
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block tag")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		logger().Debug(ctx, "Request parameters", ion.String("method", "eth_getBlockByNumber"))
@@ -148,7 +159,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			b, l1Err = handler.service.LatestL1CommitBlock(ctx)
 			if l1Err != nil {
 				resp, _ := finish(req, nil, l1Err)
-				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, l1Err
 			}
 			if b == nil {
@@ -160,26 +171,26 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			num, err := parseBlockTag(ctx, handler.service, tag)
 			if err != nil {
 				resp, _ := finish(req, nil, err)
-				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, err
 			}
 			var blockErr error
 			b, blockErr = handler.service.BlockByNumber(ctx, num, full)
 			if blockErr != nil {
 				resp, _ := finish(req, nil, blockErr)
-				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, blockErr
 			}
 		}
 		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getBlockByHash":
 		// params: [blockHash, fullTx(bool)]
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block hash")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		hash, _ := req.Params[0].(string)
@@ -202,41 +213,41 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getBalance":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "need address and block tag")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		bal, err := handler.service.Balance(ctx, addr, num, "jmdt:metamask")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+bal.Text(16), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 	case "eth_call":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing call object")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		msg, err := toCallMsg(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		var num *big.Int
@@ -244,46 +255,46 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 			if err != nil {
 				resp, _ := finish(req, nil, err)
-				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, err
 			}
 		}
 		out, err := handler.service.Call(ctx, msg, num)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_estimateGas":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx object")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		msg, err := toCallMsg(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		g, err := handler.service.EstimateGas(ctx, msg)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+big.NewInt(int64(g)).Text(16), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_sendRawTransaction":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing raw tx")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		raw, _ := req.Params[0].(string)
@@ -291,7 +302,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logger().Debug(ctx, "eth_sendRawTransaction received", ion.String("raw_tx_length", fmt.Sprintf("%d", len(raw))))
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	// Non-standard but widely used by explorers / wallets.
@@ -306,8 +317,9 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			resp, _ := invalidParams(req, "address must be a valid hex address")
 			return resp, nil
 		}
-		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
-		addr = strings.ToLower(addr)
+		// The ThebeDB SQL projection stores checksummed addresses
+		// (common.Address.Hex()); DB_OPs.*ByAddress normalise for us.
+		address := common.HexToAddress(addr)
 
 		page := 1
 		if len(req.Params) > 1 {
@@ -345,18 +357,17 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		offset := (page - 1) * limit
 
 		// Look up total first and short-circuit out-of-range pages before
-		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
-		// the covering index) — a cheap request for page 1e6 shouldn't force
-		// an expensive scan just to come back empty.
+		// paying for an OFFSET skip-scan — a cheap request for page 1e6
+		// shouldn't force an expensive scan just to come back empty.
 		//
 		// NOTE: this count and the paginated query below are two separate
-		// SQLite reads, not one transaction, so `total` can be very slightly
-		// stale relative to the rows returned if a block lands in between.
+		// reads, not one transaction, so `total` can be very slightly stale
+		// relative to the rows returned if a block lands in between.
 		// Intentional — harmless for a UI paginator, not worth a transaction.
-		total, totalErr := txindex.CountByAddress(ctx, addr)
+		total, totalErr := DB_OPs.CountTransactionsByAddress(ctx, address)
 		if totalErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", totalErr))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		if offset < 0 || offset >= total {
@@ -371,18 +382,18 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 					"has_prev":     page > 1,
 				},
 			}, nil)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
-		refs, idxErr := txindex.QueryByAddressOffset(ctx, addr, offset, limit)
+		refs, idxErr := DB_OPs.TransactionRefsByAddress(ctx, address, offset, limit)
 		if idxErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", idxErr))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
-		// Hydrate each ref from ImmuDB by hash in parallel (bounded) — each
+		// Hydrate each ref by hash in parallel (bounded) — each
 		// fetch is an independent point lookup, page size is capped at 100.
 		const hydrationConcurrency = 10
 		txs := make([]any, len(refs))
@@ -391,7 +402,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		for i, ref := range refs {
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(i int, ref txindex.TxRef) {
+			go func(i int, ref DB_OPs.TxRef) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
@@ -422,19 +433,19 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 				"has_prev":     page > 1,
 			},
 		}, nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getTransactionByHash":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		tx, err := handler.service.TxByHash(ctx, mustString(req.Params[0]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		if tx == nil {
@@ -444,11 +455,11 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			// the transaction is not known. marshalTx would dereference tx, so
 			// this must short-circuit before it.
 			resp, _ := finish(req, nil, nil)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		resp, _ := finish(req, marshalTx(tx, handler.service.GetChainIDValue()), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "jmdt_getTransactionStatus":
@@ -459,7 +470,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// eth_getTransactionsByAddress, so this fits the existing surface.
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		hash := mustString(req.Params[0])
@@ -473,80 +484,80 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			// -32601 (method not found) rather than a server error: from the
 			// caller's point of view this node does not offer the method.
 			resp := RespErr(req.ID, -32601, "jmdt_getTransactionStatus is not enabled on this node")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
 		resp, _ := finish(req, marshalTxStatus(status), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getTransactionReceipt":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		rcpt, err := handler.service.ReceiptByHash(ctx, mustString(req.Params[0]))
 		resp, _ := finish(req, rcpt, err)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	case "eth_getLogs":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing filter")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		q, err := toFilterQuery(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		// Resolve block tags ("latest", "earliest", "pending") and the EIP-234
 		// blockHash form to concrete numbers; toFilterQuery leaves them nil.
 		if err := resolveFilterRange(ctx, handler.service, req.Params[0], q); err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		logs, err := handler.service.GetLogs(ctx, *q)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, marshalLogs(logs), nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getCode":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		code, err := handler.service.GetCode(ctx, addr, num)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, code, nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getStorageAt":
@@ -574,7 +585,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "eth_feeHistory":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
@@ -595,7 +606,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			blockCount = uint64(v)
 		default:
 			resp, _ := invalidParams(req, "invalid blockCount type")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
@@ -603,7 +614,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 
@@ -628,11 +639,11 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, history, nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_maxPriorityFeePerGas":
@@ -653,18 +664,18 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "debug_traceTransaction":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		txHash, _ := req.Params[0].(string)
 		result, err := handler.service.TraceTransaction(ctx, txHash)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, result, nil)
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	// txpool_content disabled for now — will be revisited in a future release.
@@ -685,7 +696,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
-		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 	}
 }
@@ -1094,7 +1105,8 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 	}
 
 	// EIP-1559 fields (type 2)
-	if tx.Type == 2 {
+	switch tx.Type {
+	case 2:
 		maxFeeHex := "0x0"
 		if len(tx.MaxFeePerGas) > 0 {
 			maxFeeHex = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
@@ -1108,7 +1120,7 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		result["accessList"] = []any{}
 		// yParity: recovery bit, same value as v for type 2 (0x0 or 0x1)
 		result["yParity"] = vHex
-	} else if tx.Type == 1 {
+	case 1:
 		result["accessList"] = []any{}
 		result["yParity"] = vHex
 	}

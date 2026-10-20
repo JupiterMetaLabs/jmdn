@@ -461,15 +461,18 @@ func (c *ContractDB) GetStateAndCommittedState(addr common.Address, key common.H
 
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) IsNewContract(_ common.Address) bool { return false }
+
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) GetTransientState(_ common.Address, _ common.Hash) common.Hash {
 	return common.Hash{}
 }
+
 // __DEAD_CODE_AUDIT_PUBLIC__
 func (c *ContractDB) SetTransientState(_ common.Address, _, _ common.Hash) {}
 func (c *ContractDB) GetStorageRoot(_ common.Address) common.Hash          { return common.Hash{} }
+
 // __DEAD_CODE_AUDIT_PUBLIC__
-func (c *ContractDB) GetSelfDestruction(_ common.Address) bool             { return false }
+func (c *ContractDB) GetSelfDestruction(_ common.Address) bool { return false }
 
 // ============================================================================
 // Lightweight helpers (use shared singletons directly — no full StateDB needed)

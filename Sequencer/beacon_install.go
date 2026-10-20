@@ -287,6 +287,24 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		return false, errors.New("entropy: JMDN_AVC_VDF_DIFFICULTY_T must be a positive uint64")
 	}
 
+	// D-46a — reject an oversized T at install time, the same place D-39
+	// already refuses a divergent-from-pinned one. This exists for the
+	// UNPINNED case: a network-pinned group's T is already locked to an
+	// exact value by the check below, but a custom/unpinned group accepts
+	// any positive T with no upper bound today, and Start's own per-epoch
+	// deadline (vdf_sealer.go, vdfSealerDeadlineMultiple x
+	// messaging.TargetVDFDelay) only bounds how long ONE evaluation runs,
+	// not whether the chosen T was ever reasonable. maxVDFDifficultyTCeiling
+	// is set two orders of magnitude above the largest value pinned today
+	// (rsa-2048-testnet-ephemeral, T=476510) — generous enough for a real,
+	// deliberately-calibrated production T, while still refusing an
+	// obviously-wrong value (a typo, a copy-paste of the wrong unit) before
+	// it ever reaches a goroutine.
+	if difficulty > maxVDFDifficultyTCeiling {
+		return false, fmt.Errorf("%w: JMDN_AVC_VDF_DIFFICULTY_T=%d exceeds the configured ceiling %d",
+			ErrVDFDifficultyExceedsCeiling, difficulty, uint64(maxVDFDifficultyTCeiling))
+	}
+
 	// D-39 — T is a chain parameter, not a per-host env var. For a network-pinned
 	// group the fleet's T is pinned alongside its modulus; refuse a divergent
 	// per-host value, which is otherwise silent on the node that is wrong (it

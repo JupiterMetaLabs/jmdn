@@ -139,3 +139,10 @@ func TestAuthorizedRequesterSet_Composition(t *testing.T) {
 		t.Fatalf("empty pinned sequencer must be omitted; got %d members", len(noSeq))
 	}
 }
+
+// Moved from consensus_vote_authz.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// setVoteRequesterAuthorizerForTest overrides the built-in committee-
+// membership check. Test-only -- see voteRequesterAuthorizer's comment for
+// why this is unexported rather than merely documented as test-only.
+func setVoteRequesterAuthorizerForTest(fn func(peer.ID) bool) { voteRequesterAuthorizer = fn }

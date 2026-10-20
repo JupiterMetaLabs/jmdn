@@ -172,11 +172,3 @@ func IsBootstrapEpoch(epoch uint64) bool {
 	_, ok := bootstrapEpochs[epoch]
 	return ok
 }
-
-// resetBootstrapEpochs clears the recorded set. Test helper; production
-// installs once per process.
-func resetBootstrapEpochs() {
-	bootstrapEpochsMu.Lock()
-	bootstrapEpochs = map[uint64]struct{}{}
-	bootstrapEpochsMu.Unlock()
-}

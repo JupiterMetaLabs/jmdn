@@ -1,10 +1,13 @@
 package BlockProcessing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +35,105 @@ func acctNotFound(err error) bool {
 	// A first-time contract address read from the SQL-backed store surfaces the
 	// latter, which the old narrow check missed → the deploy was rejected.
 	return err != nil && DB_OPs.IsNotFound(err)
+}
+
+// ErrUnstampedNewAccount marks a contract tx that was applied as REVERTED
+// because its execution created an account with no block-carried ART identity
+// (post-activation backstop; see unstampedAccountRevertActive).
+var ErrUnstampedNewAccount = errors.New("contract execution created an account with no block-carried ART identity")
+
+// unstampedAccountRevertActive reports whether the deterministic backstop applies
+// at blockNumber: a contract tx whose execution creates an unstamped account is
+// applied as an EVM revert instead of failing the whole block. A FLEET-AGREED
+// consensus parameter (consensus.evm_unstamped_account_revert_height): 0 = off
+// (legacy whole-block failure, unchanged).
+//
+// No IsLoaded fallback (D-80): a consensus gate must not quietly pick a branch
+// when configuration is missing. settings.Get() panics before Load — the same
+// fail-closed behaviour as contractExecContext, which reads settings on this path
+// before this gate is ever reached.
+func unstampedAccountRevertActive(blockNumber uint64) bool {
+	h := settings.Get().Consensus.EVMUnstampedAccountRevertHeight
+	return h != 0 && blockNumber >= h
+}
+
+// contractExecContext is the ONE constructor of the EVM block environment for a
+// contract tx. Shared by the apply path and the sequencer's pre-consensus
+// prediction so both execute against an identical context.
+func contractExecContext(blockNumber uint64, blockHash common.Hash, blockTimestamp int64, coinbase common.Address, txIndex int) execbridge.BlockExecContext {
+	return execbridge.BlockExecContext{
+		ChainID:     settings.Get().Network.ChainID,
+		BlockNumber: blockNumber,
+		BlockHash:   blockHash,
+		Time:        blockTimestamp,
+		Coinbase:    coinbase,
+		TxIndex:     txIndex,
+		GasLimit:    contractBlockGasLimit,
+	}
+}
+
+// sortedAddrs returns m's keys in ascending byte order (deterministic iteration).
+func sortedAddrs(m map[common.Address]*big.Int) []common.Address {
+	out := make([]common.Address, 0, len(m))
+	for a := range m {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}
+
+// loadContractTouched stages every touched account and returns its pre-balance.
+// An account absent from the store is created from its block-carried ART identity;
+// one with no carried identity is NOT created and is returned in unstamped
+// (sorted, deterministic) for the caller to decide. A non-not-found read error or
+// an unparseable balance is returned as err (fail closed).
+func loadContractTouched(stage *txStage, touched []common.Address, accountNonces map[common.Address]uint64, isDeploy bool, deployed common.Address, ts int64) (*txStage, map[common.Address]*big.Int, []common.Address, error) {
+	pre := make(map[common.Address]*big.Int)
+	var unstamped []common.Address
+	seen := make(map[common.Address]bool)
+	for _, a := range touched {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		doc, gerr := stage.get(a)
+		if gerr != nil || doc == nil {
+			if gerr != nil && !acctNotFound(gerr) {
+				return nil, nil, nil, fmt.Errorf("load account %s: %w", a.Hex(), gerr)
+			}
+			// New account's ART identity is the block-carried monotonic ordinal the
+			// sequencer stamped (EnrichBlockAccountNoncesWithPredicted, including the
+			// deployed contract and execution-created accounts). No local mint.
+			artNonce, ok := accountNonces[a]
+			if !ok || artNonce == 0 {
+				unstamped = append(unstamped, a)
+				continue
+			}
+			accType := "user"
+			if isDeploy && a == deployed {
+				accType = "contract"
+			}
+			doc = &DB_OPs.Account{
+				Nonce:       artNonce,
+				DIDAddress:  "did:jmdt:metamask:" + a.Hex(),
+				Address:     a,
+				Balance:     "0",
+				AccountType: accType,
+				CreatedAt:   ts,
+				UpdatedAt:   ts,
+			}
+			stage.put(doc)
+		}
+		b := new(big.Int)
+		if doc.Balance != "" {
+			if _, ok := b.SetString(doc.Balance, 10); !ok {
+				return nil, nil, nil, fmt.Errorf("bad balance %q for %s", doc.Balance, a.Hex())
+			}
+		}
+		pre[a] = b
+	}
+	sort.Slice(unstamped, func(i, j int) bool { return bytes.Compare(unstamped[i][:], unstamped[j][:]) < 0 })
+	return stage, pre, unstamped, nil
 }
 
 // applyContractTx applies a contract transaction (deployment, or a call to an
@@ -73,16 +175,10 @@ func applyContractTx(
 		return fmt.Errorf(format, args...)
 	}
 
-	// 1. Execute deterministically through the seam.
-	res, err := execbridge.Get().ExecuteTx(span_ctx, &tx, execbridge.BlockExecContext{
-		ChainID:     settings.Get().Network.ChainID,
-		BlockNumber: blockNumber,
-		BlockHash:   blockHash,
-		Time:        blockTimestamp,
-		Coinbase:    coinbaseAddr,
-		TxIndex:     txIndex,
-		GasLimit:    contractBlockGasLimit,
-	})
+	// 1. Execute deterministically through the seam. The context comes from the
+	//    SAME helper the sequencer's pre-consensus prediction uses
+	//    (PredictContractCreatedAccounts), so both see an identical EVM block env.
+	res, err := execbridge.Get().ExecuteTx(span_ctx, &tx, contractExecContext(blockNumber, blockHash, blockTimestamp, coinbaseAddr, txIndex))
 	if err != nil {
 		return fail("contract tx %s execution error: %w", tx.Hash.Hex(), err)
 	}
@@ -104,61 +200,79 @@ func applyContractTx(
 		}
 	}
 
-	// 2. Assemble the touched accounts: sender, zkvm, coinbase, fee recipients,
-	//    value-touched accounts, and (successful deployment) the new contract.
-	touched := []common.Address{sender, zkvmAddr, coinbaseAddr}
+	// 2. Assemble the touched accounts: sender, zkvm, coinbase, fee recipients
+	//    (the fee-path base set), then the EXECUTION-touched accounts: every
+	//    value-touched address (internal CALL{value}, SELFDESTRUCT beneficiary,
+	//    CREATE/CREATE2 child funded with value) and, on a successful deployment,
+	//    the new contract.
+	base := []common.Address{sender, zkvmAddr, coinbaseAddr}
 	for _, r := range feeRecipients {
-		touched = append(touched, r.Addr)
+		base = append(base, r.Addr)
 	}
-	for a := range evmAbs {
-		touched = append(touched, a)
-	}
+	touched := append([]common.Address{}, base...)
+	touched = append(touched, sortedAddrs(evmAbs)...)
 	if res.Success && isDeploy && res.ContractAddress != (common.Address{}) {
 		touched = append(touched, res.ContractAddress)
 	}
 
 	// 3. Load pre-balances (staging docs), creating new accounts from the
-	//    block-carried identity (fail-closed if absent).
-	stage := newTxStage(accountsClient)
-	pre := make(map[common.Address]*big.Int)
-	for _, a := range touched {
-		if _, ok := pre[a]; ok {
-			continue
+	//    block-carried identity (no local mint).
+	stage, pre, unstamped, lerr := loadContractTouched(newTxStage(accountsClient), touched, accountNonces, isDeploy, res.ContractAddress, ts)
+	if lerr != nil {
+		return fail("contract tx %s: %w", tx.Hash.Hex(), lerr)
+	}
+	if len(unstamped) > 0 {
+		// A new account created DURING execution carries no block-carried ART
+		// identity. The sequencer's pre-consensus prediction
+		// (PredictContractCreatedAccounts) stamps every account a contract tx creates
+		// when simulated against the pre-block state, so this is reached only when
+		// the prediction could not see it (e.g. the tx depends on an earlier tx in
+		// the SAME block) or the block came from a pre-upgrade sequencer.
+		if !unstampedAccountRevertActive(blockNumber) {
+			// Legacy rule (pre-activation): fail the whole block, unchanged.
+			return fail("contract tx %s: new account %s has no block-carried ART identity", tx.Hash.Hex(), unstamped[0].Hex())
 		}
-		doc, gerr := stage.get(a)
-		if gerr != nil || doc == nil {
-			if gerr != nil && !acctNotFound(gerr) {
-				return fail("contract tx %s: load account %s: %w", tx.Hash.Hex(), a.Hex(), gerr)
-			}
-			// New account's ART identity is the block-carried monotonic ordinal the
-			// sequencer stamped (EnrichBlockAccountNonces, including the deployed
-			// contract address). No local mint — fail closed if absent.
-			artNonce, ok := accountNonces[a]
-			if !ok || artNonce == 0 {
-				return fail("contract tx %s: new account %s has no block-carried ART identity", tx.Hash.Hex(), a.Hex())
-			}
-			accType := "user"
-			if isDeploy && a == res.ContractAddress {
-				accType = "contract"
-			}
-			doc = &DB_OPs.Account{
-				Nonce:       artNonce,
-				DIDAddress:  "did:jmdt:metamask:" + a.Hex(),
-				Address:     a,
-				Balance:     "0",
-				AccountType: accType,
-				CreatedAt:   ts,
-				UpdatedAt:   ts,
-			}
-			stage.put(doc)
+		// Deterministic backstop (post-activation): treat the tx exactly like an EVM
+		// revert — discard its execution effects (value moves, created accounts,
+		// contract storage), charge gas, bump the sender nonce, status-0 receipt.
+		//
+		// Determinism rests on THREE inputs, all of which must agree fleet-wide:
+		//   1. the block-carried AccountNonces (identical bytes on every node);
+		//   2. the EVM result (deterministic given identical pre-state);
+		//   3. the node's local account store — `unstamped` only collects addresses
+		//      stage.get MISSES, so an account present on some nodes and absent on
+		//      others sends them down different branches (D-79).
+		// (3) holds whenever pre-state is consistent, which (2) already requires. A
+		// node whose account store differs is caught BEFORE it can take a different
+		// branch here: the P2.5 state fingerprint folds every account (membership
+		// included), so it halts on the first producer-stamped block after the
+		// divergence (TestInternalCreate_BackstopDivergentStoreHalts). That check
+		// runs only for fingerprint-stamped blocks (always, while the EVM executor
+		// is enabled) — so confirm the accounts table is consistent fleet-wide
+		// before choosing an activation height.
+		logger().Warn(span_ctx, "Contract tx created an account with no block-carried ART identity — applying as REVERTED (deterministic backstop)",
+			ion.String("tx_hash", tx.Hash.Hex()),
+			ion.String("account", unstamped[0].Hex()),
+			ion.Int("unstamped_accounts", len(unstamped)),
+			ion.Uint64("block_number", blockNumber),
+			ion.String("function", "BlockProcessing.applyContractTx"))
+		res = &execbridge.ExecResult{
+			Handled: true,
+			Success: false,
+			GasUsed: res.GasUsed,
+			Err:     fmt.Errorf("%w: %s", ErrUnstampedNewAccount, unstamped[0].Hex()),
 		}
-		b := new(big.Int)
-		if doc.Balance != "" {
-			if _, ok := b.SetString(doc.Balance, 10); !ok {
-				return fail("contract tx %s: bad balance %q for %s", tx.Hash.Hex(), doc.Balance, a.Hex())
-			}
+		evmAbs = map[common.Address]*big.Int{}
+		stage, pre, unstamped, lerr = loadContractTouched(newTxStage(accountsClient), base, accountNonces, isDeploy, common.Address{}, ts)
+		if lerr != nil {
+			return fail("contract tx %s: %w", tx.Hash.Hex(), lerr)
 		}
-		pre[a] = b
+		if len(unstamped) > 0 {
+			// A fee-path account (sender/coinbase/zkvm/fee recipient) is new and
+			// unstamped — enrichment always stamps these, so this is a malformed
+			// block. Fail closed as before.
+			return fail("contract tx %s: new account %s has no block-carried ART identity", tx.Hash.Hex(), unstamped[0].Hex())
+		}
 	}
 
 	// 4. Stale-nonce guard (mirror deductFromSender): fail the block if the

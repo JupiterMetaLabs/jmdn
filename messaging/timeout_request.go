@@ -375,19 +375,6 @@ func newPeriodCatchUpLimiter() *periodCatchUpLimiter {
 // TimeoutCertRejoinEnabled) is already saved/restored per-test.
 var defaultPeriodCatchUpLimiter = newPeriodCatchUpLimiter()
 
-// resetPeriodCatchUpLimiterForTest replaces defaultPeriodCatchUpLimiter with a
-// fresh, empty one and returns a restore function for t.Cleanup. Exists so a
-// test's call(s) to ensurePeriodForBlock are never rate-limited by another
-// test's prior use of the same height - without this, two tests (or two
-// calls in one test) that reuse a height value across the same `go test`
-// process would silently and non-deterministically interfere with each
-// other via this shared limiter.
-func resetPeriodCatchUpLimiterForTest() (restore func()) {
-	prev := defaultPeriodCatchUpLimiter
-	defaultPeriodCatchUpLimiter = newPeriodCatchUpLimiter()
-	return func() { defaultPeriodCatchUpLimiter = prev }
-}
-
 // allow reports whether a catch-up attempt for height may proceed now, and
 // if so records it so a call for the same height within the cooldown is
 // refused without doing any network work.

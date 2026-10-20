@@ -713,8 +713,12 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 		span.SetAttributes(attribute.String("status", "read_error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
+		// The sender sees this as "Failed to read heartbeat response: EOF" (the
+		// stream closes without an OK). remote_peer_id lets the two sides'
+		// logs be correlated.
 		logger().Error(span_ctx, "Error reading heartbeat",
 			err,
+			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -818,9 +822,25 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 		// Invalid/unexpected message — do NOT send "OK" and do NOT touch peer
 		// liveness. The stream closes on return; the sender treats that as a
 		// failed heartbeat (correct — it sent something other than HEARTBEAT).
+		// This path is ALSO a sender-side "Failed to read heartbeat response: EOF",
+		// so it must be visible: Warn (it was Debug, which made one of the two
+		// causes of that EOF invisible in production logs). Rate-limited per peer
+		// because the payload is peer-controlled and a peer can open streams in
+		// a loop; the message is quoted (%q) so it cannot inject log lines.
 		span.SetAttributes(attribute.String("message_status", "invalid"))
+		if allowHeartbeatWarn(remotePeer, time.Now()) {
+			logger().Warn(span_ctx, "Ignoring non-heartbeat message on heartbeat stream (sender will see EOF)",
+				ion.String("message", fmt.Sprintf("%q", message)),
+				ion.Int("bytes", n),
+				ion.String("remote_peer_id", remotePeer.String()),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "node.handleHeartbeat"),
+			)
+		}
 		logger().Debug(span_ctx, "Ignoring non-heartbeat message on heartbeat stream",
-			ion.String("message", message),
+			ion.String("message", fmt.Sprintf("%q", message)),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -831,6 +851,34 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
+}
+
+// heartbeatWarnInterval bounds the invalid-heartbeat Warn to one line per peer
+// per interval.
+const heartbeatWarnInterval = time.Minute
+
+var (
+	heartbeatWarnMu   sync.Mutex
+	heartbeatWarnLast = make(map[peer.ID]time.Time)
+)
+
+// allowHeartbeatWarn reports whether an invalid-heartbeat Warn for p may be
+// logged at now (at most once per heartbeatWarnInterval per peer). Entries older
+// than the interval are pruned on each call, so the map stays bounded by the
+// number of peers that misbehaved within the last interval.
+func allowHeartbeatWarn(p peer.ID, now time.Time) bool {
+	heartbeatWarnMu.Lock()
+	defer heartbeatWarnMu.Unlock()
+	for id, t := range heartbeatWarnLast {
+		if now.Sub(t) >= heartbeatWarnInterval {
+			delete(heartbeatWarnLast, id)
+		}
+	}
+	if _, recent := heartbeatWarnLast[p]; recent {
+		return false
+	}
+	heartbeatWarnLast[p] = now
+	return true
 }
 
 // sendHeartbeat sends a heartbeat message to a peer

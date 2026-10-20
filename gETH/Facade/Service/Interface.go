@@ -3,9 +3,10 @@ package Service
 import (
 	"context"
 	"encoding/json"
+	"math/big"
+
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/txstatus"
-	"math/big"
 )
 
 type Service interface {

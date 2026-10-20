@@ -27,6 +27,7 @@ type NodeConfig struct {
 	Contracts    ContractsSettings  `mapstructure:"contracts"`
 	TxStatus     TxStatusSettings   `mapstructure:"tx_status"`
 	Checkpoint   CheckpointSettings `mapstructure:"checkpoint"`
+	Reputation   ReputationSettings `mapstructure:"reputation"`
 }
 
 // CheckpointSettings controls committee-signed chain-head checkpoints — the
@@ -182,6 +183,66 @@ type EntropyBootstrapSettings struct {
 	Seed string `mapstructure:"seed" yaml:"seed"`
 }
 
+// ConsensusFlags — YAML home for the consensus/committee feature flags.
+//
+// Precedence per key: legacy env var (if set, with its ORIGINAL parser) >
+// consensus.flags.<key> in jmdn.yaml > default. The defaults equal the
+// historical env defaults EXCEPT committee_v2 and agg_cert, which default ON
+// to match the testnet fleet (every node sets JMDN_COMMITTEE_V2=1 and
+// JMDN_AVC_AGG_CERT=1; the runbook requires them ON together fleet-wide). Applied by applyConsensusFlags (root package) right after
+// settings.Load, before any consensus component starts.
+//
+// Legacy env parsers (kept verbatim when the env var is set):
+//   - lenient:   unset → default; "0","false","no","off" (any case) → false; anything else → true
+//   - exactly-1: "1" → true; anything else (including "true") → false
+//   - not-0:     "0" → false; anything else (including "false","off") → true
+//
+// Consensus-critical flags must be identical fleet-wide; coordinate flips.
+type ConsensusFlags struct {
+	CommitteeSnapshotAnchor      bool `mapstructure:"committee_snapshot_anchor" yaml:"committee_snapshot_anchor"`             // JMDN_COMMITTEE_SNAPSHOT_ANCHOR, lenient, default off
+	CommitteeV2                  bool `mapstructure:"committee_v2" yaml:"committee_v2"`                                       // JMDN_COMMITTEE_V2, lenient, default ON (testnet fleet value)
+	RejectLegacyVotes            bool `mapstructure:"reject_legacy_votes" yaml:"reject_legacy_votes"`                         // JMDN_REJECT_LEGACY_VOTES, lenient, default on
+	EnforceCommitteeRegistry     bool `mapstructure:"enforce_committee_registry" yaml:"enforce_committee_registry"`           // JMDN_ENFORCE_COMMITTEE_REGISTRY, lenient, default on
+	EnforceBlockLinkage          bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`                     // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
+	EnforceBodyBinding           bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`                       // JMDN_ENFORCE_BODY_BINDING, lenient, default on
+	AggCert                      bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                               // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
+	TimeoutCertWiring            bool `mapstructure:"timeout_cert_wiring" yaml:"timeout_cert_wiring"`                         // JMDN_TIMEOUT_CERT_WIRING, lenient, default off
+	TimeoutCertRejoin            bool `mapstructure:"timeout_cert_rejoin" yaml:"timeout_cert_rejoin"`                         // JMDN_TIMEOUT_CERT_REJOIN, exactly-1, default off
+	EnforceSlotRecoveryGate      bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`           // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
+	SlotRecoveryPreslotMigration bool `mapstructure:"slot_recovery_preslot_migration" yaml:"slot_recovery_preslot_migration"` // JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION, exactly-1, default off
+	EnforceSyncGate              bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                             // JMDN_ENFORCE_SYNC_GATE, not-0, default on
+	EmitBlockBoundVotes          bool `mapstructure:"emit_block_bound_votes" yaml:"emit_block_bound_votes"`                   // JMDN_EMIT_BLOCK_BOUND_VOTES, not-0, default on
+	ValidatorVoterSet            bool `mapstructure:"validator_voter_set" yaml:"validator_voter_set"`                         // JMDN_VALIDATOR_VOTER_SET, lenient, default on
+	ValidatorVoteIngest          bool `mapstructure:"validator_vote_ingest" yaml:"validator_vote_ingest"`                     // JMDN_VALIDATOR_VOTE_INGEST, lenient, default on
+	EmitCommitteeBLS             bool `mapstructure:"emit_committee_bls" yaml:"emit_committee_bls"`                           // JMDN_EMIT_COMMITTEE_BLS, not-0, default on
+	AllowNewReceiverAccounts     bool `mapstructure:"allow_new_receiver_accounts" yaml:"allow_new_receiver_accounts"`         // JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS, lenient, default on
+	BlockGossip                  bool `mapstructure:"block_gossip" yaml:"block_gossip"`                                       // JMDN_BLOCK_GOSSIP, lenient, default on
+	FinalizeCertOnly             bool `mapstructure:"finalize_cert_only" yaml:"finalize_cert_only"`                           // JMDN_FINALIZE_CERT_ONLY, lenient, default off
+	// TrustSequencerCertificate — TESTNET STOPGAP, fail-open. When on, a
+	// validator does NOT re-verify the 2f+1 committee quorum of a block it
+	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the
+	// sequencer's commit decision is trusted once the certificate carries at
+	// least f+1 cryptographically valid block-bound +1 votes from eligible,
+	// non-blocklisted validators (so at least one honest validator signed it).
+	// A verifier error is never relaxed. The sequencer's OWN quorum gate is
+	// unaffected — it still needs 2f+1 votes before it commits. Exists only because an unanchored node
+	// cannot reproduce a past block's seated committee (six "3/5 over committee
+	// 7" incidents, 2026-10-13..15); remove once committee anchoring is active.
+	// Refused under production posture.
+	TrustSequencerCertificate bool   `mapstructure:"trust_sequencer_certificate" yaml:"trust_sequencer_certificate"` // JMDN_TRUST_SEQUENCER_CERT, lenient, default OFF
+	VoteCRDTCompactK          uint64 `mapstructure:"vote_crdt_compact_k" yaml:"vote_crdt_compact_k"`                 // JMDN_VOTE_CRDT_COMPACT_K, base-10 uint, default 3 (floored at 2 by the consumer)
+}
+
+// ReputationSettings — YAML home for the reputation observer/push knobs that
+// used to be env-only. Same precedence rule as ConsensusFlags: a SET legacy
+// env var wins with its original parser.
+type ReputationSettings struct {
+	Observe             bool   `mapstructure:"observe" yaml:"observe"`                             // JMDN_REPUTATION_OBSERVE, lenient, default on
+	PushIntervalSeconds uint64 `mapstructure:"push_interval_seconds" yaml:"push_interval_seconds"` // JMDN_REPUTATION_PUSH_INTERVAL_SECONDS, uint, 0 = disabled
+	PushSuspend         bool   `mapstructure:"push_suspend" yaml:"push_suspend"`                   // JMDN_REPUTATION_PUSH_SUSPEND, not-0, default on
+	StorePath           string `mapstructure:"store_path" yaml:"store_path"`                       // JMDN_REPUTATION_STORE_PATH, path, default "" (in-memory)
+}
+
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 
@@ -277,6 +338,21 @@ type ConsensusSettings struct {
 	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR off (the older, unwired hash-only anchor).
 	CommitteeAnchorActivationHeight uint64 `mapstructure:"committee_anchor_activation_height" yaml:"committee_anchor_activation_height"`
 
+	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
+	// contract txs whose EXECUTION creates an account (internal CALL{value},
+	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no
+	// block-carried ART identity (messaging/BlockProcessing/contract_apply.go).
+	// From this height on such a tx is applied as an EVM REVERT (effects
+	// discarded, gas charged, nonce bumped, status-0 receipt) instead of failing
+	// and withholding the WHOLE block. The sequencer's pre-consensus prediction
+	// (PredictContractCreatedAccounts) stamps these accounts in the common case,
+	// so the backstop only fires when prediction could not see the account.
+	//
+	// A FLEET-AGREED consensus parameter: every node must carry the same value,
+	// set in one coordinated upgrade, to a height the chain has not reached yet.
+	// Below it (and at 0, the default) the legacy whole-block failure is kept.
+	EVMUnstampedAccountRevertHeight uint64 `mapstructure:"evm_unstamped_account_revert_height" yaml:"evm_unstamped_account_revert_height"`
+
 	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
 	// committee snapshot when the seed is unreachable.
 	//
@@ -334,6 +410,13 @@ type ConsensusSettings struct {
 	// must be identical network-wide — coordinate the flip. Default OFF = today's
 	// behaviour (empty FeeRecipients → single coinbase credit).
 	RewardSplitEnabled bool `mapstructure:"reward_split_enabled" yaml:"reward_split_enabled"`
+
+	// Flags are the consensus/committee rollout switches that used to be
+	// env-only (JMDN_* read at package init). Each key here has a legacy env
+	// alias; when that env var is SET it keeps its historical parser and wins,
+	// so existing env files behave exactly as before. YAML applies only when
+	// the env var is unset. See ConsensusFlags and jmdn_default.yaml.
+	Flags ConsensusFlags `mapstructure:"flags" yaml:"flags"`
 
 	// EntropyBootstrap pins the Stage-2 beacon's genesis entropy epochs; see
 	// EntropyBootstrapSettings. Only consulted when the beacon is installed
@@ -483,10 +566,6 @@ type ThebeCDCConfig struct {
 // Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
 	Redis RedisSettings `mapstructure:"redis" yaml:"redis"`
-
-	// TxIndexPath is the path to the SQLite address→tx index file.
-	// Defaults to "txindex.db" in the working directory if empty.
-	TxIndexPath string `mapstructure:"tx_index_path" yaml:"tx_index_path"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

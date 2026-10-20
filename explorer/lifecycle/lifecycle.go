@@ -60,16 +60,16 @@ type Entry struct {
 }
 
 type registry struct {
-	mu       sync.RWMutex
-	byTx     map[string]*Entry   // txHash -> snapshot
-	blockTxs map[uint64][]string // blockNumber -> its txHashes (set at MarkProposed)
-	hashToNum map[string]uint64  // blockHash -> blockNumber (for vote-arrival lookup)
-	numToHash map[uint64]string  // blockNumber -> blockHash (for terminal cleanup)
-	voters   map[uint64]map[string]bool // blockNumber -> set of counted voter peer IDs
-	ttl      time.Duration
-	capacity int
-	now      func() time.Time
-	obs      func(Entry) // SSE observer, invoked after unlock
+	mu        sync.RWMutex
+	byTx      map[string]*Entry          // txHash -> snapshot
+	blockTxs  map[uint64][]string        // blockNumber -> its txHashes (set at MarkProposed)
+	hashToNum map[string]uint64          // blockHash -> blockNumber (for vote-arrival lookup)
+	numToHash map[uint64]string          // blockNumber -> blockHash (for terminal cleanup)
+	voters    map[uint64]map[string]bool // blockNumber -> set of counted voter peer IDs
+	ttl       time.Duration
+	capacity  int
+	now       func() time.Time
+	obs       func(Entry) // SSE observer, invoked after unlock
 }
 
 var reg = &registry{

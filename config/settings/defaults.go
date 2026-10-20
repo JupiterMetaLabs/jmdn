@@ -55,7 +55,6 @@ func DefaultConfig() NodeConfig {
 			Profiler:   "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			TxIndexPath: "./DB/txindex.db",
 			Redis: RedisSettings{
 				URL: "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
 				// SEC-04: no baked default secret. Set via jmdn.yaml or
@@ -248,6 +247,7 @@ func DefaultConfig() NodeConfig {
 			RequirePinnedCommittee: false,
 			// Chain-anchored committee pool (W1). 0 = off. See config.go.
 			CommitteeAnchorActivationHeight: 0,
+			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,
 			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
@@ -256,6 +256,40 @@ func DefaultConfig() NodeConfig {
 			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
 			RewardAddress:      "",
 			RewardSplitEnabled: false,
+			// Legacy env defaults, except CommitteeV2 and AggCert which are ON:
+			// the testnet fleet runs JMDN_COMMITTEE_V2=1 / JMDN_AVC_AGG_CERT=1 on
+			// every node and the runbook requires them ON together fleet-wide —
+			// a node that forgot the env line silently ran the old path, which
+			// is the failure mode default-on removes. (2026-10-14, /etc/jmdn/jmdn-seq.env)
+			Flags: ConsensusFlags{
+				CommitteeSnapshotAnchor:      false,
+				CommitteeV2:                  true,
+				RejectLegacyVotes:            true,
+				EnforceCommitteeRegistry:     true,
+				EnforceBlockLinkage:          true,
+				EnforceBodyBinding:           true,
+				AggCert:                      true,
+				TimeoutCertWiring:            false,
+				TimeoutCertRejoin:            false,
+				EnforceSlotRecoveryGate:      true,
+				SlotRecoveryPreslotMigration: false,
+				EnforceSyncGate:              true,
+				EmitBlockBoundVotes:          true,
+				ValidatorVoterSet:            true,
+				ValidatorVoteIngest:          true,
+				EmitCommitteeBLS:             true,
+				AllowNewReceiverAccounts:     true,
+				BlockGossip:                  true,
+				TrustSequencerCertificate:    false,
+				FinalizeCertOnly:             false, // committee gets header+certificate instead of the full block; needs the whole committee on this build
+				VoteCRDTCompactK:             3,
+			},
+		},
+		Reputation: ReputationSettings{
+			Observe:             true,
+			PushIntervalSeconds: 300, // reputationPushDefaultIntervalSeconds
+			PushSuspend:         true,
+			StorePath:           "",
 		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below

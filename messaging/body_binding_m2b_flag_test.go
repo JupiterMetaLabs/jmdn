@@ -68,11 +68,15 @@ func TestCheckConsensusBinding_ClosesTheTamperGap(t *testing.T) {
 		t.Fatal("a rewritten Period must be rejected by checkConsensusBinding (ConsensusHash no longer matches)")
 	}
 
-	// A block with no ConsensusHash (pre-v4) and Period 0 is skipped, not
-	// rejected: Period 0 selects the same committee it always did.
+	// D-28: a zero ConsensusHash is now rejected unconditionally, including
+	// at Period 0 — the leniency this used to have at Period 0 was the exact
+	// bypass that let two equivocating forks each omit ConsensusHash and
+	// collide on the same (zero) dedup/equivocation key. No honest block can
+	// look like this: the proposer always sets ConsensusHash unconditionally
+	// (Block/consensus_fields.go).
 	b2 := &config.ZKBlock{Transactions: txs, Period: 0}
-	if rej := checkConsensusBinding(b2); rej != nil {
-		t.Fatalf("zero ConsensusHash with Period 0 must be skipped (rollout leniency), got rejection: %+v", rej)
+	if rej := checkConsensusBinding(b2); rej == nil || rej.reason != "consensus_hash_missing" {
+		t.Fatalf("zero ConsensusHash must be rejected as consensus_hash_missing even at Period 0, got %+v", rej)
 	}
 
 	// Fix 3: once timeout certificates can advance Period, a zero

@@ -258,3 +258,19 @@ func TestMissingSeatIDs_SkipsUnparseableSeats(t *testing.T) {
 		t.Fatalf("MissingSeatIDs = %v, want %v", got, want)
 	}
 }
+
+// Moved from committee_seat_resolve.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// resetSeatAddressBookClient closes and forgets any cached seed client.
+// Tests use it to get a clean cache between cases; production code has no
+// reason to call it (a URL change is handled automatically by
+// seatAddressBookClientFor).
+func resetSeatAddressBookClient() {
+	seatAddressBookClientMu.Lock()
+	defer seatAddressBookClientMu.Unlock()
+	if seatAddressBookClient != nil {
+		_ = seatAddressBookClient.Close()
+	}
+	seatAddressBookClient = nil
+	seatAddressBookClientURL = ""
+}

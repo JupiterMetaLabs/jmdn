@@ -62,10 +62,12 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/time/rate"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -179,6 +181,59 @@ func vdfBeaconIsInstalled() bool {
 	return vdfBeaconInstalled
 }
 
+// D-48 (remainder): per-peer rate limit and a global concurrency cap on
+// HandleVDFProofRequestStream. Legitimate use is rare and bursty (a
+// recovering node's whole sweep is maxRecoveryPeers=12 requests, once per
+// epoch it is missing entropy for), so both bounds are generous relative to
+// that and tight relative to a peer that opens the stream in a loop.
+//
+// vdfPullRateLimiters is bounded, not a plain map: a per-peer entry is
+// created on first request and never explicitly deleted, so without a bound
+// an attacker rotating peer IDs (or a large, honest, churny fleet) grows this
+// unboundedly — the same class of defect D-34 already found elsewhere on this
+// codebase's per-peer/per-height state. LRU eviction under that pressure just
+// means an evicted peer's next request re-creates a fresh limiter — a burst
+// allowance, not a bypass, and no worse than that peer's first-ever request.
+const (
+	vdfPullRateLimiterCacheCapacity = 4096
+	vdfPullRatePerSecond            = 1
+	vdfPullRateBurst                = 5
+	vdfPullMaxConcurrent            = 32
+)
+
+var (
+	vdfPullRateLimiters = mustNewVDFPullRateLimiterCache(vdfPullRateLimiterCacheCapacity)
+	vdfPullConcurrency  = make(chan struct{}, vdfPullMaxConcurrent)
+)
+
+func mustNewVDFPullRateLimiterCache(size int) *lru.Cache[peer.ID, *rate.Limiter] {
+	c, err := lru.New[peer.ID, *rate.Limiter](size)
+	if err != nil {
+		// Only returns an error for size <= 0, a compile-time-constant
+		// precondition violated only by an editing mistake — never at
+		// runtime from live input, matching mustNewDedupCache/
+		// mustNewHeightCache's own reasoning elsewhere in this package.
+		panic(fmt.Sprintf("messaging: invalid VDF-pull rate limiter cache size %d: %v", size, err))
+	}
+	return c
+}
+
+// vdfPullRateLimiterFor returns remote's limiter, creating one on first sight.
+// lru.Cache is internally synchronized, but get-then-create is not atomic
+// against a concurrent first request from the SAME peer racing in on two
+// streams — both could pass Get's miss and each Add its own fresh limiter,
+// so the second Add simply replaces the first. That is a momentary double
+// allowance for one peer's very first two concurrent requests, never a
+// growing or persistent bypass, and is not worth a second lock for.
+func vdfPullRateLimiterFor(remote peer.ID) *rate.Limiter {
+	if lim, ok := vdfPullRateLimiters.Get(remote); ok {
+		return lim
+	}
+	lim := rate.NewLimiter(rate.Limit(vdfPullRatePerSecond), vdfPullRateBurst)
+	vdfPullRateLimiters.Add(remote, lim)
+	return lim
+}
+
 // HandleVDFProofRequestStream is the receive side, registered on
 // config.VDFProofRequestProtocol at node startup (node/node.go).
 //
@@ -190,6 +245,34 @@ func vdfBeaconIsInstalled() bool {
 func HandleVDFProofRequestStream(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer()
+
+	// D-48 (remainder): per-peer rate limit, checked before any read. A peer
+	// over its own budget gets nothing — not even the stream-read error a
+	// malformed request would produce — so this cannot be used to distinguish
+	// "rate limited" from "this node has no proof", the same posture the
+	// vdfBeaconIsInstalled check below already takes.
+	if !vdfPullRateLimiterFor(remote).Allow() {
+		log.Warn().Str("from", remote.String()).
+			Msg("vdf proof pull: per-peer rate limit exceeded — dropping request")
+		return
+	}
+
+	// D-48 (remainder): global concurrency cap, non-blocking. A libp2p stream
+	// handler runs on its own goroutine per call, so with no cap a burst of
+	// simultaneous requests (many peers, or one peer opening streams in
+	// parallel — the rate limiter above bounds one peer's RATE, not how many
+	// of its own streams it has open at once) spawns unboundedly many
+	// concurrent handlers. Dropping over capacity is the fail-closed choice:
+	// a legitimate requester still has vdfPullMaxConcurrent-1 other in-flight
+	// slots free on this node and maxRecoveryPeers other nodes to ask.
+	select {
+	case vdfPullConcurrency <- struct{}{}:
+		defer func() { <-vdfPullConcurrency }()
+	default:
+		log.Warn().Str("from", remote.String()).
+			Msg("vdf proof pull: at max concurrent requests — dropping request")
+		return
+	}
 
 	_ = s.SetReadDeadline(time.Now().Add(vdfProofRequestTimeout))
 	reader := bufio.NewReader(&io_LimitedStream{s: s, remaining: maxVDFProofRequestBytes})

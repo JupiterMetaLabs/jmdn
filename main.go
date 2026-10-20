@@ -47,7 +47,6 @@ import (
 	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
@@ -55,6 +54,7 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/SmartContract"
 	"gossipnode/SmartContract/evmexec"
+	"gossipnode/Vote"
 	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -122,7 +122,8 @@ func goMaybeTracked(
 var (
 	// legacyFastsyncServer retains the FastsyncV2 /fastsync/v1 serving engine when
 	// serve_legacy=true (sequencer only), keeping its stream handlers alive.
-	legacyFastsyncServer *FastsyncV2.FastsyncV2
+	// Write-only by design (held for lifetime, never read).
+	legacyFastsyncServer *FastsyncV2.FastsyncV2 //nolint:unused // retained on purpose, see comment
 	globalPubSub         *Pubsub.StructGossipPubSub
 )
 
@@ -366,9 +367,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
-		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
+		fmt.Println("  rebuildrange <from> <to>          - (retired) see rebuildindex")
+		fmt.Println("  txindexstatus                     - (retired) reports READY + chain head; lookups use the ThebeDB SQL projection")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -640,7 +641,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		if resp.Ready {
 			state = "READY"
 		}
-		fmt.Printf("txindex status: %s — last indexed block: %d\n", state, resp.LastIndexedBlock)
+		fmt.Printf("txindex status: %s — chain head: %d\n", state, resp.LastIndexedBlock)
 
 	case "accountsync":
 		if len(args) < 1 {
@@ -691,9 +692,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
-		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
+		fmt.Println("  rebuildrange <from> <to>          - (retired) see rebuildindex")
+		fmt.Println("  txindexstatus                     - (retired) reports READY + chain head; lookups use the ThebeDB SQL projection")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
@@ -797,19 +798,6 @@ func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
 	return blk, nil
 }
 
-// initFastsyncV2 initializes the FastSync V2 service.
-// ctx is the node's top-level shutdown context — it governs the lifetime of
-// server-side network handler goroutines inside the engine.
-func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
-		return nil
-	}
-	log.Info().Msg("FastsyncV2 service initialized")
-	return fs
-}
-
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 	fmt.Println("Initializing PubSub system...")
@@ -875,6 +863,10 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", cfgErr)
 		os.Exit(1)
 	}
+	// consensus.flags.* / reputation.* from YAML. Must run before any consensus
+	// component (and before ValidateProductionConsensusPosture) reads the
+	// package-level flag variables. A SET legacy env var still wins.
+	applyConsensusFlags(cfg)
 
 	// Apply CLI flag overrides (only flags explicitly passed on command line)
 	flag.Visit(func(f *flag.Flag) {
@@ -1124,17 +1116,6 @@ func main() {
 						logger.Info(ctx, "Profiler server stopped gracefully")
 					}
 				}
-			}
-
-			// 3. Stop the tx-address index: refuse new async work, cancel any
-			// in-flight catchup/rebuild, and close both SQLite pools. Must run
-			// before the process exits — nothing else does this today, and an
-			// unclosed sql.DB leaks its connections/WAL file handles.
-			log.Info().Msg("Shutting down transaction address index...")
-			if err := txindex.Shutdown(); err != nil {
-				log.Error().Err(err).Msg("txindex shutdown reported an error")
-			} else {
-				log.Info().Msg("Transaction address index stopped")
 			}
 
 			// 4. Delegate final shutdown to the centralized handler
@@ -1466,88 +1447,10 @@ func main() {
 		}
 	}
 
-	// NOTE(ordering): this block MUST run after the ThebeDB wiring above.
-	// Init() immediately spawns EnsureReady, whose first step is
-	// DB_OPs.GetLatestBlockNumber(ctx, nil) -> getHandle() -> the process-wide
-	// handle set by DB_OPs.SetGlobalHandle inside the cfg.Thebe.Enabled block.
-	// When Init ran before that setter, every boot logged
-	// "[txindex] ALERT: initial catchup failed: ... no ThebeHandle available (conn=<nil>)"
-	// and the index stayed not-ready until a FastsyncV2 catchup happened to call
-	// EnsureReady again. Block-propagation handlers are registered further down,
-	// so no live block can reach IndexBlockAsync before the queue exists.
-	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
-	// and starts the background worker — it returns immediately. The (possibly
-	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
-	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
-	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
-	// getAddressTransactions return a "still syncing" / 503 error rather than
-	// an ImmuDB-scan fallback, which no longer exists (see PR history).
-	txIndexPath := cfg.Database.TxIndexPath
-	if txIndexPath == "" {
-		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
-	}
-	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
-		// Only Open() (disk/permissions) failures land here — catchup failures
-		// are logged asynchronously by the background goroutine.
-		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
-	} else {
-		fmt.Println("Transaction address index starting (background catchup in progress)")
-	}
-
-	// Explorer stats account/DID counter. The stats API used to scan immudb
-	// (CountAccounts, O(n)) on every request; instead the count is maintained in
-	// the txindex sqlite. Increments are applied asynchronously so the
-	// account-write path never blocks on the sqlite counter.
-	DB_OPs.SetAccountCreatedHook(func(delta int) {
-		go func() {
-			if err := txindex.IncrAccountCount(context.Background(), int64(delta)); err != nil {
-				log.Debug().Err(err).Int("delta", delta).Msg("[stats] account counter increment failed")
-			}
-		}()
-	})
-	// One-time seed: indexing the existing DIDs/accounts is a one-shot activity.
-	// Only run the expensive immudb Count if the counter has never been seeded;
-	// once present it is maintained by the increments above. Runs in a goroutine
-	// so a first-boot seed never delays startup, and retries with backoff: the
-	// immudb Count over the accounts prefix can exceed the default 30s on a large
-	// DB or under load, so the seed uses a long per-attempt deadline and keeps
-	// retrying until it succeeds (or the node shuts down).
-	go func() {
-		if _, seeded, err := txindex.GetAccountCount(context.Background()); err != nil {
-			log.Debug().Err(err).Msg("[stats] account counter unavailable; skipping one-time seed")
-			return
-		} else if seeded {
-			return // already indexed once — keep incrementing
-		}
-		backoff := 30 * time.Second
-		for attempt := 1; ; attempt++ {
-			// Re-check: another path (e.g. a manual reseed) may have seeded it.
-			if _, seeded, _ := txindex.GetAccountCount(context.Background()); seeded {
-				return
-			}
-			// Long per-attempt deadline — this runs off the request path.
-			n, err := DB_OPs.CountAccountsWithTimeout(5 * time.Minute)
-			if err == nil {
-				if serr := txindex.SetAccountCount(context.Background(), int64(n)); serr != nil {
-					log.Warn().Err(serr).Msg("[stats] failed to persist seeded account/DID count")
-				} else {
-					log.Info().Int("count", n).Int("attempt", attempt).Msg("[stats] account/DID counter seeded (one-time)")
-					return
-				}
-			} else {
-				log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", backoff).
-					Msg("[stats] one-time account/DID count seed failed; retrying")
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 10*time.Minute {
-				backoff *= 2
-			}
-		}
-	}()
+	// Address→transaction lookups and the explorer's account/transaction
+	// totals are served directly by the ThebeDB SQL projection (written
+	// synchronously by the gateway at block apply). The former SQLite
+	// tx-address index and its hand-maintained account counter were retired.
 
 	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
 	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
@@ -1677,6 +1580,13 @@ func main() {
 	// block's selection period once anchoring is active; otherwise identical
 	// to the line above.
 	Structs.SetAuthorizedCommitteeForHeightFn(messaging.AuthorizedCommitteeForTallyAtHeight)
+	// "Count every validator's vote in the buddy tally again" LLD: the VOTER
+	// set a buddy counts votes from (every eligible validator, uncapped), as
+	// distinct from the committee-seat set wired above (who may sign a buddy
+	// RESULT). Flag-switched (JMDN_VALIDATOR_VOTER_SET): off -> falls back to
+	// the committee wiring above, byte-identical to the previous behaviour.
+	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
+	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
@@ -2013,8 +1923,11 @@ func main() {
 							return
 						}
 						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
-						go localMonitor.TriggerCheck(context.Background())
+						go localMonitor.TriggerGapCatchUp(context.Background())
 					})
+					// The vote path sees the gap first on a node that missed a
+					// broadcast (it never receives a block, only vote requests).
+					Vote.GapCatchUpHook = messaging.RequestCatchUp
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {

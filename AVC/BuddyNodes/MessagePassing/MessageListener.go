@@ -495,7 +495,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 	json.Unmarshal([]byte(message), &voteMessage)
 
 	var isVote bool
-	if ack, ok := voteMessage["ACK"].(map[string]interface{}); ok {
+	if ack, ok := voteMessage["ack"].(map[string]interface{}); ok {
 		if stage, ok := ack["stage"].(string); ok && stage == config.Type_SubmitVote {
 			isVote = true
 		}

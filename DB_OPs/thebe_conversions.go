@@ -11,7 +11,6 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
-	"time"
 
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
@@ -386,6 +385,3 @@ func zkProofRecordToZKBlock(z *thebegateway.ZKProofRecord, block *config.ZKBlock
 		}
 	}
 }
-
-// nowNano returns the current time as Unix nanoseconds.
-func nowNano() int64 { return time.Now().UTC().UnixNano() }

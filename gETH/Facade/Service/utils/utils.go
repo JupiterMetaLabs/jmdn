@@ -2,12 +2,13 @@ package Utils
 
 import (
 	"fmt"
+	"math/big"
+	"strings"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
-	"math/big"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 )

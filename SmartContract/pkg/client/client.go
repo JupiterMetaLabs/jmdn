@@ -3,8 +3,9 @@ package client
 import (
 	"context"
 	"fmt"
-	"gossipnode/SmartContract/proto"
 	"math/big"
+
+	"gossipnode/SmartContract/proto"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"google.golang.org/grpc"

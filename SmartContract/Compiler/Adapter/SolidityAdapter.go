@@ -7,9 +7,10 @@ It promotes extensibility by allowing new compilation strategies to be added wit
 package Adapter
 
 import (
+	"strings"
+
 	"gossipnode/SmartContract/Compiler/SolidityVM"
 	"gossipnode/config/Types"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )

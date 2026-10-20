@@ -3,16 +3,17 @@ package rpc
 import (
 	"context"
 	"encoding/json"
-	"gossipnode/config/GRO"
-	"gossipnode/gETH/Facade/Service"
-	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/common"
 	"log"
 	"math/big"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
+
+	"gossipnode/config/GRO"
+	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/gETH/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"

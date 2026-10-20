@@ -6,11 +6,9 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -63,15 +61,16 @@ const addrTxHydrationConcurrency = 10
 const maxAddrTxPage = 1_000_000
 
 // getAddressTransactions returns transactions for a specific address.
-// Uses SQLite txindex for O(log n) lookup → ImmuDB point-fetch per page item.
-// If the txindex is unavailable, this returns 503 rather than a fake empty
+// Pages (block, hash) refs from the ThebeDB SQL projection (indexed
+// from_addr/to_addr), then point-fetches each transaction by hash.
+// If the projection is unavailable, this returns 503 rather than a fake empty
 // "no transactions" result — callers must be able to tell "no data" apart
 // from "data source down".
 func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// reqCtx is tied to the HTTP request's lifecycle (cancelled if the client
-	// disconnects) — pass it into txindex calls instead of a fresh Background
+	// disconnects) — pass it into the DB calls instead of a fresh Background
 	// context so a dropped connection actually aborts the in-flight query.
 	reqCtx := c.Request.Context()
 	addressParam := c.Param("address")
@@ -82,7 +81,6 @@ func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	}
 
 	address := common.HexToAddress(addressParam)
-	normalizedAddr := strings.ToLower(address.Hex()) // lowercase — matches ImmuDB/SQLite storage
 
 	pageStr := c.DefaultQuery("page", "1")
 	limitStr := c.DefaultQuery("limit", "20")
@@ -116,9 +114,9 @@ func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	// harmless, self-correcting UI paginator, and wrapping both reads in a
 	// transaction would hold a read lock across two round-trips for no real
 	// benefit. Please don't "fix" this with a transaction.
-	total, totalErr := txindex.CountByAddress(reqCtx, normalizedAddr)
+	total, totalErr := DB_OPs.CountTransactionsByAddress(reqCtx, address)
 	if totalErr != nil {
-		logger().Error(loggerCtx, "txindex unavailable",
+		logger().Error(loggerCtx, "transaction index unavailable",
 			totalErr,
 			ion.String("address", addressParam),
 			ion.String("log_file", LOG_FILE),
@@ -144,14 +142,14 @@ func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 		return
 	}
 
-	// ── Fast path via SQLite txindex ─────────────────────────────────────────
-	refs, idxErr := txindex.QueryByAddressOffset(reqCtx, normalizedAddr, offset, limit)
+	// ── Page of (block, hash) refs from the ThebeDB SQL projection ──────────
+	refs, idxErr := DB_OPs.TransactionRefsByAddress(reqCtx, address, offset, limit)
 	if idxErr != nil {
-		// txindex down/uninitialised: this is a service outage, not "address
+		// Projection unreachable: this is a service outage, not "address
 		// has no transactions". Returning 200+empty here would silently lie
 		// to explorers/wallets. Surface it as 503 so callers retry instead of
 		// showing a wrong "no activity" result.
-		logger().Error(loggerCtx, "txindex unavailable",
+		logger().Error(loggerCtx, "transaction index unavailable",
 			idxErr,
 			ion.String("address", addressParam),
 			ion.String("log_file", LOG_FILE),
@@ -192,7 +190,7 @@ func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	for i, ref := range refs {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, ref txindex.TxRef) {
+		go func(i int, ref DB_OPs.TxRef) {
 			defer wg.Done()
 			defer func() { <-sem }()
 

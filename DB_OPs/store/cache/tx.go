@@ -89,6 +89,17 @@ func (s *cachedTxStore) GetTransactionsPaginated(ctx context.Context, limit, off
 }
 
 // CountTransactions delegates directly — not cached (count changes on every new block).
+// CountTransactionsByAddress / GetTransactionRefsByAddress delegate directly — not cached
+// (a new block changes both, and the explorer paginator tolerates slight staleness only
+// between its own two reads, not across requests).
+func (s *cachedTxStore) CountTransactionsByAddress(ctx context.Context, address string) (uint64, error) {
+	return s.inner.CountTransactionsByAddress(ctx, address)
+}
+
+func (s *cachedTxStore) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]thebegateway.TxRef, error) {
+	return s.inner.GetTransactionRefsByAddress(ctx, address, limit, offset)
+}
+
 func (s *cachedTxStore) CountTransactions(ctx context.Context) (uint64, error) {
 	return s.inner.CountTransactions(ctx)
 }

@@ -42,24 +42,6 @@ func LastBlockStoredAt() time.Time {
 // BLOCK-LEVEL OPERATIONS (from immuclient.go)
 // ========================================
 
-// toBytes converts various value types to bytes.
-func toBytes(value interface{}) ([]byte, error) {
-	switch v := value.(type) {
-	case string:
-		return []byte(v), nil
-	case []byte:
-		return v, nil
-	case nil:
-		return nil, ErrNilValue
-	default:
-		jsonBytes, err := json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal value to JSON: %w", err)
-		}
-		return jsonBytes, nil
-	}
-}
-
 // Create stores a value with the given key using the connection pool.
 // tx:<hash> → blockNumber entries are handled by SQL transactions table.
 // All other ImmuDB-specific KV entries are no-ops after ThebeDB migration.

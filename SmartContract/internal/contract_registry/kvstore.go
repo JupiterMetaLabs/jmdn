@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+
 	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/pkg/types"
-	"sync"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"

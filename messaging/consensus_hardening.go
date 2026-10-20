@@ -59,6 +59,16 @@ var (
 	// decision. MUST NOT be true until the whole network emits block-bound votes.
 	RejectLegacyVotes = envOn("JMDN_REJECT_LEGACY_VOTES", true)
 
+	// TrustSequencerCertificate — TESTNET STOPGAP, FAIL-OPEN. See
+	// settings.ConsensusFlags.TrustSequencerCertificate. When true a validator
+	// accepts a received block's certificate below the 2f+1 quorum, provided at
+	// least f+1 block-bound +1 votes from eligible (non-blocklisted) validators
+	// verify. Never applied when the verifier itself errored. Applied ONLY on
+	// the receiving paths (verifyBlockCertificate, ProcessBlockLocally,
+	// VerifySyncedBlockCertificate); the sequencer's own gate
+	// (Sequencer.Consensus) never consults it. Default OFF.
+	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", false)
+
 	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
 	// members count, and an eligibility source MUST be configured. FAIL CLOSED:
 	// no source wired, a source error, or an empty eligible set means the
@@ -352,7 +362,17 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 // the vote's pubHex must equal it. When the bound key is empty (legacy getBuddy
 // source with no snapshot), only peer_id membership is checked.
 func keyAuthorized(peerID, pubHex string) bool {
-	eligible, err := eligibleMembers()
+	// Under JMDN_COMMITTEE_V2 the seated committee rotates across the WHOLE
+	// pool, so authorize against the uncapped pool (same source as
+	// AuthorizedCommitteeForTally). The capped, alphabetical eligibleMembers()
+	// set would deny correctly seated v2 members as not_in_eligible_set.
+	var eligible map[string]string
+	var err error
+	if CommitteeV2Enabled {
+		eligible, err = eligibleMembersUncapped()
+	} else {
+		eligible, err = eligibleMembers()
+	}
 	if err != nil {
 		// fmt.Printf (not zerolog) so this denial reliably reaches journald.
 		fmt.Printf("🚫 committee auth denied: peer=%s reason=eligibility_source_error err=%v\n", peerID, err)
@@ -587,6 +607,48 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consens
 	return res, nil
 }
 
+// relaxForTrustedSequencer is the single place TrustSequencerCertificate takes
+// effect. Given a receive-path verifier outcome (res, err) for a block's
+// certificate, it returns that outcome unchanged when the flag is off, the
+// quorum was reached, or the verifier returned an error (an error means the
+// committee could not be resolved — accepting then would trust a certificate
+// nobody checked). Otherwise it re-counts the certificate against the
+// eligible pool for the block's selection period, with the local blocklist
+// applied, and accepts only if at least f+1 distinct block-bound +1 votes
+// verify, where f is derived from the committee size the verifier used. f+1
+// guarantees at least one honest signer under the BFT assumption, so a single
+// (or f colluding) validator keys cannot finalize a block on their own.
+func relaxForTrustedSequencer(path string, res CertificateResult, err error, responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
+	if !TrustSequencerCertificate {
+		return res, err
+	}
+	if err != nil || res.Reached {
+		return res, err
+	}
+	pool, perr := eligibleMembersUncappedForEpoch(EpochForHeight(height), false)
+	if perr != nil || len(pool) == 0 {
+		return res, err
+	}
+	n := res.CommitteeSize
+	if n <= 0 {
+		n = committeeSizeLimit()
+	}
+	if n <= 0 || n > len(pool) {
+		n = len(pool)
+	}
+	need := (n-1)/3 + 1 // f+1
+	yes := countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
+	if yes < need {
+		return res, err
+	}
+	out := CertificateResult{CommitteeSize: n, Threshold: ByzantineQuorum(n), YesVotes: yes, Reached: true}
+	log.Warn().Str("path", path).Uint64("height", height).
+		Int("pool_verified_yes", yes).Int("required_f_plus_1", need).Int("pool_size", len(pool)).
+		Int("verifier_yes", res.YesVotes).Int("verifier_threshold", res.Threshold).Int("verifier_committee", res.CommitteeSize).
+		Msg("certificate accepted on SEQUENCER TRUST (trust_sequencer_certificate): f+1 verified, 2f+1 quorum NOT re-verified on this node")
+	return out, nil
+}
+
 // countEligibleYes returns the number of distinct +1 voters that (a) produced a
 // verifying signature (block-bound; legacy only when RejectLegacyVotes is off)
 // and (b) — when filterByMembership is true — are in the eligible committee.
@@ -763,19 +825,21 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 // exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
 func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	if (b.ConsensusHash == common.Hash{}) {
-		// Fix 3: Period selects the committee seed, and ConsensusHash is the
-		// only thing binding it. A zero ConsensusHash skips the binding check,
-		// so while Period was always 0 this was harmless - but once timeout
-		// certificates advance Period, a relay could zero ConsensusHash and
-		// rewrite Period to claim a committee that never held quorum. The
-		// proposer always sets ConsensusHash (Block/consensus_fields.go), so
-		// an honest block with Period > 0 always carries one.
-		if b.Period != 0 {
-			return reject("consensus_hash_missing",
-				"block %s: Period %d is set but ConsensusHash is empty (period would be unbound)",
-				b.BlockHash.Hex(), b.Period)
-		}
-		return nil
+		// D-28: a missing ConsensusHash is REJECTED unconditionally, not just
+		// when Period != 0. The v3 consensus-fields preimage is unconditional
+		// (Security/consensus_fields_hash.go — the rollout flag that used to
+		// make an empty ConsensusHash a legitimate "pre-v4 block" case was
+		// removed before testnet launch), so every block attachAVCConsensusFields
+		// built carries a real ConsensusHash regardless of Period. Skipping
+		// here when Period == 0 was also the exact bypass that left
+		// getBlockDedupID/checkEquivocation's re-key onto ConsensusHash
+		// (above in blockPropagation.go) still collidable: two different
+		// forks could each simply omit ConsensusHash and share the same
+		// (zero) key, reproducing the identical-BlockHash collision this
+		// whole fix exists to close.
+		return reject("consensus_hash_missing",
+			"block %s: no ConsensusHash present (required — v3 preimage is unconditional)",
+			b.BlockHash.Hex())
 	}
 	want := Security.RecomputeBlockHashWithConsensusFields(b)
 	if b.ConsensusHash != want {
@@ -969,6 +1033,10 @@ func requestCatchUp(fromBlock uint64) {
 		catchUpRequester(fromBlock)
 	}
 }
+
+// RequestCatchUp is the exported form, for packages that detect a gap but
+// cannot import messaging (Vote: messaging imports it). Nil-safe like the rest.
+func RequestCatchUp(fromBlock uint64) { requestCatchUp(fromBlock) }
 
 // checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED.
 // It reads the authenticated local tip/parent and delegates the decision

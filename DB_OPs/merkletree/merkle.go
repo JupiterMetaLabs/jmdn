@@ -5,8 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	log "gossipnode/logging"
 	"math"
+
+	log "gossipnode/logging"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"

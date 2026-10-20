@@ -84,8 +84,8 @@ func TestEpochForSlot_BoundaryExactlyAtEN(t *testing.T) {
 		want uint64
 	}{
 		{0, 0},
-		{N - 1, 0},  // slot 49 -> still epoch 0
-		{N, 1},      // slot 50 -> epoch 1, the boundary
+		{N - 1, 0}, // slot 49 -> still epoch 0
+		{N, 1},     // slot 50 -> epoch 1, the boundary
 		{N + 1, 1},
 		{2*N - 1, 1}, // slot 99 -> still epoch 1
 		{2 * N, 2},   // slot 100 -> epoch 2

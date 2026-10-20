@@ -10,8 +10,6 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
@@ -30,6 +28,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// ErrGossipPublishOnly reports that the vote WAS delivered by direct-send but
+// the gossip publish failed. Callers must treat it as PARTIAL SUCCESS, not
+// failure: the vote is out, it simply reaches peers via the next CRDT sync
+// rather than gossip. Returned wrapped, so errors.Is identifies it while the
+// underlying publish error stays inspectable.
+//
+// Logging it as a failure would re-open the false-"Failed to submit vote"
+// flood that the ack-casing fix in this same change removed — before that fix
+// every vote took SubmitVote's error path.
+var ErrGossipPublishOnly = errors.New("vote delivered via direct-send only — gossip publish failed")
 
 type VoteTrigger struct {
 	ConsensusMessage *PubSubMessages.ConsensusMessage
@@ -95,10 +104,21 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 		tipHash = parent.BlockHash
 	}
 	if err := votecheck.ExtendsTip(zkBlock.BlockNumber, zkBlock.PrevHash, tip, tipHash); err != nil {
+		// A proposal AHEAD of our tip means we missed at least one finalized
+		// block. Refusing to vote is correct, but on its own it deadlocks the
+		// chain: the sequencer cannot advance without our votes, and the sync
+		// monitor dismisses a 1-block gap as propagation lag. Ask for catch-up.
+		if zkBlock.BlockNumber > tip+1 && GapCatchUpHook != nil {
+			GapCatchUpHook(tip + 1)
+		}
 		return fmt.Errorf("vote position: %w", err)
 	}
 	return nil
 }
+
+// GapCatchUpHook is wired by main.go to messaging.RequestCatchUp (Vote cannot
+// import messaging: messaging imports Vote). Nil = no catch-up nudge.
+var GapCatchUpHook func(fromBlock uint64)
 
 func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node
@@ -244,68 +264,82 @@ func (vt *VoteTrigger) SubmitVote() error {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
 	}
 
-	// Store own vote in the local CRDT before sending to the sequencer.
-	// This ensures that when the sequencer pulls BLS from this node, its
-	// CRDT has at least its own vote to sign over — regardless of pubsub
-	// propagation timing. Without this, ProcessVotesFromCRDT finds 0 votes
-	// and returns an error, producing 0 BLS results on the sequencer side.
-	if listenerNode.CRDTLayer != nil {
-		ownVoteJSON := vt.ToVoteString(vt.Vote)
-		OP := &Types.OP{
-			NodeID: listenerNode.PeerID,
-			OpType: int8(1),
-			KeyValue: Types.KeyValue{
-				Key:   listenerNode.PeerID.String(),
-				Value: ownVoteJSON,
-			},
-		}
-		if result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); result != nil {
-			if err, ok := result.(error); ok && err != nil {
-				logger().Warn(spanCtx, "Failed to store own vote in local CRDT (non-fatal, will still send to sequencer)",
-					ion.Err(err),
-					ion.String("function", "Vote.SubmitVote"))
-			}
-		}
-		logger().Info(spanCtx, "Stored own vote in local CRDT",
-			ion.String("peer_id", listenerNode.PeerID.String()),
-			ion.Int("vote", int(vt.Vote.Vote)),
-			ion.String("block_hash", vt.Vote.BlockHash),
-			ion.String("function", "Vote.SubmitVote"))
+	// W1 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used to
+	// store the node's own vote in the legacy CRDT too. The comment that
+	// used to sit here ("without this, ProcessVotesFromCRDT finds 0 votes")
+	// was stale — ProcessVotesFromCRDT is v2-only now (voteCRDTV2Enabled
+	// hardcoded true) and never reads this. The real consumer was
+	// voterPeerIDsForBlock's legacy-scan rescue (Sequencer/Consensus.go),
+	// which is why this write was unwired rather than deleted outright —
+	// a cheap revert in case that rescue turned out to be load-bearing.
+	// voterPeerIDsForBlock has since been ported to a v2 equivalent
+	// (BlockVoteKey lookup) rather than restored on the legacy path, so this
+	// write no longer has a live consumer either way; it remains unwired,
+	// not deleted, pending Phase 6's removal of listenerNode.CRDTLayer
+	// entirely. The v2 write below (avcvotes.AddVote) is independent and
+	// unaffected by any of this.
+
+	// D-26(a)/D-51 cutover: the v2 write below is the one that matters for
+	// the tally decision (Structs.ProcessVotesFromCRDT reads only this
+	// keyspace now). The legacy read path it replaced carried no per-vote
+	// signature and keyed its CRDT write on an unauthenticated payload
+	// field; the real authentication boundary is TallyBlock's
+	// committee-registered-pubkey + BLS-signature check on this keyspace.
+	//
+	// This write used to sit behind a VoteCRDTDualWrite flag. That flag was
+	// permanently true and has been removed with its file. DO NOT
+	// reintroduce an env gate here: the cutover ships as one coordinated
+	// fleet-wide restart, and a node silently missing the toggle would run
+	// with an inert v2 keyspace (D-51's own finding).
+	//
+	// The legacy write that used to sit above is gone (W1) — its only
+	// consumer, voterPeerIDsForBlock, was ported to the v2 BlockVoteKey
+	// lookup rather than kept on the legacy path. Nothing here may affect
+	// vt.Vote, blockHash, or this function's return value, and a failure
+	// here is logged and dropped, not fatal.
+
+	// Per-vote BLS signature. Nothing in the codebase signed individual votes
+	// before this cutover — the existing signer only produces an AGGREGATED
+	// result at tally time (ListenerHandler.go). Same domain, same key
+	// material as that path, just invoked at cast time instead of at
+	// aggregation time. Hoisted out of the v2-write block below
+	// (which it used to live inside) because the signature must also be
+	// stamped onto the WIRE vote (vt.Vote, sent via pubsub/direct-send) so a
+	// receiving buddy can build the identical VoteRecord this node writes to
+	// its own VoteCRDTLayer and ingest it into its own — see
+	// Structs.IngestValidatorVote. Signing is attempted unconditionally; only
+	// what happens with the result differs.
+	blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
+		vt.Vote.Vote,
+		BLS_Signer.DomainChainID(),
+		zkBlock.BlockNumber,
+		blockHash,
+		// v3 for now ("" => v3). The CRDT verify path (verifyTallySignatures)
+		// receives only the block-hash string, not the block, so it cannot yet
+		// source ConsensusHash to verify a v4 signature — signing v4 here would
+		// make it drop these votes. ACTIVATE v4 by carrying ConsensusHash into
+		// the CRDT vote flow / vote-result request, then pass
+		// zkBlock.ConsensusHashHex() here and thread it to verifyTallySignatures.
+		"",
+	)
+	signingOK := blsErr == nil && signed
+
+	// Carry the signature on the wire so a receiving buddy can ingest this
+	// vote too (count every validator's vote LLD, C2). Left empty when
+	// signing fails (a normal, non-buddy validator with no BLS key material)
+	// — an unsigned wire vote is not countable by the v2 tally either way
+	// (Structs.IngestValidatorVote requires both fields), so there is nothing
+	// lost by leaving them blank in that case.
+	if signingOK {
+		vt.Vote.BLSSignature = blsResp.Signature
+		vt.Vote.BLSPubKeyHex = blsResp.PubKey
 	}
 
-	// D-26(a)/D-51 cutover: VoteCRDTDualWrite is now permanently true
-	// (vote_crdt_v2.go) — this is the write that actually matters for the
-	// tally decision (Structs.ProcessVotesFromCRDT reads only this
-	// keyspace now). The legacy write above is kept for other legacy CRDT
-	// consumers unrelated to vote tallying (e.g. Sequencer's
-	// voterPeerIDsForBlock buddy-set expansion) and stays byte-identical;
-	// nothing here may affect vt.Vote, blockHash, or this function's
-	// return value, and a failure here is logged and dropped, not fatal.
-	if VoteCRDTDualWrite && listenerNode.VoteCRDTLayer != nil {
-		// Per-vote BLS signature. Nothing in the codebase signs individual
-		// votes before this — the existing signer only produces an
-		// AGGREGATED result at tally time (ListenerHandler.go). Same domain,
-		// same key material as that path, just invoked at cast time instead
-		// of at aggregation time.
-		blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
-			vt.Vote.Vote,
-			BLS_Signer.DomainChainID(),
-			zkBlock.BlockNumber,
-			blockHash,
-			// v3 for now ("" => v3). The CRDT verify path (verifyTallySignatures)
-			// receives only the block-hash string, not the block, so it cannot yet
-			// source ConsensusHash to verify a v4 signature — signing v4 here would
-			// make it drop these votes. ACTIVATE v4 by carrying ConsensusHash into
-			// the CRDT vote flow / vote-result request, then pass
-			// zkBlock.ConsensusHashHex() here and thread it to verifyTallySignatures.
-			"",
-		)
-		signingOK := blsErr == nil && signed
-
+	if listenerNode.VoteCRDTLayer != nil {
 		// A node that cannot sign is a NORMAL (non-Buddy) validator in the
 		// approved design: it submits an unsigned vote rather than no vote at
-		// all. With the flag off this stays a skip, exactly as before —
-		// signing failure meant no v2 write, and it still does.
+		// all. Signing failure means no v2 write unless
+		// avcvotes.AllowUnsignedValidatorVotes is on.
 		if !signingOK && !avcvotes.AllowUnsignedValidatorVotes {
 			logger().Warn(spanCtx, "v2 vote CRDT: per-vote BLS signing failed, skipping v2 write (old path unaffected)",
 				ion.String("block_hash", blockHash),
@@ -387,24 +421,33 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// the path a tallied vote travels.
 	//
 	// The consensus-relevant write is avcvotes.AddVote above (the v2,
-	// block-keyed, BLS-signed keyspace). That is what
-	// Structs.processVotesFromCRDT_v2 -> avcvotes.TallyBlock reads, and it
-	// reaches other nodes through the CRDT sync service (3s interval, topic
-	// pubsub-crdt-sync), not through this topic.
+	// block-keyed, BLS-signed keyspace) — what
+	// Structs.processVotesFromCRDT_v2 -> avcvotes.TallyBlock reads.
 	//
-	// This publish feeds PubSub_ConsensusChannel, whose receive path writes the
-	// LEGACY CRDT layer — no longer read by the tally after the v2 cutover.
-	// So a failure here does not drop a vote from anyone's quorum; it leaves
-	// peers' legacy layer without this entry. Logged at WARN rather than
-	// escalated for that reason, and because CRDT sync re-publishes v2 state
-	// every 3s, so a transient pubsub fault at vote time self-heals on the
-	// next tick rather than needing a fallback here.
+	// This publish feeds PubSub_ConsensusChannel, whose receive path is now
+	// a v2 ingest (subscriptionService.go -> Structs.IngestValidatorVote ->
+	// VoteCRDTLayer); the legacy write that used to live there was removed
+	// by W4. So a failure here DOES cost peers this node's v2 vote on the
+	// gossip path — it is not legacy-only, as this comment previously said.
+	//
+	// It is still logged at WARN rather than escalated because the vote is
+	// recoverable: CRDT sync (TriggerCRDTSyncForBuddyNode, driven per
+	// vote-result request from handleVoteResultRequest — NOT the 3s
+	// CRDTSync.SyncService, which is never started) republishes v2 state
+	// before each tally. Recovery is one round away, not one 3s tick away.
 	//
 	// It must still not mask a direct-send failure, which is why the loop's
 	// error handling below is left exactly as it was.
+	// gossipErr is surfaced below instead of swallowed — D-5: gossip is the
+	// path that actually carries consensus (measured far more reliable than
+	// direct-send), so its failure must reach SubmitVote's caller, not just
+	// a Warn log. Still non-fatal here, and still logged at Warn: a
+	// direct-send failure below must not be masked by this.
+	var gossipErr error
 	if pubSubNode := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); pubSubNode != nil && pubSubNode.PubSub != nil {
 		if perr := Publisher.Publish(logger_ctx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, voteMessage, map[string]string{}); perr != nil {
-			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — peers' legacy CRDT layer will miss this entry; the tallied v2 vote is unaffected and propagates via CRDT sync",
+			gossipErr = perr
+			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — peers will not receive this vote over gossip; it reaches them only via the next CRDT sync before tally",
 				ion.Err(perr),
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
@@ -416,6 +459,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("function", "Vote.SubmitVote"))
 		}
 	} else {
+		gossipErr = fmt.Errorf("pubsub node unavailable")
 		logger().Warn(logger_ctx, "PubSub node unavailable — own vote not published to the consensus topic; the tallied v2 vote is unaffected and propagates via CRDT sync",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
@@ -449,6 +493,9 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 		// Success!
 		fmt.Printf("✅ Vote sent to %s\n", NodeToSendTo.PeerID)
+		if gossipErr != nil {
+			return fmt.Errorf("%w: %w", ErrGossipPublishOnly, gossipErr)
+		}
 		return nil
 	}
 

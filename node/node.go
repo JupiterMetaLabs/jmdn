@@ -301,9 +301,11 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			// Initialize CRDT Layer
 			CRDTLayer := ServiceLayer.GetServiceController()
 
-			// VoteCRDTLayer: Stage 1 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md.
-			// Constructed and reachable from here on; unused until Stage 2's
-			// dual-write lands. CRDTLayer above remains the live vote store.
+			// VoteCRDTLayer (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md): the live
+			// vote store. The D-26(a)/D-51 cutover made it the only keyspace
+			// the tally reads, and the legacy-CRDT migration left CRDTLayer
+			// above with zero writers and zero readers — still constructed,
+			// empty, pending Phase 6 removal.
 			VoteCRDTLayer := DataLayer.GetVoteCRDTLayer()
 
 			basicBuddyNode := &AVCStruct.BuddyNode{

@@ -2,13 +2,13 @@ package CLI
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"strings"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/directMSG"
@@ -275,33 +275,27 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	return SyncStats{}, fmt.Errorf("firstsync (V1 AVRO exchange) is retired — bootstrap from snapshot (see DOCKER.md), then 'catchup' (FastsyncV2)")
 }
 
-// HandleRebuildIndex wipes and rebuilds the tx-address SQLite index from genesis.
-// Fixes all gaps regardless of where last_indexed_block is sitting.
-func (h *CommandHandler) HandleRebuildIndex(ctx context.Context) (time.Duration, error) {
-	startTime := time.Now()
-	if err := txindex.RebuildIndex(ctx); err != nil {
-		return 0, fmt.Errorf("RebuildIndex failed: %w", err)
-	}
-	return time.Since(startTime), nil
+// HandleRebuildIndex — RETIRED. The SQLite tx-address index was replaced by the
+// ThebeDB SQL projection (transactions.from_addr/to_addr), which is written
+// synchronously at block apply and therefore has no separate rebuild. The gRPC
+// surface is preserved so older `jmdn -cmd` clients get a clear message.
+func (h *CommandHandler) HandleRebuildIndex(_ context.Context) (time.Duration, error) {
+	return 0, errors.New("rebuildindex: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-// HandleRebuildRange re-indexes a specific block range [from, to].
-// Safe to run over already-indexed blocks — INSERT OR IGNORE prevents duplicates.
-func (h *CommandHandler) HandleRebuildRange(ctx context.Context, from, to uint64) (time.Duration, error) {
-	if from > to {
-		return 0, fmt.Errorf("from_block (%d) must be <= to_block (%d)", from, to)
-	}
-	startTime := time.Now()
-	if err := txindex.RebuildRange(ctx, from, to); err != nil {
-		return 0, fmt.Errorf("RebuildRange [%d..%d] failed: %w", from, to, err)
-	}
-	return time.Since(startTime), nil
+// HandleRebuildRange — RETIRED, see HandleRebuildIndex.
+func (h *CommandHandler) HandleRebuildRange(_ context.Context, _, _ uint64) (time.Duration, error) {
+	return 0, errors.New("rebuildrange: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-// HandleTxIndexStatus reports whether the tx-address index has completed its
-// first full gap catchup, and the highest block number it has indexed so far.
+// HandleTxIndexStatus — RETIRED, see HandleRebuildIndex. Reports ready=true at
+// the chain head: the projection is as current as the block store itself.
 func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool, lastIndexedBlock uint64, err error) {
-	return txindex.Status(ctx)
+	head, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("txindexstatus: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild; head lookup: %w", err)
+	}
+	return true, head, nil
 }
 
 func (h *CommandHandler) HandleGetDID(input string) (*DB_OPs.Account, error) {

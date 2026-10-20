@@ -27,22 +27,18 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// voteCRDTV2Enabled mirrors Vote.VoteCRDTDualWrite (Vote/vote_crdt_v2.go).
-// Duplicated rather than imported: Vote -> MessagePassing -> Structs already
-// exists (Vote/Trigger.go imports MessagePassing; MessagePassing/
-// ListenerHandler.go imports Structs), so Structs -> Vote would be an
-// import cycle. The two must never disagree: the read side (this file) and
-// the write side (Vote/vote_crdt_v2.go) have to flip together, which is
-// exactly why both are now hardcoded true in the same commit rather than
-// left as two separately-toggleable env reads.
+// voteCRDTV2Enabled is the read-side half of the D-26(a)/D-51 cutover: the
+// tally reads only the v2, block-keyed keyspace. Its write-side counterpart
+// (Vote.VoteCRDTDualWrite) was a permanently-true flag and has been removed
+// along with its file; that rationale now lives beside the v2 write in
+// Vote/Trigger.go.
 //
 // D-26(a)/D-51 cutover (AVC-CONSENSUS-HANDOVER.md, rev 7): permanently true,
-// not env-gated. See Vote/vote_crdt_v2.go's package doc comment for the full
-// reasoning — short version: the legacy path below (processVotesFromCRDT_legacy)
+// not env-gated, and a const so the dead branch below is provable — the legacy path below (processVotesFromCRDT_legacy)
 // has no per-vote signature and keys its CRDT write on an unauthenticated
 // payload field; a naive fix at that ingest point was tried and reverted
-// (18806fb) because it also rejects legitimate direct-stream-to-pubsub vote
-// relay, which is indistinguishable from forgery at that layer. The real
+// (pre-v3base history) because it also rejects legitimate direct-stream-to-pubsub
+// vote relay, which is indistinguishable from forgery at that layer. The real
 // authentication boundary is HERE, at tally time, via TallyBlock's
 // committee-registered-pubkey + BLS-signature check — so this is the one
 // flag flip that actually matters, and it ships in the same coordinated
@@ -50,7 +46,7 @@ import (
 // processVotesFromCRDT_legacy is kept, unreachable, only because
 // legacy_vote_panic_test.go calls it directly to pin its own
 // malformed-input crash fix; do not route production traffic to it again.
-var voteCRDTV2Enabled = true
+const voteCRDTV2Enabled = true
 
 // envOnStructs is retained for any future flag that needs this exact
 // duplication pattern; it no longer determines voteCRDTV2Enabled.
@@ -162,6 +158,12 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 	return nil
 }
 
+// ErrNoVotesInCRDT is returned by ProcessVotesFromCRDT when no counted vote for
+// the target block is present yet. It is a normal, transient state (votes still
+// replicating), not a failure by itself — callers that retry match it with
+// errors.Is and only treat a FINAL empty result as an error.
+var ErrNoVotesInCRDT = errors.New("no votes found in CRDT")
+
 // ProcessVotesFromCRDT extracts votes for one block and returns the
 // aggregated decision (1 accept / -1 reject) and per-peer rejection reasons.
 // targetBlockHash is required - votes without matching block_hash are skipped.
@@ -218,9 +220,14 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 		return 0, nil, nil, nil, errors.New("vote CRDT layer not initialized")
 	}
 
-	authorized, err := authorizedCommitteeFor(height)
+	// "Count every validator's vote in the buddy tally again" LLD, C6: the
+	// tally authorizes against the VOTER set (every eligible validator,
+	// uncapped, by default), not the committee seat set — see
+	// authorizedVotersFor's doc comment. authorizedCommitteeFor (still used
+	// for committee-RESULT-signing authorization elsewhere) is untouched.
+	authorized, err := authorizedVotersFor(height)
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to resolve authorized committee (v2 path)", err,
+		logger().Error(logger_ctx, "Failed to resolve authorized voters (v2 path)", err,
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 		return 0, nil, nil, nil, err
 	}
@@ -268,6 +275,24 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	}
 	tally = verified
 
+	// "Count every validator's vote in the buddy tally again" LLD, §4c: one
+	// summary log line per tallied block, unconditional (unlike the Error/Warn
+	// lines above, which fire only when something is wrong). len(authorized)
+	// is |V| — the voter set size this decision was actually authorized
+	// against (the uncapped validator pool by default, or the committee when
+	// JMDN_VALIDATOR_VOTER_SET=0) — so an operator can see at a glance
+	// whether the tally ran against the pool they expect, alongside how much
+	// of the raw CRDT ballot TallyBlock and verifyTallySignatures each
+	// discarded for this block.
+	logger().Info(logger_ctx, "Tallied block vote CRDT (v2 path)",
+		ion.Int("authorized_voters", len(authorized)),
+		ion.Int("skipped_unauthorized", tally.SkippedUnauthorized),
+		ion.Int("dropped_forgeries", droppedForgeries),
+		ion.Int("counted_peers", len(tally.AuthorizedVotesByPeer)),
+		ion.Uint64("height", height),
+		ion.String("target_block_hash", targetBlockHash),
+		ion.String("function", "Structs.processVotesFromCRDT_v2"))
+
 	// Equivocation reporting (reputation side-effect) is an A4 concern,
 	// explicitly deferred by the user ("later we will think of the A4
 	// reputation weighting"). reporter == nil is a valid, documented no-op
@@ -297,10 +322,18 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 	}
 
 	if len(single) == 0 {
-		logger().Error(logger_ctx, "No authorized single-vote peers found in vote CRDT (v2 path)", nil,
+		// Expected and transient on every round: a buddy is asked for its result
+		// right after voting, often before the votes have replicated into its CRDT,
+		// and the callers retry (handleVoteResultRequest) or only print
+		// (printCRDTVotes). Logging this at ERROR fired on rounds that went on to
+		// reach consensus. Debug here; the caller decides whether a FINAL empty
+		// result is an error (it matches ErrNoVotesInCRDT).
+		logger().Debug(logger_ctx, "No authorized single-vote peers in vote CRDT yet (v2 path)",
 			ion.String("target_block_hash", targetBlockHash),
+			ion.Uint64("height", height),
+			ion.Int("dropped_forgeries", droppedForgeries),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
-		return 0, rejectionReasons, nil, nil, errors.New("no votes found in CRDT")
+		return 0, rejectionReasons, nil, nil, ErrNoVotesInCRDT
 	}
 
 	// Phase 1.5 (VALIDATOR-SCALE-VOTE-AGGREGATION-LLD.md §12.5): aggregate the
@@ -688,7 +721,7 @@ func processVotesFromCRDT_legacy(logger_ctx context.Context, listenerNode *PubSu
 	if len(voteData) == 0 {
 		logger().Error(logger_ctx, "No votes found in CRDT to process", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("no votes found in CRDT")
+		return 0, nil, ErrNoVotesInCRDT
 	}
 
 	// Get peer weights from seed node

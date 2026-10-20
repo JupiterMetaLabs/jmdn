@@ -33,114 +33,31 @@ import (
 	"errors"
 	"math/big"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	thebedb "github.com/JupiterMetaLabs/ThebeDB"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
-	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
-
-	"go.uber.org/zap"
-
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/backend"
-	"gossipnode/DB_OPs/cassata"
-	"gossipnode/DB_OPs/contractDB"
-	"gossipnode/DB_OPs/thebegateway"
-	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/Security"
-	"gossipnode/SmartContract/evmexec"
 	"gossipnode/config"
-	"gossipnode/consensushash"
+	"gossipnode/internal/applygate"
 	"gossipnode/messaging/BlockProcessing"
 )
 
-const chainID = 8000800
+const chainID = applygate.ChainID
 
-// two funded genesis accounts (deterministic addresses; balances in wei)
 var (
-	acctA = common.HexToAddress("0x00000000000000000000000000000000000000A1")
-	acctB = common.HexToAddress("0x00000000000000000000000000000000000000B2")
-	oneK  = new(big.Int).Mul(big.NewInt(1_000_000), big.NewInt(1e18)) // 1e6 ETH
+	acctA = applygate.AcctA
+	acctB = applygate.AcctB
+	oneK  = applygate.OneK
 )
 
-// buildHandle stands up a real ThebeDB handle in `dir`, installs it as the
-// process-wide handle, and registers the EVM executor + contract fold hook against
-// it. Returns a cleanup. Mirrors main.go's ThebeDB init (contracts-enabled path).
-func buildHandle(t *testing.T, dir string) func() {
-	t.Helper()
+// Thin wrappers over the shared harness (gossipnode/internal/applygate).
+func buildHandle(t *testing.T, dir string) func() { return applygate.BuildHandle(t, dir) }
 
-	reg := profile.NewRegistry()
-	reg.Register(thebeprofile.NewJMDNProfile())
-
-	kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: filepath.Join(dir, "kv")})
-	if err != nil {
-		t.Fatalf("kv.NewStore: %v", err)
-	}
-
-	// SQLite projection for a local test (no Postgres needed). Adjust the DSN form
-	// if thebeSql.NewSQLEngine expects a driver prefix in your build.
-	sqlEngine, err := thebeSql.NewSQLEngine("file:" + filepath.Join(dir, "sql.db") + "?_foreign_keys=on")
-	if err != nil {
-		t.Fatalf("thebeSql.NewSQLEngine: %v", err)
-	}
-
-	db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
-	if err != nil {
-		t.Fatalf("thebedb.New: %v", err)
-	}
-
-	cas := cassata.New(db, zap.NewNop())
-
-	// EVM execution against this store's local ledger (EVM-A16) + P4 contract fold.
-	evmexec.Register(
-		chainID,
-		DB_OPs.ContractAccountSource{},
-		contractDB.NewKVStateRepository(cas.KV(), cas),
-		contractDB.HasCode,
-	)
-	kvForFold := cas.KV()
-	DB_OPs.SetContractFoldHook(func(f *consensushash.StateFingerprinterV1) error {
-		return contractDB.FoldAllContracts(kvForFold, f)
-	})
-
-	outbox, err := thebegateway.NewOutboxStore(filepath.Join(dir, "kv", "outbox.db"))
-	if err != nil {
-		t.Fatalf("NewOutboxStore: %v", err)
-	}
-	gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
-	reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
-	handle := backend.NewComposite(backend.New(gw, reader, nil), nil)
-
-	DB_OPs.SetGlobalHandle(handle)
-
-	// Allow out-of-band account creation for genesis seeding in-test.
-	t.Setenv("JMDN_ALLOW_LOCAL_ACCOUNT_CREATE", "1")
-
-	return func() {
-		DB_OPs.SetGlobalHandle(nil)
-		_ = db.Close()
-	}
-}
-
-// seedGenesis funds the two accounts on the currently-installed handle.
-func seedGenesis(t *testing.T) {
-	t.Helper()
-	for _, a := range []common.Address{acctA, acctB} {
-		if err := DB_OPs.CreateAccount(nil, "did:jmdn:"+strings.ToLower(a.Hex()), a, nil); err != nil {
-			t.Fatalf("CreateAccount(%s): %v", a.Hex(), err)
-		}
-		if err := DB_OPs.UpdateAccountBalance(nil, a, oneK.String(), 0); err != nil {
-			t.Fatalf("UpdateAccountBalance(%s): %v", a.Hex(), err)
-		}
-	}
-}
+func seedGenesis(t *testing.T) { applygate.SeedGenesis(t) }
 
 // setSelector returns the calldata for SimpleStorage.set(uint256 v).
 func setCalldata(v uint64) []byte {
