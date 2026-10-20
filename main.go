@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"io"
 	"math/big"
 	"net/http"
@@ -2302,7 +2303,7 @@ func main() {
 	defer nodeManager.Shutdown()
 
 	// Initialize DID propagation handler
-	n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleDIDStream)
+	n.Host.SetStreamHandler(config.DIDPropagationProtocol, saferun.Stream(string(config.DIDPropagationProtocol), messaging.HandleDIDStream))
 
 	// Initialize DID propagation system
 	if err := messaging.InitDIDPropagation(nil); err != nil {
@@ -2311,9 +2312,9 @@ func main() {
 	}
 
 	// Initialize Contract propagation handler (ADR-001)
-	n.Host.SetStreamHandler(config.ContractPropagationProtocol, messaging.HandleContractStream)
+	n.Host.SetStreamHandler(config.ContractPropagationProtocol, saferun.Stream(string(config.ContractPropagationProtocol), messaging.HandleContractStream))
 	// Pull-on-demand: peers can request missed contract metadata from us
-	n.Host.SetStreamHandler(config.ContractPullProtocol, messaging.HandleContractPullStream)
+	n.Host.SetStreamHandler(config.ContractPullProtocol, saferun.Stream(string(config.ContractPullProtocol), messaging.HandleContractPullStream))
 
 	if err := messaging.InitContractPropagation(); err != nil {
 		mainLogger().Error(context.Background(), "Failed to initialize contract propagation", err)

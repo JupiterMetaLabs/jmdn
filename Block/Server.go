@@ -189,6 +189,10 @@ func submitRawTransaction(c *gin.Context) {
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, origin TxOrigin) (string, error) {
+	// Reject a transaction with no sender before anything dereferences tx.From.
+	if err := Security.CheckTransactionShape(tx); err != nil {
+		return "", fmt.Errorf("invalid transaction: %w", err)
+	}
 	// Record trace span and close it
 	spanCtx, span := logger().Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
 	defer span.End()

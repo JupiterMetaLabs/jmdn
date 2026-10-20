@@ -3,6 +3,7 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
@@ -111,7 +112,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 	AVCStruct.NewGlobalVariables().Set_ForListner(Node)
 
 	// Set up the stream handler for the listener nodes message protocol
-	h.SetStreamHandler(config.SubmitMessageProtocol, func(stream network.Stream) {
+	h.SetStreamHandler(config.SubmitMessageProtocol, saferun.Stream(string(config.SubmitMessageProtocol), func(stream network.Stream) {
 		logger().Info(spanCtx, "New submit message connection received",
 			ion.String("remote_peer_id", stream.Conn().RemotePeer().String()),
 			ion.String("protocol", string(config.SubmitMessageProtocol)),
@@ -123,7 +124,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 			listener.HandleSubmitMessageStream(logger_ctx, stream)
 			return nil
 		})
-	})
+	}))
 
 	span.SetAttributes(attribute.String("protocol", string(config.SubmitMessageProtocol)))
 
@@ -242,7 +243,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 	AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 
 	// Set up the stream handler for the buddy nodes message protocol
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(stream network.Stream) {
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, saferun.Stream(string(config.BuddyNodesMessageProtocol), func(stream network.Stream) {
 		logger().Info(spanCtx, "New buddy nodes connection received",
 			ion.String("remote_peer_id", stream.Conn().RemotePeer().String()),
 			ion.String("protocol", string(config.BuddyNodesMessageProtocol)),
@@ -254,7 +255,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 			buddyStream.HandleBuddyNodesMessageStream(h, stream)
 			return nil
 		})
-	})
+	}))
 
 	span.SetAttributes(attribute.String("protocol", string(config.BuddyNodesMessageProtocol)))
 
