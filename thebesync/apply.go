@@ -32,6 +32,9 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	if block == nil {
 		return false, fmt.Errorf("thebesync apply: nil block")
 	}
+	if len(block.Transactions) > 0 && (block.CoinbaseAddr == nil || block.ZKVMAddr == nil) {
+		return false, fmt.Errorf("thebesync apply: block %d has transactions but no coinbase or zkVM address", block.BlockNumber)
+	}
 
 	// 1. Body binding — the canonical BlockHash (and TxnsRoot, when present) must
 	//    match the carried transactions. Same recompute the live receive path uses.
