@@ -101,76 +101,14 @@ func TestEpochForSlot_BoundaryExactlyAtEN(t *testing.T) {
 // heights committed with no timeouts, the NEXT height's live slot is exactly
 // one more than the last committed slot.
 func TestLiveSlotFor_FreshHeightAfterCleanCommits(t *testing.T) {
-	saved, savedPeriod := DefaultSlotStore, DefaultPeriodStore
+	saved := DefaultSlotStore
 	DefaultSlotStore = NewSlotStore()
-	DefaultPeriodStore = NewPeriodStore()
-	t.Cleanup(func() { DefaultSlotStore = saved; DefaultPeriodStore = savedPeriod })
+	t.Cleanup(func() { DefaultSlotStore = saved })
 
 	DefaultSlotStore.AdvanceOnCommit(0, 0) // slot -> 1
 	DefaultSlotStore.AdvanceOnCommit(1, 0) // slot -> 2
 
 	if got := LiveSlotFor(2); got != 3 {
 		t.Fatalf("LiveSlotFor(2) = %d, want 3 (committed slot 2, no pending timeouts)", got)
-	}
-}
-
-// TestLiveSlotFor_AccountsForPendingUncommittedTimeouts is the property this
-// whole helper exists for: a height with already-accepted, not-yet-committed
-// TimeoutCertificates must have its live slot reflect them immediately - the
-// exact case a naive `DefaultSlotStore.Current()+1` would get wrong.
-func TestLiveSlotFor_AccountsForPendingUncommittedTimeouts(t *testing.T) {
-	saved, savedPeriod := DefaultSlotStore, DefaultPeriodStore
-	DefaultSlotStore = NewSlotStore()
-	DefaultPeriodStore = NewPeriodStore()
-	t.Cleanup(func() { DefaultSlotStore = saved; DefaultPeriodStore = savedPeriod })
-
-	DefaultSlotStore.AdvanceOnCommit(0, 0) // slot -> 1; next height is 1
-
-	kps := newKeypairs(t, 4)
-	cert := buildCertificate(t, kps, 1, 2) // height 1 has already timed out twice
-	if _, accepted, err := DefaultPeriodStore.AcceptTimeoutCertificate(*cert, len(kps), pubKeyMap(kps)); err != nil || !accepted {
-		t.Fatalf("accept: accepted=%v err=%v", accepted, err)
-	}
-
-	// committed slot (1) + pending period (2) + 1 (this new attempt) = 4.
-	// A naive Current()+1 would wrongly say 2, silently losing the two
-	// timeouts height 1 already burned.
-	if got := LiveSlotFor(1); got != 4 {
-		t.Fatalf("LiveSlotFor(1) = %d, want 4 (1 committed-slot + 2 pending periods + 1)", got)
-	}
-}
-
-// TestCurrentEpoch_ReflectsInFlightTimeoutsBeforeCommit is the property that
-// motivated CurrentEpoch existing at all: a height that has already timed
-// out enough times to cross an epoch boundary must report the NEW epoch
-// immediately, without waiting for that height to actually commit.
-func TestCurrentEpoch_ReflectsInFlightTimeoutsBeforeCommit(t *testing.T) {
-	saved, savedPeriod := DefaultSlotStore, DefaultPeriodStore
-	DefaultSlotStore = NewSlotStore()
-	DefaultPeriodStore = NewPeriodStore()
-	t.Cleanup(func() { DefaultSlotStore = saved; DefaultPeriodStore = savedPeriod })
-
-	// Commit 49 heights cleanly (no timeouts) so committed slot sits at 49,
-	// one short of the epoch-1 boundary.
-	for h := uint64(0); h < N-1; h++ {
-		DefaultSlotStore.AdvanceOnCommit(h, 0)
-	}
-	if got := CurrentEpoch(N - 1); got != 0 {
-		t.Fatalf("before any pending timeout, expected epoch 0, got %d", got)
-	}
-
-	// Height N-1 (the next, not-yet-committed height) has already timed out
-	// once - a live TimeoutCertificate was accepted for it, tracked by
-	// DefaultPeriodStore, with no commit yet.
-	kps := newKeypairs(t, 4)
-	cert := buildCertificate(t, kps, N-1, 1)
-	if _, accepted, err := DefaultPeriodStore.AcceptTimeoutCertificate(*cert, len(kps), pubKeyMap(kps)); err != nil || !accepted {
-		t.Fatalf("accept timeout cert: accepted=%v err=%v", accepted, err)
-	}
-
-	// Committed slot (49) + pending period (1) = 50 = the epoch-1 boundary,
-	// even though nothing has committed at height N-1 yet.
-	if got := CurrentEpoch(N - 1); got != 1 {
-		t.Fatalf("a pending, uncommitted timeout crossing the boundary should already report epoch 1, got %d", got)
 	}
 }

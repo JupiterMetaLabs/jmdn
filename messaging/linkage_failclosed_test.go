@@ -87,6 +87,49 @@ func TestBadStateRootRejected(t *testing.T) {
 	}
 }
 
+// TestSlotChain covers the slot axis: a block at Period p must sit exactly p+1
+// slots after its parent, and a parent with no slot (pre-slot history) skips
+// the check.
+func TestSlotChain(t *testing.T) {
+	parent := &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip, Slot: 100}
+	child := func(slot, period uint64) *config.ZKBlock {
+		b := blkAt(31, hashTip)
+		b.Slot, b.Period = slot, period
+		return b
+	}
+	cases := []struct {
+		name       string
+		b          *config.ZKBlock
+		parent     *config.ZKBlock
+		wantReason string
+	}{
+		{"period 0, next slot", child(101, 0), parent, ""},
+		{"period 2, three slots on", child(103, 2), parent, ""},
+		{"period 2 but only one slot on", child(101, 2), parent, "bad_slot"},
+		{"period 0 but a slot skipped", child(102, 0), parent, "bad_slot"},
+		{"slot not ahead of parent", child(100, 0), parent, "bad_slot"},
+		{"slot behind parent", child(5, 0), parent, "bad_slot"},
+		{"huge period is stopped by the cap first", child(101, ^uint64(0)), parent, "period_too_high"},
+		{"parent predates slots: skipped", child(7, 3), &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip}, ""},
+		{"period at the cap", child(100+config.MaxPeriod+1, config.MaxPeriod), parent, ""},
+		{"period above the cap", child(100+config.MaxPeriod+2, config.MaxPeriod+1), parent, "period_too_high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rej := linkageDecision(tc.b, 30, nil, tc.parent, nil)
+			if tc.wantReason == "" {
+				if rej != nil {
+					t.Fatalf("expected accept, got %s: %v", rej.reason, rej.err)
+				}
+				return
+			}
+			if rej == nil || rej.reason != tc.wantReason {
+				t.Fatalf("reason=%v, want %s", rej, tc.wantReason)
+			}
+		})
+	}
+}
+
 // TestHeightGapTriggersCatchUp verifies checkLinkage nudges the authenticated
 // catch-up requester on a gap, using injected readers so no DB is required.
 func TestHeightGapTriggersCatchUp(t *testing.T) {

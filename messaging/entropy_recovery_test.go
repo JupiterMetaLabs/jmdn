@@ -64,12 +64,12 @@ func newEntropyWorld(t *testing.T) *entropyWorld {
 	t.Cleanup(ResetMixStoreForTest)
 	ResetAggSigStoreForTest()
 	t.Cleanup(ResetAggSigStoreForTest)
-	savedSlot, savedPeriod := DefaultSlotStore, DefaultPeriodStore
-	DefaultSlotStore, DefaultPeriodStore = NewSlotStore(), NewPeriodStore()
+	savedSlot := DefaultSlotStore
+	DefaultSlotStore = NewSlotStore()
 	savedHW := committedSlotHW.Load()
 	committedSlotHW.Store(0)
 	t.Cleanup(func() {
-		DefaultSlotStore, DefaultPeriodStore = savedSlot, savedPeriod
+		DefaultSlotStore = savedSlot
 		committedSlotHW.Store(savedHW)
 	})
 	disarmEntropyRecovery()
