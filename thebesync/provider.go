@@ -18,7 +18,7 @@ type Provider struct{}
 
 // LatestHeight returns the local tip height; found=false on an empty chain.
 func (Provider) LatestHeight() (uint64, bool, error) {
-	h, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
+	h, err := DB_OPs.GetLatestBlockNumber(context.Background(), DB_OPs.TaskConn(DB_OPs.TaskSync))
 	if err != nil {
 		if DB_OPs.IsNotFound(err) {
 			return 0, false, nil
@@ -30,7 +30,7 @@ func (Provider) LatestHeight() (uint64, bool, error) {
 
 // TipHash returns the hex block hash at height.
 func (Provider) TipHash(height uint64) (string, error) {
-	blk, err := DB_OPs.GetZKBlockByNumber(nil, height)
+	blk, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), height)
 	if err != nil {
 		return "", err
 	}
@@ -40,7 +40,7 @@ func (Provider) TipHash(height uint64) (string, error) {
 // RawBlock returns the opaque serialized block at n; found=false when n is beyond
 // the local tip (end of chain), which the library treats as "tip reached".
 func (Provider) RawBlock(n uint64) ([]byte, bool, error) {
-	blk, err := DB_OPs.GetZKBlockByNumber(nil, n)
+	blk, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), n)
 	if err != nil {
 		if DB_OPs.IsNotFound(err) {
 			return nil, false, nil
