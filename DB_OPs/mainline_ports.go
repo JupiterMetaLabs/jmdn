@@ -6,10 +6,9 @@
 //
 // PORTED HERE:
 //   - NormalizePropagatedAccountState — pure, copied verbatim (cf09a26).
-//   - ListAccountsPaginatedFrom — keyset-cursor contract preserved; cursor is
-//     now an opaque decimal offset over ListAccountsPaginatedCtx (SQL
-//     `ORDER BY created_at ASC`), not an ImmuDB SeekKey scan. See
-//     docs/RECONCILE-thebe-sc.md for the ordering caveat.
+//   - ListAccountsPaginatedFrom — keyset-cursor contract preserved; the cursor
+//     is the last returned address over ListAccountsAfterCtx (SQL keyset on
+//     LOWER(address), canonical fingerprint order), not an ImmuDB SeekKey scan.
 //   - CountAccountsWithTimeout — real count via CountAccountsCtx (the compat
 //     CountBuilder stubs return 0 and must not be used for the stats seed).
 //
@@ -21,7 +20,6 @@ package DB_OPs
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"gossipnode/config"
@@ -61,32 +59,23 @@ func NormalizePropagatedAccountState(acc *Account) bool {
 // on the next call to continue. An empty result with a nil cursor means the
 // listing is exhausted.
 //
-// Port note: the ImmuDB implementation scanned ascending by KEY with a SeekKey
-// cursor. This port pages the ThebeDB SQL listing (now ORDER BY LOWER(address)
-// ASC — node-independent, matching consensushash.normAddr, so the P2.5 fingerprint
-// is identical across nodes regardless of insertion history) with the cursor
-// carrying an opaque numeric offset. Offset pagination is safe here because the
-// fingerprint scan runs under the apply lock (stable snapshot). Follow-up: an
-// address keyset cursor would drop the O(N·pages) offset cost for large N.
-func ListAccountsPaginatedFrom(_ *config.PooledConnection, limit int, seekKey []byte, _ string) ([]*Account, []byte, error) {
-	offset := 0
-	if len(seekKey) > 0 {
-		n, err := strconv.Atoi(string(seekKey))
-		if err != nil {
-			return nil, nil, fmt.Errorf("ListAccountsPaginatedFrom: bad cursor %q: %w", string(seekKey), err)
-		}
-		offset = n
-	}
+// Order: canonical ascending LOWER(address) (node-independent, matching
+// consensushash.normAddr — the P2.5 fingerprint folds accounts in exactly this
+// order). The cursor is the last returned address (keyset), so each page is an
+// index range scan (idx_accounts_address_lower) instead of an OFFSET that
+// re-sorted the whole table: the fingerprint scan, which runs on every applied
+// block, went from O(N^2/page) to O(N).
+func ListAccountsPaginatedFrom(conn *config.PooledConnection, limit int, seekKey []byte, _ string) ([]*Account, []byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	accs, err := ListAccountsPaginatedCtx(ctx, limit, offset)
+	accs, err := ListAccountsAfterCtx(ctx, conn, string(seekKey), limit)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("ListAccountsPaginatedFrom: %w", err)
 	}
 	if len(accs) == 0 {
 		return nil, nil, nil
 	}
-	return accs, []byte(strconv.Itoa(offset + len(accs))), nil
+	return accs, []byte(accs[len(accs)-1].Address.Hex()), nil
 }
 
 // CountAccountsWithTimeout returns the total number of accounts, bounded by
