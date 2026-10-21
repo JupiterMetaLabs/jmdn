@@ -34,33 +34,6 @@ func AddBuddyNodesTemporarily(buddies []PubSubMessages.Buddy_PeerMultiaddr) Cach
 }
 
 // @static function
-// PingAndAddToCache pings a buddy node and adds it to cache if reachable
-// Does NOT connect - connection is handled separately by AddPeerCache.ConnectToTemporaryPeers
-func PingAndAddToCache(buddy PubSubMessages.Buddy_PeerMultiaddr) error {
-	nodeManager := Cache.GetNodeManager()
-	if nodeManager == nil {
-		return fmt.Errorf("NodeManager not available")
-	}
-
-	addrStr := buddy.Multiaddr.String()
-
-	// Ping to check reachability
-	reachable, _, err := nodeManager.PingMultiaddrWithRetries(addrStr, 3)
-	if err != nil {
-		return fmt.Errorf("ping failed: %v", err)
-	}
-
-	if !reachable {
-		return fmt.Errorf("peer not reachable at %s", addrStr)
-	}
-
-	// Add to cache (connection will be done by AddPeerCache.ConnectToTemporaryPeers)
-	Cache.AddPeer(buddy.PeerID, buddy.Multiaddr)
-
-	return nil
-}
-
-// @static function
 /*
 This function wraps a ZKBlock and buddy peers into a ConsensusMessage with timing metadata.
 What it does:

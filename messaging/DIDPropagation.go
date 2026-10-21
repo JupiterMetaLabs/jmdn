@@ -173,28 +173,6 @@ func storeAccountInDB(msg DIDMessage) {
 	})
 }
 
-/* UNUSED
-// updateDIDSet adds a DID to the grow-only set in accounts database
-func updateDIDSet(client *config.PooledConnection, did string) error {
-	const setKey = "crdt:did_set"
-
-	// Try to get the current set
-	var didSet map[string]bool
-	err := DB_OPs.ReadJSON(setKey, &didSet)
-
-	// If not found or error, start with empty set
-	if err != nil {
-		didSet = make(map[string]bool)
-	}
-
-	// Add the new DID (idempotent operation)
-	didSet[did] = true
-
-	// Store the updated set
-	return DB_OPs.Create(client, setKey, didSet)
-}
-*/
-
 // maxDIDFrameBytes caps the JSON frame size for a single DID message. Account
 // documents are well under this bound; the cap keeps reads bounded and memory
 // use predictable.
@@ -616,17 +594,4 @@ func committeeDeliveryStatus(targets []peer.ID, delivered int) (reached, size in
 		reached = delivered
 	}
 	return reached, size, nil
-}
-
-// ListAllDIDs retrieves all known DIDs from the database
-func ListAllDIDs(limit int) ([]*DB_OPs.Account, error) {
-	accountsMutex.RLock()
-	client := accountsClient
-	accountsMutex.RUnlock()
-
-	if client == nil {
-		return nil, fmt.Errorf("accounts client not initialized")
-	}
-
-	return DB_OPs.ListAllAccounts(client, limit)
 }

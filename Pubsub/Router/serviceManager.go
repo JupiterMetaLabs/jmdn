@@ -49,13 +49,3 @@ func (sm *ServiceManager) GetConsensusService() *Service.VerificationService {
 func (sm *ServiceManager) GetPublishService() *Service.PublishService {
 	return sm.publishService
 }
-
-// GetNodeDiscoveryService returns the node discovery service
-func (sm *ServiceManager) GetNodeDiscoveryService() *Service.NodeDiscoveryService {
-	return sm.nodeDiscoveryService
-}
-
-// GetValidationService returns the validation service
-func (sm *ServiceManager) GetValidationService() *Service.ValidationService {
-	return sm.validationService
-}

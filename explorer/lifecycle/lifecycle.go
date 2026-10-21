@@ -83,14 +83,6 @@ var reg = &registry{
 	now:       time.Now,
 }
 
-// Configure sets TTL and capacity. ttl<=0 or capacity<=0 disables the tracker.
-func Configure(ttl time.Duration, capacity int) {
-	reg.mu.Lock()
-	reg.ttl = ttl
-	reg.capacity = capacity
-	reg.mu.Unlock()
-}
-
 // SetObserver installs a single fan-out callback fired (guarded, after the lock
 // is released) on every entry transition. The explorer sets this to push SSE.
 func SetObserver(fn func(Entry)) {

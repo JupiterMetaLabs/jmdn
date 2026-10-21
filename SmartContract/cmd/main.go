@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"gossipnode/DB_OPs"
 	"gossipnode/logging"
 
 	"gossipnode/DB_OPs/backend"
@@ -24,7 +24,6 @@ import (
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/router"
-	"gossipnode/config"
 	"gossipnode/config/settings"
 	pb "gossipnode/gETH/proto"
 
@@ -89,9 +88,7 @@ func main() {
 	gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, nil)
 	reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
 	thebeHandleBackend := backend.New(gw, reader, nil)
-	config.SetGlobalHandleFactory(func() (io.Closer, error) {
-		return backend.NewComposite(thebeHandleBackend, nil), nil
-	})
+	DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 	_ = cas // cassata used directly by SmartContract execution engine
 
 	// 4. Contract registry

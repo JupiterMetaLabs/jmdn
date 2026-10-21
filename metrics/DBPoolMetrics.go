@@ -133,15 +133,3 @@ func UpdateMainDBConnectionPoolMetrics(total, active, idle int) {
 	MainDBConnectionPoolActive.WithLabelValues("pool_state").Set(float64(active))
 	MainDBConnectionPoolIdle.Set(float64(idle))
 }
-
-// UpdateAccountsDBConnectionPoolMetricsWithFunction is now deprecated - use UpdateAccountsDBConnectionPoolMetrics instead
-func UpdateAccountsDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
-	// Ignore function name for pool-level metrics
-	UpdateAccountsDBConnectionPoolMetrics(total, active, idle)
-}
-
-// UpdateMainDBConnectionPoolMetricsWithFunction is now deprecated - use UpdateMainDBConnectionPoolMetrics instead
-func UpdateMainDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
-	// Ignore function name for pool-level metrics
-	UpdateMainDBConnectionPoolMetrics(total, active, idle)
-}

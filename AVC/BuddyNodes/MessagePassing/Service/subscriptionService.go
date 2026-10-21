@@ -101,16 +101,6 @@ func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub, optionalParams ...in
 	return service
 }
 
-// SetBFTAdapterFactory allows setting the factory after creation
-func (s *SubscriptionService) SetBFTAdapterFactory(factory BFTAdapterFactory) {
-	s.adapterFactory = factory
-}
-
-// SetBFTAdapter sets the BFT adapter for handling consensus messages
-func (s *SubscriptionService) SetBFTAdapter(adapter BFTMessageHandler) {
-	s.bftAdapter = adapter
-}
-
 // handleReceivedMessage processes received pubsub messages
 func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	if LocalGRO == nil {
@@ -613,59 +603,6 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 
 	return nil
 }
-
-/* UNUSED
-func (s *SubscriptionService) subscribeToTopic(topic string, handler func(*AVCStruct.GossipMessage)) error {
-	if s.pubSub == nil {
-		return errors.New("SubscriptionService.subscribeToTopic - pubsub not available")
-	}
-
-	hostID := s.pubSub.Host.ID()
-	if !s.canSubscribe(topic, hostID) {
-		return errors.New("SubscriptionService.subscribeToTopic - access denied: not authorized to subscribe to channel " + topic)
-	}
-
-	s.pubSub.Mutex.Lock()
-	defer s.pubSub.Mutex.Unlock()
-
-	s.pubSub.Topics[topic] = true
-	s.pubSub.Handlers[topic] = handler
-	return nil
-}
-
-func (s *SubscriptionService) unsubscribeFromTopic(topic string) error {
-	if s.pubSub == nil {
-		return errors.New("SubscriptionService.unsubscribeFromTopic - pubsub not available")
-	}
-
-	s.pubSub.Mutex.Lock()
-	defer s.pubSub.Mutex.Unlock()
-
-	delete(s.pubSub.Topics, topic)
-	delete(s.pubSub.Handlers, topic)
-	return nil
-}
-
-func (s *SubscriptionService) canSubscribe(channelName string, peerID peer.ID) bool {
-	if s.pubSub == nil {
-		return false
-	}
-
-	s.pubSub.Mutex.RLock()
-	defer s.pubSub.Mutex.RUnlock()
-
-	access, exists := s.pubSub.ChannelAccess[channelName]
-	if !exists {
-		return false
-	}
-
-	if access.IsPublic {
-		return true
-	}
-
-	return access.AllowedPeers[peerID]
-}
-*/
 
 func (s *SubscriptionService) GetMyBuddyID() string {
 	if s.myBuddyID != "" {

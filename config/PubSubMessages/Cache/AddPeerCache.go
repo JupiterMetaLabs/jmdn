@@ -35,9 +35,6 @@ type Stats struct {
 	TimeTaken        time.Duration
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr { return make(map[peer.ID]multiaddr.Multiaddr) }
-
 func AddPeer(peerID peer.ID, addr multiaddr.Multiaddr) {
 	if AddPeersCache == nil {
 		AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
@@ -47,112 +44,10 @@ func AddPeer(peerID peer.ID, addr multiaddr.Multiaddr) {
 	AddPeersCacheMu.Unlock()
 }
 
-func GetPeer(peerID peer.ID) multiaddr.Multiaddr {
-	AddPeersCacheMu.Lock()
-	defer AddPeersCacheMu.Unlock()
-	if AddPeersCache == nil {
-		return nil
-	}
-	return AddPeersCache[peerID]
-}
-
-func RemovePeer(peerID peer.ID) {
-	AddPeersCacheMu.Lock()
-	defer AddPeersCacheMu.Unlock()
-	if AddPeersCache == nil {
-		return
-	}
-	delete(AddPeersCache, peerID)
-}
-
-func GetAllPeers() map[peer.ID]multiaddr.Multiaddr {
-	AddPeersCacheMu.Lock()
-	defer AddPeersCacheMu.Unlock()
-	if AddPeersCache == nil {
-		return make(map[peer.ID]multiaddr.Multiaddr)
-	}
-	// return a copy to avoid external mutation races
-	cp := make(map[peer.ID]multiaddr.Multiaddr, len(AddPeersCache))
-	for k, v := range AddPeersCache {
-		cp[k] = v
-	}
-	return cp
-}
-
-func GetPeerCount() int {
-	AddPeersCacheMu.Lock()
-	defer AddPeersCacheMu.Unlock()
-	if AddPeersCache == nil {
-		return 0
-	}
-	return len(AddPeersCache)
-}
-
 func ClearCache() {
 	AddPeersCacheMu.Lock()
 	AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
 	AddPeersCacheMu.Unlock()
-}
-
-// FallbackConnectionFunction: update cache only (no connect)
-func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
-	ctx := context.Background()
-	if len(multiaddrs) == 0 {
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "No multiaddrs provided for fallback", ion.String("peer_id", peerID.String()))
-		}
-		return
-	}
-
-	reachableFound := false
-
-	for _, multiaddrStr := range multiaddrs {
-		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
-		if err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "Invalid multiaddr", err, ion.String("peer_id", peerID.String()))
-			}
-			continue
-		}
-
-		nm := GetNodeManager()
-		if nm == nil {
-			if l := cacheLogger(); l != nil {
-				l.Warn(ctx, "NodeManager not available for reachability check", ion.String("peer_id", peerID.String()))
-			}
-			break
-		}
-
-		reachable, timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3)
-		if err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "Error checking reachability", err, ion.String("peer_id", peerID.String()))
-			}
-			continue
-		}
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "Reachability check completed", ion.String("peer_id", peerID.String()), ion.Duration("time_taken", timeTaken))
-		}
-		if !reachable {
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Multiaddr not reachable", ion.String("peer_id", peerID.String()), ion.String("multiaddr", multiaddrStr))
-			}
-			continue
-		}
-
-		AddPeer(peerID, addr)
-		reachableFound = true
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "Reachable fallback multiaddr found", ion.String("peer_id", peerID.String()), ion.String("multiaddr", multiaddrStr))
-		}
-		break
-	}
-
-	if !reachableFound {
-		if l := cacheLogger(); l != nil {
-			l.Warn(ctx, "No reachable fallback multiaddr found", ion.String("peer_id", peerID.String()))
-		}
-	}
 }
 
 // AddPeersTemporary: concurrent reachability check, adds all reachable peers
@@ -359,18 +254,5 @@ func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
 			actuallyConnected, config.MaxMainPeers, connectedCount, failedCount)
 	}
 
-	return nil
-}
-
-// DisconnectFromTemporaryPeers: disconnect from temporary peers - Should be called when consensus is done
-func DisconnectFromTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
-	nodeManager := GetNodeManager()
-	if nodeManager == nil {
-		return fmt.Errorf("NodeManager not available")
-	}
-
-	for peerID := range peers {
-		nodeManager.RemovePeer(peerID.String())
-	}
 	return nil
 }

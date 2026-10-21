@@ -762,23 +762,6 @@ func (s *SubscriptionService) handleBFTCommitVote(logger_ctx context.Context, ms
 	return handler.HandleCommitVote(msg)
 }
 
-// SetMyBuddyID sets the buddy ID
-func (s *SubscriptionService) SetMyBuddyID(id string) {
-	s.myBuddyID = id
-}
-
-// SetBFTFactory sets the BFT factory
-func (s *SubscriptionService) SetBFTFactory(factory BFTFactory) {
-	s.bftFactory = factory
-}
-
-// InitBFTHandlers initializes the BFT handlers map if not already done
-func (s *SubscriptionService) InitBFTHandlers() {
-	if s.bftHandlers == nil {
-		s.bftHandlers = make(map[string]BFTMessageHandler)
-	}
-}
-
 // handleL1Commit updates the local block with L1 finality data received via gossip.
 // Apply logic is shared with the HTTP ingestion path and the Service package's
 // identical handler via the l1finality package — see its doc comment.

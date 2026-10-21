@@ -406,56 +406,6 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	return nil
 }
 
-// Shutdown cancels all active subscriptions
-func (sm *SubscriptionManager) Shutdown() {
-	logger_ctx := context.Background()
-	tracer := logger().Tracer("Subscription")
-	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionManager.Shutdown")
-	defer span.End()
-
-	logger().Info(trace_ctx, "SubscriptionManager: Shutting down all subscriptions",
-		ion.Int("total_subscriptions", len(sm.subscriptions)),
-		ion.String("function", "SubscriptionManager.Shutdown"))
-
-	sm.mutex.Lock()
-	defer sm.mutex.Unlock()
-
-	for topic, managed := range sm.subscriptions {
-		if managed.sub != nil {
-			managed.sub.Cancel()
-		}
-		if managed.cancel != nil {
-			managed.cancel()
-		}
-		// Close the topic to free resources
-		if managed.pubsubTopic != nil {
-			if err := sm.gps.CloseTopic(topic); err != nil {
-				logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic during shutdown",
-					ion.String("topic", topic),
-					ion.String("error", err.Error()),
-					ion.String("function", "SubscriptionManager.Shutdown"))
-			}
-		}
-		logger().Info(trace_ctx, "SubscriptionManager: Cancelled subscription and closed topic",
-			ion.String("topic", topic),
-			ion.String("function", "SubscriptionManager.Shutdown"))
-	}
-
-	sm.subscriptions = make(map[string]*ManagedSubscription)
-
-	// Shutdown the GossipPubSub instance to cleanup remaining resources
-	if sm.gps != nil {
-		if err := sm.gps.Shutdown(context.Background()); err != nil {
-			logger().Warn(trace_ctx, "SubscriptionManager: Failed to shutdown GossipPubSub",
-				ion.String("error", err.Error()),
-				ion.String("function", "SubscriptionManager.Shutdown"))
-		}
-	}
-
-	logger().Info(trace_ctx, "SubscriptionManager: Shutdown complete",
-		ion.String("function", "SubscriptionManager.Shutdown"))
-}
-
 // GetStats returns statistics about active subscriptions
 func (sm *SubscriptionManager) GetStats() map[string]interface{} {
 	sm.mutex.RLock()

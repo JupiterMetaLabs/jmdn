@@ -69,47 +69,6 @@ func addrHex(addr *common.Address, fallback string) string {
 	return addr.Hex()
 }
 
-type APIAccessTuple struct {
-	Address     string   `json:"address"`
-	StorageKeys []string `json:"storage_keys"`
-}
-
-type TransactionResponse struct {
-	LegacyTx  *FullTxn `json:"legacy_tx,omitempty"`
-	EIP1559Tx *FullTxn `json:"eip1559_tx,omitempty"`
-}
-
-type FullTxn struct {
-	Transaction     *config.Transaction `json:"transaction"`
-	TransactionHash string              `json:"transaction_hash"`
-}
-
-/* UNUSED
-// Global mutex to protect account access
-var accountMutex sync.Mutex
-
-// Convert API AccessTuple to Block.AccessList
-// __DEAD_CODE_AUDIT__
-func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
-	if len(apiList) == 0 {
-		return config.AccessList{}
-	}
-
-	result := make(config.AccessList, len(apiList))
-	for i, tuple := range apiList {
-		storageKeys := make([]common.Hash, len(tuple.StorageKeys))
-		for j, key := range tuple.StorageKeys {
-			storageKeys[j] = common.HexToHash(key)
-		}
-
-		result[i] = config.AccessTuple{
-			Address:     common.HexToAddress(tuple.Address),
-			StorageKeys: storageKeys,
-		}
-	}
-	return result
-}
-*/
 
 func submitRawTransaction(c *gin.Context) {
 	// Record trace span and close it
@@ -393,11 +352,6 @@ func getPublishGPS() *PubSubMessages.GossipPubSub {
 		return node.PubSub
 	}
 	return globalGPS
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func Startserver(bindAddr string, port int, h host.Host, chainID int) {
-	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }
 
 // StartserverWithContext starts the transaction/block API server and shuts it down when ctx is cancelled.

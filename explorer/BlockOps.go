@@ -276,44 +276,6 @@ func (s *ExplorerServer) listBlocks(c *gin.Context) {
 	})
 }
 
-/* UNUSED
-func (s *ExplorerServer) getTransactionBlock(c *gin.Context) {
-	// Create span for getTransactionBlock
-	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransactionBlock")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	hash := c.Param("hash")
-	span.SetAttributes(attribute.String("transaction_hash", hash))
-
-	block, err := DB_OPs.GetTransactionBlock(spanCtx, &s.defaultdb, hash)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "error"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to get transaction block",
-			err,
-			ion.String("transaction_hash", hash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ExplorerAPI.getTransactionBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	span.SetAttributes(
-		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
-	)
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration))
-
-	c.JSON(http.StatusOK, block)
-}
-*/
-
 func (s *ExplorerServer) getLatestBlock(c *gin.Context) {
 	// Create span for getLatestBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlock")

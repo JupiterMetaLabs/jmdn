@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -128,14 +127,11 @@ var (
 	// serve_legacy=true (sequencer only), keeping its stream handlers alive.
 	// Write-only by design (held for lifetime, never read).
 	legacyFastsyncServer *FastsyncV2.FastsyncV2 //nolint:unused // retained on purpose, see comment
-	globalPubSub         *Pubsub.StructGossipPubSub
 )
 
 // Global connection pools
 var (
-	mainDBPool     *config.ConnectionPool // Main database connection pool
-	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
-	cas            *cassata.Cassata
+	cas *cassata.Cassata
 )
 
 func initGlobalGRO() {
@@ -254,38 +250,6 @@ func StartWSServer(bindAddr string, port int, chainID int, smartRPC int) {
 			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.WSServerThread))
 		}
 	}
-}
-
-// GetMainDBPool returns the global main database connection pool
-func GetMainDBPool() *config.ConnectionPool {
-	if mainDBPool == nil {
-		if logger := mainLogger(); logger != nil {
-			logger.Error(context.Background(), "Main DB pool not initialized. Call initMainDBPool first", nil)
-		}
-		os.Exit(1)
-	}
-	return mainDBPool
-}
-
-// GetAccountsDBPool returns the global accounts database connection pool
-func GetAccountsDBPool() *config.ConnectionPool {
-	if accountsDBPool == nil {
-		if logger := mainLogger(); logger != nil {
-			logger.Error(context.Background(), "Accounts DB pool not initialized. Call initAccountsDBPool first", nil)
-		}
-		os.Exit(1)
-	}
-	return accountsDBPool
-}
-
-// GetGlobalPubSub returns the global PubSub instance
-func GetGlobalPubSub() *Pubsub.StructGossipPubSub {
-	if globalPubSub == nil {
-		if logger := mainLogger(); logger != nil {
-			logger.Warn(context.Background(), "Global PubSub not initialized - PubSub features may be limited")
-		}
-	}
-	return globalPubSub
 }
 
 // formatTimestamp formats a time.Time as "DD-MM-YYYY HH:MM:SS" (readable format)
@@ -746,11 +710,8 @@ func initMainDBPool(logger_ctx context.Context, _ bool) error {
 		DBName: config.DBName,
 	}
 
-	// Initialize the global pool. The factory is supplied process-wide via
-	// config.SetGlobalHandleFactory once ThebeDB is constructed (initThebeBackend).
+	// Initialize the global pool.
 	config.InitGlobalPoolWithLoki(poolingConfig, nil)
-
-	mainDBPool = config.GetGlobalPool(logger_ctx)
 
 	// Also initialize the DB_OPs main pool
 	if logger := mainLogger(); logger != nil {
@@ -1354,17 +1315,8 @@ func main() {
 		// then drains them.
 		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
 
-		// Wire the outbox purge hooks (D-858). The block-store-failure rollback in
-		// BlockProcessing samples MaxID before StoreZKBlock and, on failure, deletes
-		// everything enqueued past it, so a rolled-back block's tx/snapshot projection
-		// can never be drained to SQL later.
-		DB_OPs.SetOutboxMaxIDFn(outbox.MaxID)
-		DB_OPs.SetOutboxPurgeAfterFn(outbox.DeleteAfter)
-
-		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
-		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
-		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
-		// before the first GetConnection is sufficient.
+		// Wire the process-wide ThebeHandle: writes via the gateway (2PC SQL+KV),
+		// reads via the reader (SQL).
 		// Reads go to the READ task pool, not the write engine's pool.
 		reader := thebegateway.NewThebeReader(readDB, db.KV, nil)
 		// EVM event logs: KV-backed store so eth_getLogs works (it returned
@@ -1377,9 +1329,6 @@ func main() {
 		// it still go via the gateway (write pool).
 		syncReader := thebegateway.NewThebeReader(syncDB, db.KV, nil)
 		DB_OPs.SetTaskHandle(DB_OPs.TaskSync, backend.NewComposite(backend.New(gw, syncReader, logStore), nil))
-		config.SetGlobalHandleFactory(func() (io.Closer, error) {
-			return backend.NewComposite(thebeHandleBackend, nil), nil
-		})
 		// Also wire the process-wide ThebeHandle used by DB_OPs shim functions
 		// (GetLatestBlockNumber, GetBlock, etc.) which call getHandle() directly
 		// without going through a PooledConnection.
@@ -1750,7 +1699,7 @@ func main() {
 	}
 
 	// Legacy pool-client acquisition removed: storage goes through the
-	// process-wide ThebeHandle (config.SetGlobalHandleFactory above); helpers
+	// process-wide ThebeHandle (DB_OPs.SetGlobalHandle above); helpers
 	// take a nil conn and resolve getHandle(nil) internally.
 
 	// Sync engine: ThebeSync (FastSync v4). FastsyncV2 is retired — serving is via
