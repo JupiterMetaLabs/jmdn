@@ -3,6 +3,8 @@ package Pubsub
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -240,7 +242,50 @@ const (
 	gossipStreamReadTimeout = 30 * time.Second // slow-drip peers cannot pin a goroutine
 	gossipCacheEntryTTL     = 10 * time.Minute // dedup retention; age-expired, not wholesale-flushed
 	gossipCacheMaxEntries   = 100_000          // hard ceiling against a unique-ID flood
+
+	// Largest hop budget any local publisher sets (Publish uses 30). A received
+	// TTL above it is clamped so a peer cannot extend a message's reach.
+	gossipMaxTTL = 30
+	// Accepted Timestamp window for relayed messages. The past bound is inside
+	// gossipCacheEntryTTL so a message is stale before its dedup entry ages out.
+	gossipMaxAge    = gossipCacheEntryTTL - time.Minute
+	gossipMaxFuture = time.Minute
 )
+
+// gossipContentKey is a dedup key derived from the message content rather
+// than the sender-chosen ID, so the same payload re-sent under fresh IDs is
+// still recognised as a duplicate.
+func gossipContentKey(m *PubSubMessages.GossipMessage) (string, error) {
+	data, err := json.Marshal(m.Data)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%d\x00", m.Topic, m.Sender, m.Timestamp)
+	h.Write(data)
+	return "content:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkGossipEnvelope validates the sender-controlled envelope fields and
+// clamps TTL. Returns "" when the message may be processed.
+func checkGossipEnvelope(m *PubSubMessages.GossipMessage, now time.Time) string {
+	if m.TTL < 0 {
+		return "negative_ttl"
+	}
+	if m.TTL > gossipMaxTTL {
+		m.TTL = gossipMaxTTL
+	}
+	if m.TTL > 0 {
+		ts := time.Unix(m.Timestamp, 0)
+		if now.Sub(ts) > gossipMaxAge {
+			return "stale"
+		}
+		if ts.Sub(now) > gossipMaxFuture {
+			return "future_timestamp"
+		}
+	}
+	return ""
+}
 
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
@@ -282,22 +327,44 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	}
 	logger().Debug(context.Background(), "Received message with ACK",
 		ion.String("ack", fmt.Sprintf("%+v", gossipMsg.Data.GetACK())))
-	// Check if we've already seen this message
+	if reason := checkGossipEnvelope(&gossipMsg, time.Now().UTC()); reason != "" {
+		log.Printf("Dropping gossip message %s from %s: %s", gossipMsg.ID, s.Conn().RemotePeer(), reason)
+		return
+	}
+	// Relayed messages are also deduplicated by content, since the ID is
+	// sender-chosen. Direct (TTL 0) messages are never relayed and keep
+	// ID-only dedup.
+	var contentKey string
+	if gossipMsg.TTL > 0 {
+		k, err := gossipContentKey(&gossipMsg)
+		if err != nil {
+			log.Printf("Dropping gossip message %s: %v", gossipMsg.ID, err)
+			return
+		}
+		contentKey = k
+	}
+
+	// Check if we've already seen this message.
 	gps.Mutex.Lock()
-	if _, seen := gps.MessageCache[gossipMsg.ID]; seen {
+	_, seen := gps.MessageCache[gossipMsg.ID]
+	if !seen && contentKey != "" {
+		_, seen = gps.MessageCache[contentKey]
+	}
+	if seen {
 		gps.Mutex.Unlock()
 		return // Already processed
 	}
-	gps.MessageCache[gossipMsg.ID] = time.Now()
+	now := time.Now()
+	gps.MessageCache[gossipMsg.ID] = now
+	if contentKey != "" {
+		gps.MessageCache[contentKey] = now
+	}
 	gps.Mutex.Unlock()
 
 	// Skip TTL checks for direct messages (TTL = 0)
 	// TTL is only needed for multi-hop gossip propagation
 	if gossipMsg.TTL == 0 {
 		log.Printf("Processing direct message (no TTL needed): %s", gossipMsg.ID)
-	} else if gossipMsg.TTL < 0 {
-		log.Printf("Gossip message TTL expired: %s", gossipMsg.ID)
-		return
 	} else {
 		// Only decrement TTL for actual gossip messages
 		gossipMsg.TTL--
