@@ -14,11 +14,14 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build
 # -----------------------------------------------------------------------------
-FROM golang:1.26-bookworm AS builder
+# Base images are pinned by digest (multi-arch index) so a rebuilt tag upstream
+# cannot change what we ship. To update: pick the new tag, read its index
+# digest (docker buildx imagetools inspect <image>:<tag>), replace both here.
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
 
-# Let Go fetch the exact toolchain go.mod requires if the base image drifts behind
-# (official golang images pin GOTOOLCHAIN=local, which otherwise fails the build).
-ENV GOTOOLCHAIN=auto
+# Build only with the pinned image's toolchain; never download another one at
+# build time. Bump the base image when go.mod needs a newer Go.
+ENV GOTOOLCHAIN=local
 
 # Install build dependencies (CGO_ENABLED=1 requires gcc)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,7 +76,7 @@ RUN GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "u
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime
 # -----------------------------------------------------------------------------
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # Install runtime dependencies + Yggdrasil (required: network.yggdrasil: true in jmdn.yaml)
 RUN apt-get update && apt-get install -y --no-install-recommends \

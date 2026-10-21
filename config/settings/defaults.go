@@ -15,7 +15,7 @@ func DefaultConfig() NodeConfig {
 			Alias: "",
 		},
 		Network: NetworkSettings{
-			ChainID:           8000800,
+			ChainID:           8000800, // JMDT testnet. Mainnet (7000700) is set explicitly by the shipped YAML profiles.
 			SeedNode:          "",
 			Mempool:           "",
 			Yggdrasil:         true,

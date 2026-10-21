@@ -93,3 +93,7 @@ Scripts/sign_tx.go
 local-thebesync-gate/
 /_to_delete
 /docs/superpowers/*
+# Python bytecode and local build output
+__pycache__/
+*.pyc
+SmartContract/example/build/
