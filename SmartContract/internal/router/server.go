@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"fmt"
-	"gossipnode/config/settings"
 	"net"
 	"strings"
 
