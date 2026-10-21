@@ -233,7 +233,9 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	// unbounded buffer growth reading a single frame.
 	conn.SetReadLimit(maxWSMessageBytes)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// The upgrade request's Authorization header applies to every message on
+	// this connection (admin-only methods check it).
+	ctx, cancel := context.WithCancel(withAuthHeader(context.Background(), r.Header.Get("Authorization")))
 	defer cancel()
 
 	subs := map[string]*sub{}

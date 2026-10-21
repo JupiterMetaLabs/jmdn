@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/config/settings"
 
 	log "gossipnode/logging"
 
@@ -52,6 +53,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "solc_compile":
+		// Runs a solc process per call: off unless enabled, admin-only when on.
+		if err := adminMethodAllowed(ctx, req.Method, func(f settings.FeatureSettings) bool { return f.EnableSolcCompile }); err != nil {
+			return RespErr(req.ID, errMethodNotAvailable, err.Error()), nil
+		}
 		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
 		if len(req.Params) == 0 {
 			resp, _ := invalidParams(req, "missing params")
@@ -662,6 +667,11 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, err
 
 	case "debug_traceTransaction":
+		// Re-executes a transaction with a tracer: off unless enabled,
+		// admin-only when on.
+		if err := adminMethodAllowed(ctx, req.Method, func(f settings.FeatureSettings) bool { return f.EnableDebugTrace }); err != nil {
+			return RespErr(req.ID, errMethodNotAvailable, err.Error()), nil
+		}
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
 			logRPCResponse(ctx, req.Method, resp)

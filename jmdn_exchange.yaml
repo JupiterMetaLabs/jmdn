@@ -124,6 +124,8 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false
+  enable_solc_compile: false # solc_compile JSON-RPC; requires security.admin_token when on
+  enable_debug_trace: false  # debug_traceTransaction; requires security.admin_token when on
 
 # ── 8. FastSync ──────────────────────────────────────────────────────────────
 fastsync:
@@ -154,6 +156,10 @@ security:
   #   JMDN_SECURITY_JWT_SECRET=<value>
   explorer_api_key: ""     # REQUIRED — token for Explorer API access (see explorer_api below)
   jwt_secret: ""           # REQUIRED — JWT signing secret
+  # Bearer token for admin-only operations: POST /sync/reconcile, and
+  # solc_compile / debug_traceTransaction when enabled under features.
+  # Empty = those operations are refused.
+  admin_token: ""
 
   # ── Rate Limiting ────────────────────────────────────────────────────────
   # Layer 1: Global per-IP cap across all services.

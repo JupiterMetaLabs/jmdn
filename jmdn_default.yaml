@@ -112,6 +112,8 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
+  enable_solc_compile: false # solc_compile JSON-RPC; requires security.admin_token when on
+  enable_debug_trace: false  # debug_traceTransaction; requires security.admin_token when on
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
@@ -209,6 +211,10 @@ security:
   # Legacy Secrets (Moved here for unification)
   explorer_api_key: ""
   jwt_secret: ""
+  # Bearer token for admin-only operations: POST /sync/reconcile, and
+  # solc_compile / debug_traceTransaction when enabled under features.
+  # Empty = those operations are refused.
+  admin_token: ""
 
   # Service Policies (Granular Control)
   services:
