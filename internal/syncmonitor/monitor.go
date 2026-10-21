@@ -207,7 +207,23 @@ type Monitor struct {
 	// Fix 6: adaptive interval — written under runMu, read in Start goroutine
 	currentInterval  time.Duration
 	immediateRecheck atomic.Bool
+
+	// Asynchronous trigger coalescing (RequestCheck / RequestGapCatchUp).
+	// checkQueued / gapQueued are set while a run of that kind is waiting to
+	// start, so any number of signals collapse into at most one waiting run
+	// per kind. triggerMu serializes the triggered runs and guards
+	// lastTriggered, which spaces them at least triggerCooldown apart.
+	checkQueued     atomic.Bool
+	gapQueued       atomic.Bool
+	triggerMu       sync.Mutex
+	lastTriggered   time.Time
+	triggerCooldown time.Duration
 }
+
+// defaultTriggerCooldown is the minimum spacing between two event-triggered
+// checks. Each one costs a seednode round trip and may start a reconcile, and
+// the events that cause them arrive from the network.
+const defaultTriggerCooldown = 2 * time.Second
 
 // New creates a Monitor with production defaults.
 //
@@ -232,7 +248,59 @@ func New(
 		propagationToleranceBlocks: defaultPropagationToleranceBlocks,
 		seednodeGracePeriod:        defaultSeednodeGracePeriod,
 		rootCtx:                    context.Background(),
+		triggerCooldown:            defaultTriggerCooldown,
 	}
+}
+
+// WithTriggerCooldown overrides the minimum spacing between triggered runs.
+// Intended for tests.
+func (m *Monitor) WithTriggerCooldown(d time.Duration) *Monitor {
+	m.triggerCooldown = d
+	return m
+}
+
+// RequestCheck asks for a TriggerCheck without blocking the caller. Repeated
+// requests while one is already waiting are dropped, so a burst of signals
+// costs at most one waiting goroutine plus the run in progress.
+func (m *Monitor) RequestCheck() {
+	m.requestRun(&m.checkQueued, func(ctx context.Context) { m.TriggerCheck(ctx) })
+}
+
+// RequestGapCatchUp is the non-blocking, coalesced form of TriggerGapCatchUp.
+// Gap signals come from blocks and vote requests received before their
+// certificate is checked, so the caller must not be able to multiply work by
+// sending many of them.
+func (m *Monitor) RequestGapCatchUp() {
+	m.requestRun(&m.gapQueued, func(ctx context.Context) { m.TriggerGapCatchUp(ctx) })
+}
+
+func (m *Monitor) requestRun(queued *atomic.Bool, run func(context.Context)) {
+	if !queued.CompareAndSwap(false, true) {
+		return // a run of this kind is already waiting; it will see the latest state
+	}
+	go func() {
+		m.mu.RLock()
+		ctx := m.rootCtx
+		m.mu.RUnlock()
+
+		m.triggerMu.Lock()
+		defer m.triggerMu.Unlock()
+		if wait := m.triggerCooldown - time.Since(m.lastTriggered); wait > 0 {
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				queued.Store(false)
+				return
+			case <-t.C:
+			}
+		}
+		// Clear before running: a signal that arrives during the run must
+		// queue a fresh one, since the run may already have read its state.
+		queued.Store(false)
+		m.lastTriggered = time.Now()
+		run(ctx)
+	}()
 }
 
 // WithOutOfSyncThreshold overrides the consecutive out-of-sync threshold.

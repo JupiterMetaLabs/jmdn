@@ -1864,7 +1864,7 @@ func main() {
 						return
 					}
 					log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering peer-sampled catch-up (no seednode)")
-					go localMonitor.TriggerCheck(context.Background())
+					localMonitor.RequestCheck()
 				})
 			}
 
@@ -1946,7 +1946,7 @@ func main() {
 							return
 						}
 						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
-						go localMonitor.TriggerGapCatchUp(context.Background())
+						localMonitor.RequestGapCatchUp()
 					})
 					// The vote path sees the gap first on a node that missed a
 					// broadcast (it never receives a block, only vote requests).
