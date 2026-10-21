@@ -55,6 +55,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/JupiterMetaLabs/avc/committee"
+
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
 )
@@ -81,9 +83,20 @@ var defaultRevealInbox = &revealInbox{byEpoch: make(map[uint64]map[string][]byte
 // one valid signature per (peer, epoch) — two different ones means one is
 // forged, and silently taking the later one would let an attacker displace a
 // good reveal with a bad one.
+//
+// Bounds (the inbox is fed by peers, and any peer can sign a valid reveal for
+// its own ID): once this node has a slot clock, reveals for epochs more than
+// maxRevealEpochsBehind behind or maxRevealEpochsAhead ahead of the current
+// epoch are refused; at most maxRevealInboxEpochs epochs are buffered; and
+// once an epoch holds maxRevealsPerEpoch reveals, further peers are admitted
+// only if they are seated on that epoch's entropy committee, so a flood of
+// self-signed non-member reveals cannot crowd out real members.
 func AddInboundReveal(epoch uint64, peerID string, reveal []byte) error {
 	if peerID == "" {
 		return ErrEmptyRevealPeer
+	}
+	if err := checkRevealEpochWindow(epoch); err != nil {
+		return err
 	}
 	chainID := BLS_Signer.DomainChainID()
 	if !revealVerifier.VerifyReveal(peerID, chainID, epoch, reveal) {
@@ -95,6 +108,9 @@ func AddInboundReveal(epoch uint64, peerID string, reveal []byte) error {
 
 	byPeer, ok := defaultRevealInbox.byEpoch[epoch]
 	if !ok {
+		if len(defaultRevealInbox.byEpoch) >= maxRevealInboxEpochs {
+			return ErrRevealInboxFull
+		}
 		byPeer = make(map[string][]byte)
 		defaultRevealInbox.byEpoch[epoch] = byPeer
 	}
@@ -103,6 +119,9 @@ func AddInboundReveal(epoch uint64, peerID string, reveal []byte) error {
 			return nil // identical re-delivery: harmless, and expected under §4.4's per-slot retry
 		}
 		return ErrConflictingReveal
+	}
+	if len(byPeer) >= maxRevealsPerEpoch && !revealPeerSeated(epoch, peerID) {
+		return ErrRevealInboxFull
 	}
 	cp := make([]byte, len(reveal))
 	copy(cp, reveal)
@@ -179,6 +198,9 @@ func RevealsForBlock(slot uint64) []config.Reveal {
 // pruneRevealsBelow drops buffered reveals for epochs before the given one.
 // Called after an epoch finalises: its reveal window is closed, so nothing
 // held for it can ever be used again.
+//
+// Also drops Accumulators more than one epoch older than that: the epoch just
+// finalised (epoch-1) keeps its Accumulator; anything before it is settled.
 func pruneRevealsBelow(epoch uint64) {
 	defaultRevealInbox.mu.Lock()
 	for e := range defaultRevealInbox.byEpoch {
@@ -187,6 +209,17 @@ func pruneRevealsBelow(epoch uint64) {
 		}
 	}
 	defaultRevealInbox.mu.Unlock()
+
+	if epoch < 2 {
+		return
+	}
+	defaultEntropyAccumulatorStore.mu.Lock()
+	for e := range defaultEntropyAccumulatorStore.accs {
+		if e < epoch-1 {
+			delete(defaultEntropyAccumulatorStore.accs, e)
+		}
+	}
+	defaultEntropyAccumulatorStore.mu.Unlock()
 }
 
 // InboxCountForEpoch reports how many reveals are buffered for epoch.
@@ -196,4 +229,48 @@ func InboxCountForEpoch(epoch uint64) int {
 	defaultRevealInbox.mu.Lock()
 	defer defaultRevealInbox.mu.Unlock()
 	return len(defaultRevealInbox.byEpoch[epoch])
+}
+
+// Inbox bounds; see AddInboundReveal.
+const (
+	maxRevealEpochsAhead  = 2
+	maxRevealEpochsBehind = 1
+	maxRevealInboxEpochs  = 8
+	maxRevealsPerEpoch    = 4 * EntropyCommitteeSize
+)
+
+// revealCurrentEpoch reports this node's current entropy epoch, or false
+// before the slot clock has advanced (startup), when no bound can be applied.
+var revealCurrentEpoch = func() (uint64, bool) {
+	if !DefaultSlotStore.haveCommittedForRecoveryCheck() {
+		return 0, false
+	}
+	return EpochForSlot(DefaultSlotStore.Current()), true
+}
+
+// revealPeerSeated reports whether peerID is on epoch's entropy committee.
+// Only consulted once an epoch is at capacity. Unresolvable committee (no
+// beacon yet) counts as not seated: the inbox is already full of candidates.
+var revealPeerSeated = func(epoch uint64, peerID string) bool {
+	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
+	if err != nil {
+		return false
+	}
+	for _, m := range members {
+		if m.PeerID == peerID {
+			return true
+		}
+	}
+	return false
+}
+
+func checkRevealEpochWindow(epoch uint64) error {
+	cur, ok := revealCurrentEpoch()
+	if !ok {
+		return nil
+	}
+	if epoch > cur+maxRevealEpochsAhead || epoch+maxRevealEpochsBehind < cur {
+		return ErrRevealEpochOutOfWindow
+	}
+	return nil
 }

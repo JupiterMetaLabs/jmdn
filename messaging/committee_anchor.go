@@ -274,10 +274,26 @@ var (
 	anchorBlockAt = func(height uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, height) }
 )
 
+// maxCachedAnchors bounds the in-memory anchor cache. Evicted periods are
+// reloaded from the KV record or the anchor block by anchoredRecord.
+const maxCachedAnchors = 64
+
 func rememberAnchor(rec *anchorRecord) {
 	anchorMu.Lock()
 	if _, exists := anchorRecords[rec.Period]; !exists {
 		anchorRecords[rec.Period] = rec
+		for len(anchorRecords) > maxCachedAnchors {
+			oldest := rec.Period
+			for p := range anchorRecords {
+				if p < oldest {
+					oldest = p
+				}
+			}
+			if oldest == rec.Period {
+				break // only the newest is left to evict; keep it
+			}
+			delete(anchorRecords, oldest)
+		}
 	}
 	anchorMu.Unlock()
 }

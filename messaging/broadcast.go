@@ -30,6 +30,7 @@ import (
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -48,12 +49,14 @@ type BroadcastMessageStruct struct {
 }
 
 // Track seen messages to prevent loops
-var (
-	seenMessages   = make(map[string]time.Time)
-	seenMessagesMu sync.RWMutex
-)
+// seenMessages is the broadcast dedup cache: message ID -> seen. Bounded in
+// both size and age: entries expire after config.MessageExpiryTime, and at
+// most maxSeenMessages are held (least recently added evicted first), so a
+// flood of unique IDs cannot grow memory without limit.
+const maxSeenMessages = 100_000
 
-// generateMessageID creates a unique ID for a broadcast message
+var seenMessages = expirable.NewLRU[string, struct{}](maxSeenMessages, nil, config.MessageExpiryTime)
+
 func generateMessageID(sender, content string, timestamp int64) string {
 	hasher := sha256.New()
 	hasher.Write(fmt.Appendf(nil, "%s-%s-%d", sender, content, timestamp))
@@ -61,59 +64,17 @@ func generateMessageID(sender, content string, timestamp int64) string {
 	return hash[:16] // Return first 16 chars for brevity
 }
 
-// cleanupOldMessages periodically removes expired message IDs.
-// It stops when ctx is cancelled.
-func cleanupOldMessages(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+// StartBroadcastCleanup is kept for callers; expiry is now handled by the
+// bounded cache itself, so there is no background loop to start.
+func StartBroadcastCleanup() {}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			seenMessagesMu.Lock()
-			now := time.Now().UTC()
-			for id, timestamp := range seenMessages {
-				if now.Sub(timestamp) > config.MessageExpiryTime {
-					delete(seenMessages, id)
-				}
-			}
-			seenMessagesMu.Unlock()
-		}
-	}
-}
-
-// Start message cleanup in background
-// StartBroadcastCleanup initializes the GRO and starts the cleanup thread.
-func StartBroadcastCleanup() {
-	if BroadcastLocalGRO == nil {
-		var err error
-		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
-		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BroadcastLocalGRO", err)
-			return
-		}
-	}
-	BroadcastLocalGRO.Go(GRO.BroadcastCleanupThread, func(ctx context.Context) error {
-		cleanupOldMessages(ctx)
-		return nil
-	})
-}
-
-// isMessageSeen checks if we've seen this message before
 func isMessageSeen(msgID string) bool {
-	seenMessagesMu.RLock()
-	defer seenMessagesMu.RUnlock()
-	_, exists := seenMessages[msgID]
-	return exists
+	return seenMessages.Contains(msgID)
 }
 
 // markMessageSeen records that we've seen this message
 func markMessageSeen(msgID string) {
-	seenMessagesMu.Lock()
-	defer seenMessagesMu.Unlock()
-	seenMessages[msgID] = time.Now().UTC()
+	seenMessages.Add(msgID, struct{}{})
 }
 
 // HandleBroadcastStream processes incoming broadcast messages
