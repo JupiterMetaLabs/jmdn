@@ -172,7 +172,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 				defer saferun.RecoverInto("rpc.batch", func(any) {
 					resps[i] = RespErr(req.ID, -32603, "Internal error")
 				})
-				resps[i], _ = s.h.Handle(c.Request.Context(), req)
+				resps[i], _ = s.h.Handle(withAuthHeader(c.Request.Context(), c.GetHeader("Authorization")), req)
 			}(i, req)
 		}
 		wg.Wait()
@@ -198,7 +198,7 @@ func (s *HTTPServer) handleSafe(c *gin.Context, req Request) (resp Response) {
 	defer saferun.RecoverInto("rpc.single", func(any) {
 		resp = RespErr(req.ID, -32603, "Internal error")
 	})
-	resp, _ = s.h.Handle(c.Request.Context(), req)
+	resp, _ = s.h.Handle(withAuthHeader(c.Request.Context(), c.GetHeader("Authorization")), req)
 	return resp
 }
 

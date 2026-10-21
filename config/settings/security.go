@@ -14,6 +14,10 @@ const (
 	ServiceEthGRPC         = "eth_grpc"
 	ServiceBFTBuddy        = "bft_buddy"
 	ServiceBFTSequencer    = "bft_sequencer"
+	// ServiceAdminHTTP is not a listener: it is the policy for admin-only
+	// operations served on other listeners (POST /sync/reconcile, and
+	// solc_compile / debug_traceTransaction when enabled).
+	ServiceAdminHTTP = "admin_http"
 )
 
 // AuthType defines the authentication method required for a service
@@ -82,6 +86,9 @@ type SecurityConfig struct {
 	// Legacy Secrets (Moved here for unification)
 	ExplorerAPIKey string `mapstructure:"explorer_api_key" yaml:"explorer_api_key"`
 	JWTSecret      string `mapstructure:"jwt_secret" yaml:"jwt_secret"`
+	// AdminToken authorizes admin-only operations (admin_http policy). Empty
+	// means no request is authorized: those operations are refused.
+	AdminToken string `mapstructure:"admin_token" yaml:"admin_token"`
 
 	// Services map service name (e.g., "block_api") to its policy
 	Services map[string]Policy `mapstructure:"services" yaml:"services"`
@@ -170,6 +177,13 @@ func DefaultSecurityConfig() SecurityConfig {
 				TLS:      false,
 				AuthType: AuthTypeNone,
 			},
+			// Admin-only operations: always token-gated. An empty
+			// security.admin_token refuses every request (fail closed).
+			ServiceAdminHTTP: {
+				TLS:      false,
+				AuthType: AuthTypeToken,
+				TokenEnv: "ADMIN_TOKEN",
+			},
 		},
 	}
 }
@@ -199,6 +213,11 @@ func (c *SecurityConfig) ResolveTokens() {
 				c.resolvedTokens[policy.TokenEnv] = c.JWTSecret
 				continue
 			}
+		case "ADMIN_TOKEN":
+			if c.AdminToken != "" {
+				c.resolvedTokens[policy.TokenEnv] = c.AdminToken
+				continue
+			}
 		}
 		// Fallback: env var lookup (done once, not per request)
 		c.resolvedTokens[policy.TokenEnv] = os.Getenv(policy.TokenEnv)
@@ -219,6 +238,11 @@ func (c *SecurityConfig) GetResolvedToken(tokenEnv string) string {
 		return c.ExplorerAPIKey
 	case "JWT_SECRET":
 		return c.JWTSecret
+	case "ADMIN_TOKEN":
+		if c.AdminToken != "" {
+			return c.AdminToken
+		}
+		return os.Getenv(tokenEnv)
 	default:
 		return os.Getenv(tokenEnv)
 	}
