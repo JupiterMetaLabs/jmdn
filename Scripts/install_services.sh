@@ -219,14 +219,14 @@ services:
     restart: unless-stopped
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in the compose .env}
+      --requirepass ${REDIS_PASSWORD:?}
       --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - jmdn_redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD in the compose .env}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
