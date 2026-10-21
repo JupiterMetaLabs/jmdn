@@ -1,7 +1,6 @@
 package MessagePassing
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,6 +19,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/streamread"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -96,8 +96,8 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		ion.String("topic", TOPIC),
 		ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 
-	reader := bufio.NewReader(s)
-	msg, err := reader.ReadString(config.Delimiter)
+	raw, err := streamread.Frame(s, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+	msg := string(raw)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "read_error"))

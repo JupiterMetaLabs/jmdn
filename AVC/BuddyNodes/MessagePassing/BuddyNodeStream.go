@@ -1,7 +1,6 @@
 package MessagePassing
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/streamread"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -72,8 +72,8 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 		attribute.String("local_peer_id", host.ID().String()),
 	)
 
-	reader := bufio.NewReader(s)
-	msg, err := reader.ReadString(config.Delimiter)
+	raw, err := streamread.Frame(s, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+	msg := string(raw)
 	if err != nil {
 		streamSpan.RecordError(err)
 		streamSpan.SetAttributes(attribute.String("status", "read_error"))

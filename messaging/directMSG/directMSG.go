@@ -281,7 +281,7 @@ func SendViaYggdrasil(target string, message string) error {
 
 	// Wait for acknowledgment
 	conn.SetReadDeadline(time.Now().UTC().Add(ReadTimeout))
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(io.LimitReader(conn, MaxMessageSize))
 	response, err := reader.ReadString('\n')
 
 	if err != nil {

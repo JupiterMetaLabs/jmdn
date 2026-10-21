@@ -1,10 +1,10 @@
 package seed
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"sync"
@@ -15,6 +15,7 @@ import (
 	database "gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
+	"gossipnode/internal/streamread"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -136,8 +137,8 @@ func RegisterAsSeed(node *config.Node) error {
 func handleSeedRequest(stream network.Stream, node *config.Node) {
 	defer stream.Close()
 
-	reader := bufio.NewReader(stream)
-	message, err := reader.ReadString('\n')
+	raw, err := streamread.Frame(stream, '\n', streamread.SmallMaxBytes, streamread.DefaultTimeout)
+	message := string(raw)
 	if err != nil {
 		log.Printf("[seed] error reading seed request from %s: %v", stream.Conn().RemotePeer(), err)
 		return
@@ -182,7 +183,8 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 	}
 
 	var request PeerRequest
-	decoder := json.NewDecoder(stream)
+	_ = stream.SetReadDeadline(time.Now().Add(streamread.DefaultTimeout))
+	decoder := json.NewDecoder(io.LimitReader(stream, streamread.SmallMaxBytes))
 	if err := decoder.Decode(&request); err != nil {
 		log.Printf("[seed] error decoding peer request from %s: %v", remotePeer, err)
 		stream.Write([]byte("{\"error\": \"Invalid request format\"}\n"))
@@ -369,7 +371,8 @@ func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) (
 	}
 
 	var response PeerResponse
-	decoder := json.NewDecoder(stream)
+	_ = stream.SetReadDeadline(time.Now().Add(streamread.DefaultTimeout))
+	decoder := json.NewDecoder(io.LimitReader(stream, streamread.DefaultMaxBytes))
 	if err := decoder.Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to read peer response: %v", err)
 	}
