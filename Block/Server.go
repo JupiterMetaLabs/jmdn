@@ -188,6 +188,13 @@ func submitRawTransaction(c *gin.Context) {
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
+// isSelfTransfer reports whether tx sends to its own sender. It compares the
+// addresses, not the pointers: two distinct pointers to one address are a
+// self-transfer.
+func isSelfTransfer(tx *config.Transaction) bool {
+	return tx.To != nil && tx.From != nil && *tx.To == *tx.From
+}
+
 func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, origin TxOrigin) (string, error) {
 	// Reject a transaction with no sender before anything dereferences tx.From.
 	if err := Security.CheckTransactionShape(tx); err != nil {
@@ -286,7 +293,7 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, or
 	}
 
 	// Check that To and From addresses are not the same (not checked in security checks)
-	if tx.To == tx.From {
+	if isSelfTransfer(tx) {
 		span.RecordError(errors.New("invalid transaction: To and From address are the same"))
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		duration := time.Since(startTime).Seconds()
