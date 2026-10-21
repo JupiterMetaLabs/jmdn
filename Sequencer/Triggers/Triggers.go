@@ -1,7 +1,6 @@
 package Triggers
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/internal/streamread"
 	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -254,9 +254,13 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 
 			log.Printf("RequestVoteResultsFromBuddies: Sent request to %s", peerID)
 
-			// Read response
-			reader := bufio.NewReader(stream)
-			response, err := reader.ReadString(config.Delimiter)
+			// Read response. Bounded size and a read deadline: the reply comes
+			// from a remote buddy, so a peer that never sends the delimiter
+			// would otherwise hold this goroutine open, and one that sends an
+			// endless frame would be buffered without limit. Same treatment as
+			// Consensus.readVoteResultResponse, which reads the same reply.
+			raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+			response := string(raw)
 			if err != nil {
 				log.Printf("RequestVoteResultsFromBuddies: Failed to read response from %s: %v", peerID, err)
 				return err
