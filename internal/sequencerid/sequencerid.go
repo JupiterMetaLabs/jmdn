@@ -89,16 +89,12 @@ func configPin() string {
 }
 
 func productionPosture() bool {
+	// settings.ProductionPosture is the single definition of "production"
+	// (strict posture, or a mainnet environment, folding case and trimming).
+	// Repeating the comparison is how it drifts: a raw != "mainnet" elsewhere
+	// was case-sensitive and would have read "Mainnet" as non-production.
 	if !settings.IsLoaded() {
 		return false
 	}
-	c := settings.Get()
-	return c.Security.StrictPosture || strings.EqualFold(strings.TrimSpace(c.Network.Environment), "mainnet")
-}
-
-// resetForTest clears the seed value.
-func resetForTest() {
-	mu.Lock()
-	seedID, seedEpoch = "", 0
-	mu.Unlock()
+	return settings.Get().ProductionPosture()
 }

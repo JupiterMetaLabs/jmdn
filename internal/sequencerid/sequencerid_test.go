@@ -57,3 +57,12 @@ func TestGet_ProductionUnknownFailsClosed(t *testing.T) {
 		t.Fatalf("production with no sequencer must return Unknown, got %q", Get())
 	}
 }
+
+// resetForTest clears the seed value. It lives in the test file because
+// .golangci.yml sets run.tests: false, so a helper used only by tests but
+// declared in the production file reads as dead code to the unused linter.
+func resetForTest() {
+	mu.Lock()
+	seedID, seedEpoch = "", 0
+	mu.Unlock()
+}
