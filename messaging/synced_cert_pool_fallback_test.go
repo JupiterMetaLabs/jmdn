@@ -214,11 +214,16 @@ func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	if !got.Reached || got.YesVotes != 3 {
 		t.Fatalf("f+1=3 verifying votes must be accepted in trusted mode: %+v", got)
 	}
-	// The same helper the live receive path uses, fed a verifier error (e.g.
-	// round context unavailable): still accepted on the one real vote.
+	// A verifier error (e.g. round context unavailable) is preserved even
+	// with enough votes: nothing was verified, so nothing is trusted.
+	// relaxForTrustedSequencer's own doc comment is explicit about this: an
+	// error means the committee could not be resolved, and accepting then
+	// would trust a certificate nobody checked (consensus_hardening.go:625-627
+	// returns (res, err) unchanged whenever err != nil, before ever reaching
+	// the f+1 pool re-count below).
 	relaxed, rerr := relaxForTrustedSequencer("block_propagation", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), testBlockConsensusHash, height)
-	if rerr != nil || !relaxed.Reached {
-		t.Fatalf("verifier error must be overridden by a real registered vote: (%+v, %v)", relaxed, rerr)
+	if rerr == nil || relaxed.Reached {
+		t.Fatalf("a verifier error must never be relaxed: (%+v, %v)", relaxed, rerr)
 	}
 }
 
@@ -252,8 +257,8 @@ func TestTrustSequencerCertificate_NoRegisteredVoteStillRejects(t *testing.T) {
 }
 
 // errVerifierUnavailable stands in for any receive-path verifier error (for
-// example an unavailable committee source) that relaxForTrustedSequencer may
-// override.
+// example an unavailable committee source); relaxForTrustedSequencer must
+// never relax it.
 var errVerifierUnavailable = errors.New("committee: verifier unavailable")
 
 // Flag off: relaxForTrustedSequencer is a pass-through, byte for byte.
