@@ -61,6 +61,14 @@ var (
 	})
 
 	// Heartbeat metrics
+	// ConsensusLegacyVotesTotal counts BLS votes that verified only as legacy
+	// unbound "vote:<v>" signatures (not bound to a block). Expected to stay at
+	// zero; a rise means some validators still sign the legacy domain.
+	ConsensusLegacyVotesTotal = factory.NewCounter(prometheus.CounterOpts{
+		Name: "consensus_legacy_votes_total",
+		Help: "BLS votes accepted only as legacy unbound signatures",
+	})
+
 	HeartbeatSentCounter = factory.NewCounter(prometheus.CounterOpts{
 		Name: "p2p_heartbeats_sent_total",
 		Help: "The total number of heartbeats sent",
