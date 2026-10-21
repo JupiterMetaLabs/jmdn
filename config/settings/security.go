@@ -61,6 +61,11 @@ type SecurityConfig struct {
 	// still starts. Set true to fail closed.
 	StrictPosture bool `mapstructure:"strict_posture" yaml:"strict_posture"`
 
+	// AllowUnprotectedTxs accepts submitted legacy transactions signed without
+	// a chain ID (pre-EIP-155, v = 27/28). Off by default: such a signature is
+	// valid on every chain, so it can be replayed from another network.
+	AllowUnprotectedTxs bool `mapstructure:"allow_unprotected_txs" yaml:"allow_unprotected_txs"`
+
 	// Global Rate Limit (Layer 1: aggregate per-IP cap across all services)
 	GlobalRateLimit float64 `mapstructure:"global_rate_limit" yaml:"global_rate_limit"` // 0 = disabled
 	GlobalBurst     int     `mapstructure:"global_burst" yaml:"global_burst"`

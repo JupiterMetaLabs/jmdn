@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -347,6 +348,16 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	// created at BLOCK APPLY on every node from the block-carried identity
 	// stamped by the sequencer (DB_OPs.EnrichBlockAccountNonces) — one canonical
 	// identity, no propagation dependency, no DB write for rejected txs.
+	// Submission-only policy (not applied to block validation, so history that
+	// predates it still verifies): no replayable unprotected signatures, and a
+	// bounded nonce gap. Read the committed nonce before allChecksWithConn,
+	// which advances the cached value.
+	if err := checkSubmissionPolicy(tx, security_cache); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "submission_policy_rejected"))
+		return false, err
+	}
+
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
 
 	duration := time.Since(startTime).Seconds()
@@ -1084,4 +1095,44 @@ func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 		ion.Float64("duration", duration),
 		ion.String("function", "Security.checkTransactionHash"))
 	return true, nil
+}
+
+// MaxSubmissionNonceGap is how far ahead of the sender's committed nonce a
+// submitted transaction's nonce may be. A transaction applied with a gap moves
+// the account past every nonce in between, so an unbounded gap lets an old
+// signed transaction with a high nonce strand all of the sender's lower ones.
+const MaxSubmissionNonceGap = 64
+
+// allowUnprotectedTxs controls whether submitted legacy transactions may use
+// pre-EIP-155 (chain-less, v = 27/28) signatures. Off by default: such a
+// signature is valid on every chain, so one signed for another network can be
+// replayed here. Set with SetAllowUnprotectedTxs.
+var allowUnprotectedTxs atomic.Bool
+
+// SetAllowUnprotectedTxs enables or disables submission of pre-EIP-155
+// signed legacy transactions.
+func SetAllowUnprotectedTxs(allow bool) { allowUnprotectedTxs.Store(allow) }
+
+// IsUnprotectedLegacyTx reports whether tx is a legacy transaction signed
+// without a chain ID (v = 27 or 28).
+func IsUnprotectedLegacyTx(tx *config.Transaction) bool {
+	if tx == nil || tx.Type != types.LegacyTxType || tx.V == nil || !tx.V.IsUint64() {
+		return false
+	}
+	v := tx.V.Uint64()
+	return v == 27 || v == 28
+}
+
+// checkSubmissionPolicy applies the rules that hold for newly submitted
+// transactions only.
+func checkSubmissionPolicy(tx *config.Transaction, cache *SecurityCache) error {
+	if IsUnprotectedLegacyTx(tx) && !allowUnprotectedTxs.Load() {
+		return fmt.Errorf("transaction %s is signed without a chain ID (pre-EIP-155); re-sign it for this chain", tx.Hash.Hex())
+	}
+	if cache != nil && tx != nil && tx.From != nil {
+		if acct := cache.GetAccount(*tx.From); acct != nil && tx.Nonce > acct.TxNonce+MaxSubmissionNonceGap {
+			return fmt.Errorf("nonce %d is too far ahead of the account nonce %d (max gap %d)", tx.Nonce, acct.TxNonce, MaxSubmissionNonceGap)
+		}
+	}
+	return nil
 }

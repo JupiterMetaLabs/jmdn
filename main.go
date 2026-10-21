@@ -1031,6 +1031,7 @@ func main() {
 		os.Exit(1)
 	}
 	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
+	Security.SetAllowUnprotectedTxs(cfg.Security.AllowUnprotectedTxs)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first
