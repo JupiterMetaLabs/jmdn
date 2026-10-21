@@ -29,17 +29,45 @@ package messaging
 // committee.BeaconSource retains entropy.
 
 import (
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 )
 
-// mixRetainEpochs bounds the store. It mirrors committee.MinRetainedEpochs for
-// the same reason that constant exists — a legitimately-lagging peer's
-// boundary block must still be verifiable — plus one, because a proof for
-// epoch E is checked against the mix of E-1.
-const mixRetainEpochs = committee.MinRetainedEpochs + 1
+// configuredRetainEpochs reads JMDN_AVC_BEACON_RETAIN_EPOCHS — the SAME env
+// var Sequencer/beacon_install.go's InstallAVCBeaconFromEnv and
+// Sequencer/vdf_seal_wiring.go's configuredBeaconRetainEpochs already read
+// (same default, same parse rule). Duplicated here, not shared, because
+// messaging cannot import Sequencer (Sequencer imports messaging, not the
+// reverse) — same constraint vdf_seal_wiring.go's copy documents. Error-
+// tolerant like that copy, not error-returning like beacon_install.go's: this
+// is retention bookkeeping consulted on every remember()/
+// entropyAccumulatorFor() call on an already-running node, which must never
+// abort over a malformed value beacon_install.go already validated at
+// startup. D-47: this file previously ignored the env var entirely via a
+// hardcoded mixRetainEpochs constant, so JMDN_AVC_BEACON_RETAIN_EPOCHS moved
+// the beacon's own retention but not this store's.
+func configuredRetainEpochs() uint64 {
+	retain := uint64(committee.MinRetainedEpochs)
+	if retainStr := strings.TrimSpace(os.Getenv("JMDN_AVC_BEACON_RETAIN_EPOCHS")); retainStr != "" {
+		if r, err := strconv.ParseUint(retainStr, 10, 64); err == nil {
+			retain = r
+		}
+	}
+	return retain
+}
+
+// mixRetainEpochs bounds the store. It mirrors the configured beacon
+// retention for the same reason committee.MinRetainedEpochs exists — a
+// legitimately-lagging peer's boundary block must still be verifiable — plus
+// one, because a proof for epoch E is checked against the mix of E-1.
+func mixRetainEpochs() uint64 {
+	return configuredRetainEpochs() + 1
+}
 
 type mixStore struct {
 	mu     sync.RWMutex
@@ -69,8 +97,9 @@ func (m *mixStore) remember(epoch uint64, seed randao.Seed) (ok bool) {
 		m.newest = epoch
 		m.seeded = true
 	}
-	if m.newest >= mixRetainEpochs {
-		cutoff := m.newest - mixRetainEpochs
+	retain := mixRetainEpochs()
+	if m.newest >= retain {
+		cutoff := m.newest - retain
 		for e := range m.mixes {
 			if e < cutoff {
 				delete(m.mixes, e)
