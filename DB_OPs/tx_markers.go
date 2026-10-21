@@ -16,12 +16,16 @@
 // (defaultdb + accountsdb) dual-read is retired — there is exactly ONE marker
 // population.
 //
-// ORDERING (fail-direction guarantee, preserved from F4): account writes
-// commit BEFORE their marker (ApplyTxAtomic writes docs first, marker last;
-// the drain writes markers strictly after all account chunks). A crash between
-// the two fails toward bounded re-apply — NEVER toward silent skip.
-// TODO(STEP 3): move markers + accounts into one projector SQL transaction to
-// upgrade the ordering guarantee to true atomicity.
+// ORDERING: account writes commit BEFORE their marker (ApplyTxAtomic writes
+// docs first, marker last; the drain writes markers strictly after all account
+// chunks), so a crash never produces a marker over missing effects.
+//
+// CRASH SAFETY (live apply): the account writes and the marker are separate
+// store commits, so ApplyTxAtomic first persists a redo record holding the
+// tx's complete staged post-state (absolute documents, not deltas). If the
+// process dies part-way, RecoverPendingTxApply rewrites those same documents
+// and the marker at boot — an idempotent roll-forward — instead of letting the
+// tx be re-staged from a partially updated base (which would apply it twice).
 
 package DB_OPs
 
@@ -104,21 +108,57 @@ func IsMarkerApplied(_ *config.PooledConnection, key string) (bool, error) {
 	return markerValueApplied(raw), nil
 }
 
-// ApplyTxAtomic commits one transaction's complete effect: every touched
-// account document, then the tx_processed marker LAST. On ThebeDB the account
-// writes route through mergeAccountForWrite/storeAccount (canonical log) and
-// the marker through the sync-state KV; the marker-last ordering guarantees a
-// crash mid-apply is re-applied on replay — never silently skipped.
-// TODO(STEP 3): single projector SQL transaction for docs + marker.
-func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
-	if len(docs) == 0 {
-		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
-	}
+// txApplyRedoKey holds the in-flight live apply. Live applies are serialized by
+// LockStateApply, so at most one is ever in flight and a single key suffices.
+// An empty value means "nothing pending".
+const txApplyRedoKey = "tx_apply_redo"
 
-	// Accounts first — RAW authoritative write (merge-bypassing). The stage was
-	// built from the stored base under LockStateApply, so these absolute docs
-	// must win unconditionally; the LWW merge gate is for uncoordinated sync
-	// writers only (see DB_OPs/authoritative_write.go).
+// txApplyRedo is the persisted form of one in-flight ApplyTxAtomic call.
+type txApplyRedo struct {
+	TxHash    string     `json:"tx_hash"`
+	AppliedAt int64      `json:"applied_at"`
+	Docs      []*Account `json:"docs"`
+}
+
+// redoStore is the subset of the handle the redo record needs.
+type redoStore interface {
+	GetSyncKV(key string) ([]byte, error)
+	PutSyncKV(key string, value []byte) error
+}
+
+func readTxApplyRedo(h redoStore) (*txApplyRedo, error) {
+	raw, err := h.GetSyncKV(txApplyRedoKey)
+	if err != nil {
+		return nil, fmt.Errorf("read apply redo: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var r txApplyRedo
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("decode apply redo: %w", err)
+	}
+	if r.TxHash == "" || len(r.Docs) == 0 {
+		return nil, fmt.Errorf("apply redo record is malformed (tx=%q docs=%d)", r.TxHash, len(r.Docs))
+	}
+	return &r, nil
+}
+
+func clearTxApplyRedo(h redoStore) error {
+	if err := h.PutSyncKV(txApplyRedoKey, []byte{}); err != nil {
+		return fmt.Errorf("clear apply redo: %w", err)
+	}
+	return nil
+}
+
+// writeTxEffects performs the two commits that make up one tx's effect:
+// the absolute account documents, then the tx_processed marker. Idempotent:
+// re-running it with the same inputs converges to the same state.
+func writeTxEffects(h redoStore, docs []*Account, txHash string, appliedAt int64) error {
+	// RAW authoritative write (merge-bypassing). The stage was built from the
+	// stored base under LockStateApply, so these absolute docs must win
+	// unconditionally; the LWW merge gate is for uncoordinated sync writers
+	// only (see DB_OPs/authoritative_write.go).
 	entries := make([]struct {
 		Key   string
 		Value []byte
@@ -126,7 +166,7 @@ func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, a
 	for _, doc := range docs {
 		val, err := json.Marshal(doc)
 		if err != nil {
-			return fmt.Errorf("ApplyTxAtomic %s: marshal account %s: %w", txHash, doc.Address.Hex(), err)
+			return fmt.Errorf("marshal account %s: %w", doc.Address.Hex(), err)
 		}
 		entries = append(entries, struct {
 			Key   string
@@ -134,19 +174,130 @@ func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, a
 		}{Key: Prefix + doc.Address.Hex(), Value: val})
 	}
 	if err := BatchPutAccountsAuthoritative(entries); err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: accounts: %w", txHash, err)
+		return fmt.Errorf("accounts: %w", err)
 	}
+	op := markerOp(TxProcessedKey(txHash), appliedAt)
+	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+		return fmt.Errorf("marker: %w", err)
+	}
+	return nil
+}
 
-	// Marker LAST — the "done" claim only lands after the effects it describes.
+// ApplyTxAtomic commits one transaction's complete effect: every touched
+// account document, then the tx_processed marker LAST, bracketed by a redo
+// record so a crash between the commits is rolled forward at boot
+// (RecoverPendingTxApply) rather than re-applied on a mutated base.
+//
+// Caller must hold LockStateApply.
+//
+// On a returned error the redo record is cleared: the caller rolls the block
+// back (rollbackState), and a leftover record would otherwise re-apply the
+// failed tx after that rollback.
+func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
+	if len(docs) == 0 {
+		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
+	}
 	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
 	}
-	op := markerOp(TxProcessedKey(txHash), appliedAt)
-	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: marker: %w", txHash, err)
+
+	// A record left over here means boot recovery did not run or failed.
+	// Never stack a second apply on top of an unresolved one.
+	pending, err := readTxApplyRedo(h)
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+	}
+	if pending != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: unresolved apply of tx %s is pending; run RecoverPendingTxApply first", txHash, pending.TxHash)
+	}
+
+	redo, err := json.Marshal(&txApplyRedo{TxHash: txHash, AppliedAt: appliedAt, Docs: docs})
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: encode redo: %w", txHash, err)
+	}
+	if err := h.PutSyncKV(txApplyRedoKey, redo); err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: write redo: %w", txHash, err)
+	}
+
+	if err := writeTxEffects(h, docs, txHash, appliedAt); err != nil {
+		if cerr := clearTxApplyRedo(h); cerr != nil {
+			return fmt.Errorf("ApplyTxAtomic %s: %w (and %v)", txHash, err, cerr)
+		}
+		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+	}
+
+	if err := clearTxApplyRedo(h); err != nil {
+		// Effects and marker are committed. A stale record is harmless to
+		// recovery (it rewrites identical docs) but blocks the next apply, so
+		// surface it.
+		return fmt.Errorf("ApplyTxAtomic %s: applied, but %w", txHash, err)
 	}
 	return nil
+}
+
+// RecoverPendingTxApply rolls forward a live apply that was interrupted
+// between its account writes and its marker. Call once at startup, after the
+// ThebeDB handle is wired and before any block processing.
+//
+// Returns the recovered tx hash ("" when nothing was pending). An error means
+// state could not be made consistent; the node must not process blocks.
+func RecoverPendingTxApply() (string, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return "", fmt.Errorf("recover apply: %w", err)
+	}
+	LockStateApply()
+	defer UnlockStateApply()
+	return recoverPendingTxApply(h)
+}
+
+func recoverPendingTxApply(h redoStore) (string, error) {
+	pending, err := readTxApplyRedo(h)
+	if err != nil {
+		return "", fmt.Errorf("recover apply: %w", err)
+	}
+	if pending == nil {
+		return "", nil
+	}
+	// A revoked marker means the block was rolled back after this record was
+	// written; rolling forward would undo that rollback.
+	raw, err := h.GetSyncKV(TxProcessedKey(pending.TxHash))
+	if err != nil {
+		return "", fmt.Errorf("recover apply %s: marker read: %w", pending.TxHash, err)
+	}
+	if raw != nil && !markerValueApplied(raw) {
+		if err := clearTxApplyRedo(h); err != nil {
+			return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+		}
+		return "", nil
+	}
+	if err := writeTxEffects(h, pending.Docs, pending.TxHash, pending.AppliedAt); err != nil {
+		return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+	}
+	if err := clearTxApplyRedo(h); err != nil {
+		return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+	}
+	return pending.TxHash, nil
+}
+
+// DiscardPendingTxApply drops an in-flight apply record without applying it.
+// Called by the block rollback path before balances are restored, so a record
+// that survived a failed ApplyTxAtomic cannot re-apply the failed tx later.
+// Caller must hold LockStateApply.
+func DiscardPendingTxApply() error {
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	raw, err := h.GetSyncKV(txApplyRedoKey)
+	if err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	return clearTxApplyRedo(h)
 }
 
 // WriteTxProcessedMarkers writes applied markers for a set of txs.
