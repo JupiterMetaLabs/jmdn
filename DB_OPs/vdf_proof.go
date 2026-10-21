@@ -166,12 +166,3 @@ func readVDFProofNewest(h store.ThebeHandle) (uint64, bool, error) {
 	}
 	return newest, true, nil
 }
-
-// NewestVDFProofEpoch reports the highest epoch with a stored proof.
-func NewestVDFProofEpoch(conn *config.PooledConnection) (uint64, bool, error) {
-	h, err := getHandle(conn)
-	if err != nil {
-		return 0, false, fmt.Errorf("vdf proof newest: %w", err)
-	}
-	return readVDFProofNewest(h)
-}

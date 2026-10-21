@@ -12,39 +12,12 @@ import (
 	"testing"
 
 	"github.com/JupiterMetaLabs/avc/beacon"
-	"github.com/JupiterMetaLabs/avc/randao"
 )
 
-// TestConcurrentStartAndCancelSealer_NoRace hammers Start and CancelSealer
-// for the SAME epoch from many goroutines at once. The zero-value pipeline
-// makes any launched evaluation fail fast (see
-// TestOnEpochFinalised_StartedSealer_FailsClosedOnZeroValuePipeline), so this
-// stays fast under -race instead of running a real ~20-minute evaluation.
-func TestConcurrentStartAndCancelSealer_NoRace(t *testing.T) {
-	resetVDFWiringState(t)
-	p := &beacon.Pipeline{}
-	const epoch = 42
-
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			s := sealerFor(epoch, p)
-			s.Start(epoch, randao.Seed{})
-		}()
-		go func() {
-			defer wg.Done()
-			CancelSealer(epoch)
-		}()
-	}
-	wg.Wait()
-
-	if !SealerCancelledForTest(epoch) {
-		t.Fatal("epoch was never marked cancelled despite 50 concurrent CancelSealer calls racing " +
-			"against 50 concurrent Start calls")
-	}
-}
+// TestConcurrentStartAndCancelSealer_NoRace moved to
+// vdf_sealer_concurrency_testhelpers_test.go (D-49): it depends on
+// SealerCancelledForTest, which now lives behind the `sequencertest` build
+// tag. Run with `go test -tags sequencertest ./Sequencer/...`.
 
 // TestConcurrentSealerForAndCancelSealer_MapMissRace stresses the specific
 // window this fix depends on: sealerFor's fresh-sealer-insert and
