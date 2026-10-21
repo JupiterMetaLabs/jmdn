@@ -121,7 +121,7 @@ func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
 // the caller lets the node log every violation before deciding whether to abort.
 func (c *NodeConfig) ValidateSecurityPosture() error {
 	v := c.InsecurePublicServices()
-	if len(v) == 0 || !c.productionPosture() {
+	if len(v) == 0 || !c.ProductionPosture() {
 		return nil
 	}
 	names := make([]string, len(v))
@@ -129,12 +129,6 @@ func (c *NodeConfig) ValidateSecurityPosture() error {
 		names[i] = v[i].String()
 	}
 	return fmt.Errorf("SEC-03 fail-closed (production posture: security.strict_posture or network.environment=mainnet): unauthenticated public service(s): %s — set auth_type token/mtls for each or bind it to 127.0.0.1", strings.Join(names, "; "))
-}
-
-// productionPosture mirrors messaging.IsProductionPosture: strict posture or a
-// mainnet environment.
-func (c *NodeConfig) productionPosture() bool {
-	return c.Security.StrictPosture || strings.EqualFold(strings.TrimSpace(c.Network.Environment), "mainnet")
 }
 
 // knownDefaultDBPasswords are credentials that have shipped in this repository's
