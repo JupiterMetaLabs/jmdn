@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"log"
 	"strings"
 	"sync"
@@ -106,19 +107,19 @@ func RegisterAsSeed(node *config.Node) error {
 
 	// Set up handlers for seed node protocols
 	node.Host.SetStreamHandler(config.SeedProtocol,
-		func(s network.Stream) {
+		saferun.Stream(string(config.SeedProtocol), func(s network.Stream) {
 			handleSeedRequest(s, node)
-		})
+		}))
 
 	node.Host.SetStreamHandler(config.PeerDiscoveryProtocol,
-		func(s network.Stream) {
+		saferun.Stream(string(config.PeerDiscoveryProtocol), func(s network.Stream) {
 			handlePeerDiscoveryRequest(s, node)
-		})
+		}))
 
 	node.Host.SetStreamHandler(config.RegisterProtocol,
-		func(s network.Stream) {
+		saferun.Stream(string(config.RegisterProtocol), func(s network.Stream) {
 			handleRegisterRequest(s, node)
-		})
+		}))
 
 	// Start routine to cleanup stale peers
 	LocalGRO.Go(GRO.SeedLocal, func(ctx context.Context) error {

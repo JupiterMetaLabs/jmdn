@@ -76,6 +76,9 @@ func DefaultConfig() NodeConfig {
 			StreamName: "",
 			MaxLen:     1000,
 			GroupName:  "",
+			// Write keeps the pre-split ThebeDB default (PG_MAX_OPEN_CONNS=10).
+			// 10+10+4 = 24 per node, well inside Postgres' default 100.
+			Pools: ThebePoolsConfig{Write: 10, Read: 10, Sync: 4},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
@@ -160,10 +163,11 @@ func DefaultConfig() NodeConfig {
 		// / fail-closed until an operator pins the seed authority key); epoch clock
 		// defaults to the seed's 3600s.
 		Consensus: ConsensusSettings{
-			BlockBuddy:            nil,
-			SeedAuthorityBLSPub:   "",
-			SequencerPinnedPeerID: "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
-			CommitteeEpochSeconds: 3600,
+			BlockBuddy:                  nil,
+			SeedAuthorityBLSPub:         "",
+			SequencerPinnedPeerID:       "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
+			SyncCertificateRequiredFrom: 0,  // set per network; required under production posture
+			CommitteeEpochSeconds:       3600,
 			// Selection-epoch length in BLOCKS (messaging.EpochForHeight).
 			//
 			// SET TO 1 (2026-08-27, operator decision): every height is its own
@@ -266,8 +270,6 @@ func DefaultConfig() NodeConfig {
 				EnforceBlockLinkage:          true,
 				EnforceBodyBinding:           true,
 				AggCert:                      true,
-				TimeoutCertWiring:            false,
-				TimeoutCertRejoin:            false,
 				EnforceSlotRecoveryGate:      true,
 				SlotRecoveryPreslotMigration: false,
 				EnforceSyncGate:              true,

@@ -3,28 +3,61 @@ package MessagePassing
 import (
 	"fmt"
 
+	"gossipnode/config"
 	"gossipnode/internal/roundlock"
 )
 
 // roundLedger is the per-round signing ledger this package consults. A
 // package variable so tests can use a fresh ledger; production uses the
-// process-wide roundlock.Default, the SAME ledger the timeout-vote signer in
-// messaging uses - the rule only holds if both sides share one ledger.
+// process-wide roundlock.Default.
 var roundLedger = roundlock.Default
 
-// lockBlockResultRound records that this node is about to BLS-sign a block
-// result for round (height, period). It returns an error - and the caller must
-// not sign - when this node has already signed a timeout vote for that round.
-// Re-signing a block result for the same round (a retried request) is allowed.
+// roundRefusal is returned by lockBlockResultRound when this node must not
+// sign. Highest is the highest period this node has signed for the height; it
+// travels back to the sequencer in the refusal so a sequencer that restarted
+// mid-height can resume above every round it already burned.
+type roundRefusal struct {
+	Height  uint64
+	Period  uint64
+	Reason  roundlock.Refusal
+	Highest uint64
+}
+
+func (e *roundRefusal) Error() string {
+	return fmt.Sprintf("round (height %d, period %d) refused: %s (highest signed period %d)",
+		e.Height, e.Period, e.Reason, e.Highest)
+}
+
+// blockIdentity is what R1 compares: BlockHash covers only the transactions,
+// so the ConsensusHash (which covers Period, Slot and the other consensus
+// fields) is what tells two proposals of the same transactions apart.
+func blockIdentity(blockHash, consensusHash string) string {
+	return blockHash + "/" + consensusHash
+}
+
+// lockBlockResultRound records that this node is about to BLS-sign the block
+// identified by (blockHash, consensusHash) for round (height, period). It
+// returns a *roundRefusal - and the caller must not sign - when this node
+// already signed a different block for the round (R1), a block at a higher
+// period for the height (R2), or the height is already committed. It returns
+// a plain error when period exceeds config.MaxPeriod. Re-signing the same
+// block (a retried request) is allowed.
 //
 // It returns fresh=true only when THIS call created the reservation. A caller
 // whose signing attempt then FAILS must call unlockBlockResultRound below ONLY
 // when fresh is true - on a re-entry an earlier attempt owns the reservation
-// and may already have shipped a signature (F-9). See TryLockFresh.
-func lockBlockResultRound(height, period uint64) (fresh bool, err error) {
-	ok, taken, fresh := roundLedger.TryLockFresh(roundlock.Round{Height: height, Period: period}, roundlock.Block)
+// and may already have shipped a signature (F-9). See roundlock.TryLockFresh.
+func lockBlockResultRound(height, period uint64, blockHash, consensusHash string) (fresh bool, err error) {
+	if period > config.MaxPeriod {
+		// Every verifier rejects such a block (config.MaxPeriod), so a
+		// signature on it could only help certify a block nobody accepts.
+		return false, fmt.Errorf("round (height %d, period %d) refused: period exceeds the cap %d",
+			height, period, config.MaxPeriod)
+	}
+	ok, refusal, highest, fresh := roundLedger.TryLockFresh(
+		roundlock.Round{Height: height, Period: period}, blockIdentity(blockHash, consensusHash))
 	if !ok {
-		return false, fmt.Errorf("round (height %d, period %d) already signed as %s", height, period, taken)
+		return false, &roundRefusal{Height: height, Period: period, Reason: refusal, Highest: highest}
 	}
 	return fresh, nil
 }
@@ -34,19 +67,13 @@ func lockBlockResultRound(height, period uint64) (fresh bool, err error) {
 //
 // CALL ONLY WHEN lockBlockResultRound RETURNED fresh=true. On a re-entry the
 // reservation belongs to an earlier attempt that may already have shipped a
-// signature; releasing it would let this node also sign a timeout for the same
-// round (F-9).
+// signature; releasing it would let this node sign a second block for the
+// same round (F-9).
 //
-// lockBlockResultRound marks the round Block-signed the moment it succeeds,
-// before the caller has actually produced a BLS signature. If the sign that
-// follows fails (see ListenerHandler.go's handleVoteResultRequest, the one
-// production caller), the round would otherwise stay permanently marked as
-// signed by this node even though no valid signature was ever produced -
-// stranding it: this node could then never sign a timeout vote for the same
-// round either, contributing to neither certificate for the rest of the
-// process's life. Call this from that failure path, and nowhere else - see
-// roundlock.Ledger.Release's doc comment for the full reasoning and the
-// safety property this does NOT weaken.
-func unlockBlockResultRound(height, period uint64) {
-	roundLedger.Release(roundlock.Round{Height: height, Period: period}, roundlock.Block)
+// Without this, a round whose sign failed would stay reserved for the
+// process's life and this node could never contribute to it. Call this from
+// the signing failure path in handleVoteResultRequest (ListenerHandler.go),
+// and nowhere else - see roundlock.Ledger.Release.
+func unlockBlockResultRound(height, period uint64, blockHash, consensusHash string) {
+	roundLedger.Release(roundlock.Round{Height: height, Period: period}, blockIdentity(blockHash, consensusHash))
 }

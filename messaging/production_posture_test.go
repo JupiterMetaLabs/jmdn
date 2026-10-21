@@ -1,16 +1,9 @@
 package messaging
 
-// D-38(b): avcvotes.AllowUnsignedValidatorVotes was fail-open in production —
-// a production node could boot with it enabled, same class of gap as the
-// three flags ValidateProductionConsensusPosture already checked.
-
 import (
-	"strings"
 	"testing"
 
 	"gossipnode/config/settings"
-
-	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
 // withPassingPosture sets every OTHER posture input to its safe value and
@@ -19,20 +12,20 @@ import (
 func withPassingPosture(t *testing.T) {
 	t.Helper()
 	prevReject, prevRegistry, prevBody := RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding
-	prevUnsigned := avcvotes.AllowUnsignedValidatorVotes
 	RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = true, true, true
-	avcvotes.AllowUnsignedValidatorVotes = false
 
 	// TestMain (blockPropagation_test.go) already loads settings once for
 	// the whole package test run.
 	cfg := settings.Get()
 	prevPin := cfg.Consensus.SequencerPinnedPeerID
 	cfg.Consensus.SequencerPinnedPeerID = "pinned-peer"
+	prevCertFrom := cfg.Consensus.SyncCertificateRequiredFrom
+	cfg.Consensus.SyncCertificateRequiredFrom = 1
 
 	t.Cleanup(func() {
 		RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = prevReject, prevRegistry, prevBody
-		avcvotes.AllowUnsignedValidatorVotes = prevUnsigned
 		cfg.Consensus.SequencerPinnedPeerID = prevPin
+		cfg.Consensus.SyncCertificateRequiredFrom = prevCertFrom
 	})
 }
 
@@ -44,22 +37,23 @@ func TestValidateProductionConsensusPosture_AllPassing(t *testing.T) {
 }
 
 func TestValidateProductionConsensusPosture_NonProductionSkipsEntirely(t *testing.T) {
-	avcvotes.AllowUnsignedValidatorVotes = true
-	defer func() { avcvotes.AllowUnsignedValidatorVotes = false }()
 	if err := ValidateProductionConsensusPosture(false); err != nil {
 		t.Fatalf("non-production posture must never fail, got: %v", err)
 	}
 }
 
-func TestValidateProductionConsensusPosture_FlagsUnsignedValidatorVotes(t *testing.T) {
-	withPassingPosture(t)
-	avcvotes.AllowUnsignedValidatorVotes = true
+// TestValidateProductionConsensusPosture_FlagsUnsignedValidatorVotes was
+// removed here: 6226a97 (#193) deleted the capability it exercised
+// (avcvotes.AllowUnsignedValidatorVotes) and the posture check that guarded
+// it, and dropped this file's avcvotes/strings imports — but left the test
+// body behind, so the messaging package's tests could not compile. There is
+// no longer a flag to flip, so the test has nothing left to assert.
 
-	err := ValidateProductionConsensusPosture(true)
-	if err == nil {
-		t.Fatal("a production node with AllowUnsignedValidatorVotes on must refuse to start")
-	}
-	if !strings.Contains(err.Error(), "AllowUnsignedValidatorVotes") {
-		t.Fatalf("error must name AllowUnsignedValidatorVotes so an operator knows which setting to fix, got: %v", err)
+func TestValidateProductionConsensusPosture_RequiresSyncCertificateHeight(t *testing.T) {
+	withPassingPosture(t)
+	cfg := settings.Get()
+	cfg.Consensus.SyncCertificateRequiredFrom = 0
+	if err := ValidateProductionConsensusPosture(true); err == nil {
+		t.Fatal("production posture must require consensus.sync_certificate_required_from")
 	}
 }

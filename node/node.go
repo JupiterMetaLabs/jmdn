@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"gossipnode/internal/saferun"
 	"os"
 	"time"
 
@@ -201,31 +202,29 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 
 	messaging.SetHostInstance(h)
 	// Set up stream handlers for messages (TCP) and files (QUIC)
-	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
-	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
-	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
+	h.SetStreamHandler(config.MessageProtocol, saferun.Stream(string(config.MessageProtocol), messaging.HandleMessageStream))
+	h.SetStreamHandler(config.BroadcastProtocol, saferun.Stream(string(config.BroadcastProtocol), messaging.HandleBroadcastStream))
+	h.SetStreamHandler(config.BlockPropagationProtocol, saferun.Stream(string(config.BlockPropagationProtocol), messaging.HandleBlockStream))
 	// ThebeSync (FastSync v4) read-only serving handlers: head handshake + bounded
 	// GetBlocks range serve. The engine lives in the JMDN-FastSync module (opaque
 	// blocks); jmdn supplies the block store via thebesync.Provider. Safe to
 	// register unconditionally — read-only, answers explicit peer requests only.
 	// See docs/THEBESYNC-DESIGN.md.
 	thebeSyncServer := &fssync.Server{Provider: thebesync.Provider{}}
-	h.SetStreamHandler(fssync.HeadProtocol, thebeSyncServer.HeadHandler)
-	h.SetStreamHandler(fssync.GetBlocksProtocol, thebeSyncServer.GetBlocksHandler)
+	h.SetStreamHandler(fssync.HeadProtocol, saferun.Stream(string(fssync.HeadProtocol), thebeSyncServer.HeadHandler))
+	h.SetStreamHandler(fssync.GetBlocksProtocol, saferun.Stream(string(fssync.GetBlocksProtocol), thebeSyncServer.GetBlocksHandler))
 	// Architecture §4.4 RevealPush — receive an entropy-committee member's
 	// RANDAO reveal pushed directly to this node when it is the current slot's
 	// proposer. Registered on EVERY node, not only proposers: which node
 	// proposes a given slot changes, and a node without the handler would
 	// refuse the stream outright, which under Rule 1 costs the whole epoch.
 	// Added 2026-08-20 with M4 Decision A.
-	h.SetStreamHandler(config.RevealPushProtocol, messaging.HandleRevealPushStream)
-	// M0/§7.1c timeout-certificate rejoin RPC — answer "what's your latest
-	// accepted TimeoutCertificate for height H" for a peer that just synced
-	// or restarted. Registered on EVERY node (not just ones expecting to be
-	// asked) for the same reason as RevealPushProtocol above: any peer could
-	// be the one asked. Added 2026-08-24; no-op while JMDN_TIMEOUT_CERT_REJOIN
-	// is unset (default OFF) — see messaging/timeout_rejoin.go.
-	h.SetStreamHandler(config.TimeoutCertRejoinProtocol, messaging.HandleTimeoutCertRejoinStream)
+	h.SetStreamHandler(config.RevealPushProtocol, saferun.Stream(string(config.RevealPushProtocol), messaging.HandleRevealPushStream))
+	// The M0/§7.1c timeout-certificate rejoin RPC was registered here until
+	// 94e8fb6 (#196) retired the whole timeout-certificate flow. That commit
+	// deleted both config.TimeoutCertRejoinProtocol and
+	// messaging.HandleTimeoutCertRejoinStream but left this registration
+	// behind, so the node package could not compile. Removed with the flow.
 	// Stage-F VDF proof pull — answer "do you have the VDF proof for entropy
 	// epoch E" for a peer that missed the epoch-boundary block, restarted, or
 	// joined late. Registered on EVERY node for the same reason as the two
@@ -234,7 +233,7 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	//
 	// Bounded work: one direct KV read of vdf_proof:<epoch>. It never scans the
 	// chain and never starts an evaluation. See messaging/entropy_vdf_pull.go.
-	h.SetStreamHandler(config.VDFProofRequestProtocol, messaging.HandleVDFProofRequestStream)
+	h.SetStreamHandler(config.VDFProofRequestProtocol, saferun.Stream(string(config.VDFProofRequestProtocol), messaging.HandleVDFProofRequestStream))
 
 	// The recovery DISPATCHER. messaging owns the deadline logic but cannot
 	// reach the libp2p host or the peer set, so it hands an epoch here.
@@ -275,12 +274,12 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			messaging.RecoverVDFProofFromPeers(h, peers, forEpoch, boundarySlot)
 		}()
 	})
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, saferun.Stream(string(config.BuddyNodesMessageProtocol), func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
-	})
+	}))
 
 	// Set up SubmitMessageProtocol handler for all nodes (so they can receive subscription requests)
-	h.SetStreamHandler(config.SubmitMessageProtocol, func(s network.Stream) {
+	h.SetStreamHandler(config.SubmitMessageProtocol, saferun.Stream(string(config.SubmitMessageProtocol), func(s network.Stream) {
 		// Initialize ForListner for this node so it can handle subscription requests
 		// This is needed because ListenerHandler.handleAskForSubscription requires ForListner to be set
 		if AVCStruct.NewGlobalVariables().Get_ForListner() == nil {
@@ -339,7 +338,7 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			listenerHandler.HandleSubmitMessageStream(logger_ctx, stream)
 			return nil
 		})
-	})
+	}))
 
 	// Capture host in closure
 	host := h

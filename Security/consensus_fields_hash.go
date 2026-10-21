@@ -34,24 +34,15 @@ import (
 // CanonicalVoteMessageV4 byte-identical for both. A certificate gathered for one
 // fork verified against the other.
 //
-// WHAT THIS FIXES, AND WHAT IT DOES NOT. The certificate-replay half is closed:
+// WHAT THIS FIXES. The certificate-replay half is closed:
 // the v4 vote now signs a ConsensusHash that differs between the two forks, so
 // a cert gathered for one no longer verifies against the other.
 //
-// EQUIVOCATION DETECTION IS NOT FIXED and this comment used to claim it was.
-// checkEquivocation is still keyed on BlockHash (blockPropagation.go:677), and
-// BlockHash remains transactions-only — attachAVCConsensusFields never rewrites
-// it (Block/consensus_fields.go). Two forks carrying the same transactions
-// therefore still share a BlockHash, so the equivocation map sees one entry, not
-// two. Worse, the pre-validation dedup key is that same colliding value
-// (getBlockDedupID -> "zkblock:"+BlockHash), so the second fork is discarded as
-// a DUPLICATE at blockPropagation.go:295 and never reaches the check at all.
-//
-// Closing detection means re-keying BOTH the equivocation map and the dedup
-// cache onto ConsensusHash, which changes what "the same block" means on the
-// receive path. That is a design change, not a follow-up edit, and it is
-// deliberately not attempted here. Until it lands, do not read this file as
-// evidence that forks are detected.
+// EQUIVOCATION DETECTION is keyed on ConsensusHash too: checkEquivocation
+// (end of validateRemoteBlock) and the pre-validation dedup key
+// (getBlockDedupID -> "zkblock:"+ConsensusHashHex) both use it, so two forks
+// that share transactions (and therefore BlockHash) are distinct entries and
+// both reach validation.
 //
 // The old branch and its JMDN_CONSENSUS_HASH_V3 flag were removed before testnet
 // launch: with no live fleet and no history to re-verify, one unconditional
@@ -104,12 +95,11 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 // with the transaction component built from each transaction's carried tx.Hash
 // instead of re-deriving it from the transaction contents.
 //
-// Why it exists: a block read back from ThebeDB does not carry every field the
-// contents hash needs - txRecordToTransaction restores neither ChainID nor
-// AccessList (the tx table has no chain-id column), so every type-1/type-2
-// transaction re-hashes differently and the contents-based recompute of a
-// stored or ThebeSync-served block never matches its ConsensusHash. tx.Hash
-// (the tx_hash column) does survive.
+// Why it exists: blocks stored before the chain_id column and the access list
+// were persisted read back without those fields, so their type-1/type-2
+// transactions re-hash differently and a contents-based recompute of such a
+// stored block does not match its ConsensusHash. tx.Hash (the tx_hash column)
+// does survive.
 //
 // Why it is sound: for every committed block tx.Hash IS the contents hash.
 // Preconditions, both of which the caller must hold:
@@ -117,9 +107,8 @@ func RecomputeBlockHashWithConsensusFields(block *config.ZKBlock) common.Hash {
 // flag gates BOTH checkBodyBinding (BlockHash == H(tx.Hash...)) and
 // Security.CheckBlockHash (BlockHash == H(contentsHash...)), which together
 // force per-transaction equality;
-// (2) the block was NOT acquired via ThebeSync alone — thebesync/apply.go
-// re-checks only BlockHash == H(tx.Hash...), never the contents side, so
-// equality is inherited there from live validation, not verified locally.
+// (2) the block passed thebesync/apply.go, which now verifies each tx.Hash
+// against its contents and signature (messaging.ValidateSyncedBlockContents).
 // On an honest block satisfying these, this equals RecomputeBlockHashWithConsensusFields,
 // and a rewritten tx.Hash breaks BlockHash. Use it only together with that BlockHash
 // check (W1 committee-anchor binding).

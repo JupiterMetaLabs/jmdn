@@ -286,7 +286,14 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 
 Ordered by traffic removed. Items 1, 3, 4, 5 are backward compatible node-by-node; item 2 needs a flag and fleet-wide rollout.
 
-### 4.1 Vote trigger: committee only, non-forwardable (removes 2b, halves 2)
+### 4.1 Vote trigger: voters + committee, non-forwardable (removes 2b)
+
+> **Correction (fix/vote-trigger-all-voters).** The first version of this change sent the trigger to the
+> committee only. That broke the consensus design: **every eligible validator votes; the committee (buddies)
+> aggregates** — each buddy tallies all validator votes and returns its own BLS-signed result, and only those
+> committee signatures form the certificate and earn the reward. The trigger now goes to the voter set
+> (`AuthorizedVotersForTallyAtHeight`) ∪ `Buddies`, one copy each, still never re-flooded; the sequencer requests
+> signed results from the committee only (`committeePeerIDsForRound`).
 - In `BroadcastVoteTrigger`, replace `h.Network().Peers()` with the committee from `consensusMessage.Buddies` (peer IDs are right there), falling back to `messaging.EligibleCommitteePeerIDs()` if `Buddies` is empty. Intersect with connected peers; log committee members that are not connected (they will miss the round — that is already the case today, just invisible).
 - Mark the message non-forwardable. Simplest: set `Hops = config.MaxHops` before marshalling so `HandleBroadcastStream`'s `msg.Hops < config.MaxHops` check is false on every receiver, no wire-format change. Cleaner: add `NoRebroadcast bool \`json:"no_rebroadcast,omitempty"\`` to `BroadcastMessageStruct` and honour it in `HandleBroadcastStream` — old receivers ignore the unknown field and would still re-flood, so the `Hops` trick is the one that works on a mixed fleet.
 - Keep the full block in `Data` — it is the proposal.
@@ -367,7 +374,7 @@ Unit tests to add: `BroadcastVoteTrigger` peer selection (committee ∩ connecte
 
 | Item | Status | Where |
 |---|---|---|
-| 4.1 vote trigger → committee only, dial unconnected members from `Buddies` multiaddr, `Hops = MaxHops`; receivers never re-flood `vote_trigger` | done | `messaging/broadcast.go`: `voteTriggerTargets`, `BroadcastVoteTrigger`, `HandleBroadcastStream` |
+| 4.1 vote trigger → voter set ∪ committee (corrected from committee-only), dial unconnected members from `Buddies` multiaddr, `Hops = MaxHops`; receivers never re-flood `vote_trigger` | done | `messaging/broadcast.go`: `voteTriggerTargets`, `BroadcastVoteTrigger`, `HandleBroadcastStream` |
 | 4.2 certificate-only finalize (`zkblock_cert`, header + `bls_results`, no proof) to voters/committee; receiver substitutes the cached proposal (`LookupConsensusMessageByBlockHash`), ignores the envelope if it has no proposal and waits for gossip | done, **flag default off** | `messaging/broadcast.go` (`FinalizeCertOnly` branch, `finalizeCommitteeTargets`, `stripProof`), `messaging/blockPropagation.go` (top of `HandleReceivedBlockMessage`), flag `JMDN_FINALIZE_CERT_ONLY` / `consensus.flags.finalize_cert_only` |
 | 4.3 `forwardBlock` only when gossip is off | done | `messaging/blockPropagation.go` (`!EnableBlockGossip` added to the forward gate) |
 | 4.4 rejected-block notice without the proof | done | `messaging/broadcast.go` (`!result` branch sends `stripProof(block)`, direct only) |

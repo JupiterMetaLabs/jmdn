@@ -56,7 +56,7 @@ func (sync *sync_struct) GetBlockNumber() uint64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	num, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	num, err := DB_OPs.GetLatestBlockNumber(ctx, DB_OPs.TaskConn(DB_OPs.TaskSync))
 	if err != nil {
 		log.Printf("[NodeInfo] ERROR: GetLatestBlockNumber failed: %v. Attempting manual reconciliation.", err)
 		return 0
@@ -70,13 +70,13 @@ func (sync *sync_struct) GetBlockDetails() types.PriorSync {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	latestNum, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	latestNum, err := DB_OPs.GetLatestBlockNumber(ctx, DB_OPs.TaskConn(DB_OPs.TaskSync))
 	if err != nil {
 		log.Printf("Error getting latest block number for GetBlockDetails: %v", err)
 		return types.PriorSync{}
 	}
 
-	latestBlock, err := DB_OPs.GetZKBlockByNumber(nil, latestNum)
+	latestBlock, err := DB_OPs.GetZKBlockByNumber(DB_OPs.TaskConn(DB_OPs.TaskSync), latestNum)
 	if err != nil {
 		log.Printf("Error getting latest block details: %v", err)
 		return types.PriorSync{}

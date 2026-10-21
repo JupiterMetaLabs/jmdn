@@ -189,6 +189,10 @@ func submitRawTransaction(c *gin.Context) {
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, origin TxOrigin) (string, error) {
+	// Reject a transaction with no sender before anything dereferences tx.From.
+	if err := Security.CheckTransactionShape(tx); err != nil {
+		return "", fmt.Errorf("invalid transaction: %w", err)
+	}
 	// Record trace span and close it
 	spanCtx, span := logger().Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
 	defer span.End()
@@ -641,7 +645,8 @@ func processZKBlock(c *gin.Context) {
 	//   (b) a consensus round for this height is already in flight (proposalguard).
 	// The 409 + reason is a DISTINCT, non-retryable signal the orchestrator treats as
 	// "already proposed" (item 4). proposalguard is claimed here and released on the
-	// consensus terminal (ProcessBlockLocally), with a TTL backstop for a dead round.
+	// consensus terminal (ProcessBlockLocally, or the rejected-round branch of
+	// BroadcastAndProcessBlock), with a TTL backstop for a dead round.
 	if tip, terr := DB_OPs.GetLatestDataCompleteBlock(); terr != nil {
 		span.RecordError(terr)
 		span.SetAttributes(attribute.String("status", "tip_read_failed"))
@@ -685,7 +690,8 @@ func processZKBlock(c *gin.Context) {
 	}
 	// Release the in-flight claim on ANY early return before consensus is handed to
 	// its async flow; once consensus.Start succeeds, the consensus terminal
-	// (ProcessBlockLocally) owns the release, with proposalguard's TTL as backstop.
+	// (ProcessBlockLocally, or the rejected-round branch) owns the release, with
+	// proposalguard's TTL as backstop.
 	consensusHandedOff := false
 	defer func() {
 		if !consensusHandedOff {

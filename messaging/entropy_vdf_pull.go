@@ -75,8 +75,7 @@ import (
 
 // vdfProofRequestTimeout bounds one request end-to-end (dial + write + read).
 // Short on purpose: a recovering node asks several peers, so one unresponsive
-// peer must not stall the others. Same value and same reasoning as the
-// timeout-certificate rejoin path.
+// peer must not stall the others.
 const vdfProofRequestTimeout = 5 * time.Second
 
 // maxVDFProofRequestBytes bounds what the responder will read from a stream.

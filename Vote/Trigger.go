@@ -142,6 +142,12 @@ func (vt *VoteTrigger) SubmitVote() error {
 	defer span.End()
 
 	zkBlock := vt.ConsensusMessage.GetZKBlock()
+	// The broadcast handler validates the proposal first; this guards any other
+	// caller.
+	if zkBlock == nil {
+		span.SetAttributes(attribute.String("status", "no_block"))
+		return fmt.Errorf("consensus message carries no block")
+	}
 	blockHash := zkBlock.BlockHash.String()
 
 	// Add span attributes for tracing
@@ -336,11 +342,12 @@ func (vt *VoteTrigger) SubmitVote() error {
 	}
 
 	if listenerNode.VoteCRDTLayer != nil {
-		// A node that cannot sign is a NORMAL (non-Buddy) validator in the
-		// approved design: it submits an unsigned vote rather than no vote at
-		// all. Signing failure means no v2 write unless
-		// avcvotes.AllowUnsignedValidatorVotes is on.
-		if !signingOK && !avcvotes.AllowUnsignedValidatorVotes {
+		// Signing failure means no v2 write. The unsigned normal-validator
+		// seam (avcvotes.AllowUnsignedValidatorVotes) that used to admit an
+		// unsigned record here was removed in avc (D-38, commit 66c0e6c) —
+		// the flag defaulted off and nothing in this repo set it, so removing
+		// it changes no running node's behavior that this repo controls.
+		if !signingOK {
 			logger().Warn(spanCtx, "v2 vote CRDT: per-vote BLS signing failed, skipping v2 write (old path unaffected)",
 				ion.String("block_hash", blockHash),
 				ion.Err(blsErr),
@@ -352,18 +359,8 @@ func (vt *VoteTrigger) SubmitVote() error {
 				BlockHash:       blockHash,
 				Height:          zkBlock.BlockNumber,
 				RejectionReason: vt.Vote.RejectionReason,
-			}
-			if signingOK {
-				// Buddy (or any node holding BLS key material): signed exactly
-				// as before. BLSSignature/BLSPubKeyHex are left empty ONLY on
-				// the unsigned path below — never silently dropped here.
-				rec.BLSSignature = blsResp.Signature
-				rec.BLSPubKeyHex = blsResp.PubKey
-			} else {
-				logger().Info(spanCtx, "v2 vote CRDT: writing UNSIGNED normal-validator vote (no BLS key material)",
-					ion.String("block_hash", blockHash),
-					ion.String("peer_id", listenerNode.PeerID.String()),
-					ion.String("function", "Vote.SubmitVote"))
+				BLSSignature:    blsResp.Signature,
+				BLSPubKeyHex:    blsResp.PubKey,
 			}
 			if err := avcvotes.AddVote(listenerNode.VoteCRDTLayer, listenerNode.PeerID, rec); err != nil {
 				if !errors.Is(err, avcvotes.ErrHeightCompacted) {

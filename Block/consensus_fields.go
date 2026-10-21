@@ -95,7 +95,10 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		return fmt.Errorf("attachAVCConsensusFields: SlotStore not recovered — refusing to propose block %d until this node's slot/epoch clock is confirmed consistent with its committed history", block.BlockNumber)
 	}
 	block.Slot = messaging.LiveSlotFor(block.BlockNumber)
-	block.Period = messaging.DefaultPeriodStore.PeriodFor(block.BlockNumber)
+	// R3: the proposer's own retry counter; it moves up after each failed
+	// round at this height (Sequencer.BroadcastAndProcessBlock). Verifiers
+	// read Period from the block, never from this counter.
+	block.Period = messaging.DefaultProposerPeriods.PeriodFor(block.BlockNumber)
 	// F-6 / messaging.checkConsensusBinding: that check rejects a block whose
 	// Period is nonzero with a still-zero ConsensusHash - the invariant this
 	// function must uphold is that EVERY early return between here and the

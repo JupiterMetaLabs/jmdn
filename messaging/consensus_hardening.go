@@ -814,15 +814,16 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 
 // checkConsensusBinding verifies the SEPARATE consensus-fields digest. Unlike
 // checkBodyBinding (which binds BlockHash to transactions only), this binds the
-// six AVC consensus fields + PrevAggCert + CommitteeSnapshotHash + FeeRecipients
-// via block.ConsensusHash. It runs BEFORE certificate verification so the cert's
-// v4 signatures (which sign over ConsensusHash) are checked against a
-// confirmed-honest value, closing the post-commit rewrite of Period/FeeRecipients.
+// consensus fields (see Security.consensusFieldsDigest for the exact preimage:
+// BlockNumber, PrevHash, Slot, Period, reveals, VdfProof, epochs, PrevAggCert,
+// CommitteeSnapshotHash, VdfParamsDigest, tx content hashes) via block.ConsensusHash.
+// FeeRecipients is NOT in that preimage; checkFeeRecipients recomputes it. This
+// runs BEFORE certificate verification so the cert's v4 signatures (which sign
+// over ConsensusHash) are checked against a confirmed-honest value, closing the
+// post-commit rewrite of Period and the other hashed fields.
 //
-// Leniency for rollout: a block with a zero ConsensusHash predates the field
-// (v3/older builds). Those are not bindable on this axis and the v4 vote path
-// falls back to v3 (BlockHash-only), so a zero value is skipped, not rejected —
-// exactly the TxnsRoot leniency rule above. A NON-zero value MUST match.
+// A zero ConsensusHash is REJECTED unconditionally (consensus_hash_missing); a
+// non-zero value MUST match the recomputed digest.
 func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 	if (b.ConsensusHash == common.Hash{}) {
 		// D-28: a missing ConsensusHash is REJECTED unconditionally, not just
@@ -846,6 +847,33 @@ func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
 		return reject("consensus_hash_mismatch",
 			"block %s: ConsensusHash %s does not match recomputed consensus fields %s (consensus field tampered?)",
 			b.BlockHash.Hex(), b.ConsensusHash.Hex(), want.Hex())
+	}
+	return nil
+}
+
+// CheckSyncedPeriodBinding is ThebeSync's guard on a block's Period. The
+// committee that certifies a block is seated from the block's own Period
+// (RoundContextForBlock), so a synced block that claims a non-zero Period
+// must prove it through its ConsensusHash, exactly as checkConsensusBinding
+// does on the live receive path. Without it a sync peer could rewrite Period
+// (and so the slot accounting AdvanceOnCommit derives from it) on a block
+// whose certificate still verifies - always the case when every committee is
+// the whole pool.
+//
+// A Period above config.MaxPeriod is rejected outright, as on the live path.
+//
+// Period 0 blocks are left to the existing sync checks: history that predates
+// the persisted consensus fields cannot recompute its ConsensusHash, and no
+// block before the proposer's period counter carried a non-zero Period.
+func CheckSyncedPeriodBinding(b *config.ZKBlock) error {
+	if b == nil || b.Period == 0 {
+		return nil
+	}
+	if b.Period > config.MaxPeriod {
+		return fmt.Errorf("block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, config.MaxPeriod)
+	}
+	if rej := checkConsensusBinding(b); rej != nil {
+		return rej.err
 	}
 	return nil
 }
@@ -1116,6 +1144,25 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 		return reject("bad_parent",
 			"block %d prevHash %s != local tip %d hash %s",
 			b.BlockNumber, b.PrevHash.Hex(), localTip, parent.BlockHash.Hex())
+	}
+
+	// (Period cap) Nothing else bounds the proposer's choice of Period; see
+	// config.MaxPeriod.
+	if b.Period > config.MaxPeriod {
+		return reject("period_too_high",
+			"block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, config.MaxPeriod)
+	}
+
+	// (Slot chain) Each failed round at a height burns one slot, so a block
+	// committed at Period p sits exactly p+1 slots after its parent - the same
+	// arithmetic every node's SlotStore.AdvanceOnCommit and the entropy path
+	// (prevSlot = Slot - (Period+1)) already assume. Enforced here so the
+	// proposer cannot stamp a Slot and Period that disagree. Skipped when the
+	// parent predates the slot counter (Slot 0).
+	if parent.Slot != 0 && (b.Slot <= parent.Slot || b.Slot-parent.Slot-1 != b.Period) {
+		return reject("bad_slot",
+			"block %d slot %d, period %d does not follow parent slot %d (want slot = parent slot + period + 1)",
+			b.BlockNumber, b.Slot, b.Period, parent.Slot)
 	}
 
 	// (State-root chain) The generator computes

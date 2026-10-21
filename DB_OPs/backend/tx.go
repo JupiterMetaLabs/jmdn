@@ -201,6 +201,9 @@ func toTransactionRecord(tx *config.Transaction, blockNumber uint64, txIndex int
 	if tx.ChainID != nil {
 		rec.ChainID = tx.ChainID.String()
 	}
+	// The access list is signed content of type-1/2 transactions; persist it so
+	// a stored transaction re-hashes to its tx hash.
+	rec.AccessList = tx.AccessList.ToRecord()
 
 	// Record the fee actually charged to the sender at ingest time.
 	// Canonical math: config.GasFee (gasLimit × effective price). Readers
