@@ -458,11 +458,13 @@ func (s *ExplorerServer) generateToken(c *gin.Context) {
 	}
 
 	now := time.Now()
+	// The token is scoped to the explorer service via "aud" and carries no
+	// secret: the API key itself is never embedded in it.
 	claims := jwt.MapClaims{
-		"api_key": req.APIKey,
-		"iat":     now.Unix(),
-		"exp":     now.Add(JWT_EXPIRATION).Unix(),
-		"type":    "explorer_api",
+		"aud":  settings.ServiceExplorerAPI,
+		"iat":  now.Unix(),
+		"exp":  now.Add(JWT_EXPIRATION).Unix(),
+		"type": settings.ServiceExplorerAPI,
 	}
 
 	span.SetAttributes(
