@@ -24,6 +24,16 @@
 #   CHECKSUM_FILE  Checksum filename        (default: checksums.md5)
 #   DATA_MARKER    Dir name marking the data root inside the archive
 #                  (default: storage — the ThebeDB store directory)
+#   SNAPSHOT_SHA256  REQUIRED. SHA-256 of the full archive (all parts
+#                  concatenated in order), published by JupiterMeta through a
+#                  channel other than the bucket. The MD5 manifest comes from
+#                  the same bucket as the parts, so it only detects corruption;
+#                  this pin is what authenticates the snapshot.
+#   ALLOW_UNVERIFIED_SNAPSHOT=1  Skip the SHA-256 pin (dev only).
+#
+# Exit codes: 0 done or already bootstrapped; 3 skipped because no
+# SNAPSHOT_SHA256 was provided (the node then syncs from peers); other non-zero
+# on failure.
 #
 # To force a re-sync (delete sentinel from the jmdn-state volume):
 #   docker run --rm -v jmdn_jmdn-state:/data alpine rm -f /data/.bootstrapped
@@ -66,6 +76,19 @@ fi
 
 log "First run detected — starting bootstrap sync."
 
+SNAPSHOT_SHA256="${SNAPSHOT_SHA256:-}"
+if [ -z "$SNAPSHOT_SHA256" ]; then
+    if [ "${ALLOW_UNVERIFIED_SNAPSHOT:-}" = "1" ]; then
+        log "WARNING: ALLOW_UNVERIFIED_SNAPSHOT=1 — the snapshot is NOT authenticated."
+    else
+        log "No SNAPSHOT_SHA256 provided — skipping snapshot bootstrap; the node will sync from peers."
+        log "Set SNAPSHOT_SHA256 to the published hash of the archive to use the snapshot."
+        exit 3
+    fi
+elif ! [[ "$SNAPSHOT_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    die "SNAPSHOT_SHA256 must be 64 hex characters."
+fi
+
 # ── Ensure services are stopped ───────────────────────────
 # If running on a live system, immudb will hold file locks on the data directory.
 # We must stop it (and jmdn which depends on it) before manipulating data.
@@ -76,7 +99,7 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 # ── Ensure required tools ─────────────────────────────────
-for tool in curl wget awk md5sum tar python3; do
+for tool in curl wget awk md5sum sha256sum tar python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not found."
 done
 
@@ -131,6 +154,30 @@ awk '{n=split($2,a,"/"); print $1 "  " a[n]}' \
     || die "Checksum verification failed — aborting to prevent corrupt data."
 log "Checksums OK."
 
+# ── Authenticate the archive against the pinned hash ──────
+if [ -n "$SNAPSHOT_SHA256" ]; then
+    log "Verifying archive SHA-256 against SNAPSHOT_SHA256..."
+    # shellcheck disable=SC2086
+    actual=$(cat "$WORK_DIR"/${PARTS_PREFIX}* | sha256sum | awk '{print $1}')
+    if [ "${actual,,}" != "${SNAPSHOT_SHA256,,}" ]; then
+        die "Archive SHA-256 ${actual} does not match SNAPSHOT_SHA256 — refusing to install."
+    fi
+    log "Archive SHA-256 OK."
+fi
+
+# ── Inspect archive members before extracting ─────────────
+# Reject absolute paths, parent-directory components and links: the archive
+# is extracted as root and only chain data may come out of it.
+log "Checking archive members..."
+# shellcheck disable=SC2086
+bad=$(cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -tvzf - \
+    | awk '{ type=substr($1,1,1); name=$6; for (i=7;i<=NF;i++) name=name" "$i;
+             if (type=="l" || type=="h" || name ~ /^\// || name ~ /(^|\/)\.\.(\/|$)/) print }' \
+    | head -n 5) || die "Could not list archive members."
+if [ -n "$bad" ]; then
+    die "Archive contains links or unsafe paths, e.g.: ${bad}"
+fi
+
 # ── Backup existing data ──────────────────────────────────
 # Only the chain-data dirs are cleared — config/ and certs/ are left in place.
 for d in storage DB; do
@@ -154,7 +201,7 @@ log "Extracting parts into sandbox: $SANDBOX"
 mkdir -p "$SANDBOX"
 
 # shellcheck disable=SC2086
-cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -xzf - -C "$SANDBOX" \
+cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -xzf - -C "$SANDBOX" --no-same-owner --no-same-permissions \
     || die "Extraction failed."
 
 # ── Auto-discover real data root ──────────────────────────
@@ -173,7 +220,18 @@ log "Moving data to $DATA_DIR..."
 # DATA_DIR always exists as a Docker volume mount point — `mv src dst` when
 # dst exists as a directory would move src *into* dst, giving the wrong path.
 # Move contents of REAL_DATA_DIR into DATA_DIR instead.
-find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
+# Only the chain-data directories are installed. Anything else in the archive
+# (config/, certs/, scripts) is discarded so a snapshot can never replace the
+# node's configuration or keys.
+moved=0
+for d in storage DB; do
+    if [ -d "${REAL_DATA_DIR}/${d}" ]; then
+        rm -rf "${DATA_DIR:?}/${d}"
+        mv "${REAL_DATA_DIR}/${d}" "${DATA_DIR}/${d}"
+        moved=1
+    fi
+done
+[ "$moved" = 1 ] || die "Snapshot contains no storage/ or DB/ directory."
 rm -rf "${BASE_DIR}/data_tmp"
 
 # ── Fix permissions ───────────────────────────────────────
