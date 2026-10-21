@@ -292,7 +292,6 @@ ProcessBlockTransactions(block, client, commitToDB=false)
 
 - [Go-Ethereum StateDB](https://github.com/ethereum/go-ethereum/blob/master/core/state/statedb.go)
 - [Ethereum Yellow Paper](https://ethereum.github.io/yellowpaper/paper.pdf) - State transition
-- [`evm_update.md`](./evm_update.md) - Original refactor specification
 
 ## Future Improvements
 
