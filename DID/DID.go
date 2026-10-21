@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	pb "gossipnode/DID/proto"
 	"gossipnode/config"
@@ -251,14 +252,14 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	}
 	// Validate the public key is a well-formed 20-byte hex address BEFORE
 	// common.HexToAddress, which otherwise silently pads/truncates malformed
-	// input and would let junk be registered (SEC audit: DID spoofing/squatting).
-	// NOTE (follow-up, requires a wire change): this does NOT yet prove the
-	// caller controls the key. Full anti-squatting needs a signature over the
-	// DID by the claimed key — add a `signature` field to RegisterDIDRequest
-	// (DID/proto/DID.proto) and verify it here with crypto.SigToPub/ecrecover
-	// before storeAccount. Tracked as the DID ownership-proof hardening item.
+	// input and would let junk be registered.
 	if !common.IsHexAddress(req.PublicKey) {
 		return nil, status.Error(codes.InvalidArgument, "public key must be a valid 20-byte hex address")
+	}
+	// Ownership proof: the caller must sign the registration message with the
+	// key being registered, so nobody can claim another party's address.
+	if err := verifyDIDOwnership(req.Did, common.HexToAddress(req.PublicKey), req.Signature, BLS_Signer.DomainChainID()); err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -426,11 +427,17 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 	}, nil
 }
 
+// maxListDIDs caps one ListDIDs page; each entry is a full account read.
+const maxListDIDs = 1000
+
 // ListDIDs lists all DIDs with pagination
 func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (*pb.ListDIDsResponse, error) {
 	limit := int(req.Limit)
 	if limit <= 0 {
 		limit = 100 // Default limit
+	}
+	if limit > maxListDIDs {
+		limit = maxListDIDs
 	}
 
 	// Get DIDs

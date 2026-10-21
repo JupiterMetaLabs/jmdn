@@ -409,11 +409,44 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 
 // StorePropagatedAccount securely stores an account received from the P2P network,
 // perfectly preserving its ART Nonce and other properties to ensure Fastsync consensus.
+//
+// A propagated record is an unauthenticated identity announcement, not a
+// state transition: it may create an account this node does not know yet, but
+// it never carries value and never touches an existing account. Without this,
+// the write's fresh UpdatedAt would win the last-writer-wins merge and replace
+// a real balance and nonce with whatever the message claimed.
 func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *Account) error {
 	if account == nil || account.Address == (common.Address{}) {
 		return fmt.Errorf("propagated account is invalid")
 	}
-	return storeAccount(nil, account)
+	// Serialize with the authoritative writers so an account created by block
+	// apply between the existence check and the write cannot be clobbered.
+	LockStateApply()
+	defer UnlockStateApply()
+
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("StorePropagatedAccount: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	existing, err := h.GetAccount(ctx, account.Address.Hex())
+	cancel()
+	if err != nil {
+		// Fail closed: a read error must not be mistaken for "absent".
+		return fmt.Errorf("StorePropagatedAccount(%s): %w", account.Address.Hex(), err)
+	}
+	if existing != nil {
+		return nil // already known; identity fields are immutable after creation
+	}
+	fresh := &Account{
+		DIDAddress:  account.DIDAddress,
+		Address:     account.Address,
+		Balance:     "0",
+		AccountType: account.AccountType,
+		Metadata:    account.Metadata,
+		CreatedAt:   account.CreatedAt,
+	}
+	return storeAccount(nil, fresh)
 }
 
 // GetTransactionsByAccount retrieves all transactions associated with a given account address via ThebeDB.
