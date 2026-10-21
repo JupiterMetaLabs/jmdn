@@ -136,10 +136,6 @@ func (s *WSServer) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (s *WSServer) Serve(addr string) error {
-	return s.ServeWithContext(context.Background(), addr)
-}
-
 func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWS)

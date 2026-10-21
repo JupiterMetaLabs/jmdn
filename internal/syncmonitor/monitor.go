@@ -252,13 +252,6 @@ func New(
 	}
 }
 
-// WithTriggerCooldown overrides the minimum spacing between triggered runs.
-// Intended for tests.
-func (m *Monitor) WithTriggerCooldown(d time.Duration) *Monitor {
-	m.triggerCooldown = d
-	return m
-}
-
 // RequestCheck asks for a TriggerCheck without blocking the caller. Repeated
 // requests while one is already waiting are dropped, so a burst of signals
 // costs at most one waiting goroutine plus the run in progress.
