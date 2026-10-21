@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # JMDN (Jupiter MetaZK Decentralized Network) - Multi-stage Dockerfile
 # =============================================================================
@@ -30,9 +31,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /src
 
+# JupiterMetaLabs modules are private: fetch them directly (not through the
+# public proxy / checksum DB, which cannot see them). go.sum still pins every
+# hash.
+ENV GOPRIVATE=github.com/JupiterMetaLabs/*
+
 # Copy dependency files first for better layer caching
 COPY go.mod go.sum ./
-RUN go mod download
+# The read token arrives as a BuildKit secret and is only visible to this RUN:
+# it is passed to git through per-command env, so it never lands in a layer or
+# in the image's git config. Without the secret, the download runs
+# unauthenticated (works only if the modules are public).
+RUN --mount=type=secret,id=go_modules_token \
+    if [ -s /run/secrets/go_modules_token ]; then \
+      export GIT_CONFIG_COUNT=1 \
+             GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/go_modules_token)@github.com/.insteadOf" \
+             GIT_CONFIG_VALUE_0="https://github.com/"; \
+    fi && \
+    go mod download
 
 # Copy source code
 COPY . .
