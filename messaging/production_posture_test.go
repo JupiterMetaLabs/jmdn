@@ -42,18 +42,12 @@ func TestValidateProductionConsensusPosture_NonProductionSkipsEntirely(t *testin
 	}
 }
 
-func TestValidateProductionConsensusPosture_FlagsUnsignedValidatorVotes(t *testing.T) {
-	withPassingPosture(t)
-	avcvotes.AllowUnsignedValidatorVotes = true
-
-	err := ValidateProductionConsensusPosture(true)
-	if err == nil {
-		t.Fatal("a production node with AllowUnsignedValidatorVotes on must refuse to start")
-	}
-	if !strings.Contains(err.Error(), "AllowUnsignedValidatorVotes") {
-		t.Fatalf("error must name AllowUnsignedValidatorVotes so an operator knows which setting to fix, got: %v", err)
-	}
-}
+// TestValidateProductionConsensusPosture_FlagsUnsignedValidatorVotes was
+// removed here: 6226a97 (#193) deleted the capability it exercised
+// (avcvotes.AllowUnsignedValidatorVotes) and the posture check that guarded
+// it, and dropped this file's avcvotes/strings imports — but left the test
+// body behind, so the messaging package's tests could not compile. There is
+// no longer a flag to flip, so the test has nothing left to assert.
 
 func TestValidateProductionConsensusPosture_RequiresSyncCertificateHeight(t *testing.T) {
 	withPassingPosture(t)

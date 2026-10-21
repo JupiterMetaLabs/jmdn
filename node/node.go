@@ -220,13 +220,11 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	// refuse the stream outright, which under Rule 1 costs the whole epoch.
 	// Added 2026-08-20 with M4 Decision A.
 	h.SetStreamHandler(config.RevealPushProtocol, saferun.Stream(string(config.RevealPushProtocol), messaging.HandleRevealPushStream))
-	// M0/§7.1c timeout-certificate rejoin RPC — answer "what's your latest
-	// accepted TimeoutCertificate for height H" for a peer that just synced
-	// or restarted. Registered on EVERY node (not just ones expecting to be
-	// asked) for the same reason as RevealPushProtocol above: any peer could
-	// be the one asked. Added 2026-08-24; no-op while JMDN_TIMEOUT_CERT_REJOIN
-	// is unset (default OFF) — see messaging/timeout_rejoin.go.
-	h.SetStreamHandler(config.TimeoutCertRejoinProtocol, saferun.Stream(string(config.TimeoutCertRejoinProtocol), messaging.HandleTimeoutCertRejoinStream))
+	// The M0/§7.1c timeout-certificate rejoin RPC was registered here until
+	// 94e8fb6 (#196) retired the whole timeout-certificate flow. That commit
+	// deleted both config.TimeoutCertRejoinProtocol and
+	// messaging.HandleTimeoutCertRejoinStream but left this registration
+	// behind, so the node package could not compile. Removed with the flow.
 	// Stage-F VDF proof pull — answer "do you have the VDF proof for entropy
 	// epoch E" for a peer that missed the epoch-boundary block, restarted, or
 	// joined late. Registered on EVERY node for the same reason as the two
