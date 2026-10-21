@@ -73,6 +73,24 @@ jobs:
         continue-on-error: true
         run: go test -short -race ./...
 
+      # The sequencertest-tagged seams, which the default build deliberately
+      # excludes.
+      #
+      # #240 (D-49) moved SealerCancelledForTest, ClearSealerForTest and
+      # SeedSealResultForTest out of the production files and behind
+      # //go:build sequencertest, so they no longer compile into the release
+      # binary. Correct - but nothing passed the tag, so the nine tests that
+      # exercise those seams stopped running anywhere: VDF sealer cancellation
+      # (5), the consensus-fields seam tests (2), and the sealer concurrency
+      # and latch helpers (1 each).
+      #
+      # A separate step, not a tag added to the step above: the tagged files
+      # replace untagged ones, so a single tagged run would skip the default
+      # variants. Both have to run.
+      - name: Test (sequencertest seams)
+        continue-on-error: true
+        run: go test -short -race -tags sequencertest ./...
+
   security:
     name: Security
     runs-on: ubuntu-latest

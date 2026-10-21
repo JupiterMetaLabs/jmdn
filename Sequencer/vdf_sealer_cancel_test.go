@@ -1,5 +1,12 @@
+//go:build sequencertest
+
 package Sequencer
 
+// D-49: every test in this file depends on SealerCancelledForTest,
+// SeedSealResultForTest and/or ClearSealerForTest, which now live behind the
+// `sequencertest` build tag (vdf_seal_wiring_testhelpers.go) — run with
+// `go test -tags sequencertest ./Sequencer/...`.
+//
 // Tests for sealer cancellation — the "first valid proof wins" saving.
 //
 // The property under test is that adopting a peer's proof for epoch E stops
