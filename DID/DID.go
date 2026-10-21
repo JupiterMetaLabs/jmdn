@@ -525,8 +525,10 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 	}
 	pb.RegisterDIDServiceServer(grpcServer, server)
 
-	// Register reflection service
-	reflection.Register(grpcServer)
+	// Reflection lists every method; never on mainnet.
+	if settings.GRPCReflectionAllowed() {
+		reflection.Register(grpcServer)
+	}
 
 	logger().Info(ctx, "Starting DID gRPC server",
 		ion.String("address", address),

@@ -419,7 +419,10 @@ func StartGRPCServerWithContext(ctx context.Context, handler *CommandHandler, bi
 
 	cliServer := NewCLIServer(handler, l)
 	cliServer.Register(grpcServer)
-	reflection.Register(grpcServer)
+	// Reflection lists every admin method; never on mainnet.
+	if settings.GRPCReflectionAllowed() {
+		reflection.Register(grpcServer)
+	}
 
 	l.Info(ctx, "gRPC server started")
 
