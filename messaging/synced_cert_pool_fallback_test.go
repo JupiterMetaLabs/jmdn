@@ -305,7 +305,6 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackClosedOnceAnchoringConfigu
 	members := poolOf(t, 10, 7)
 	const height = 2150
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002150")
-	testBlockConsensusHash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000f0f").Hex()
 	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
 	// p5..p9: outside the legacy alphabetical cap (p0..p6) for four of five signers.
@@ -358,14 +357,14 @@ func TestVerifySyncedBlockCertificate_PoolWideFallbackRequiresPoolFPlusOne(t *te
 	for i := 15; i < 22; i++ { // seven signers outside the legacy alphabetical cap
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
 	}
-	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash}, votes)
+	got, err := VerifySyncedBlockCertificate(&config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Reached {
 		t.Fatalf("7 pool signers over a pool of 22 must not certify (need f_pool+1 = 8): %+v", got)
 	}
-	pool, perr := verifySyncedCertificatePoolWide(votes, hash.Hex(), "", height)
+	pool, perr := verifySyncedCertificatePoolWide(votes, hash.Hex(), testBlockConsensusHash, height)
 	if perr != nil || pool.Threshold != 8 || pool.YesVotes != 7 {
 		t.Fatalf("pool-wide tally = %+v, %v; want threshold 8, yes 7", pool, perr)
 	}
