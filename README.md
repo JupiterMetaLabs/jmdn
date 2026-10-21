@@ -55,7 +55,7 @@ The system is built on a modular architecture combining several advanced distrib
 - **OS**: Linux (Ubuntu/Debian, RHEL/CentOS, Arch, Alpine) or macOS for development
 - **Architecture**: x86_64, ARM64 or ARMv7
 - **Memory / disk**: 2 GB RAM, 10 GB free disk minimum
-- **Go**: the version in `go.mod` (currently 1.26); CGO and GCC are required
+- **Go**: the version in `go.mod`; CGO and GCC are required
 - **PostgreSQL**: ThebeDB's SQL projection
 - **Redis**: account sync queue
 - **Yggdrasil**: optional mesh messaging

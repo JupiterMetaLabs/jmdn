@@ -26,7 +26,7 @@ Before you begin, ensure your machine meets the following requirements.
 | Tool | Version | Notes |
 |---|---|---|
 | **Git** | Any | Required to clone the repo |
-| **Go** | Version in `go.mod` (1.26) | Installed by `setup_dependencies.sh` |
+| **Go** | Version in `go.mod` | Installed by `setup_dependencies.sh` |
 | **GCC** | Any | Required for CGO build (`gcc` package) |
 | **PostgreSQL** | 15+ | Installed by `setup_dependencies.sh`; holds ThebeDB's SQL projection |
 | **Yggdrasil** | Latest | Installed automatically |
