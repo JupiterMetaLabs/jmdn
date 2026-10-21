@@ -71,6 +71,23 @@ func NewThebeReader(db *sql.DB, kv ThebeKVStore, c cache.Cache) ThebeReader {
 // Compile-time interface check.
 var _ ThebeReader = (*thebeReader)(nil)
 
+// MaxTxRefPageSize bounds one page of transaction references.
+//
+// limit originates in an HTTP query parameter and travels here through the
+// TxStore interface. Both HTTP callers already clamp it to 100, but a bound
+// that every caller has to remember is not a bound: a new caller that forgot
+// would hand an unbounded LIMIT to Postgres and size a slice from it, which is
+// an out-of-memory denial of service (CWE-770). CodeQL cannot follow those
+// clamps across the interface and reports it as
+// go/uncontrolled-allocation-size on the make() in
+// GetTransactionRefsByAddress.
+//
+// Defined in this package rather than in DB_OPs because reader.go must not
+// import DB_OPs (cycle risk — see the header). DB_OPs.TransactionRefsByAddress
+// clamps to this same constant, so the bound holds whether a caller arrives
+// through that helper or straight through the interface.
+const MaxTxRefPageSize = 100
+
 // Package-level SQL constants — never fmt.Sprintf for SQL.
 const (
 	sqlGetLatestBlock = `
@@ -933,6 +950,16 @@ func (r *thebeReader) CountTransactionsByAddress(ctx context.Context, address st
 // GetTransactionRefsByAddress returns one page of (tx_hash, block_number)
 // for address, newest first. offset/limit follow SQL semantics.
 func (r *thebeReader) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]TxRef, error) {
+	// Bound limit before it reaches either the SQL LIMIT or the allocation
+	// below. Capping only the make() would hide the finding while leaving the
+	// denial of service intact, since append grows the slice anyway and
+	// Postgres would still be asked for every matching row.
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > MaxTxRefPageSize {
+		limit = MaxTxRefPageSize
+	}
 	rows, err := r.db.QueryContext(ctx, sqlGetTxRefsByAddrPage, address, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("GetTransactionRefsByAddress: query: %w", err)

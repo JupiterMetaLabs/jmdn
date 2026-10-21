@@ -13,6 +13,11 @@ import (
 // TxRef is a (block, hash) reference to a transaction involving an address.
 type TxRef = thebegateway.TxRef
 
+// MaxTxRefPageSize bounds one page of transaction references. Re-exported from
+// thebegateway so callers of this package do not need to import it; the reader
+// enforces the same cap, so the bound holds on either path.
+const MaxTxRefPageSize = thebegateway.MaxTxRefPageSize
+
 // CountTransactionsByAddress returns how many stored transactions name addr as
 // sender or receiver. Served by the ThebeDB SQL projection (transactions
 // table, from_addr/to_addr indexes); this replaced the retired SQLite
@@ -37,6 +42,9 @@ func CountTransactionsByAddress(ctx context.Context, addr common.Address) (int, 
 func TransactionRefsByAddress(ctx context.Context, addr common.Address, offset, limit int) ([]TxRef, error) {
 	if limit <= 0 {
 		return []TxRef{}, nil
+	}
+	if limit > MaxTxRefPageSize {
+		limit = MaxTxRefPageSize
 	}
 	if offset < 0 {
 		offset = 0
