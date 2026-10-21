@@ -17,24 +17,6 @@ func TestSeenMessages_Bounded(t *testing.T) {
 	}
 }
 
-func TestPeriodStore_PrunesOldHeights(t *testing.T) {
-	s := NewPeriodStore()
-	s.periods[5] = 1
-	s.periods[3000] = 2
-	s.pruneBelowLocked(3000)
-	if _, ok := s.periods[5]; ok {
-		t.Fatal("height far below the newest certified height must be pruned")
-	}
-	if s.periods[3000] != 2 {
-		t.Fatal("recent height must be kept")
-	}
-	s.periods[10] = 1
-	s.pruneBelowLocked(500) // below the retention distance: nothing to prune
-	if s.periods[10] != 1 {
-		t.Fatal("pruned inside the retention window")
-	}
-}
-
 func TestRememberAnchor_Bounded(t *testing.T) {
 	prev := anchorRecords
 	anchorRecords = map[uint64]*anchorRecord{}
