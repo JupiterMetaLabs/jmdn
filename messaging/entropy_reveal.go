@@ -76,9 +76,16 @@ import (
 // There is no longer a paired Round to keep in sync with each Accumulator
 // (that was the previous version's epochRound); the verifier is stateless, so
 // an Accumulator is the whole per-epoch state.
+//
+// newest/seeded bound accs the same way mixStore bounds its own map (D-47):
+// before this, nothing ever removed an entry in normal operation — only
+// RunEntropyStartupRecovery's replay reset cleared entries, and only on that
+// one resync path — so accs grew by one entry per epoch forever.
 type entropyAccumulatorStore struct {
-	mu   sync.Mutex
-	accs map[uint64]*randao.Accumulator
+	mu     sync.Mutex
+	accs   map[uint64]*randao.Accumulator
+	newest uint64
+	seeded bool
 }
 
 var defaultEntropyAccumulatorStore = &entropyAccumulatorStore{
@@ -137,6 +144,21 @@ func entropyAccumulatorFor(epoch uint64) (*randao.Accumulator, error) {
 	}
 
 	defaultEntropyAccumulatorStore.accs[epoch] = acc
+	if !defaultEntropyAccumulatorStore.seeded || epoch > defaultEntropyAccumulatorStore.newest {
+		defaultEntropyAccumulatorStore.newest = epoch
+		defaultEntropyAccumulatorStore.seeded = true
+	}
+	// D-47: bound accs the same way mixStore bounds mixes — same retention
+	// window, since both are per-epoch state for the same recent window a
+	// lagging peer's boundary block still needs to be verifiable within.
+	if retain := mixRetainEpochs(); defaultEntropyAccumulatorStore.newest >= retain {
+		cutoff := defaultEntropyAccumulatorStore.newest - retain
+		for e := range defaultEntropyAccumulatorStore.accs {
+			if e < cutoff {
+				delete(defaultEntropyAccumulatorStore.accs, e)
+			}
+		}
+	}
 	return acc, nil
 }
 

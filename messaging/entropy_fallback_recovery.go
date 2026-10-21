@@ -185,20 +185,9 @@ func aggSigStoreLen() int {
 	return len(defaultAggSigStore.sigs)
 }
 
-// AggSigStoreSlotsForTest returns the recorded slots. Test-only.
-func AggSigStoreSlotsForTest() []uint64 {
-	defaultAggSigStore.mu.Lock()
-	defer defaultAggSigStore.mu.Unlock()
-	out := make([]uint64, 0, len(defaultAggSigStore.sigs))
-	for s := range defaultAggSigStore.sigs {
-		out = append(out, s)
-	}
-	return out
-}
-
-// ResetAggSigStoreForTest clears the store. Test-only.
-func ResetAggSigStoreForTest() {
-	defaultAggSigStore.mu.Lock()
-	defaultAggSigStore.sigs = make(map[uint64][]byte)
-	defaultAggSigStore.mu.Unlock()
-}
+// D-49: AggSigStoreSlotsForTest and ResetAggSigStoreForTest used to live
+// here — exported, no build tag, compiling into the release binary. Every
+// real caller of both is a _test.go file in this same package, so neither
+// needs cross-package visibility; they now live in
+// entropy_fallback_recovery_testhelpers_test.go, which a normal build never
+// compiles at all.
