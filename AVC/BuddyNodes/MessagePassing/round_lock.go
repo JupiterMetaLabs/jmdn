@@ -32,7 +32,7 @@ func (e *roundRefusal) Error() string {
 // so the ConsensusHash (which covers Period, Slot and the other consensus
 // fields) is what tells two proposals of the same transactions apart.
 func blockIdentity(blockHash, consensusHash string) string {
-	return blockHash + "/" + consensusHash
+	return roundlock.BlockIdentity(blockHash, consensusHash)
 }
 
 // lockBlockResultRound records that this node is about to BLS-sign the block

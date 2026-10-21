@@ -14,6 +14,7 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/consensus/adapters"
+	"gossipnode/internal/roundlock"
 	"gossipnode/internal/votecheck"
 
 	"time"
@@ -121,6 +122,19 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 // import messaging: messaging imports Vote). Nil = no catch-up nudge.
 var GapCatchUpHook func(fromBlock uint64)
 
+// reserveAcceptVote records this node's ACCEPT vote for zkBlock's round in
+// roundlock.Votes, or reports why it may not vote ACCEPT.
+func reserveAcceptVote(zkBlock *config.ZKBlock) error {
+	r := roundlock.Round{Height: zkBlock.BlockNumber, Period: zkBlock.Period}
+	ok, refusal, highest, _ := roundlock.Votes.TryLockFresh(r,
+		roundlock.BlockIdentity(zkBlock.BlockHash.String(), zkBlock.ConsensusHashHex()))
+	if !ok {
+		return fmt.Errorf("vote ledger: height %d period %d refused: %s (highest accepted period %d)",
+			r.Height, r.Period, refusal, highest)
+	}
+	return nil
+}
+
 func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
@@ -179,6 +193,18 @@ func (vt *VoteTrigger) SubmitVote() error {
 		if posErr := checkVoteChainPosition(zkBlock); posErr != nil {
 			status = false
 			err = posErr
+		}
+	}
+
+	// One ACCEPT per round, never backwards: refuse to vote for a different
+	// block at a (height, period) this node already accepted, or for a lower
+	// period than one it accepted. The ledger is durable, so a restart does
+	// not reopen a round. A ledger error abstains (rejects), like the guard
+	// above.
+	if status && err == nil {
+		if lockErr := reserveAcceptVote(zkBlock); lockErr != nil {
+			status = false
+			err = lockErr
 		}
 	}
 
