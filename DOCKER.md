@@ -501,10 +501,33 @@ Use the pre-built image unless you need an unreleased branch/commit, want to ver
 
 CI publishes on every `v*` tag: `ghcr.io/jupitermetalabs/jmdn:v2.0.0` (pinnable) and `:latest`, for linux/amd64, arm64, and arm/v7.
 
+### A read token is required
+
+`go.mod` requires two private repositories — `github.com/JupiterMetaLabs/ThebeDB`
+and `github.com/JupiterMetaLabs/avc`. (The other four `JupiterMetaLabs/*`
+modules are public and need nothing.) Without a token `go mod download` fails
+inside the builder with:
+
+```
+fatal: could not read Username for 'https://github.com': terminal prompts disabled
+```
+
+Export a token with read access to those two repos before building. A
+fine-grained PAT with **Contents: Read-only** scoped to them is enough:
+
+```bash
+export GO_MODULES_TOKEN=ghp_...   # or: GO_MODULES_TOKEN=$(gh auth token)
+```
+
+Every `docker build` below passes it as a BuildKit secret, so it is visible
+only to the `go mod download` layer — never written into an image layer or the
+image's git config.
+
 ```bash
 # Current branch (version metadata embedded — without these flags
 # `jmdn --version` reports "unknown")
 docker build \
+  --secret id=go_modules_token,env=GO_MODULES_TOKEN \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
   --build-arg GIT_TAG=$(git describe --tags --always --dirty) \
@@ -514,12 +537,14 @@ docker build \
 # A specific release tag
 git checkout v2.0.0
 docker build \
+  --secret id=go_modules_token,env=GO_MODULES_TOKEN \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=v2.0.0 --build-arg GIT_TAG=v2.0.0 \
   -t ghcr.io/jupitermetalabs/jmdn:v2.0.0 .
 
 # Multi-platform (push to registry)
 docker buildx build --platform linux/amd64,linux/arm64 \
+  --secret id=go_modules_token,env=GO_MODULES_TOKEN \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   -t ghcr.io/jupitermetalabs/jmdn:latest --push .
 
