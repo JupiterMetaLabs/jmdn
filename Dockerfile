@@ -17,7 +17,7 @@
 # Base images are pinned by digest (multi-arch index) so a rebuilt tag upstream
 # cannot change what we ship. To update: pick the new tag, read its index
 # digest (docker buildx imagetools inspect <image>:<tag>), replace both here.
-FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
+FROM golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132 AS builder
 
 # Build only with the pinned image's toolchain; never download another one at
 # build time. Bump the base image when go.mod needs a newer Go.
