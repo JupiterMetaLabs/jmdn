@@ -781,7 +781,11 @@ func VerifyCertificateForRound(
 //     same thing every peer that accepted this block live ran;
 //  2. a POOL-WIDE tally: distinct verified +1 votes from ANY member of the
 //     fleet-eligible pool, against the fixed committee size k
-//     (consensus.max_validators) and threshold ceil(2k/3).
+//     (consensus.max_validators) and threshold ceil(2k/3). NOT available once
+//     committee anchoring is configured (see poolWideSyncFallbackAllowed):
+//     anchoring is what lets a node prove a block's committee, and production
+//     refuses to boot without it, so this is a bridge for chains that have not
+//     turned anchoring on.
 //
 // WHY (2026-10-13/15, six incidents): without an anchor nothing on this node can
 // reproduce the committee a past block was sealed under. The legacy verifier
@@ -836,7 +840,18 @@ func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_S
 		}
 	}
 
-	// Fallback 2: pool-wide tally.
+	// Fallback 2: pool-wide tally. Testnet-only. It counts votes from ANY
+	// current pool member against ceil(2k/3) of k, regardless of pool size, so
+	// a key that joined the pool after this block was sealed can help certify
+	// it. Once anchoring is configured the bridge is closed: a block below the
+	// anchored start is checked on the legacy and seated tallies only, and a
+	// block whose committee cannot be proven is rejected instead.
+	if !poolWideSyncFallbackAllowed() {
+		log.Warn().Uint64("height", height).
+			Int("legacy_yes", legacy.YesVotes).Int("legacy_threshold", legacy.Threshold).
+			Msg("thebesync: certificate below quorum on the legacy and seated checks; pool-wide fallback is disabled because committee anchoring is configured, rejecting")
+		return legacy, nil
+	}
 	pool, perr := verifySyncedCertificatePoolWide(responses, blockHashHex, consensusHashHex, height)
 	if perr == nil && pool.Reached {
 		log.Warn().Uint64("height", height).
@@ -847,6 +862,19 @@ func verifySyncedBlockCertificateStrict(block *config.ZKBlock, responses []BLS_S
 	}
 	return legacy, nil
 }
+
+// poolWideSyncFallbackAllowed reports whether the pool-wide tally may be used on
+// the sync path. It is allowed only while committee anchoring is NOT configured.
+//
+// It deliberately does not read IsProductionPosture: that helper treats an
+// unset network.environment as "mainnet" (a fail-safe default chosen for the
+// boot-refusal checks), so on a node nobody configured it is true, and a gate
+// built on it would switch the fallback off for every unconfigured node and
+// test run. Whether anchoring is on is an explicit, fleet-agreed setting, and
+// ValidateProductionConsensusPosture already refuses to boot a production node
+// running committee-v2 without it, so on production this fallback is never
+// reachable.
+func poolWideSyncFallbackAllowed() bool { return !CommitteeAnchoringEnabled() }
 
 // poolWideResult is a CertificateResult plus the size of the pool the +1
 // votes were counted over (CommitteeSize stays k, the threshold base).

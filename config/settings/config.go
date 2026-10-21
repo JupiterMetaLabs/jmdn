@@ -225,9 +225,12 @@ type ConsensusFlags struct {
 	// A verifier error is never relaxed. The sequencer's OWN quorum gate is
 	// unaffected — it still needs 2f+1 votes before it commits. Exists only because an unanchored node
 	// cannot reproduce a past block's seated committee (six "3/5 over committee
-	// 7" incidents, 2026-10-13..15); remove once committee anchoring is active.
-	// Refused under production posture.
-	TrustSequencerCertificate bool   `mapstructure:"trust_sequencer_certificate" yaml:"trust_sequencer_certificate"` // JMDN_TRUST_SEQUENCER_CERT, lenient, default OFF
+	// 7" incidents, 2026-10-13..15); turn it off once committee anchoring is
+	// active (consensus.committee_anchor_activation_height > 0): while it is
+	// on, a single valid vote passes, so the anchored committee check is not
+	// what decides acceptance. Compiled default is ON (testnet). Refused under
+	// production posture.
+	TrustSequencerCertificate bool   `mapstructure:"trust_sequencer_certificate" yaml:"trust_sequencer_certificate"` // JMDN_TRUST_SEQUENCER_CERT, lenient, default ON (testnet; refused in production)
 	VoteCRDTCompactK          uint64 `mapstructure:"vote_crdt_compact_k" yaml:"vote_crdt_compact_k"`                 // JMDN_VOTE_CRDT_COMPACT_K, base-10 uint, default 3 (floored at 2 by the consumer)
 }
 
