@@ -40,7 +40,7 @@ func TestCheckBroadcastEnvelope(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m := envelopeMsg("A", timeoutVoteBroadcastType, 0, ts)
+			m := envelopeMsg("A", "general", 0, ts)
 			if c.mutate != nil {
 				c.mutate(&m)
 			}
@@ -63,13 +63,15 @@ func TestCheckBroadcastEnvelope_VoteTriggerID(t *testing.T) {
 	}
 }
 
+// The allowlist held the three timeout-certificate types until 94e8fb6 (#196)
+// removed that flow. It is empty now, so nothing is re-flooded — including the
+// unrecognised types that used to be relayed to every peer. If a type is ever
+// added to relayableBroadcastTypes, assert it here too.
 func TestBroadcastRelayable(t *testing.T) {
-	for _, typ := range []string{timeoutVoteBroadcastType, timeoutRequestBroadcastType, timeoutCertBroadcastType} {
-		if !broadcastRelayable(typ) {
-			t.Errorf("%s must be relayed", typ)
-		}
+	if len(relayableBroadcastTypes) != 0 {
+		t.Fatalf("a relayable type was added without extending this test: %v", relayableBroadcastTypes)
 	}
-	for _, typ := range []string{"", "general", voteTriggerBroadcastType, "made_up"} {
+	for _, typ := range []string{"", "general", voteTriggerBroadcastType, "made_up", "timeout_vote", "timeout_cert"} {
 		if broadcastRelayable(typ) {
 			t.Errorf("%q must not be relayed", typ)
 		}

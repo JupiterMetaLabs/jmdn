@@ -181,13 +181,24 @@ const (
 	broadcastMaxFuture = time.Minute
 )
 
+// relayableBroadcastTypes are the message types this node re-floods to its
+// peers. Add a type here only when it genuinely needs network-wide delivery.
+//
+// The set is empty. It held the three timeout-certificate types (vote,
+// request, cert) when this check was written; 94e8fb6 (#196) removed that flow
+// and its constants with it. vote_trigger is excluded deliberately and
+// separately: it carries the full proposed block, the sequencer already
+// delivers it directly to every committee member, and re-flooding it cost
+// about 560 MB of duplicate traffic per block on testnet.
+//
+// An empty set is the intended state, not an oversight. Before this check,
+// any unrecognised type was re-flooded to every connected peer, so one peer
+// could use this node to spread an arbitrary payload across the network.
+var relayableBroadcastTypes = map[string]bool{}
+
 // broadcastRelayable reports whether a received message type is re-flooded.
 func broadcastRelayable(msgType string) bool {
-	switch msgType {
-	case timeoutVoteBroadcastType, timeoutRequestBroadcastType, timeoutCertBroadcastType:
-		return true
-	}
-	return false
+	return relayableBroadcastTypes[msgType]
 }
 
 // expectedBroadcastID recomputes the message ID the way each sender builds it.
