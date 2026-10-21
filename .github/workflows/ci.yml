@@ -39,10 +39,19 @@ jobs:
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
         run: |
-          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
-          if [ -n "$GO_MODULES_TOKEN" ]; then
-            git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # go.mod requires two private repos - ThebeDB and avc. Without this
+          # token the run does not fail here; it dies two steps later inside
+          # `go mod verify` with "could not read Username for
+          # 'https://github.com'", which reads as a network fault rather than a
+          # missing secret. Fail at the step that owns the condition, with a
+          # message that names it. Forks are never given secrets, so a fork PR
+          # stops here by design.
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions (the other four JupiterMetaLabs modules are public and need no token)."
+            exit 1
           fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       # Install golangci-lint once. Both the format check and lint step below
       # will use this binary, so it is only installed once.
@@ -165,10 +174,19 @@ jobs:
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
         run: |
-          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
-          if [ -n "$GO_MODULES_TOKEN" ]; then
-            git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # go.mod requires two private repos - ThebeDB and avc. Without this
+          # token the run does not fail here; it dies two steps later inside
+          # `go mod verify` with "could not read Username for
+          # 'https://github.com'", which reads as a network fault rather than a
+          # missing secret. Fail at the step that owns the condition, with a
+          # message that names it. Forks are never given secrets, so a fork PR
+          # stops here by design.
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions (the other four JupiterMetaLabs modules are public and need no token)."
+            exit 1
           fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       # ── Known-vulnerability scan (hard gate) ────────────────────────────
       - name: Install govulncheck
