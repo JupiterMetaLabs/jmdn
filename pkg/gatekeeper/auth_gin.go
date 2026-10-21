@@ -69,6 +69,33 @@ func (m *GinMiddleware) Middleware(serviceName string) gin.HandlerFunc {
 	}
 }
 
+// AllowAdditional charges n more requests from this request's client against
+// serviceName's limits. The middleware already charged one per HTTP request;
+// handlers that fan one HTTP request out into several (JSON-RPC batches) call
+// this for the remainder. Returns true when limiting is disabled.
+func (m *GinMiddleware) AllowAdditional(c *gin.Context, serviceName string, n int) bool {
+	if n <= 0 || m == nil || m.rateLimiter == nil || (m.config != nil && !m.config.Enabled) {
+		return true
+	}
+	clientIP := m.ipExtractor.GetClientIPFromRequest(c.Request)
+	if m.rateLimiter.AllowN(c.Request.Context(), serviceName, clientIP, n) {
+		return true
+	}
+	if m.logger != nil {
+		m.logger.Warn(c.Request.Context(), "Rate Limit Exceeded (batch)",
+			ion.String("service", serviceName), ion.String("ip", clientIP), ion.Int("requests", n+1))
+	}
+	return false
+}
+
+// RetryAfter returns the Retry-After hint for serviceName.
+func (m *GinMiddleware) RetryAfter(c *gin.Context, serviceName string) int {
+	if m == nil || m.rateLimiter == nil {
+		return 1
+	}
+	return m.rateLimiter.RetryAfterSeconds(serviceName, m.ipExtractor.GetClientIPFromRequest(c.Request))
+}
+
 // enforcePolicy checks Rate Limit and Authentication.
 // Returns errRateLimited for rate limit denials, other errors for auth failures.
 func (m *GinMiddleware) enforcePolicy(c *gin.Context, serviceName string) error {

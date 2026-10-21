@@ -326,3 +326,40 @@ func TestNewRateLimiter_DefaultCacheSize(t *testing.T) {
 		t.Fatal("expected non-nil RateLimiter")
 	}
 }
+
+func TestAllowN_ChargesEveryBatchMember(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 10
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+	ctx := context.Background()
+	if !rl.AllowN(ctx, settings.ServiceEthRPC, "10.0.0.9", 8) {
+		t.Fatal("batch of 8 within burst 10 should pass")
+	}
+	if rl.AllowN(ctx, settings.ServiceEthRPC, "10.0.0.9", 8) {
+		t.Fatal("second batch of 8 must be denied: only ~2 tokens remain")
+	}
+	if !rl.AllowN(ctx, settings.ServiceEthRPC, "10.0.0.9", 2) {
+		t.Fatal("denied AllowN must not consume tokens")
+	}
+	if rl.AllowN(ctx, settings.ServiceEthRPC, "10.0.0.10", 11) {
+		t.Fatal("a batch larger than the burst can never pass")
+	}
+}
+
+func TestAllowN_TrustedClientBypass(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	cfg.TrustedClients = []string{"10.1.0.0/16"}
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+	if !rl.AllowN(context.Background(), settings.ServiceEthRPC, "10.1.2.3", 100) {
+		t.Fatal("trusted client must bypass batch charging")
+	}
+}

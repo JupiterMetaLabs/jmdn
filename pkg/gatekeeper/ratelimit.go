@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"time"
 
 	log "gossipnode/logging"
 
@@ -20,6 +21,10 @@ import (
 type Limiter interface {
 	// Allow reports whether a request from ip to serviceName is permitted.
 	Allow(ctx context.Context, serviceName string, ip string) bool
+
+	// AllowN is Allow for n requests at once (a JSON-RPC batch). It consumes
+	// n tokens or none.
+	AllowN(ctx context.Context, serviceName string, ip string, n int) bool
 
 	// RetryAfterSeconds returns the recommended wait time (in seconds)
 	// for a client that was just rate-limited on the given service+ip.
@@ -86,6 +91,17 @@ func NewRateLimiter(cfg *settings.SecurityConfig, cacheSize int) (*RateLimiter, 
 // Layer 1 (global per-IP) runs first; if it denies, the request is rejected immediately.
 // Layer 2 (per-service per-IP) runs second to enforce per-service limits.
 func (rl *RateLimiter) Allow(ctx context.Context, serviceName string, ip string) bool {
+	return rl.AllowN(ctx, serviceName, ip, 1)
+}
+
+// AllowN charges n requests against both layers. A batch larger than a
+// layer's burst can never be admitted by that layer.
+func (rl *RateLimiter) AllowN(ctx context.Context, serviceName string, ip string, n int) bool {
+	if n <= 0 {
+		return true
+	}
+	now := time.Now()
+
 	// --- Layer 0: Trusted client bypass ---
 	// Internal services (orchestrator, VPC peers) skip all rate limiting.
 	// Auth enforcement is unaffected — handled separately by middleware.
@@ -96,10 +112,10 @@ func (rl *RateLimiter) Allow(ctx context.Context, serviceName string, ip string)
 	// --- Layer 1: Global per-IP cap ---
 	if rl.config.GlobalRateLimit > 0 {
 		limiter := rl.getOrCreate(rl.perIP, ip, rl.config.GlobalRateLimit, rl.config.GlobalBurst)
-		if !limiter.Allow() {
+		if !limiter.AllowN(now, n) {
 			if rl.logger != nil {
 				rl.logger.Warn(ctx, "Global rate limit exceeded",
-					ion.String("ip", ip), ion.String("attempted_service", serviceName))
+					ion.String("ip", ip), ion.String("attempted_service", serviceName), ion.Int("requests", n))
 			}
 			return false
 		}
@@ -123,7 +139,7 @@ func (rl *RateLimiter) Allow(ctx context.Context, serviceName string, ip string)
 	key := serviceName + ":" + ip
 
 	limiter := rl.getOrCreate(rl.perIPSvc, key, policy.RateLimit, policy.Burst)
-	return limiter.Allow()
+	return limiter.AllowN(now, n)
 }
 
 // RetryAfterSeconds calculates a recommended wait time based on the service's rate limit.
