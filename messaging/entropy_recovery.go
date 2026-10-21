@@ -390,8 +390,9 @@ func RunEntropyStartupRecovery(beaconInstalled bool, tipHeight uint64, haveTip b
 	}
 	eTip := EpochForSlot(tip.Slot)
 	from := uint64(0)
-	if eTip >= mixRetainEpochs {
-		from = eTip - mixRetainEpochs
+	retain := mixRetainEpochs()
+	if eTip >= retain {
+		from = eTip - retain
 	}
 	restored, rerr := RestoreEntropyMixes(from, eTip)
 	if rerr != nil {
