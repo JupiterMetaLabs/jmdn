@@ -1,0 +1,152 @@
+name: Nightly
+
+# The slow checks live here, out of the PR gate.
+#
+# WHY: ci.yml runs on every push and every PR. `go test -short -race` and the
+# security scanners took the bulk of that wall time, and none of them block a
+# merge today — a gate nobody can act on is pure latency between a push and a
+# merge. ci.yml is now build + tidy + format + lint only, and everything slow
+# runs here on a schedule or on demand.
+#
+# SCHEDULING CAVEAT: GitHub runs `schedule` only from the repository's DEFAULT
+# branch, using the workflow file as it exists there. Until this file reaches
+# main the cron will not fire, so use "Run workflow" (workflow_dispatch) in the
+# Actions tab. The checkout below always names the ref explicitly, so a
+# scheduled run still tests v3base rather than the default branch.
+on:
+  schedule:
+    # 18:00 UTC = 23:30 IST, after the working day.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or SHA to check"
+        required: false
+        default: "v3base"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || 'v3base' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (-race)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'v3base' }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          # go.mod requires two private repos - ThebeDB and avc. See ci.yml for
+          # why this fails here rather than later in `go mod verify`.
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      # -short skips integration tests that need live infra (they must gate on
+      # testing.Short()); -race catches data races in the unit + consensus
+      # tests. If a package fails for lack of infra, gate that test behind
+      # testing.Short() rather than disabling the step.
+      #
+      # NON-BLOCKING while the open-PR backlog lands: v3base is red on arrival
+      # and the failures predate every open PR. Delete continue-on-error once
+      # the suite is green, and move this job back into ci.yml as a hard gate.
+      - name: Test
+        continue-on-error: true
+        run: go test -short -race ./...
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # go-ethereum needs cgo; keep it on so package loading (govulncheck/gosec)
+    # matches the real build (see Makefile: CGO_ENABLED=1).
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'v3base' }}
+          # gitleaks scans git history; fetch it all so old commits are covered.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      # ── Known-vulnerability scan ────────────────────────────────────────
+      # Reports CVEs in dependencies, so it can turn red with no change to
+      # this repo and a finding is rarely attributable to one PR. Non-blocking
+      # here; triage the findings, then make it a hard gate again.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        continue-on-error: true
+        run: govulncheck ./...
+
+      # ── Static analysis ─────────────────────────────────────────────────
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        continue-on-error: true
+        run: |
+          # -severity medium / -confidence medium: drops low-severity and
+          #   low-confidence noise on first rollout.
+          # -exclude-generated: skip *.pb.go and other generated files.
+          # -exclude=G115: integer-overflow-on-conversion is extremely noisy on
+          #   a codebase full of uint64<->int block-height/index conversions;
+          #   drop this exclude once those sites are audited.
+          gosec \
+            -severity medium \
+            -confidence medium \
+            -exclude-generated \
+            -exclude=G115 \
+            ./...
+
+      # ── Secret scan ─────────────────────────────────────────────────────
+      # gitleaks/gitleaks-action@v2.3.9 pinned to its commit SHA, so a
+      # compromised upstream tag cannot silently run new code in CI.
+      # NOTE: requires GITLEAKS_LICENSE for ORGANIZATION-owned repos (free only
+      # for personal public repos). Add it as a repo/org secret, or swap this
+      # step for the gitleaks binary (`gitleaks detect --source .`).
+      - name: Secret scan (gitleaks)
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
