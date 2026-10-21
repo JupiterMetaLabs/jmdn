@@ -26,6 +26,20 @@ import (
 // All operations succeed immediately without storing or retrieving anything.
 type noopCache struct{}
 
+// isNoop reports whether c can never return a hit (nil or the no-op cache).
+// The New*Store constructors then return the inner store unwrapped: a
+// read-through decorator over a cache that discards every Set would still
+// json.Marshal each record it reads — for a ZK proof that is ~2.66 MB of proof
+// bytes base64-encoded and thrown away on every block read (14.5 GB in 204 min
+// on the testnet sequencer, runtime bundle 2026-10-15).
+func isNoop(c cache.Cache) bool {
+	if c == nil {
+		return true
+	}
+	_, ok := c.(*noopCache)
+	return ok
+}
+
 // NewNoopCache returns a cache.Cache that never stores anything.
 func NewNoopCache() cache.Cache { return &noopCache{} }
 

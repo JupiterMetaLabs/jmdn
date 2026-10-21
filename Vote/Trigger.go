@@ -97,7 +97,8 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 	}
 	var tipHash common.Hash
 	if tip > 0 {
-		parent, perr := DB_OPs.GetZKBlockByNumber(nil, tip)
+		// Header-only: only the tip hash is compared; no proof/tx read.
+		parent, perr := DB_OPs.GetZKBlockHeaderByNumber(tip)
 		if perr != nil {
 			return fmt.Errorf("vote position: cannot read local tip block %d (fail closed): %w", tip, perr)
 		}

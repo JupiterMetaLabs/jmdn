@@ -261,6 +261,38 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	return blk, nil
 }
 
+// GetZKBlockHeaderByNumber returns block blockNumber WITHOUT its ZK proof,
+// transactions or L1 finality: one `blocks` row read, no proof BYTEA (~2.66 MB on
+// testnet), no tx fan-out.
+//
+// Populated: every field blockRecordToZKBlock fills from the blocks row —
+// BlockNumber, BlockHash, PrevHash, Timestamp, TxnsRoot, StateRoot, CoinbaseAddr,
+// ZKVMAddr, GasLimit, GasUsed, Status and the ExtraData-backed fields
+// (CommitteeCertificate, …). EMPTY: ProofHash, StarkProof, Commitment,
+// Transactions, L1TxHash/L1BlockNumber.
+//
+// Use it for tip/linkage/header reads (vote position, sync-monitor tip state,
+// previous-block certificate, EVM block context). Anything that hashes,
+// re-serves, re-verifies or fingerprints a block MUST keep GetZKBlockByNumber —
+// ProofHash and Transactions are part of what those paths cover.
+func GetZKBlockHeaderByNumber(blockNumber uint64) (*config.ZKBlock, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetZKBlockHeaderByNumber: %w", err)
+	}
+	rec, err := h.GetBlock(ctx, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("GetZKBlockHeaderByNumber(%d): %w", blockNumber, err)
+	}
+	blk, convErr := blockRecordToZKBlock(rec)
+	if convErr != nil {
+		return nil, fmt.Errorf("GetZKBlockHeaderByNumber(%d): convert: %w", blockNumber, convErr)
+	}
+	return blk, nil
+}
+
 // ReadZKBlockByNumber retrieves a ZK block by number using ThebeDB.
 // Delegates to GetZKBlockByNumber (ThebeDB-backed).
 //

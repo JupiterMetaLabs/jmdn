@@ -30,6 +30,9 @@ import (
 	"gossipnode/config"
 )
 
+// maxCachedProofBytes caps the StarkProof size this decorator will cache.
+const maxCachedProofBytes = 256 << 10
+
 // cachedZKProofStore wraps a store.ZKProofStore with a cache read-through / write-invalidation layer.
 type cachedZKProofStore struct {
 	inner store.ZKProofStore
@@ -41,6 +44,9 @@ var _ store.ZKProofStore = (*cachedZKProofStore)(nil)
 
 // NewCachedZKProofStore wraps inner with cache. Pass NewNoopCache() for no-cache mode.
 func NewCachedZKProofStore(inner store.ZKProofStore, c cache.Cache) store.ZKProofStore {
+	if isNoop(c) {
+		return inner // nothing to cache: skip the per-read json.Marshal of the record
+	}
 	return &cachedZKProofStore{inner: inner, c: c}
 }
 
@@ -69,6 +75,12 @@ func (s *cachedZKProofStore) GetZKProof(ctx context.Context, blockNumber uint64)
 	rec, err := s.inner.GetZKProof(ctx, blockNumber)
 	if err != nil {
 		return nil, err
+	}
+	// Large proofs are not cached: JSON-encoding a multi-MB STARK proof (base64,
+	// +33%) on every miss costs more than the Postgres read it would save, and
+	// would put multi-MB values into the shared cache.
+	if len(rec.StarkProof) > maxCachedProofBytes {
+		return rec, nil
 	}
 	if raw, merr := json.Marshal(rec); merr == nil {
 		_ = s.c.Set(ctx, key, raw, TTLZKProof)

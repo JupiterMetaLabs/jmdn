@@ -529,6 +529,15 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		Addr:              portStr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout bounds a slow body (a /api/process-block body carries the
+		// multi-MB proof). IdleTimeout closes idle keep-alive connections: with
+		// neither set, a client that opens a connection per poll and never closes
+		// it pins one server goroutine per connection for the process lifetime.
+		// WriteTimeout is deliberately left unset — process-block responds after
+		// consensus.Start, and cutting that response would make the orchestrator
+		// retry a block that was already accepted.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// --- TLS CONFIGURATION ---

@@ -266,7 +266,9 @@ func PrevBlockCertSigners(prevNumber uint64) ([]config.CertSigner, error) {
 	if prevNumber == 0 {
 		return nil, nil
 	}
-	blk, err := DB_OPs.GetZKBlockByNumber(nil, prevNumber)
+	// Header-only: the certificate lives on the blocks row (ExtraData); the
+	// proof and transactions are not needed here.
+	blk, err := DB_OPs.GetZKBlockHeaderByNumber(prevNumber)
 	if err != nil {
 		if DB_OPs.IsNotFound(err) {
 			return nil, nil // parent not persisted yet => no certifiers to reward

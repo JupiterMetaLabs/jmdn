@@ -41,6 +41,9 @@ var _ store.AccountStore = (*cachedAccountStore)(nil)
 
 // NewCachedAccountStore wraps inner with cache. Pass NewNoopCache() for no-cache mode.
 func NewCachedAccountStore(inner store.AccountStore, c cache.Cache) store.AccountStore {
+	if isNoop(c) {
+		return inner // nothing to cache: skip the per-read json.Marshal of the record
+	}
 	return &cachedAccountStore{inner: inner, c: c}
 }
 

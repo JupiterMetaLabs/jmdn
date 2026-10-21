@@ -43,6 +43,9 @@ var _ store.BlockStore = (*cachedBlockStore)(nil)
 
 // NewCachedBlockStore wraps inner with cache. Pass NewNoopCache() for no-cache mode.
 func NewCachedBlockStore(inner store.BlockStore, c cache.Cache) store.BlockStore {
+	if isNoop(c) {
+		return inner // nothing to cache: skip the per-read json.Marshal of the record
+	}
 	return &cachedBlockStore{inner: inner, c: c}
 }
 
