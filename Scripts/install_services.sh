@@ -88,6 +88,38 @@ fi
 # MODE: DOCKER
 ################################################################################
 
+# yaml_get_redis_password FILE — prints database.redis.password from a jmdn
+# YAML (two-space indentation, as in jmdn_default.yaml), or nothing.
+yaml_get_redis_password() {
+    awk '
+        /^[^[:space:]#]/        { db = ($0 ~ /^database:/); r = 0; next }
+        db && /^  [^[:space:]#]/ { r = ($0 ~ /^  redis:/); next }
+        db && r && /^    password:/ {
+            v = $0; sub(/^    password:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v)
+            gsub(/^["\x27]|["\x27]$/, "", v); print v; exit
+        }
+    ' "$1"
+}
+
+# yaml_set_redis_password FILE VALUE — sets database.redis.password in place.
+# Fails if the key is not present.
+yaml_set_redis_password() {
+    local file="$1" value="$2" tmp
+    tmp="$(mktemp)"
+    if ! awk -v pw="${value}" '
+        /^[^[:space:]#]/        { db = ($0 ~ /^database:/); r = 0 }
+        db && /^  [^[:space:]#]/ { r = ($0 ~ /^  redis:/) }
+        db && r && !done && /^    password:/ { print "    password: \"" pw "\""; done = 1; next }
+        { print }
+        END { exit done ? 0 : 1 }
+    ' "${file}" > "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+    cat "${tmp}" > "${file}"   # keep the file's owner and mode
+    rm -f "${tmp}"
+}
+
 install_docker() {
     log_info "Installing in Docker mode..."
 
@@ -116,11 +148,45 @@ EOF
     local docker_bin
     docker_bin="$(command -v docker)"
 
+    # Redis password. jmdn reads it from database.redis.password in its YAML;
+    # the redis container reads it from the compose .env. Source of truth, in
+    # order: the value already in jmdn.yaml, the one already in the compose
+    # .env, else a newly generated one. Both are then set to the same value.
+    local node_yaml="${JMDN_ETC}/jmdn.yaml"
+    [ -f "${node_yaml}" ] || log_die "${node_yaml} not found. Copy jmdn_default.yaml there first, then re-run."
+    local env_file="${compose_dir}/.env"
+    local redis_password
+    redis_password="$(yaml_get_redis_password "${node_yaml}")"
+    if [ -z "${redis_password}" ] && [ -f "${env_file}" ]; then
+        redis_password="$(grep -E '^REDIS_PASSWORD=' "${env_file}" | head -1 | cut -d= -f2-)"
+    fi
+    if [ -z "${redis_password}" ]; then
+        command -v openssl &>/dev/null || log_die "openssl is required to generate the Redis password."
+        redis_password="$(openssl rand -hex 32)"
+        log_ok "Generated a Redis password"
+    fi
+    yaml_set_redis_password "${node_yaml}" "${redis_password}" \
+        || log_die "Could not set database.redis.password in ${node_yaml} (expected database: / redis: / password: keys)."
+    chmod o-rwx "${node_yaml}"
+    if [ "${SERVICE_USER}" != "root" ] && id "${SERVICE_USER}" &>/dev/null; then
+        chown "${SERVICE_USER}" "${node_yaml}"
+    fi
+    log_ok "Set database.redis.password in ${node_yaml}"
+    touch "${env_file}"
+    chmod 600 "${env_file}"
+    if grep -qE '^REDIS_PASSWORD=' "${env_file}"; then
+        sed -i.bak "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=${redis_password}|" "${env_file}" && rm -f "${env_file}.bak"
+    else
+        echo "REDIS_PASSWORD=${redis_password}" >> "${env_file}"
+    fi
+
     log_info "Writing ${compose_file}..."
     cat > "${compose_file}" <<'COMPOSE'
 # JMDN infrastructure — Postgres + Redis
 # Postgres is configured for logical replication (required for CDC/ThebeDB WAL consumer).
 # DuckDB is embedded in the jmdn binary — no container needed.
+# Both ports are published on 127.0.0.1 only: Docker-published ports bypass
+# host firewalls such as ufw, so a 0.0.0.0 mapping would expose them publicly.
 
 services:
   postgres:
@@ -138,7 +204,7 @@ services:
         -c max_replication_slots=4
         -c max_wal_senders=4
     ports:
-      - "5430:5432"
+      - "127.0.0.1:5430:5432"
     volumes:
       - jmdn_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -151,13 +217,16 @@ services:
     image: redis:7-alpine
     container_name: jmdn-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?}
+      --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - jmdn_redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -170,7 +239,7 @@ COMPOSE
 
     log_info "Starting containers..."
     docker compose -f "${compose_file}" up -d
-    log_ok "Postgres (port 5430) and Redis (port 6379) are running."
+    log_ok "Postgres (127.0.0.1:5430) and Redis (127.0.0.1:6379, password-protected) are running."
 
     # One-time DB setup: create publication for CDC
     log_info "Waiting for Postgres to be ready..."

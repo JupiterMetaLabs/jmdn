@@ -21,7 +21,7 @@
 #
 # Changelog:
 #   - 2026-07-01: Added --redis (install + idempotent password setup, stored
-#     in ${JMDN_ETC}/redis.env). Reuses pkg_install/_map_package_name and
+#     in database.redis.password of jmdn.yaml). Reuses pkg_install/_map_package_name and
 #     svc_enable/svc_restart from lib/platform.sh instead of duplicating
 #     per-platform package/service logic.
 #   - 2025-03-02: Added cross-platform support for Linux, macOS, and FreeBSD
