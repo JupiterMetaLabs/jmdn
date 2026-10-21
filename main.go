@@ -704,34 +704,6 @@ func initYggdrasilMessaging(ctx context.Context) {
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
-// Initialize main database connection pool
-func initMainDBPool(logger_ctx context.Context, _ bool) error {
-	poolingConfig := &config.PoolingConfig{
-		DBName: config.DBName,
-	}
-
-	// Initialize the global pool.
-	config.InitGlobalPoolWithLoki(poolingConfig, nil)
-
-	// Also initialize the DB_OPs main pool
-	if logger := mainLogger(); logger != nil {
-		logger.Debug(context.Background(), "Initializing DB_OPs main pool...")
-	}
-
-	if logger := mainLogger(); logger != nil {
-		logger.Info(context.Background(), "Main database connection pool initialized", ion.String("database", config.DBName))
-	}
-	return nil
-}
-
-// Initialize accounts database connection pool
-func initAccountsDBPool() error {
-	if logger := mainLogger(); logger != nil {
-		logger.Info(context.Background(), "Accounts database connection pool initialized", ion.String("database", config.AccountsDBName))
-	}
-	return nil
-}
-
 // slotStoreRecoveryGetTip reads this node's own latest LOCALLY committed
 // block, for messaging.RecoverSlotStoreAtStartup / EnsureSlotStoreRecovered
 // (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 — the slot-restart
@@ -1127,17 +1099,6 @@ func main() {
 		if logger := mainLogger(); logger != nil {
 			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ShutdownThread))
 		}
-	}
-
-	// Initialize database connection pools FIRST
-	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(logger_ctx, false); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
-	}
-	fmt.Println("Main database pool initialized successfully")
-
-	if err := initAccountsDBPool(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
 	// Captured ThebeDB canonical KV handle, used AFTER the committee-eligibility
