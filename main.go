@@ -944,6 +944,16 @@ func main() {
 			Str("reason", v.Reason).
 			Msg("SEC-03: insecure gatekeeper service on a public bind — remediate per 'reason' (auth_type=none → set auth_type token/mtls; no rate limit → set a rate limit), restrict the bind to loopback, or enable security.strict_posture to fail closed")
 	}
+	if err := cfg.ValidateEnvironment(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	if !cfg.ProductionPosture() {
+		log.Warn().
+			Str("environment", cfg.Network.Environment).
+			Int("chain_id", cfg.Network.ChainID).
+			Msg("production safety locks are OFF (network.environment is not mainnet and security.strict_posture is false): fail-open consensus flags and unauthenticated public services are only warned about")
+	}
 	if err := cfg.ValidateSecurityPosture(); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
