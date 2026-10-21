@@ -216,7 +216,7 @@ func HandleDIDStream(stream network.Stream) {
 	remotePeer := stream.Conn().RemotePeer().String()
 
 	// Record metrics
-	metrics.MessagesReceivedCounter.WithLabelValues("did", remotePeer).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("did", metrics.PeerLabel(remotePeer)).Inc()
 
 	// Read the incoming message with a bounded frame size.
 	reader := bufio.NewReader(io.LimitReader(stream, maxDIDFrameBytes))
@@ -373,7 +373,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("did", peerIDForGoroutine.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues("did", metrics.PeerLabel(peerIDForGoroutine.String())).Inc()
 
 			return nil
 		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
@@ -508,7 +508,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("did", peerIDForGoroutine.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues("did", metrics.PeerLabel(peerIDForGoroutine.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
 			broadcastLogger().Error(context.Background(), "Failed to start goroutine for DID propagation", err, ion.String("peer", peerID.String()))

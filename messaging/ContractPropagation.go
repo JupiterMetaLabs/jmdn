@@ -113,7 +113,7 @@ func HandleContractStream(stream network.Stream) {
 	defer stream.Close()
 
 	remotePeer := stream.Conn().RemotePeer().String()
-	metrics.MessagesReceivedCounter.WithLabelValues("contract", remotePeer).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("contract", metrics.PeerLabel(remotePeer)).Inc()
 
 	// Cap incoming message size to prevent an OOM attack from a malicious peer.
 	const maxPushBytes = 4 * 1024 * 1024 // 4 MB — well above any legitimate ContractMessage
@@ -234,7 +234,7 @@ func forwardContract(h host.Host, msg ContractMessage) {
 			successMu.Lock()
 			successCount++
 			successMu.Unlock()
-			metrics.MessagesSentCounter.WithLabelValues("contract", p.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues("contract", metrics.PeerLabel(p.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.ContractForwardWG)); err != nil {
 			contractLogger().Error(context.Background(), "ContractPropagation: failed to start forwarding goroutine", err,

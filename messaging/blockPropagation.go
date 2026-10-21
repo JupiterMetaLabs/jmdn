@@ -291,7 +291,7 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
-	metrics.MessagesReceivedCounter.WithLabelValues("block", remotePeer).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("block", metrics.PeerLabel(remotePeer)).Inc()
 
 	// Bound the read: cap the size (remote-OOM guard, mirrors the 7 MB gossip cap)
 	// and set a deadline so a slow/idle peer cannot hold the stream open forever.
@@ -428,7 +428,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 				// The "local" label keeps that visible and bounds cardinality.
 				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, "local").Inc()
 			} else {
-				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
+				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, metrics.PeerLabel(remotePeer)).Inc()
 				timeoutPeer(remotePeer, 30*time.Second)
 			}
 			return // no forward, no mutation, no persistence, NOT cached
@@ -924,7 +924,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 			successCount++
 			successMutex.Unlock()
 
-			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues(metrics.ProtocolLabel(msg.Type), metrics.PeerLabel(peerIDForGoroutine.String())).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
 			broadcastLogger().Error(context.Background(), "Failed to start goroutine for block forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
