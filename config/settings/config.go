@@ -276,6 +276,11 @@ type ConsensusSettings struct {
 	// resolvable committee member. production_posture.go's
 	// ValidateProductionConsensusPosture warns/fails on this being unset in
 	// a production posture — see that file.
+	//
+	// Optional when the seed signs the sequencer peer ID into the committee
+	// snapshot (v3): the node then learns it from the verified snapshot
+	// (internal/sequencerid). When set, this value wins and a disagreeing seed
+	// value is logged.
 	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
 	// SyncCertificateRequiredFrom is the first block height that catch-up sync
 	// requires to carry a committee certificate. 1 for a chain certified from

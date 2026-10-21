@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/internal/sequencerid"
 	"gossipnode/seednode/committee"
 	peerpb "gossipnode/seednode/proto"
 
@@ -39,6 +40,7 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 		Seed:            s.Seed,
 		AuthorityPubHex: s.AuthorityPubkey,
 		Signature:       s.Signature,
+		SequencerPeerID: s.SequencerPeerId,
 	}, nil
 }
 
@@ -98,6 +100,7 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds in
 			if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
 				return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 			}
+			sequencerid.SetFromSeed(snap.SequencerPeerID, snap.Epoch)
 		}
 		// peer_id -> authenticated bls_pub, so the verifier can enforce the
 		// peer_id↔bls_pub binding, not just membership.
@@ -362,6 +365,7 @@ func (s *committeeSource) eligible(epoch uint64, pinned bool) (map[string]string
 	}
 	s.cachedSnap = snap
 	s.cachedAt = time.Now()
+	sequencerid.SetFromSeed(snap.SequencerPeerID, snap.Epoch)
 	return snap.BLSPubByPeer(), nil
 }
 
@@ -437,6 +441,7 @@ func (s *committeeSource) currentSnapshot(ctx context.Context) (*committee.Commi
 	}
 	s.cachedSnap = snap
 	s.cachedAt = time.Now()
+	sequencerid.SetFromSeed(snap.SequencerPeerID, snap.Epoch)
 	return snap, nil
 }
 

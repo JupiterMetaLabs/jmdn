@@ -67,6 +67,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -2084,7 +2085,7 @@ func main() {
 		// to pin-only, or empty if unpinned too), it never makes the
 		// decision indeterminate.
 		var pinned peer.ID
-		if raw := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID); raw != "" {
+		if raw := sequencerid.Get(); raw != "" && raw != sequencerid.Unknown {
 			if p, decErr := peer.Decode(raw); decErr == nil {
 				pinned = p
 			} else {

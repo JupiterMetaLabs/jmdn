@@ -42,6 +42,13 @@ const (
 	// a v2 seed and a v1 jmdn reject each other outright (the intended failure
 	// mode). MUST match seedNodes pkg/peer/committee_snapshot.go byte-for-byte.
 	CommitteeSnapshotVersion = "jmdt/committee/v2"
+	// CommitteeSnapshotVersionV3 — the same snapshot with the fleet sequencer's
+	// peer ID signed in after the seed:
+	//   jmdt/committee/v3|epoch|seed|sequencer_peer_id|<entries>
+	// A snapshot is v3 exactly when it carries a sequencer peer ID, so a v3
+	// signature never verifies as v2 or with another sequencer. Both versions are
+	// accepted. MUST match seedNodes pkg/peer/committee_snapshot.go.
+	CommitteeSnapshotVersionV3 = "jmdt/committee/v3"
 	// SeqAuthVersion — seedNodes/pkg/peer/sequencer_auth.go.
 	SeqAuthVersion = "jmdt/seed-auth/v1"
 
@@ -124,6 +131,7 @@ type CommitteeSnapshot struct {
 	Epoch           uint64           `json:"epoch"`
 	Entries         []CommitteeEntry `json:"entries"`
 	Seed            string           `json:"seed,omitempty"`
+	SequencerPeerID string           `json:"sequencer_peer_id,omitempty"` // v3 only
 	AuthorityPubHex string           `json:"authority_pubkey"`
 	Signature       string           `json:"signature"`
 }
@@ -147,13 +155,24 @@ func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 // version|epoch|seed|<peer_id:bls_pub>,... (entries sorted by peer_id).
 // MUST match seedNodes canonicalCommitteeBytes byte-for-byte.
 func CanonicalCommitteeBytes(epoch uint64, seed string, entries []CommitteeEntry) []byte {
+	return CanonicalCommitteeBytesWithSequencer(epoch, seed, "", entries)
+}
+
+// CanonicalCommitteeBytesWithSequencer is the v2 bytes for an empty
+// sequencerPeerID and the v3 bytes (sequencer peer ID after the seed)
+// otherwise. MUST match seedNodes canonicalCommitteeBytesWithSequencer.
+func CanonicalCommitteeBytesWithSequencer(epoch uint64, seed, sequencerPeerID string, entries []CommitteeEntry) []byte {
 	parts := make([]string, 0, len(entries))
 	for _, e := range sortedEntries(entries) {
 		// Three colon-separated fields ALWAYS; an unset reward_address is a
 		// trailing colon, never dropped. Must match seedNodes byte-for-byte.
 		parts = append(parts, e.PeerID+":"+e.BLSPub+":"+e.RewardAddress)
 	}
-	return []byte(CommitteeSnapshotVersion + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + strings.Join(parts, ","))
+	seq := strings.TrimSpace(sequencerPeerID)
+	if seq == "" {
+		return []byte(CommitteeSnapshotVersion + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + strings.Join(parts, ","))
+	}
+	return []byte(CommitteeSnapshotVersionV3 + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + seq + "|" + strings.Join(parts, ","))
 }
 
 // VerifyCommitteeSnapshot verifies the authority signature over the snapshot's
@@ -180,7 +199,7 @@ func VerifyCommitteeSnapshot(snap *CommitteeSnapshot, expectedAuthorityPubHex st
 	if err != nil {
 		return fmt.Errorf("bad snapshot signature hex: %w", err)
 	}
-	if err := blssign.BLSVerify(pubBytes, CanonicalCommitteeBytes(snap.Epoch, snap.Seed, snap.Entries), sigBytes); err != nil {
+	if err := blssign.BLSVerify(pubBytes, CanonicalCommitteeBytesWithSequencer(snap.Epoch, snap.Seed, snap.SequencerPeerID, snap.Entries), sigBytes); err != nil {
 		return fmt.Errorf("committee snapshot signature invalid: %w", err)
 	}
 	return nil

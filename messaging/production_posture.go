@@ -93,8 +93,14 @@ func ValidateProductionConsensusPosture(production bool) error {
 	// sequencer's vote-result requests whenever the sequencer is not
 	// independently a resolvable committee member — a liveness failure
 	// worth catching at boot rather than at incident time.
-	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" {
-		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id)")
+	// The sequencer identity may come from the config pin or from the
+	// seed-signed committee snapshot; the latter needs the seed authority key
+	// pinned. With neither, nothing can identify the sequencer. (At runtime an
+	// unresolved sequencer fails closed under production posture — see
+	// internal/sequencerid.)
+	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" &&
+		strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) == "" {
+		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) or SeedAuthorityBLSPub (consensus.seed_authority_bls_pub)")
 	}
 	// Catch-up sync needs a durable height from which every block must carry a
 	// committee certificate; without it a fresh node can be served a

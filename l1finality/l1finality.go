@@ -11,12 +11,11 @@ package l1finality
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	"gossipnode/config/settings"
 	"gossipnode/internal/l1auth"
+	"gossipnode/internal/sequencerid"
 )
 
 // AuthorizeGossipSender decides whether an L1-commit / L1-commit-range gossip
@@ -40,7 +39,7 @@ import (
 //     ship to mainnet — the block-858 finding-4 empty-pin lesson.
 //   - proceed=true, enforced=true  → sender is the pinned sequencer; apply.
 func AuthorizeGossipSender(authenticatedSender string) (proceed, enforced bool) {
-	pin := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID)
+	pin := sequencerid.Get()
 	if !l1auth.Enforced(pin) {
 		return true, false
 	}

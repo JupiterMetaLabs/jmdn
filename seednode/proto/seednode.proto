@@ -391,6 +391,7 @@ message CommitteeSnapshot {
   string seed = 3;                        // per-epoch beacon, if any
   string authority_pubkey = 4;            // dela/bls authority pubkey (hex)
   string signature = 5;                   // dela/bls signature (hex) over canonical bytes
+  string sequencer_peer_id = 6;           // fleet sequencer libp2p peer ID; non-empty => signed under jmdt/committee/v3
 }
 message GetCommitteeSnapshotRequest {
   uint64 epoch = 1;                       // 0 = current epoch
