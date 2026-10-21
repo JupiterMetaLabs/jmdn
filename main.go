@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"gossipnode/internal/roundlock"
 	"gossipnode/internal/saferun"
 
 	"syscall"
@@ -1383,6 +1384,12 @@ func main() {
 		// (GetLatestBlockNumber, GetBlock, etc.) which call getHandle() directly
 		// without going through a PooledConnection.
 		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
+
+		// Per-round signing records (buddy block results, and this node's
+		// ACCEPT votes) live in the sync-state KV, so a restart cannot be
+		// used to sign a different block at a round already signed.
+		roundlock.Default.SetStore(DB_OPs.ConsensusLockStore{}, "roundlock:")
+		roundlock.Votes.SetStore(DB_OPs.ConsensusLockStore{}, "votelock:")
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
 		// Finish any tx apply that was interrupted by the previous shutdown

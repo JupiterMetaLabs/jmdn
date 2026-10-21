@@ -139,5 +139,6 @@ func (p *ProposerPeriods) ForgetThrough(height uint64) {
 // rather than the heights of incoming requests.
 func NoteHeightCommitted(height uint64) {
 	roundlock.Default.ForgetThrough(height)
+	roundlock.Votes.ForgetThrough(height)
 	DefaultProposerPeriods.ForgetThrough(height)
 }

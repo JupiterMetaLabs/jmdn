@@ -24,12 +24,20 @@
 // never by the heights of incoming requests, so a request at a bogus huge
 // height cannot clear the live height's records.
 //
-// Scope: in-memory. A restart forgets the ledger. The node then signs a
-// height's current round again, which is safe for an honest sequencer: it
-// never re-proposes a round it already left.
+// Durability: with a Store (SetStore, wired by main to the node's sync-state
+// KV) every height's records are written before a reservation is granted and
+// read back the first time a height is touched after a restart, so a restart
+// cannot be used to sign a different block at a round already signed. A store
+// read or write failure refuses the reservation (Unavailable). Without a
+// Store the ledger is in-memory only.
 package roundlock
 
-import "sync"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"sync"
+)
 
 // Round identifies one consensus round.
 type Round struct {
@@ -51,6 +59,9 @@ const (
 	// Committed: the height is at or below this node's committed tip; no
 	// block at it can be accepted any more.
 	Committed
+	// Unavailable: the durable store could not be read or written, so the
+	// ledger cannot prove the round is free. Fail closed.
+	Unavailable
 )
 
 func (r Refusal) String() string {
@@ -61,6 +72,8 @@ func (r Refusal) String() string {
 		return "stale_period"
 	case Committed:
 		return "height_committed"
+	case Unavailable:
+		return "ledger_unavailable"
 	default:
 		return "none"
 	}
@@ -80,15 +93,121 @@ type Ledger struct {
 	highest       map[uint64]uint64
 	committed     uint64
 	haveCommitted bool
+
+	// Durable store (nil: in-memory only). loaded marks heights already read
+	// back from the store this process; onDisk marks heights with a stored
+	// record, so pruning clears exactly those.
+	store  Store
+	prefix string
+	loaded map[uint64]bool
+	onDisk map[uint64]bool
 }
 
-// NewLedger returns an empty ledger.
+// Store persists ledger records. Get returns (nil, nil) or an empty value for
+// an absent key.
+type Store interface {
+	Get(key string) ([]byte, error)
+	Put(key string, value []byte) error
+}
+
+// NewLedger returns an empty in-memory ledger.
 func NewLedger() *Ledger {
-	return &Ledger{signed: make(map[Round]string), highest: make(map[uint64]uint64)}
+	return &Ledger{
+		signed:  make(map[Round]string),
+		highest: make(map[uint64]uint64),
+		loaded:  make(map[uint64]bool),
+		onDisk:  make(map[uint64]bool),
+	}
 }
 
 // Default is the process-wide ledger the buddy vote-result signer uses.
 var Default = NewLedger()
+
+// Votes is the ledger for this node's own ACCEPT votes: one block per round,
+// never a lower period of a height than one already voted for. Kept separate
+// from Default because voting for a block and signing its aggregated result
+// are different signatures, and refusing one must not block the other.
+var Votes = NewLedger()
+
+// BlockIdentity is the block key the ledgers compare: BlockHash covers only
+// the transactions, so the ConsensusHash (Period, Slot and the other
+// consensus fields) is what tells two proposals of the same transactions
+// apart.
+func BlockIdentity(blockHash, consensusHash string) string {
+	return blockHash + "/" + consensusHash
+}
+
+// SetStore makes the ledger durable under the given key prefix. Call once at
+// startup, before any signing.
+func (l *Ledger) SetStore(store Store, prefix string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.store, l.prefix = store, prefix
+}
+
+// heightRecord is the stored form of one height: periods signed and the
+// block signed at each.
+type heightRecord struct {
+	Signed map[string]string `json:"signed"`
+}
+
+func (l *Ledger) key(height uint64) string { return l.prefix + strconv.FormatUint(height, 10) }
+
+// loadHeightLocked reads height's stored record into memory the first time
+// the height is touched. Caller holds l.mu.
+func (l *Ledger) loadHeightLocked(height uint64) error {
+	if l.store == nil || l.loaded[height] {
+		return nil
+	}
+	raw, err := l.store.Get(l.key(height))
+	if err != nil {
+		return fmt.Errorf("roundlock: read height %d: %w", height, err)
+	}
+	if len(raw) > 0 {
+		var rec heightRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return fmt.Errorf("roundlock: decode height %d: %w", height, err)
+		}
+		for ps, block := range rec.Signed {
+			p, err := strconv.ParseUint(ps, 10, 64)
+			if err != nil {
+				return fmt.Errorf("roundlock: decode height %d: bad period %q", height, ps)
+			}
+			l.signed[Round{Height: height, Period: p}] = block
+			if h, ok := l.highest[height]; !ok || p > h {
+				l.highest[height] = p
+			}
+		}
+		l.onDisk[height] = true
+	}
+	l.loaded[height] = true
+	return nil
+}
+
+// persistHeightLocked writes height's current records. Caller holds l.mu.
+func (l *Ledger) persistHeightLocked(height uint64) error {
+	if l.store == nil {
+		return nil
+	}
+	rec := heightRecord{Signed: map[string]string{}}
+	for r, block := range l.signed {
+		if r.Height == height {
+			rec.Signed[strconv.FormatUint(r.Period, 10)] = block
+		}
+	}
+	raw := []byte{}
+	if len(rec.Signed) > 0 {
+		var err error
+		if raw, err = json.Marshal(rec); err != nil {
+			return err
+		}
+	}
+	if err := l.store.Put(l.key(height), raw); err != nil {
+		return fmt.Errorf("roundlock: write height %d: %w", height, err)
+	}
+	l.onDisk[height] = len(raw) > 0
+	return nil
+}
 
 // TryLockFresh records that this node is about to sign block for round r.
 //
@@ -105,10 +224,13 @@ var Default = NewLedger()
 func (l *Ledger) TryLockFresh(r Round, block string) (ok bool, refusal Refusal, highest uint64, fresh bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	high, signedHere := l.highest[r.Height]
 	if l.haveCommitted && r.Height <= l.committed {
-		return false, Committed, high, false
+		return false, Committed, l.highest[r.Height], false
 	}
+	if err := l.loadHeightLocked(r.Height); err != nil {
+		return false, Unavailable, l.highest[r.Height], false
+	}
+	high, signedHere := l.highest[r.Height]
 	if signedHere && r.Period < high {
 		return false, Stale, high, false
 	}
@@ -118,7 +240,14 @@ func (l *Ledger) TryLockFresh(r Round, block string) (ok bool, refusal Refusal, 
 		}
 		return true, None, high, false
 	}
+	// Persist before granting: if the record cannot be written, the
+	// reservation is undone and refused, so a granted signature is always on
+	// disk before it is produced.
 	l.signed[r] = block
+	if err := l.persistHeightLocked(r.Height); err != nil {
+		delete(l.signed, r)
+		return false, Unavailable, high, false
+	}
 	if !signedHere || r.Period > high {
 		l.highest[r.Height] = r.Period
 		high = r.Period
@@ -176,6 +305,9 @@ func (l *Ledger) Release(r Round, block string) {
 	} else {
 		delete(l.highest, r.Height)
 	}
+	// Best effort: if this write fails the round stays reserved on disk,
+	// which costs only liveness for this round after a restart, never safety.
+	_ = l.persistHeightLocked(r.Height)
 }
 
 // ForgetThrough records that height is committed locally. From then on
@@ -201,6 +333,21 @@ func (l *Ledger) ForgetThrough(height uint64) {
 	for h := range l.highest {
 		if h <= floor {
 			delete(l.highest, h)
+		}
+	}
+	for h := range l.loaded {
+		if h <= floor {
+			delete(l.loaded, h)
+		}
+	}
+	// Clear stored records for pruned heights. Best effort: a record left
+	// behind is never consulted again, since every height at or below the
+	// committed tip is refused before the store is read.
+	for h := range l.onDisk {
+		if h <= floor {
+			if l.store == nil || l.store.Put(l.key(h), []byte{}) == nil {
+				delete(l.onDisk, h)
+			}
 		}
 	}
 }
