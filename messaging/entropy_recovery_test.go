@@ -187,7 +187,7 @@ func (w *entropyWorld) restart(tip uint64) {
 	ResetAggSigStoreForTest()
 	committedSlotHW.Store(0)
 	DefaultSlotStore = NewSlotStore()
-	DefaultSlotStore.SeedFromCommittedTip(tip, tip) // RecoverSlotStoreAtStartup
+	DefaultSlotStore.AdvanceOnCommit(tip) // RecoverSlotStoreAtStartup
 	w.stored = tip
 	w.mu.Lock()
 	w.hooks, w.events, w.persist = nil, nil, nil

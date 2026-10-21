@@ -184,7 +184,6 @@ consensus:
     enforce_body_binding: true              # JMDN_ENFORCE_BODY_BINDING (lenient). Production posture locks this ON.
     agg_cert: true                          # JMDN_AVC_AGG_CERT (exactly-1). Aggregate BLS certificates. Fleet-wide ON.
     enforce_slot_recovery_gate: true        # JMDN_ENFORCE_SLOT_RECOVERY_GATE (not-0). Applies to BOTH readers (messaging + vote path).
-    slot_recovery_preslot_migration: false  # JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION (exactly-1). One-time migration aid.
     enforce_sync_gate: true                 # JMDN_ENFORCE_SYNC_GATE (not-0). A validator behind the head abstains.
                                             # Devnet genesis bootstrap sets this false; re-enable once blocks flow.
     emit_block_bound_votes: true            # JMDN_EMIT_BLOCK_BOUND_VOTES (not-0). Block-bound BLS vote domain.

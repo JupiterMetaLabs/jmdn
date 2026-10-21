@@ -1,25 +1,16 @@
 package messaging
 
-// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
-// item 8's "remaining integration step") — 2026-08-24.
+// Slot recovery at startup and after catch-up.
 //
-// slot_store.go's SeedFromCommittedTip existed and was tested, and
-// DB_OPs/backend/block.go's toBlockRecord persisted Slot/Period into every
-// committed block's ExtraData, but nothing called SeedFromCommittedTip at
-// real node startup. Left as-is, a restarted node's DefaultSlotStore woke up
-// at slot 0 with haveCommitted=false, and its FIRST post-restart commit hook
-// call (broadcast.go / blockPropagation.go's AdvanceOnCommit) would silently
-// treat that commit as the first one ever, self-correcting to a slot far
-// below the network's true value — wrong committee/entropy epoch, no error,
-// no log line an operator would notice before divergence.
-//
-// This file is the missing half: a startup (and post-catch-up) recovery path
-// that reads this node's own locally-committed tip and seeds the counter
-// BEFORE the node is allowed to vote, propose, or otherwise participate in
-// consensus — see SlotStoreReady/MarkSlotStoreReady below, and the two gates
-// that consult it: AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go's
-// consensusVoteReady (voting) and Block/consensus_fields.go's
-// attachAVCConsensusFields (proposing).
+// A block's slot is its block number (slot_store.go), so recovery has nothing
+// to reconstruct: it reads this node's committed tip and records its height
+// (NoteHeightCommitted), which also arms the per-round signing ledgers. Its
+// remaining job is to fail closed when the tip cannot be READ - until then
+// this node must not vote or propose. See SlotStoreReady/MarkSlotStoreReady
+// below and the two gates that consult it:
+// AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go's consensusVoteReady
+// (voting) and Block/consensus_fields.go's attachAVCConsensusFields
+// (proposing).
 
 import (
 	"errors"
@@ -43,25 +34,6 @@ import (
 // all (e.g. an isolated unit test of unrelated logic that happens to route
 // through the vote or propose path).
 var EnforceSlotRecoveryGate = os.Getenv("JMDN_ENFORCE_SLOT_RECOVERY_GATE") != "0"
-
-// PreSlotMigration is a ONE-TIME operator escape hatch for a chain whose
-// committed history predates the Slot/Period persistence (a tip at height > 0
-// with no persisted slot/period). Default-OFF: normal operation must keep the
-// fail-closed refusal below, which correctly catches a broken read-back or a
-// block written by a buggy version. Set JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1
-// ONLY on the single restart that migrates such a chain onto the slot
-// machinery.
-//
-// When set, a slotless tip at height H is seeded as slot = H. That is exact,
-// not a guess, for any pre-slot chain: AdvanceOnCommit folds (period+1) per
-// commit, every pre-slot block has Period 0 (no failed round ever burned a
-// period then), and the slot clock starts at 0 at genesis, so the
-// fully-folded slot at height H is exactly H. Every node migrating the SAME
-// chain derives the SAME value (§7.1b fleet agreement holds), and while
-// H < N it lands in epoch 0 regardless — consistent with committee_epoch_blocks=0.
-// After the first post-migration commit stamps a real slot, subsequent
-// restarts recover normally and this flag is no longer needed.
-var PreSlotMigration = os.Getenv("JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION") == "1"
 
 // slotStoreReady gates consensus participation on this node. Fail-closed by
 // construction: zero value is false, so any code path that forgets to call
@@ -96,41 +68,27 @@ func ResetSlotStoreReadyForTest() { slotStoreReady.Store(false) }
 // sentinel rather than "any error means empty."
 var ErrNoCommittedBlock = errors.New("messaging: no committed block found (empty local chain)")
 
-// RecoverSlotStoreAtStartup seeds DefaultSlotStore from this node's local
-// committed tip. Call exactly once, at startup, BEFORE the libp2p host is
-// created and its stream handlers registered — i.e. before any commit hook
-// (broadcast.go/blockPropagation.go's AdvanceOnCommit) can possibly fire.
-// That ordering, not any locking here, is what makes this race-free: see
-// main.go's call site, placed before node.NewNode.
+// RecoverSlotStoreAtStartup records this node's local committed tip. Call it
+// at startup before the node may vote or propose, and again after any bulk
+// catch-up (EnsureSlotStoreRecovered).
 //
 // getTip must return:
-//   - (tip, nil): a real committed block — its OWN Slot/BlockNumber are
-//     adopted directly (see slot_store.go's SeedFromCommittedTip doc: tipSlot
-//     already equals what AdvanceOnCommit would have produced live).
-//   - (nil, err) wrapping ErrNoCommittedBlock: chain genuinely has no block
-//     yet. Slot 0 is already correct — there is nothing to lose — so this is
-//     treated as ready, but WITHOUT calling SeedFromCommittedTip and without
-//     otherwise touching DefaultSlotStore, so a later real tip (this node's
-//     own first commit, or bulk fast-sync — see EnsureSlotStoreRecovered)
-//     can still seed it correctly. The pre-existing block-height sync gate
+//   - (tip, nil): a real committed block - its height is recorded, and since
+//     the slot is the height, no stored slot field is needed. A tip written
+//     before slots were persisted (Slot 0 at a real height) recovers like any
+//     other.
+//   - (nil, err) wrapping ErrNoCommittedBlock: the chain genuinely has no
+//     block yet. Ready, with nothing recorded; the block-height sync gate
 //     (consensus_sync_gate.go: "a node with no local chain NEVER votes")
-//     independently blocks participation at height 0 regardless, so treating
-//     this as ready here does not open any actual gap.
-//   - (_, other error): a REAL read failure (DB unreachable, corrupt record,
-//     etc). Fails closed — returns the error, does not touch the readiness
-//     gate, so SlotStoreReady() stays false and the caller must not proceed
-//     to start consensus.
-//
-// Also fails closed if the tip names a real height (BlockNumber > 0) but
-// carries no persisted Slot/Period at all: that can only mean either the
-// block predates the ExtraData persistence fix, or the read-back conversion
-// broke — either way, adopting a silent zero here is exactly the bug this
-// function exists to close, so it refuses instead.
+//     still blocks participation at height 0.
+//   - (_, other error): a real read failure (DB unreachable, corrupt record).
+//     Fails closed - returns the error and leaves the readiness gate closed,
+//     so the caller must not start consensus.
 func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 	tip, err := getTip()
 	if err != nil {
 		if errors.Is(err, ErrNoCommittedBlock) {
-			log.Info().Msg("slot recovery: local chain has no committed block yet (genesis or unsynced) — SlotStore starts at slot 0, will be re-seeded once a real tip exists")
+			log.Info().Msg("slot recovery: local chain has no committed block yet (genesis or unsynced) — nothing to record until a real tip exists")
 			MarkSlotStoreReady()
 			return nil
 		}
@@ -139,59 +97,18 @@ func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 	if tip == nil {
 		return fmt.Errorf("slot recovery: getTip returned a nil block with no error — refusing to treat that as success")
 	}
-
-	if tip.BlockNumber > 0 && tip.Slot == 0 && tip.Period == 0 {
-		if !PreSlotMigration {
-			return fmt.Errorf("slot recovery: committed tip at height %d carries no persisted slot/period — cannot safely recover this node's epoch clock; refusing to start consensus until this is investigated (if this chain legitimately predates slot/period persistence, run once with JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1)", tip.BlockNumber)
-		}
-		// One-time pre-slot migration: seed slot = height (see PreSlotMigration
-		// doc for why this is exact, not a guess). Seed via BlockNumber so the
-		// zero Slot field is not adopted silently.
-		if !DefaultSlotStore.SeedFromCommittedTip(tip.BlockNumber, tip.BlockNumber) {
-			return fmt.Errorf("slot recovery: pre-slot migration SeedFromCommittedTip refused — SlotStore already live (startup-ordering bug, not a data problem)")
-		}
-		log.Warn().Uint64("tip_height", tip.BlockNumber).Uint64("seeded_slot", tip.BlockNumber).
-			Msg("slot recovery: PRE-SLOT MIGRATION — tip carries no persisted slot/period; seeding slot = height (one-time, JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1). Unset this flag after the next block commits.")
-		NoteHeightCommitted(tip.BlockNumber)
-		MarkSlotStoreReady()
-		return nil
-	}
-
-	if !DefaultSlotStore.SeedFromCommittedTip(tip.Slot, tip.BlockNumber) {
-		return fmt.Errorf("slot recovery: SeedFromCommittedTip refused — SlotStore is already live; this function must run before any commit hook can fire (startup-ordering bug, not a data problem)")
-	}
-	log.Info().Uint64("tip_height", tip.BlockNumber).Uint64("tip_slot", tip.Slot).Uint64("tip_period", tip.Period).
-		Msg("slot recovery: SlotStore seeded from local committed tip")
 	NoteHeightCommitted(tip.BlockNumber)
+	log.Info().Uint64("tip_height", tip.BlockNumber).Uint64("slot", DefaultSlotStore.Current()).
+		Msg("slot recovery: recorded local committed tip (slot = block number)")
 	MarkSlotStoreReady()
 	return nil
 }
 
-// EnsureSlotStoreRecovered is the idempotent, re-callable form: safe to call
-// again after RecoverSlotStoreAtStartup, in particular after a bulk fast-sync
-// catch-up completes (§7.1's own documented gap: FastsyncV2 bulk writes do
-// NOT go through the live commit hooks, so DefaultSlotStore.haveCommitted
-// stays false throughout a catch-up — there is no live-hook race to guard
-// against here, only a stale "no committed block yet" read from before the
-// catch-up ran).
-//
-// No-ops (returns nil without calling getTip) once DefaultSlotStore is
-// already live (SeedFromCommittedTip would refuse anyway) — this makes it
-// safe to call from every fast-sync/reconcile success path without extra
-// bookkeeping at the call site.
-//
-// Known, disclosed residual: this does not itself prevent a live gossip block
-// from committing (and calling AdvanceOnCommit) in the narrow window between
-// a fast-sync batch finishing and this function's own SeedFromCommittedTip
-// call. Closing that fully needs an explicit lock shared with the commit
-// hooks, which is a larger change than this task's scope; today the risk is
-// bounded by the same block-height sync gate that already blocks voting more
-// than MaxConsensusLagBlocks behind head, so any live block landing in that
-// window necessarily comes from a peer this node is already near-caught-up
-// with.
+// EnsureSlotStoreRecovered re-reads the committed tip and records it. Call it
+// after every bulk catch-up (FastsyncV2 / reconcile), whose block writes do
+// not go through the live commit hooks: it moves the slot store, and the
+// signing ledgers, up to the new tip. Safe to call any number of times and in
+// any order with live commits - recording only ever raises.
 func EnsureSlotStoreRecovered(getTip func() (*config.ZKBlock, error)) error {
-	if DefaultSlotStore.haveCommittedForRecoveryCheck() {
-		return nil
-	}
 	return RecoverSlotStoreAtStartup(getTip)
 }

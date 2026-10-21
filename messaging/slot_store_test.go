@@ -1,10 +1,8 @@
 package messaging
 
-// Tests for M0.1 (Architecture §7.1, monotonic slot counter) and M3
-// (Architecture §3.1/§9.1, EpochForSlot). Required acceptance criteria per
-// §9.1's build table:
-//  - M0.1: "slot advances on commit AND on timeout; never skips backwards"
-//  - M3:   "epoch boundary exactly at E*N; test slots E*N-1 and E*N"
+// Tests for the slot rule (slot == block number) and M3 (Architecture
+// §3.1/§9.1, EpochForSlot): "epoch boundary exactly at E*N; test slots
+// E*N-1 and E*N".
 
 import "testing"
 
@@ -15,64 +13,44 @@ func TestSlotStoreStartsAtZero(t *testing.T) {
 	}
 }
 
-// TestAdvanceOnCommit_NoTimeouts is the simple case: a height that committed
-// on its first try (period 0) advances slot by exactly 1 - one unit for the
-// commit, zero for timeouts.
-func TestAdvanceOnCommit_NoTimeouts(t *testing.T) {
+// Committing a height moves the store to that height's slot - the height.
+func TestAdvanceOnCommit_SlotIsTheHeight(t *testing.T) {
 	s := NewSlotStore()
-	newSlot, advanced := s.AdvanceOnCommit(0, 0)
-	if !advanced || newSlot != 1 {
-		t.Fatalf("expected advanced=true slot=1, got advanced=%v slot=%d", advanced, newSlot)
+	if slot, advanced := s.AdvanceOnCommit(0); !advanced || slot != 0 {
+		t.Fatalf("genesis commit: advanced=%v slot=%d, want true,0", advanced, slot)
+	}
+	if slot, advanced := s.AdvanceOnCommit(1); !advanced || slot != 1 {
+		t.Fatalf("height 1: advanced=%v slot=%d, want true,1", advanced, slot)
 	}
 }
 
-// TestAdvanceOnCommit_FoldsInTimeoutHistory is the case the whole design
-// exists for: a height that burned 2 certified timeouts before finally
-// committing must advance slot by 3 (2 timeouts + 1 commit), not by 1 - a
-// stalled-then-recovered round must not be invisible to the epoch clock.
-func TestAdvanceOnCommit_FoldsInTimeoutHistory(t *testing.T) {
+// A node that catches up jumps straight to the synced tip; nothing in between
+// has to be replayed.
+func TestAdvanceOnCommit_CatchUpJumpsToTheTip(t *testing.T) {
 	s := NewSlotStore()
-	newSlot, advanced := s.AdvanceOnCommit(0, 2)
-	if !advanced || newSlot != 3 {
-		t.Fatalf("expected advanced=true slot=3 (period 2 + 1 commit), got advanced=%v slot=%d", advanced, newSlot)
+	s.AdvanceOnCommit(19_900)
+	if slot, advanced := s.AdvanceOnCommit(20_000); !advanced || slot != 20_000 {
+		t.Fatalf("after catching up to 20000: advanced=%v slot=%d, want true,20000", advanced, slot)
 	}
 }
 
-// TestAdvanceOnCommit_SequentialHeights confirms slot accumulates correctly
-// across multiple real heights, not just one in isolation.
-func TestAdvanceOnCommit_SequentialHeights(t *testing.T) {
-	s := NewSlotStore()
-	s.AdvanceOnCommit(0, 0) // slot -> 1
-	s.AdvanceOnCommit(1, 1) // slot -> 1 + 2 = 3
-	newSlot, advanced := s.AdvanceOnCommit(2, 0)
-	if !advanced || newSlot != 4 {
-		t.Fatalf("expected advanced=true slot=4 after heights [0,1,2], got advanced=%v slot=%d", advanced, newSlot)
-	}
-}
-
-// TestAdvanceOnCommit_DuplicateHeightIsNoOp is required: a node's own
-// broadcast block echoing back through its own gossip receive path (or any
-// other double-delivery) must not double-advance the counter.
+// A node's own broadcast block echoing back through gossip (or any other
+// double delivery) must not move the store.
 func TestAdvanceOnCommit_DuplicateHeightIsNoOp(t *testing.T) {
 	s := NewSlotStore()
-	s.AdvanceOnCommit(5, 1) // slot -> 2
-
-	newSlot, advanced := s.AdvanceOnCommit(5, 1) // same height redelivered
-	if advanced || newSlot != 2 {
-		t.Fatalf("duplicate height must be a no-op, got advanced=%v slot=%d", advanced, newSlot)
+	s.AdvanceOnCommit(5)
+	if slot, advanced := s.AdvanceOnCommit(5); advanced || slot != 5 {
+		t.Fatalf("duplicate height must be a no-op, got advanced=%v slot=%d", advanced, slot)
 	}
 }
 
-// TestAdvanceOnCommit_NeverSkipsBackwards is the §9.1 acceptance criterion,
-// stated directly: an out-of-order (older) height arriving after a newer one
-// must never regress the counter.
-func TestAdvanceOnCommit_NeverSkipsBackwards(t *testing.T) {
+// An older height arriving after a newer one - a sync batch and a live commit
+// racing - never regresses the store.
+func TestAdvanceOnCommit_NeverGoesBackwards(t *testing.T) {
 	s := NewSlotStore()
-	s.AdvanceOnCommit(10, 0) // slot -> 1, lastCommittedHeight -> 10
-
-	newSlot, advanced := s.AdvanceOnCommit(3, 5) // stale/out-of-order height 3
-	if advanced || newSlot != 1 {
-		t.Fatalf("an older height must never regress or re-advance slot, got advanced=%v slot=%d", advanced, newSlot)
+	s.AdvanceOnCommit(10)
+	if slot, advanced := s.AdvanceOnCommit(3); advanced || slot != 10 {
+		t.Fatalf("an older height must never regress the store, got advanced=%v slot=%d", advanced, slot)
 	}
 }
 
@@ -97,18 +75,34 @@ func TestEpochForSlot_BoundaryExactlyAtEN(t *testing.T) {
 	}
 }
 
-// TestLiveSlotFor_FreshHeightAfterCleanCommits is the simple case: after N
-// heights committed with no timeouts, the NEXT height's live slot is exactly
-// one more than the last committed slot.
-func TestLiveSlotFor_FreshHeightAfterCleanCommits(t *testing.T) {
-	saved := DefaultSlotStore
-	DefaultSlotStore = NewSlotStore()
-	t.Cleanup(func() { DefaultSlotStore = saved })
+// The slot a block carries is its height - independent of the committed store
+// and of how many rounds failed at that height.
+func TestLiveSlotFor_IsTheHeight(t *testing.T) {
+	savedSlots, savedPeriods := DefaultSlotStore, DefaultProposerPeriods
+	DefaultSlotStore, DefaultProposerPeriods = NewSlotStore(), NewProposerPeriods()
+	t.Cleanup(func() { DefaultSlotStore, DefaultProposerPeriods = savedSlots, savedPeriods })
 
-	DefaultSlotStore.AdvanceOnCommit(0, 0) // slot -> 1
-	DefaultSlotStore.AdvanceOnCommit(1, 0) // slot -> 2
+	DefaultSlotStore.AdvanceOnCommit(1)
+	if got := LiveSlotFor(2); got != 2 {
+		t.Fatalf("LiveSlotFor(2) = %d, want 2", got)
+	}
+	DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
+	DefaultProposerPeriods.AdvanceAfterFailure(2, 7)
+	if got := LiveSlotFor(2); got != 2 {
+		t.Fatalf("after two failed rounds LiveSlotFor(2) = %d, want 2 (the retry shares the slot)", got)
+	}
+}
 
-	if got := LiveSlotFor(2); got != 3 {
-		t.Fatalf("LiveSlotFor(2) = %d, want 3 (committed slot 2, no pending timeouts)", got)
+// A height's epoch boundary block sits exactly at slot E*N, whatever retries
+// happened before it, so the boundary block is always height E*N.
+func TestLiveSlotFor_EpochBoundaryIsHeightEN(t *testing.T) {
+	for _, e := range []uint64{1, 2, 400} {
+		h := EpochBoundarySlot(e)
+		if got := EpochForSlot(LiveSlotFor(h)); got != e {
+			t.Fatalf("height %d: epoch %d, want %d", h, got, e)
+		}
+		if got := EpochForSlot(LiveSlotFor(h - 1)); got != e-1 {
+			t.Fatalf("height %d: epoch %d, want %d", h-1, got, e-1)
+		}
 	}
 }

@@ -47,11 +47,11 @@ type BlockByHeightFn func(height uint64) (*config.ZKBlock, error)
 
 // maxRecoveryScanBlocks bounds the backward walk.
 //
-// The window is at most FallbackFoldMaxSlotOffset slots wide, and a block
-// advances the slot counter by period+1 — so with timeouts, one slot can cost
-// several heights. This cap keeps a pathological chain (or a corrupt slot
-// field) from turning startup into an unbounded scan. Generous by design:
-// exceeding it is a diagnostic, not a normal condition.
+// The window is at most FallbackFoldMaxSlotOffset slots wide and a block's
+// slot is its block number, so a well-formed chain needs only a handful of
+// blocks. This cap keeps a pathological chain (or a corrupt slot field) from
+// turning startup into an unbounded scan. Generous by design: exceeding it is
+// a diagnostic, not a normal condition.
 const maxRecoveryScanBlocks = 512
 
 // RecoverAggSigStoreAtStartup replays committed blocks whose parent slots fall
@@ -115,10 +115,10 @@ func RecoverAggSigStoreAtStartup(currentSlot, tipHeight uint64, getBlock BlockBy
 		return 0, fmt.Errorf("fallback recovery: computing collection bounds for epoch %d: %w", epoch, berr)
 	}
 
-	// Walk backwards from the tip. Each block carries its OWN slot, so the
-	// slot->height mapping is read, never computed: AdvanceOnCommit does
-	// `slot += period + 1`, so slots and heights are not 1:1 across a round
-	// that timed out, and any arithmetic reconstruction would silently drift.
+	// Walk backwards from the tip, reading each block's OWN slot. Slot equals
+	// the block number on every block stamped by the current rule; reading
+	// the stored value rather than assuming it keeps pre-slot history (Slot
+	// 0) out of the window.
 	scanned := 0
 	for h := tipHeight; h > 0 && scanned < maxRecoveryScanBlocks; h-- {
 		scanned++
@@ -132,12 +132,12 @@ func RecoverAggSigStoreAtStartup(currentSlot, tipHeight uint64, getBlock BlockBy
 		}
 
 		// VerifyAndRecordPrevCert records against the PARENT's slot
-		// (block.Slot - (block.Period + 1)), so that is what decides whether
-		// this block contributes to the window.
-		if block.Slot == 0 || block.Slot < block.Period+1 {
+		// (block.Slot - 1: slot is the block number), so that is what decides
+		// whether this block contributes to the window.
+		if block.Slot == 0 {
 			continue
 		}
-		prevSlot := block.Slot - (block.Period + 1)
+		prevSlot := block.Slot - 1
 
 		// Below the window and walking backwards — everything earlier is older
 		// still, so stop rather than scan the rest of the chain.

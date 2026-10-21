@@ -947,6 +947,10 @@ func (r *thebeReader) CountTransactionsByAddress(ctx context.Context, address st
 	return n, nil
 }
 
+// maxTxRefsPrealloc bounds the slice pre-allocation in
+// GetTransactionRefsByAddress.
+const maxTxRefsPrealloc = 1000
+
 // GetTransactionRefsByAddress returns one page of (tx_hash, block_number)
 // for address, newest first. offset/limit follow SQL semantics.
 func (r *thebeReader) GetTransactionRefsByAddress(ctx context.Context, address string, limit, offset int) ([]TxRef, error) {
@@ -965,7 +969,18 @@ func (r *thebeReader) GetTransactionRefsByAddress(ctx context.Context, address s
 		return nil, fmt.Errorf("GetTransactionRefsByAddress: query: %w", err)
 	}
 	defer rows.Close()
-	out := make([]TxRef, 0, limit)
+	// limit is a caller-supplied page size: pre-size from it only up to a
+	// bound (append grows past it if a large page really has more rows), so an
+	// oversized limit cannot force a huge allocation and a negative one cannot
+	// panic make.
+	capHint := limit
+	if capHint < 0 {
+		capHint = 0
+	}
+	if capHint > maxTxRefsPrealloc {
+		capHint = maxTxRefsPrealloc
+	}
+	out := make([]TxRef, 0, capHint)
 	for rows.Next() {
 		var ref TxRef
 		if err := rows.Scan(&ref.TxHash, &ref.BlockNumber); err != nil {

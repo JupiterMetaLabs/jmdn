@@ -31,8 +31,7 @@ const (
 // MaxPeriod is the highest Period any block may carry. The proposer chooses a
 // height's Period (one more after each failed round) and every other node
 // takes it from the block, so this cap is what stops a buggy or compromised
-// proposer from stamping an absurd value - which would also push the block's
-// Slot, and with it the entropy epoch, arbitrarily far ahead. At roughly one
+// proposer from stamping an absurd value. At roughly one
 // minute per failed round, 1024 is about 17 hours of continuous failure at a
 // single height. Enforced by the proposer (ProposerPeriods), the buddy signer,
 // the live receive path (linkageDecision) and ThebeSync
