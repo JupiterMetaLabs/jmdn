@@ -41,11 +41,11 @@ func DefaultConfig() NodeConfig {
 			Profiler: 0, // disabled
 		},
 		Binds: BindSettings{
-			API:        "0.0.0.0",   // Public data access
+			API:        "127.0.0.1", // Explorer/data API; expose deliberately via YAML
 			BlockGen:   "127.0.0.1", // Admin - Block generation
-			BlockGRPC:  "0.0.0.0",   // P2P - Block propagation
+			BlockGRPC:  "127.0.0.1", // Block ingest gRPC (orchestrator); no auth by default
 			CLI:        "127.0.0.1", // Admin - CLI control
-			DID:        "0.0.0.0",   // Identity Service
+			DID:        "127.0.0.1", // Identity service; no auth by default
 			Facade:     "0.0.0.0",   // Public RPC
 			ThebeDebug: "127.0.0.1", // Internal debug APIs
 			WS:         "0.0.0.0",   // Public WS

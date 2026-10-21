@@ -33,12 +33,16 @@ func gatekeeperServiceBind(b BindSettings) map[string]string {
 		ServiceDID:             b.DID,      // identity service
 		ServiceCLI:             b.CLI,      // admin CLI (loopback)
 		ServiceEthGRPC:         b.Geth,     // eth gRPC (loopback)
+		// Block ingest gRPC (Block/grpc_server.go): a plain gRPC listener that
+		// accepts proposed blocks from the orchestrator and starts consensus on
+		// them. It is NOT a libp2p surface, so nothing but its policy
+		// authenticates a caller; exposed with auth_type none it lets anyone
+		// propose blocks.
+		ServiceBlockIngestGRPC: b.BlockGRPC,
 	}
-	// Deliberately EXCLUDED: block_ingest_grpc and the BFT buddy/sequencer paths.
-	// Those are consensus/P2P surfaces authenticated by libp2p transport + committee
-	// BLS, NOT by the gatekeeper — auth_type=none there is correct, so bind-based
-	// flagging would be a false positive. mempool is a client dial target, not a
-	// local bind. If any of these later gains a gatekeeper HTTP surface, add it here.
+	// Deliberately EXCLUDED: the BFT buddy/sequencer paths, authenticated by
+	// libp2p transport + committee BLS rather than the gatekeeper. mempool is a
+	// client dial target, not a local bind.
 }
 
 // isLoopbackBind reports whether a bind address is loopback-only (not remotely
@@ -117,14 +121,14 @@ func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
 // the caller lets the node log every violation before deciding whether to abort.
 func (c *NodeConfig) ValidateSecurityPosture() error {
 	v := c.InsecurePublicServices()
-	if len(v) == 0 || !c.Security.StrictPosture {
+	if len(v) == 0 || !c.ProductionPosture() {
 		return nil
 	}
 	names := make([]string, len(v))
 	for i := range v {
 		names[i] = v[i].String()
 	}
-	return fmt.Errorf("SEC-03 fail-closed (security.strict_posture=true): unauthenticated public service(s): %s — set auth_type token/mtls for each, or clear strict_posture to run open", strings.Join(names, "; "))
+	return fmt.Errorf("SEC-03 fail-closed (production posture: security.strict_posture or network.environment=mainnet): unauthenticated public service(s): %s — set auth_type token/mtls for each or bind it to 127.0.0.1", strings.Join(names, "; "))
 }
 
 // knownDefaultDBPasswords are credentials that have shipped in this repository's

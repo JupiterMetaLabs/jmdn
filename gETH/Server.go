@@ -42,7 +42,7 @@ func StartGRPC(port int, chainID int) error {
 		}
 	}
 	// Create a listener on the specified port
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lis, err := net.Listen("tcp", settings.ListenAddr(func(b settings.BindSettings) string { return b.Geth }, port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
