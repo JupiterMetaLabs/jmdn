@@ -2,14 +2,32 @@ package messaging
 
 import (
 	"context"
+	"strings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/internal/l1auth"
 	"gossipnode/metrics"
 )
+
+// pinnedSequencerID reads consensus.sequencer_pinned_peer_id.
+//
+// Lives here because this file is its only remaining caller. It was defined in
+// messaging/timeout_request.go until 94e8fb6 (#196) deleted that file with the
+// rest of the timeout-certificate flow, without updating blockSenderPin below —
+// which left v3base unable to compile ("undefined: pinnedSequencerID"). Restored
+// rather than dropped: blockSenderPin is live security logic, so removing the
+// call site would have turned the pinned-sequencer check off instead of fixing
+// the build.
+func pinnedSequencerID() string {
+	if !settings.IsLoaded() {
+		return ""
+	}
+	return strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID)
+}
 
 // blockSenderPin returns the pinned sequencer peer ID. A variable so tests can
 // set it without a config file.
