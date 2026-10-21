@@ -217,8 +217,12 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 // Execution
 // ============================================================================
 
-// ExecuteContract executes a contract function (state-changing).
-// Each call gets its own fresh StateDB so concurrent requests don't race on shared state.
+// ExecuteContract simulates a contract function call against current state and
+// returns its result. Nothing is persisted: the caller is not authenticated and
+// the call does not go through consensus, so committing its writes would let any
+// client change contract state on this node alone. State changes must be
+// submitted as signed transactions. Each call gets its own fresh StateDB so
+// concurrent requests don't race on shared state.
 func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContractRequest) (*proto.ExecutionResult, error) {
 	logger().Info(ctx, "Executing contract",
 		ion.String("caller", req.Caller),
@@ -266,12 +270,9 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 		}, nil
 	}
 
-	// Persist changes
-	if _, err := stateDB.CommitToDB(false); err != nil {
-		logger().Error(ctx, "Failed to commit state changes", err)
-	}
+	// Deliberately no CommitToDB: the per-request StateDB is discarded.
 
-	logger().Info(ctx, "Contract executed successfully",
+	logger().Info(ctx, "Contract execution simulated",
 		ion.Uint64("gas_used", result.GasUsed),
 		ion.Int("return_data_size", len(result.ReturnData)))
 
