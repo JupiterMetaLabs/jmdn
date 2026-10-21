@@ -275,6 +275,15 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			messaging.RecoverVDFProofFromPeers(h, peers, forEpoch, boundarySlot)
 		}()
 	})
+	// NOTE: three places register a handler for config.BuddyNodesMessageProtocol
+	// (node.NewNode, Pubsub.NewGossipPubSub via initPubSub, MessagePassing.NewBuddyNode)
+	// and libp2p keeps only the latest one. Between boot and the first
+	// NewBuddyNode call the custom gossip handler owns the protocol; afterwards
+	// the buddy handler does, and gossip-format messages on it (the custom-gossip
+	// fallback in Publisher.Publish, and the currently unused AVC/BFT adapter)
+	// are dropped. Live votes use SubmitMessageProtocol and consensus pubsub uses
+	// libp2p GossipSub topics, so neither depends on which handler wins. Route both
+	// formats through one handler before relying on either path.
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, saferun.Stream(string(config.BuddyNodesMessageProtocol), func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	}))

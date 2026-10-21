@@ -804,6 +804,15 @@ func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 	fmt.Println("Initializing PubSub system...")
 
+	// NOTE: three places register a handler for config.BuddyNodesMessageProtocol
+	// (node.NewNode, Pubsub.NewGossipPubSub via initPubSub, MessagePassing.NewBuddyNode)
+	// and libp2p keeps only the latest one. Between boot and the first
+	// NewBuddyNode call the custom gossip handler owns the protocol; afterwards
+	// the buddy handler does, and gossip-format messages on it (the custom-gossip
+	// fallback in Publisher.Publish, and the currently unused AVC/BFT adapter)
+	// are dropped. Live votes use SubmitMessageProtocol and consensus pubsub uses
+	// libp2p GossipSub topics, so neither depends on which handler wins. Route both
+	// formats through one handler before relying on either path.
 	// Create a protocol ID for PubSub (using the consensus channel name as protocol)
 	pubSubProtocol := config.BuddyNodesMessageProtocol
 
