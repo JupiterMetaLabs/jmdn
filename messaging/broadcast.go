@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
@@ -420,6 +421,67 @@ func BroadcastMessage(h host.Host, content string) error {
 	return nil
 }
 
+// voteTriggerWindowBehind is a one-block buffer below the local tip: the tip
+// can advance between a caller reading it and this check running, and a
+// trigger for the height that just committed should not be penalized for
+// that race.
+const voteTriggerWindowBehind = 1
+
+// voteTriggerInWindow reports whether a vote trigger's claimed block number n
+// is close enough to this node's local tip to be worth caching and acting
+// on. The ahead bound must cover MessagePassing.MaxConsensusLagBlocks: a node
+// allowed to lag that far behind the real head can still legitimately
+// receive a trigger for (its own local tip) + MaxConsensusLagBlocks + 1, so a
+// window that stopped at +MaxConsensusLagBlocks would reject a
+// still-eligible lagging voter, not just an attacker. Pure function so the
+// boundary cases are table-testable without any network or handler setup.
+func voteTriggerInWindow(tip, n uint64) bool {
+	ahead := MessagePassing.MaxConsensusLagBlocks + 1
+	if n > tip+ahead {
+		return false
+	}
+	if tip > voteTriggerWindowBehind && n < tip-voteTriggerWindowBehind {
+		return false
+	}
+	return true
+}
+
+// admitVoteTrigger decides whether a vote trigger's consensus message should
+// be acted on at all, before any ForListner/buddy-list work runs. This
+// handler has no sender authentication (msg.Sender is attacker-controlled),
+// and everything past this point — including the cache insert — assumes a
+// real ZKBlock close to the local tip. A nil block would otherwise reach an
+// unguarded dereference further down the vote path, and an implausible
+// height would let any peer grow the consensus-message cache with garbage
+// keyed far from anything a round ever needs.
+//
+// tipErr is passed in rather than re-read here so the window check can be
+// skipped (not failed closed) when the tip genuinely could not be read: the
+// cache's own size cap bounds memory regardless, and a transient read
+// failure must not itself block legitimate vote participation. Pure modulo
+// its one side effect (pruning stale cache entries on acceptance), so it is
+// directly testable without any handler, network, or ForListner setup.
+func admitVoteTrigger(cm *PubSubMessages.ConsensusMessage, tip uint64, tipErr error) bool {
+	zkBlock := cm.GetZKBlock()
+	if zkBlock == nil {
+		return false
+	}
+	if tipErr != nil {
+		return true
+	}
+	if !voteTriggerInWindow(tip, zkBlock.BlockNumber) {
+		return false
+	}
+	// Prune anything the cache is still holding below the window's low bound
+	// before this message is inserted: a stale entry left over from an
+	// earlier round should not occupy a slot an attacker could otherwise be
+	// blamed for filling.
+	if tip > voteTriggerWindowBehind {
+		PubSubMessages.PruneConsensusMessagesBelow(tip - voteTriggerWindowBehind)
+	}
+	return true
+}
+
 // handleVoteTriggerBroadcast processes vote trigger broadcast messages
 func handleVoteTriggerBroadcast(msg BroadcastMessageStruct, from peer.ID) {
 	broadcastLogger().Info(context.Background(), "Processing vote trigger broadcast",
@@ -457,6 +519,20 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct, from peer.ID) {
 		metrics.BlocksRejectedCounter.WithLabelValues("vote_trigger_malformed", "remote").Inc()
 		broadcastLogger().Warn(context.Background(), "Dropping malformed vote trigger",
 			ion.Err(err), ion.String("from", from.String()), ion.String("msg_id", msg.ID))
+		return
+	}
+
+	tip, tipErr := readLocalTip(context.Background())
+	if !admitVoteTrigger(&consensusMessage, tip, tipErr) {
+		broadcastLogger().Warn(context.Background(), "Dropping vote trigger (nil block or out of window)",
+			ion.Uint64("block_number", func() uint64 {
+				if b := consensusMessage.GetZKBlock(); b != nil {
+					return b.BlockNumber
+				}
+				return 0
+			}()),
+			ion.Uint64("tip", tip),
+			ion.String("msg_id", msg.ID))
 		return
 	}
 

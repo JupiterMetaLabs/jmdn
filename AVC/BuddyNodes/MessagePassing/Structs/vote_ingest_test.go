@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	ingestChainID   = uint64(7100700)
-	ingestHeight    = uint64(9500)
-	ingestBlockHash = "0xingest"
+	ingestChainID       = uint64(7100700)
+	ingestHeight        = uint64(9500)
+	ingestBlockHash     = "0xingest"
+	ingestConsensusHash = "0xingest-consensus-hash"
 )
 
 func ingestTestPeer(t *testing.T) peer.ID {
@@ -62,7 +63,7 @@ func ingestWireVote(t *testing.T, vote int8, height uint64, blockHash string, si
 	v := PubSubMessages.Vote{Vote: vote, BlockHash: blockHash, Height: height}
 	if sign {
 		t.Setenv("JMDN_BLS_AUTOGEN", "1")
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, ingestChainID, height, blockHash, "")
+		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, ingestChainID, height, blockHash, ingestConsensusHash)
 		if err != nil || !signed {
 			t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
 		}

@@ -709,7 +709,7 @@ func DialTargetsForRound(seated []committee.Member, selfPeerID string) []committ
 // code rejects. Behaviour must be identical, so the original is verified.
 type blsVerifier struct {
 	bindings      string
-	consensusHash string // v4 binding; empty => v3 (block hash only)
+	consensusHash string // must be non-empty — VerifyForBlock rejects an empty ConsensusHash
 	orig          map[string]BLS_Signer.BLSresponse
 }
 
