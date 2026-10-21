@@ -86,8 +86,7 @@ func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub) *SubscriptionService
 
 // HandleAskForSubscription handles subscription requests
 func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.GossipMessage) error {
-	logger_ctx := context.WithValue(context.Background(), "logger", logger)
-	defer logger_ctx.Done()
+	logger_ctx := context.Background()
 	// start trace
 	tracer := logger().Tracer("SubscriptionService")
 	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionService.HandleAskForSubscription")
@@ -133,8 +132,7 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.
 
 // HandleEndPubSub handles unsubscription requests
 func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMessage) error {
-	logger_ctx := context.WithValue(context.Background(), "logger", logger)
-	defer logger_ctx.Done()
+	logger_ctx := context.Background()
 	logger().Info(logger_ctx, "Handling end pubsub message",
 		ion.String("channel", config.PubSub_ConsensusChannel),
 		ion.String("topic", log.SubscriptionService),

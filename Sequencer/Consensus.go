@@ -1493,8 +1493,6 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		logger().Debug(trace_ctx, "Processing vote", ion.Int("vote_index", i+1))
 		logger().Debug(trace_ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
 		logger().Debug(trace_ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
-		if i < len(votes)-1 {
-		}
 	}
 
 	span.SetAttributes(

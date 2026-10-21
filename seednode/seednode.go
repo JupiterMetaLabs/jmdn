@@ -130,7 +130,7 @@ func NewClient(seedNodeURL string) (*Client, error) {
 	}
 
 	// Create gRPC connection with appropriate credentials
-	conn, err := grpc.Dial(seedNodeURL, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(seedNodeURL, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to seed node: %w", err)
 	}

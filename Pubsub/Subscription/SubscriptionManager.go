@@ -377,7 +377,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 		managed.cancel()
 	}
 	// Close the topic to free resources
-	if managed.pubsubTopic != nil {
+	if managed.pubsubTopic != nil && sm.gps != nil {
 		if err := sm.gps.CloseTopic(topic); err != nil {
 			logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic",
 				ion.String("topic", topic),

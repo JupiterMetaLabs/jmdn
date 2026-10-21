@@ -2052,7 +2052,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 				}
 				matched += "pubsub"
 			}
-			logger().Info(context.Background(), "⚠️ Filtering out self: %s (matches %s)")
+			logger().Info(context.Background(), "Filtering out self",
+				ion.String("buddy", buddyIDStr), ion.String("matches", matched))
 		}
 	}
 
