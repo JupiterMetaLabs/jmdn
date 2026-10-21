@@ -101,14 +101,62 @@ func (consensusMessage *ConsensusMessage) GetStartTime() time.Time {
 	return consensusMessage.StartTime
 }
 
+// MaxCachedConsensusMessages bounds cacheConsensuMessage: it has no
+// caller-supplied authentication and previously had no eviction, so an
+// attacker choosing an arbitrary block hash could otherwise grow it without
+// limit. On overflow the entry with the HIGHEST BlockNumber is evicted, not
+// the lowest: the handler that feeds this cache also enforces a tight
+// ahead/behind window around the local tip before ever calling this setter,
+// so the legitimate in-flight proposal is almost always the LOWEST height
+// present (closest to the tip that just committed), while an attacker
+// flooding the window has to reach for the window's upper edge to do it.
+// Evicting the lowest would let that flood push the honest entry out first;
+// evicting the highest instead confines an attacker to spamming at the exact
+// same height as the honest proposal, which needs sender authentication to
+// close fully (not yet built).
+const MaxCachedConsensusMessages = 6
+
 func (consensusMessage *ConsensusMessage) SetGloalVarCacheConsensusMessage() *ConsensusMessage {
 	if consensusMessage.ZKBlock == nil {
 		return consensusMessage // never key on a nil block (audit NET-01 deref)
 	}
+	key := consensusMessage.ZKBlock.BlockHash.String()
 	cacheMu.Lock()
-	cacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()] = consensusMessage
+	if _, exists := cacheConsensuMessage[key]; !exists && len(cacheConsensuMessage) >= MaxCachedConsensusMessages {
+		var worstKey string
+		var worstHeight uint64
+		first := true
+		for k, v := range cacheConsensuMessage {
+			h := uint64(0)
+			if v != nil && v.ZKBlock != nil {
+				h = v.ZKBlock.BlockNumber
+			}
+			if first || h > worstHeight {
+				worstKey, worstHeight, first = k, h, false
+			}
+		}
+		if worstKey != "" {
+			delete(cacheConsensuMessage, worstKey)
+		}
+	}
+	cacheConsensuMessage[key] = consensusMessage
 	cacheMu.Unlock()
 	return consensusMessage
+}
+
+// PruneConsensusMessagesBelow removes every cached entry whose ZKBlock height
+// is strictly below minHeight. Callers use this to clear stale entries left
+// over from an earlier round before a new one can be crowded out by them —
+// a cache slot a stale entry still holds is one less slot available to the
+// current round, with no eviction needed to reclaim it.
+func PruneConsensusMessagesBelow(minHeight uint64) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	for k, v := range cacheConsensuMessage {
+		if v == nil || v.ZKBlock == nil || v.ZKBlock.BlockNumber < minHeight {
+			delete(cacheConsensuMessage, k)
+		}
+	}
 }
 
 // __DEAD_CODE_AUDIT_PUBLIC__

@@ -119,18 +119,33 @@ func signedTx(t *testing.T, key *ecdsa.PrivateKey, nonce uint64) config.Transact
 }
 
 // blockBoundCert returns a Data map with a certificate of block-bound +1 votes,
-// one per PeerID, signed over the block's hash AND at the block's BlockNumber
-// (v3). verifyBlockCertificate verifies each vote at msg.Block.BlockNumber, so
-// the cert must be signed at that height — passing the block keeps the two in
-// lock-step for blocks at any height.
+// one per PeerID, signed over the block's hash, ConsensusHash AND at the
+// block's BlockNumber. verifyBlockCertificate verifies each vote against
+// msg.Block.ConsensusHashHex(), so the cert must be signed with that SAME
+// value — if the block carries a real, independently-computed ConsensusHash
+// (e.g. set via Security.RecomputeBlockHashWithConsensusFields, to also
+// satisfy checkConsensusBinding) that real value is used; otherwise it falls
+// back to testBlockConsensusHash, matching blockVoteAt's own default.
 func blockBoundCert(t *testing.T, block *config.ZKBlock, peerIDs ...string) map[string]string {
 	t.Helper()
-	return blockBoundCertH(t, block.BlockHash.Hex(), block.BlockNumber, peerIDs...)
+	ch := block.ConsensusHashHex()
+	if ch == "" {
+		ch = testBlockConsensusHash
+	}
+	return blockBoundCertWithHash(t, block.BlockHash.Hex(), ch, block.BlockNumber, peerIDs...)
 }
 
-// blockBoundCertH signs the certificate over an explicit hash and height, for
-// tests that verify at height 0 or over a hash with no backing block value.
+// blockBoundCertH signs the certificate over an explicit hash and height
+// (bound to testBlockConsensusHash), for tests that verify at height 0 or
+// over a hash with no backing block value.
 func blockBoundCertH(t *testing.T, blockHashHex string, height uint64, peerIDs ...string) map[string]string {
+	t.Helper()
+	return blockBoundCertWithHash(t, blockHashHex, testBlockConsensusHash, height, peerIDs...)
+}
+
+// blockBoundCertWithHash is the shared implementation behind blockBoundCert
+// and blockBoundCertH, parameterized on the ConsensusHash to sign against.
+func blockBoundCertWithHash(t *testing.T, blockHashHex, consensusHashHex string, height uint64, peerIDs ...string) map[string]string {
 	t.Helper()
 	var resps []BLS_Signer.BLSresponse
 	for _, pid := range peerIDs {
@@ -138,7 +153,7 @@ func blockBoundCertH(t *testing.T, blockHashHex string, height uint64, peerIDs .
 		if !ok {
 			t.Fatalf("blockBoundCert: %q is not in the default test committee (peerA/peerB/peerC)", pid)
 		}
-		resps = append(resps, mem.blockVoteAt(t, blockHashHex, 1, height))
+		resps = append(resps, mem.blockVoteAtWithHash(t, blockHashHex, consensusHashHex, 1, height))
 	}
 	b, err := json.Marshal(resps)
 	if err != nil {
@@ -183,7 +198,7 @@ func TestVerifyBlockCertificate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := config.BlockMessage{Block: &config.ZKBlock{BlockHash: hash}, Data: tc.data}
+			msg := config.BlockMessage{Block: &config.ZKBlock{BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}, Data: tc.data}
 			rej := verifyBlockCertificate(msg)
 			if tc.wantReason == "" {
 				if rej != nil {
