@@ -50,7 +50,8 @@ GO_INSTALL_DIR="/usr/local"
 GO_FALLBACK_VER="1.25.3"
 YGG_FALLBACK_VER="0.5.12"
 PG_APP_USER="${PG_APP_USER:-thebedb}"
-PG_APP_PASSWORD="${PG_APP_PASSWORD:-thebedb}"
+# No shared default password: generate a unique one unless the caller sets it.
+PG_APP_PASSWORD="${PG_APP_PASSWORD:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
 PG_APP_DB="${PG_APP_DB:-thebedb}"
 PG_APP_PORT="${PG_APP_PORT:-5430}"
 
