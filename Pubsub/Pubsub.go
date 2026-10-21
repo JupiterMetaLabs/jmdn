@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"io"
 	"log"
 	"sync"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
 	Publisher "gossipnode/Pubsub/Publish"

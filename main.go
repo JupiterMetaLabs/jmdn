@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"io"
 	"math/big"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+
+	"gossipnode/internal/saferun"
 
 	"syscall"
 	"time"

@@ -5,9 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"os"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"

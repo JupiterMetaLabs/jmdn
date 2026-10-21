@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"log"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	"gossipnode/config"
 	"gossipnode/config/GRO"

@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"strings"
 	"sync"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"

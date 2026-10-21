@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"gossipnode/config/settings"
 	"math"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"gossipnode/config/settings"
 
 	"github.com/rs/zerolog/log"
 

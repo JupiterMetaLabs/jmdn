@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"log"
 	"strings"
 	"sync"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	database "gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"

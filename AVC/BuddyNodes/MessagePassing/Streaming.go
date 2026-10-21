@@ -3,8 +3,9 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"

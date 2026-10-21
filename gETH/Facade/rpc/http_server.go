@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gossipnode/internal/saferun"
 	"net/http"
 	"sync"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
