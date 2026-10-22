@@ -83,7 +83,7 @@ behind. `FastsyncV2/` holds the full-sync engine, currently disabled by default
 | Execution | `SmartContract/`, `execbridge/` |
 | APIs | `gETH/` (JSON-RPC 8545, WebSocket 8546, gRPC), `Block/` (HTTP + gRPC), `explorer/`, `CLI/`, `DID/`, `txstatus/` |
 | Peer registry | `seednode/` (registration, committee snapshots, reputation push), `internal/reputation/` |
-| Security plumbing | `pkg/gatekeeper/` (auth tokens, rate limits, TLS), `CA/` |
+| Security plumbing | `pkg/gatekeeper/` (auth and admin tokens, rate limits, TLS), `CA/` |
 | Cross-cutting | `config/` (settings, protocol IDs, pubsub topics), `logging/`, `metrics/`, `shutdown/`, `profiler/`, `helper/` |
 
 ## Configuration
