@@ -178,6 +178,46 @@ sudo rm /opt/jmdn/.bootstrapped
 sudo SNAPSHOT_SHA256=<sha256> ./Scripts/bootstrap_sync.sh
 ```
 
+On the sequencer, a snapshot older than the node's last checkpoint will not
+boot: `checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`)
+remembers the highest checkpoint and the boot check treats an older store as a
+rollback. After a deliberate restore, delete that file (and lower
+`checkpoint.min_seq` if you set it) before starting the node.
+
+### Sequencer checkpoints
+
+The sequencer signs a chain-head checkpoint once per committee epoch with its
+own BLS key, and every boot verifies the latest one against that key. Nothing
+needs to be configured. Two optional hardening steps:
+
+- `checkpoint.signer_bls_pub` pins the key in `/etc/jmdn/jmdn.yaml` (the boot
+  log prints the value in use as `signer_bls_pub`). With it set, replacing the
+  key file on the data volume does not let a forged checkpoint through.
+- `checkpoint.min_seq`: after each restart the log prints `checkpoint_seq`.
+  Copying it into the sequencer's config makes the floor survive a
+  whole-volume restore, which rolls the floor file back with the store. Set it
+  only on a node that signs checkpoints; on any other node it stops the boot.
+
+Every node checks only its own checkpoints. A node restored from another node's
+snapshot (with no floor file) logs a warning and skips the check until it signs
+a checkpoint of its own.
+
+#### Rotating the signing key
+
+Existing checkpoints are signed with the old key, so the first boot with the new
+key fails the check. To rotate:
+
+1. Stop the node, install the new key, and set `checkpoint.boot_fail_closed:
+   false`. If `checkpoint.signer_bls_pub` is set, change it to the new public key.
+2. Start the node. The boot logs the verification failure and continues.
+3. Wait for `[checkpoint] committee-signed chain-head checkpoint stored` in the
+   log: a checkpoint signed with the new key now exists.
+4. Set `checkpoint.boot_fail_closed: true` again. The next boot verifies the new
+   checkpoint.
+
+Do not pin `signer_bls_pub` to the old key instead: the node boots, but every new
+checkpoint is refused.
+
 Start the services:
 
 ```bash

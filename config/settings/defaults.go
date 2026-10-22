@@ -325,15 +325,18 @@ func DefaultConfig() NodeConfig {
 			// it is a second, separate opt-in.
 			PendingTxByHash: false,
 		},
-		// Committee-signed chain-head checkpoints: DEFAULT-OFF. With Enabled=false
-		// the boot integrity gate never runs and the sequencer signs nothing, so
-		// runtime behaviour is byte-identical to a node without this feature.
-		// boot_fail_closed defaults true (production-safe) but only takes effect
-		// once Enabled=true. cadence_blocks 0 = per-epoch (see CheckpointSettings).
+		// Signed chain-head checkpoints: ON. The block producer signs one per
+		// committee epoch with its own BLS key (or signer_bls_pub) and raises the
+		// floor file. Every node runs the boot gate against its own key; a node
+		// with no checkpoint of its own and no floor boots as before.
+		// cadence_blocks 0 = per-epoch (see CheckpointSettings). The floor path
+		// matches the YAML templates; a relative path would depend on the
+		// working directory.
 		Checkpoint: CheckpointSettings{
-			Enabled:        false,
+			Enabled:        true,
 			BootFailClosed: true,
 			CadenceBlocks:  0,
+			FloorFile:      "/opt/jmdn/checkpoint-floor.json",
 		},
 	}
 }

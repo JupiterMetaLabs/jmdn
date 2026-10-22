@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -25,7 +26,6 @@ import (
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
-	checkpointpkg "github.com/JupiterMetaLabs/ThebeDB/pkg/checkpoint"
 	thebeconfig "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
@@ -2166,42 +2166,59 @@ func main() {
 	}
 
 	// ── Committee-signed chain-head checkpoints (Option A anchor) ─────────────
-	// DEFAULT-OFF: with checkpoint.enabled=false this whole block is a no-op —
-	// no boot gate runs and no signing is wired, so an existing node is
-	// unaffected. Placed here (not right after the KV handle) deliberately: the
-	// boot verifier resolves committee keys via messaging.AuthorizedCommittee,
-	// which needs the committee-eligibility source wired above.
+	// Placed here (not right after the KV handle) deliberately: the boot
+	// verifier resolves committee keys via messaging.AuthorizedCommittee, which
+	// needs the committee-eligibility source wired above.
 	//
 	// Boot gate: verify the recomputed canonical head against the latest
-	// committee-signed checkpoint (full walk from seq 0 — the "existing data
-	// anchored for free" property). fail-closed policy is config-gated.
+	// committee-signed checkpoint (full walk from seq 0), with a floor from
+	// checkpoint.floor_file / checkpoint.min_seq so a rolled-back store or
+	// deleted checkpoint keys are caught. fail-closed policy is config-gated.
 	//   - error         → log.Fatal when boot_fail_closed, else log.Error+continue
-	//   - (false, nil)  → no checkpoint yet (expected before first signing): info
-	//   - (true, nil)   → verified: info
+	//   - (false, nil)  → no checkpoint and no floor: info
+	//   - (true, nil)   → verified (floor raised): info
 	if cfg.Checkpoint.Enabled && checkpointKV != nil {
 		// Sequencer discriminator: enable_catchup==false marks the authoritative
 		// producer (same discriminator the sync monitor + committee-source wiring
 		// use). Only the sequencer signs.
 		isSequencer := !cfg.FastSync.EnableCatchup
 
-		verifier := messaging.CheckpointSigVerifier()
-		if verified, verr := checkpointpkg.BootVerify(context.Background(), checkpointKV, verifier); verr != nil {
-			if cfg.Checkpoint.BootFailClosed {
-				log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its committee-signed checkpoint")
+		// Resolve the floor file once so every log line names the real path; a
+		// relative path depends on the working directory.
+		floorFile := cfg.Checkpoint.FloorFile
+		if floorFile != "" {
+			if abs, absErr := filepath.Abs(floorFile); absErr == nil {
+				floorFile = abs
 			}
+		}
+
+		// The signer key: the configured pin, else this node's own BLS key.
+		// No manual copy step; an explicit pin in jmdn.yaml still wins.
+		signerPub, signerSource := messaging.ResolveCheckpointSigner(cfg.Checkpoint.SignerBLSPub)
+
+		verified, verr := messaging.CheckpointBootGate(context.Background(), checkpointKV,
+			messaging.CheckpointSigVerifierFor(signerPub), floorFile, cfg.Checkpoint.MinSeq,
+			12, 10*time.Second)
+		switch {
+		case verr != nil && cfg.Checkpoint.BootFailClosed:
+			log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its signed checkpoint. If this node's BLS key was rotated, boot once with checkpoint.boot_fail_closed: false (see GETTING_STARTED \"Rotating the signing key\")")
+		case verr != nil:
 			log.Error().Err(verr).Msg("[checkpoint] boot verification failed (boot_fail_closed=false) — continuing; the canonical log does NOT match its signed checkpoint")
-		} else if !verified {
-			log.Info().Msg("[checkpoint] no committee-signed checkpoint stored yet (expected before the first signing) — boot gate skipped")
-		} else {
-			log.Info().Msg("[checkpoint] boot verification passed — canonical head matches its committee-signed checkpoint")
+		case !verified:
+			log.Info().Msg("[checkpoint] no checkpoint of this node's own and no floor — boot gate skipped")
+		default:
+			log.Info().Str("floor_file", floorFile).Msg("[checkpoint] boot verification passed — canonical head matches its signed checkpoint")
 		}
 
 		// Wire the per-committed-block signing hook (sequencer-only; no-op on
 		// non-sequencers and when the cadence does not fire).
-		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String())
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, signerPub)
 		log.Info().
 			Bool("sequencer", isSequencer).
+			Str("signer_source", signerSource).
+			Str("signer_bls_pub", signerPub).
 			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
+			Str("floor_file", floorFile).
 			Msg("[checkpoint] chain-head checkpoint feature enabled")
 	}
 
