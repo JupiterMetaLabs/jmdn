@@ -6,11 +6,11 @@ Guidance for working in this repository.
 
 `jmdn` is a peer-to-peer blockchain node. A node discovers
 peers over libp2p, propagates and validates blocks, participates in committee-based
-consensus, persists chain and account state in ThebeDB (ImmuDB removed on feat/thebe-sc-layer), and exposes Ethereum-compatible
+consensus, persists chain and account state in ThebeDB (BadgerDB KV log + PostgreSQL projection), and exposes Ethereum-compatible
 and node-management APIs over gRPC/HTTP.
 
 - Language: Go (see `go.mod` for the toolchain version).
-- Build tag: CGO is required (`CGO_ENABLED=1`) because of the go-ethereum dependency (ImmuDB removed on feat/thebe-sc-layer).
+- Build tag: CGO is required (`CGO_ENABLED=1`) because of the go-ethereum dependency.
 - Produced binary: `jmdn` (built from the root `main.go`).
 
 ## Build, run, test
@@ -24,7 +24,7 @@ make fmt          # golangci-lint fmt (gofmt-compatible)
 ```
 
 Notes:
-- Some tests are integration tests and expect a live ImmuDB instance and a reachable
+- Some tests are integration tests and expect a live PostgreSQL instance (ThebeDB) and a reachable
   seed node; unit tests run without them.
 - Node configuration is read from `jmdn.yaml` (see `jmdn_default.yaml` for the shipped
   defaults) and can be overridden via environment variables (many flags are prefixed
@@ -45,7 +45,7 @@ Notes:
 - **Validation (`Security/`, `messaging/`)**: canonical block-hash / transaction-root
   recomputation, transaction value checks, and certificate verification on the receive
   path.
-- **State (`DB_OPs/`, `FastsyncV2/`, `crdt/`)**: ImmuDB-backed account and block state,
+- **State (`DB_OPs/`, `thebesync/`, `FastsyncV2/`)**: ThebeDB-backed account and block state,
   crash-safe transaction application markers, an equivocation record store, a sync
   anchor, and state synchronization between peers.
 - **Interfaces (`Block/`, `gETH/`, `CLI/`, `DID/`, `CA/`, `Mempool/`)**: block/tx
