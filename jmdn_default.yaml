@@ -73,8 +73,10 @@ thebe:
 
 # ── Chain-head checkpoints ───────────────────────────────
 # Every node verifies the latest checkpoint at boot. The sequencer signs the
-# canonical-log head once per committee epoch, but only once signer_bls_pub is
-# set to its own BLS public key (its boot log prints the value to use).
+# canonical-log head once per committee epoch with its own BLS key; checkpoints
+# are verified against that key, so committee changes cannot block a restart.
+# signer_bls_pub optionally pins the key here (guards against a swapped key
+# file); empty uses the node's own key.
 # floor_file records the highest checkpoint seen; a store rolled back below it,
 # or with its checkpoints deleted, will not start. It shares the data volume
 # with the store, so a whole-volume restore rolls it back too: on the sequencer
@@ -87,7 +89,7 @@ checkpoint:
   cadence_blocks: 0                    # 0 = per committee epoch
   floor_file: "/opt/jmdn/checkpoint-floor.json"
   min_seq: 0                           # restore-safe floor; 0 = none
-  signer_bls_pub: ""                   # sequencer BLS public key (hex)
+  signer_bls_pub: ""                   # optional pin; empty = node key
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like

@@ -2192,8 +2192,12 @@ func main() {
 			}
 		}
 
+		// The signer key: the configured pin, else this node's own BLS key.
+		// No manual copy step; an explicit pin in jmdn.yaml still wins.
+		signerPub, signerSource := messaging.ResolveCheckpointSigner(cfg.Checkpoint.SignerBLSPub)
+
 		verified, verr := messaging.CheckpointBootGate(context.Background(), checkpointKV,
-			messaging.CheckpointSigVerifierFor(cfg.Checkpoint.SignerBLSPub), floorFile, cfg.Checkpoint.MinSeq,
+			messaging.CheckpointSigVerifierFor(signerPub), floorFile, cfg.Checkpoint.MinSeq,
 			12, 10*time.Second)
 		switch {
 		case verr != nil && cfg.Checkpoint.BootFailClosed:
@@ -2208,10 +2212,11 @@ func main() {
 
 		// Wire the per-committed-block signing hook (sequencer-only; no-op on
 		// non-sequencers and when the cadence does not fire).
-		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, cfg.Checkpoint.SignerBLSPub)
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, signerPub)
 		log.Info().
 			Bool("sequencer", isSequencer).
-			Bool("signer_pinned", cfg.Checkpoint.SignerBLSPub != "").
+			Str("signer_source", signerSource).
+			Str("signer_bls_pub", signerPub).
 			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
 			Str("floor_file", floorFile).
 			Msg("[checkpoint] chain-head checkpoint feature enabled")

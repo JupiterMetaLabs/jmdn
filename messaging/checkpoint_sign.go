@@ -111,10 +111,11 @@ var ErrCheckpointBadSignature = errors.New("checkpoint verify: signature does no
 //     only; not part of the signed bytes).
 //   - floorPath:   config checkpoint.floor_file; raised after every stored
 //     checkpoint ("" keeps no floor).
-//   - signerPub:   config checkpoint.signer_bls_pub. The sequencer signs only
-//     when this is set and equals its own BLS public key: a checkpoint that a
-//     later boot can only check against the rotating committee could stop the
-//     sequencer from restarting once its key leaves the eligible set.
+//   - signerPub:   the key checkpoints are verified against (see
+//     ResolveCheckpointSigner). The sequencer signs only when it is set; a
+//     checkpoint that a later boot could only check against the rotating
+//     committee could stop the sequencer from restarting once its key leaves
+//     the eligible set.
 //
 // Safe to call concurrently.
 func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID, floorPath, signerPub string) {
@@ -152,6 +153,31 @@ func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceB
 // fail-open). Documented deliberately rather than silently resolving "current".
 func CheckpointSigVerifier() checkpoint.SigVerifier {
 	return CheckpointSigVerifierFor("")
+}
+
+// ResolveCheckpointSigner picks the key checkpoints are signed and verified
+// with, so an operator does not have to copy it into the config by hand:
+//   - configPub (checkpoint.signer_bls_pub) when set: an explicit pin, kept
+//     outside the data volume. Also protects against the node's key file being
+//     swapped on disk.
+//   - otherwise this node's own BLS public key (the key the sequencer signs
+//     with), read from its key file.
+//   - "" when neither is available: nothing is signed and stored checkpoints
+//     are checked against the current committee.
+//
+// source names which one was used, for the boot log.
+func ResolveCheckpointSigner(configPub string) (signerPubHex, source string) {
+	if p := normalizeBLSPub(configPub); p != "" {
+		return p, "config"
+	}
+	// Read the key file directly. BLS_Signer.LocalBLSKeypair caches its first
+	// result for the process; calling it before the key file exists (a fresh
+	// node, before seed registration creates it) would cache the error and
+	// break vote signing for the rest of the run.
+	if _, pub, err := blssign.LoadBLSKeyPair(); err == nil && len(pub) > 0 {
+		return hex.EncodeToString(pub), "node_key"
+	}
+	return "", "none"
 }
 
 // CheckpointSigVerifierFor returns the verifier the boot gate uses.
@@ -266,8 +292,11 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 	}
 
 	if signerPub == "" {
-		warnSignerNotPinnedOnce()
-		return
+		// No key at boot (fresh node whose key file appeared later): resolve now.
+		if signerPub, _ = ResolveCheckpointSigner(""); signerPub == "" {
+			warnSignerNotPinnedOnce()
+			return
+		}
 	}
 	if err := signAndStoreCheckpoint(store, block, selfPeerID, floorPath, signerPub); err != nil {
 		log.Warn().Err(err).
@@ -312,14 +341,10 @@ func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, f
 var signerNotPinnedOnce sync.Once
 
 // warnSignerNotPinnedOnce tells the operator, once per process, why the
-// sequencer is not signing and what to set.
+// sequencer is not signing: no signer key could be resolved.
 func warnSignerNotPinnedOnce() {
 	signerNotPinnedOnce.Do(func() {
-		ev := log.Warn()
-		if _, pub, err := BLS_Signer.LocalBLSKeypair(); err == nil {
-			ev = ev.Str("this_node_bls_pub", hex.EncodeToString(pub))
-		}
-		ev.Msg("[checkpoint] not signing: set checkpoint.signer_bls_pub in jmdn.yaml to this node's BLS public key to enable sequencer checkpoints")
+		log.Warn().Msg("[checkpoint] not signing: this node has no BLS key and checkpoint.signer_bls_pub is unset")
 	})
 }
 

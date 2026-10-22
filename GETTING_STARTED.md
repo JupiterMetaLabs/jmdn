@@ -186,18 +186,16 @@ rollback. After a deliberate restore, delete that file (and lower
 
 ### Sequencer checkpoints
 
-The sequencer signs a chain-head checkpoint once per committee epoch, but only
-after you pin its key:
+The sequencer signs a chain-head checkpoint once per committee epoch with its
+own BLS key, and every boot verifies the latest one against that key. Nothing
+needs to be configured. Two optional hardening steps:
 
-1. Start the sequencer once. Its log prints `[checkpoint] not signing: set
-   checkpoint.signer_bls_pub ...` with `this_node_bls_pub`.
-2. Put that value in `/etc/jmdn/jmdn.yaml` under `checkpoint.signer_bls_pub`
-   and restart. Checkpoints are verified against this key only, so committee
-   changes cannot stop the sequencer from restarting.
-3. After each restart the log prints `checkpoint_seq`. Copy it into
-   `checkpoint.min_seq` from time to time. The floor file sits on the data
-   volume and is rolled back with it by a volume restore; `min_seq` in the
-   config file is not.
+- `checkpoint.signer_bls_pub` pins the key in `/etc/jmdn/jmdn.yaml` (the boot
+  log prints the value in use as `signer_bls_pub`). With it set, replacing the
+  key file on the data volume does not let a forged checkpoint through.
+- `checkpoint.min_seq`: after each restart the log prints `checkpoint_seq`.
+  Copying it into the config makes the floor survive a whole-volume restore,
+  which rolls the floor file back with the store.
 
 Start the services:
 

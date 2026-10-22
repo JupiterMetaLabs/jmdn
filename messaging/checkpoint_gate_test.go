@@ -256,3 +256,39 @@ func TestPinnedVerifierRejectsOtherSigner(t *testing.T) {
 		t.Fatal("stored a checkpoint not signed by the pinned key")
 	}
 }
+
+// With no pin configured the node's own key file is the signer, so a fresh
+// sequencer needs no operator step; a configured pin still wins.
+func TestResolveCheckpointSignerUsesNodeKey(t *testing.T) {
+	t.Setenv("JMDN_BLS_KEY_FILE", filepath.Join(t.TempDir(), "bls.json"))
+
+	if pub, src := ResolveCheckpointSigner(""); pub != "" || src != "none" {
+		t.Fatalf("no key file: got %q/%q, want empty/none", pub, src)
+	}
+	priv, pubBytes, err := blssign.GenerateBLSKeyPair() // writes JMDN_BLS_KEY_FILE
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, src := ResolveCheckpointSigner("")
+	if src != "node_key" || pub != hex.EncodeToString(pubBytes) {
+		t.Fatalf("node key: got %q/%q", pub, src)
+	}
+	if p, s := ResolveCheckpointSigner("0xABCD"); p != "abcd" || s != "config" {
+		t.Fatalf("config pin: got %q/%q", p, s)
+	}
+
+	// The resolved key verifies the node's own checkpoint even when the key is
+	// not in the committee at all.
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
+		return map[string]string{"someoneElse": "00"}, nil
+	})
+	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
+	s := newCkptStore(t)
+	seq := appendRecords(t, s, 2)
+	if err := storeVerifiedCheckpoint(s, signedCheckpointAt(t, s, seq, priv), CheckpointSigVerifierFor(pub), ""); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if ok, err := CheckpointBootGate(context.Background(), s, CheckpointSigVerifierFor(pub), "", 0, 0, 0); err != nil || !ok {
+		t.Fatalf("boot gate: ok=%v err=%v", ok, err)
+	}
+}

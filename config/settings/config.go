@@ -81,12 +81,12 @@ type CheckpointSettings struct {
 	// to set after each successful verification.
 	MinSeq uint64 `mapstructure:"min_seq" yaml:"min_seq"`
 
-	// SignerBLSPub is the sequencer's BLS public key (hex). Checkpoints are
-	// verified against this key only, so committee changes cannot fail a
-	// genuine checkpoint at boot. The sequencer signs only when this is set and
-	// matches its own key; its boot log prints the value to use. Empty: no
-	// checkpoints are signed, and existing ones are checked against the current
-	// committee.
+	// SignerBLSPub optionally pins the sequencer's BLS public key (hex).
+	// Checkpoints are verified against one key only, so committee changes
+	// cannot fail a genuine checkpoint at boot. Empty (the default): the node's
+	// own BLS key is used, with no operator step. Set it to also guard against
+	// the node's key file being replaced on disk; the boot log prints the
+	// key in use (signer_bls_pub).
 	SignerBLSPub string `mapstructure:"signer_bls_pub" yaml:"signer_bls_pub"`
 }
 
