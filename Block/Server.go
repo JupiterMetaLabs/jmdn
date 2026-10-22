@@ -69,7 +69,6 @@ func addrHex(addr *common.Address, fallback string) string {
 	return addr.Hex()
 }
 
-
 func submitRawTransaction(c *gin.Context) {
 	// Record trace span and close it
 	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.submitRawTransaction")

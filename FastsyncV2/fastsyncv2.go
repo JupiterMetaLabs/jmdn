@@ -22,10 +22,8 @@ import (
 	"time"
 
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
-	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
-	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	wal_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types/wal"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/accountsync"
@@ -179,115 +177,4 @@ func NewFastsyncV2(ctx context.Context, h host.Host, syncTimeout time.Duration) 
 		blockInfoAdapter:  blockInfo,
 		syncTimeout:       syncTimeout,
 	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Type conversion helpers: types.ZKBlock → proto types
-//
-// These convert JMDN-FastSync's types.ZKBlock into the protobuf types expected
-// by the HeadersWriter and DataWriter adapters, enabling PoTS WAL blocks to be
-// persisted through the same path as normal sync blocks.
-// ---------------------------------------------------------------------------
-
-// zkBlockToProtoNonHeaders extracts the non-header fields (transactions, ZK proofs)
-// from a types.ZKBlock into a blockpb.NonHeaders for persistence via DataWriter.
-func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
-	nh := &blockpb.NonHeaders{
-		BlockNumber: b.BlockNumber,
-		Snapshot: &blockpb.SnapshotRecord{
-			BlockHash: b.BlockHash[:],
-			CreatedAt: b.Timestamp,
-		},
-	}
-
-	// Attach the ZK proof whenever the block carries ANY proof data, not only when
-	// ProofHash is set — shared gate (config.HasZKProof) with the peer-serving
-	// converter so the two never drift. This is the PoTS WAL-dump path; the fix that
-	// matters for syncing peers is the same gate in DB_OPs/Nodeinfo.convertZKBlockToNonHeaders.
-	if config.HasZKProof(b.ProofHash, b.StarkProof, b.Commitment) {
-		nh.ZkProof = &blockpb.ZKProof{
-			ProofHash:  b.ProofHash,
-			StarkProof: b.StarkProof,
-			Commitment: commitmentToBytes(b.Commitment),
-		}
-	}
-
-	for idx, tx := range b.Transactions {
-		pbTx := &blockpb.Transaction{
-			Hash:      tx.Hash[:],
-			Type:      uint32(tx.Type),
-			Timestamp: tx.Timestamp,
-			Nonce:     tx.Nonce,
-			GasLimit:  tx.GasLimit,
-			Data:      tx.Data,
-		}
-		if tx.From != nil {
-			pbTx.From = tx.From[:]
-		}
-		if tx.To != nil {
-			pbTx.To = tx.To[:]
-		}
-		if tx.Value != nil {
-			pbTx.Value = tx.Value.Bytes()
-		}
-		if tx.ChainID != nil {
-			pbTx.ChainId = tx.ChainID.Bytes()
-		}
-		if tx.GasPrice != nil {
-			pbTx.GasPrice = tx.GasPrice.Bytes()
-		}
-		if tx.MaxFee != nil {
-			pbTx.MaxFee = tx.MaxFee.Bytes()
-		}
-		if tx.MaxPriorityFee != nil {
-			pbTx.MaxPriorityFee = tx.MaxPriorityFee.Bytes()
-		}
-		for _, at := range tx.AccessList {
-			pbAT := &blockpb.AccessTuple{
-				Address: at.Address[:],
-			}
-			for _, sk := range at.StorageKeys {
-				pbAT.StorageKeys = append(pbAT.StorageKeys, sk[:])
-			}
-			pbTx.AccessList = append(pbTx.AccessList, pbAT)
-		}
-		if tx.V != nil {
-			pbTx.V = tx.V.Bytes()
-		}
-		if tx.R != nil {
-			pbTx.R = tx.R.Bytes()
-		}
-		if tx.S != nil {
-			pbTx.S = tx.S.Bytes()
-		}
-		// NOTE: AccessList is already encoded in the loop above (lines 831-839).
-		// The duplicate block that was here has been removed — it doubled every
-		// access-list entry in the serialised output.
-
-		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
-			Tx:        pbTx,
-			TxIndex:   uint32(idx),
-			CreatedAt: b.Timestamp,
-		})
-	}
-
-	return nh
-}
-
-// commitmentToBytes encodes a []uint32 commitment to raw bytes (4 bytes per element, little-endian).
-// This matches the block_nonheader.proto ZKProof.commitment field (bytes).
-// NOTE: internal/merkle/hash.go encodes the same field BIG-endian for Merkle leaf hashing.
-// The two encodings serve different purposes and must NOT be mixed.
-func commitmentToBytes(c []uint32) []byte {
-	if len(c) == 0 {
-		return nil
-	}
-	buf := make([]byte, len(c)*4)
-	for i, v := range c {
-		buf[i*4+0] = byte(v)
-		buf[i*4+1] = byte(v >> 8)
-		buf[i*4+2] = byte(v >> 16)
-		buf[i*4+3] = byte(v >> 24)
-	}
-	return buf
 }
