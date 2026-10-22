@@ -4,9 +4,9 @@ package messaging
 // the ThebeDB canonical-log external anchor described in
 // docs/CHAIN-HEAD-ANCHOR-DESIGN.md.
 //
-// This file provides three things, all inert unless the operator explicitly
-// enables the feature (config checkpoint.enabled) AND wiring installs the KV
-// handle via EnableCheckpointSigning:
+// This file provides the following, active when config checkpoint.enabled is
+// true (the default) and wiring installs the KV handle via
+// EnableCheckpointSigning:
 //
 //  1. CheckpointSigVerifier — a checkpoint.SigVerifier that BLS-verifies a
 //     checkpoint's committee signature against the AUTHENTICATED committee keys
@@ -18,7 +18,11 @@ package messaging
 //     (the same key used for block votes).
 //
 //  3. maybeSignChainHeadCheckpoint — the per-committed-block cadence hook,
-//     invoked from broadcast.go's commit path. Only the sequencer signs.
+//     invoked from broadcast.go's commit path. Only the sequencer signs, and
+//     only a checkpoint it can verify itself is stored.
+//
+//  4. CheckpointBootGate — the boot check, with a floor kept in a file outside
+//     the store (internal/ckptfloor) so a rollback is caught.
 //
 // ── PHASE 1 v0 SCOPE: SINGLE-SIGNER ATTESTATION ──────────────────────────────
 // v0 stores a checkpoint signed by a SINGLE committee member (the sequencer):
@@ -34,15 +38,20 @@ package messaging
 // rather than a single member. Do NOT fake an aggregate here.
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
+	"gossipnode/internal/ckptfloor"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/checkpoint"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
@@ -66,7 +75,14 @@ var (
 	checkpointIsSequencer bool
 	checkpointCadence     uint64 // 0 => per-epoch
 	checkpointSelfPeerID  string
+	checkpointFloorPath   string // "" => no floor file kept
 )
+
+// ErrCheckpointCommitteeUnavailable marks a verification that could not run
+// because the committee source was unavailable or empty — as opposed to a
+// signature that ran and failed. The boot gate retries on it before applying
+// its fail-closed policy.
+var ErrCheckpointCommitteeUnavailable = errors.New("checkpoint verify: committee source unavailable")
 
 // EnableCheckpointSigning wires committee-signed chain-head checkpoint creation.
 // It is a NO-OP for signing unless enabled is true and store is non-nil; when
@@ -82,9 +98,11 @@ var (
 //   - cadenceBlocks: config checkpoint.cadence_blocks (0 = per-epoch).
 //   - selfPeerID:  this node's libp2p peer id, recorded in SignerSet (metadata
 //     only; not part of the signed bytes).
+//   - floorPath:   config checkpoint.floor_file; raised after every stored
+//     checkpoint ("" keeps no floor).
 //
 // Safe to call concurrently.
-func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID string) {
+func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID, floorPath string) {
 	checkpointMu.Lock()
 	defer checkpointMu.Unlock()
 	checkpointKV = store
@@ -92,6 +110,7 @@ func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceB
 	checkpointIsSequencer = isSequencer
 	checkpointCadence = cadenceBlocks
 	checkpointSelfPeerID = strings.TrimSpace(selfPeerID)
+	checkpointFloorPath = strings.TrimSpace(floorPath)
 }
 
 // CheckpointSigVerifier returns a checkpoint.SigVerifier that verifies a
@@ -122,10 +141,10 @@ func CheckpointSigVerifier() checkpoint.SigVerifier {
 		}
 		committee, err := AuthorizedCommittee()
 		if err != nil {
-			return fmt.Errorf("checkpoint verify: committee source unavailable (fail closed, epoch %d): %w", epoch, err)
+			return fmt.Errorf("%w (fail closed, epoch %d): %v", ErrCheckpointCommitteeUnavailable, epoch, err)
 		}
 		if len(committee) == 0 {
-			return fmt.Errorf("checkpoint verify: empty committee (fail closed, epoch %d)", epoch)
+			return fmt.Errorf("%w: empty committee (fail closed, epoch %d)", ErrCheckpointCommitteeUnavailable, epoch)
 		}
 		for _, pubHex := range committee {
 			pubHex = normalizeBLSPub(pubHex)
@@ -193,6 +212,7 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 	isSeq := checkpointIsSequencer
 	cadence := checkpointCadence
 	selfPeerID := checkpointSelfPeerID
+	floorPath := checkpointFloorPath
 	checkpointMu.RUnlock()
 
 	if !enabled || store == nil || !isSeq {
@@ -202,7 +222,7 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 		return
 	}
 
-	if err := signAndStoreCheckpoint(store, block, selfPeerID); err != nil {
+	if err := signAndStoreCheckpoint(store, block, selfPeerID, floorPath); err != nil {
 		log.Warn().Err(err).
 			Uint64("block_number", block.BlockNumber).
 			Msg("[checkpoint] sign/store failed (non-fatal; block commit unaffected)")
@@ -216,7 +236,7 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 // signAndStoreCheckpoint reads the current canonical head from the KV store,
 // builds+signs a checkpoint, and persists it. Kept separate so the cadence hook
 // stays trivial.
-func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID string) error {
+func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, floorPath string) error {
 	raw, err := store.Get([]byte(chainHeadKey))
 	if err != nil {
 		return fmt.Errorf("read %s: %w", chainHeadKey, err)
@@ -239,10 +259,89 @@ func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID st
 	if err != nil {
 		return err
 	}
+	return storeVerifiedCheckpoint(store, c, CheckpointSigVerifier(), floorPath)
+}
+
+// storeVerifiedCheckpoint stores c only if it verifies with the same verifier
+// the boot gate uses, then raises the floor. A checkpoint this node cannot
+// verify (for example its key is not in the authorized committee) must never be
+// stored: the next boot would find it, fail verification and refuse to start.
+func storeVerifiedCheckpoint(store kv.Store, c *checkpoint.Checkpoint, verify checkpoint.SigVerifier, floorPath string) error {
+	if err := verify(checkpoint.CanonicalCheckpointBytes(c), c.Signature, c.Epoch); err != nil {
+		return fmt.Errorf("not storing checkpoint (seq %d): it does not verify against the authorized committee: %w", c.Seq, err)
+	}
 	if err := checkpoint.Store(store, c); err != nil {
-		return fmt.Errorf("store checkpoint (seq %d): %w", seq, err)
+		return fmt.Errorf("store checkpoint (seq %d): %w", c.Seq, err)
+	}
+	if err := ckptfloor.Raise(floorPath, c.ChainID, c.Seq, c.Head); err != nil {
+		return fmt.Errorf("checkpoint stored (seq %d) but floor not raised: %w", c.Seq, err)
 	}
 	return nil
+}
+
+// CheckpointBootGate is the start-up integrity check. It verifies the canonical
+// log against the latest stored checkpoint, with a floor taken from the floor
+// file (outside the store) and minSeq (config). Returns:
+//   - (true, nil):  a checkpoint exists, is at or above the floor, and verifies.
+//     The floor file is raised to it.
+//   - (false, nil): no checkpoint and no floor (a node that has never had one —
+//     every non-sequencer, and a sequencer before its first signing).
+//   - (false, err): anything else. The caller applies boot_fail_closed.
+//
+// Verification that cannot run because the committee source is unavailable is
+// retried `retries` times, `wait` apart, before it is returned.
+func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.SigVerifier, floorPath string, minSeq uint64, retries int, wait time.Duration) (bool, error) {
+	rec, hasFloor, err := ckptfloor.Load(floorPath)
+	if err != nil {
+		return false, err
+	}
+	floor := checkpoint.Floor{Required: hasFloor || minSeq > 0, MinSeq: minSeq}
+	if hasFloor {
+		if rec.Seq > floor.MinSeq {
+			floor.MinSeq = rec.Seq
+		}
+		// The checkpoint the floor was taken from must still be there, unchanged.
+		// Otherwise the stored checkpoint history was replaced.
+		at, gerr := checkpoint.Get(store, rec.Seq)
+		if gerr != nil {
+			return false, fmt.Errorf("checkpoint at floor seq %d is missing (store rolled back or checkpoints deleted; floor file %s): %w", rec.Seq, floorPath, gerr)
+		}
+		if want := rec.HeadBytes(); want != nil && !bytes.Equal(at.Head, want) {
+			return false, fmt.Errorf("checkpoint at floor seq %d has a different head than the floor file %s records (checkpoint history replaced)", rec.Seq, floorPath)
+		}
+		if rec.ChainID != 0 && at.ChainID != rec.ChainID {
+			return false, fmt.Errorf("checkpoint at floor seq %d is for chain %d, floor file %s says %d", rec.Seq, at.ChainID, floorPath, rec.ChainID)
+		}
+	}
+
+	var verified bool
+	for attempt := 0; ; attempt++ {
+		verified, err = checkpoint.BootVerifyWithFloor(ctx, store, verify, floor)
+		if err == nil || !errors.Is(err, ErrCheckpointCommitteeUnavailable) || attempt >= retries {
+			break
+		}
+		log.Warn().Err(err).Int("attempt", attempt+1).Int("of", retries).
+			Msg("[checkpoint] committee source unavailable at boot — retrying before applying fail-closed policy")
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	if err != nil {
+		if errors.Is(err, checkpoint.ErrNoCheckpoint) || errors.Is(err, checkpoint.ErrCheckpointBelowFloor) {
+			return false, fmt.Errorf("%w (floor file %s; delete it only after a deliberate restore from an older snapshot)", err, floorPath)
+		}
+		return false, err
+	}
+	if verified {
+		if latest, ok, lerr := checkpoint.Latest(store); lerr == nil && ok {
+			if rerr := ckptfloor.Raise(floorPath, latest.ChainID, latest.Seq, latest.Head); rerr != nil {
+				log.Warn().Err(rerr).Str("floor_file", floorPath).Msg("[checkpoint] verified, but the floor file could not be raised")
+			}
+		}
+	}
+	return verified, nil
 }
 
 // checkpointStateRoot picks the state digest the checkpoint covers. It prefers
