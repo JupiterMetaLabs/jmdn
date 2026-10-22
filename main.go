@@ -2201,11 +2201,11 @@ func main() {
 			12, 10*time.Second)
 		switch {
 		case verr != nil && cfg.Checkpoint.BootFailClosed:
-			log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its committee-signed checkpoint")
+			log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its signed checkpoint. If this node's BLS key was rotated, boot once with checkpoint.boot_fail_closed: false (see GETTING_STARTED \"Rotating the signing key\")")
 		case verr != nil:
 			log.Error().Err(verr).Msg("[checkpoint] boot verification failed (boot_fail_closed=false) — continuing; the canonical log does NOT match its signed checkpoint")
 		case !verified:
-			log.Info().Msg("[checkpoint] no checkpoint and no floor on this node — boot gate skipped")
+			log.Info().Msg("[checkpoint] no checkpoint of this node's own and no floor — boot gate skipped")
 		default:
 			log.Info().Str("floor_file", floorFile).Msg("[checkpoint] boot verification passed — canonical head matches its signed checkpoint")
 		}

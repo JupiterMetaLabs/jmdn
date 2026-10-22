@@ -50,6 +50,11 @@ func Load(path string) (f Floor, ok bool, err error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return Floor{}, false, fmt.Errorf("ckptfloor: parse %s: %w", path, err)
 	}
+	// An unreadable head would turn off the head comparison at boot, so it is
+	// rejected the same way as an unparsable file.
+	if f.Head != "" && f.HeadBytes() == nil {
+		return Floor{}, false, fmt.Errorf("ckptfloor: %s: head %q is not hex", path, f.Head)
+	}
 	return f, true, nil
 }
 

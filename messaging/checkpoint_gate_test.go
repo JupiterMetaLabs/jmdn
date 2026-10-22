@@ -292,3 +292,69 @@ func TestResolveCheckpointSignerUsesNodeKey(t *testing.T) {
 		t.Fatalf("boot gate: ok=%v err=%v", ok, err)
 	}
 }
+
+// A store restored from another node: its checkpoints carry that node's
+// signature. With no floor of this node's own, the gate skips; with a floor or
+// min_seq, it fails closed.
+func TestBootGateForeignCheckpoint(t *testing.T) {
+	otherPriv, _ := testBLSKey(t, "other-node")
+	_, selfPub := testBLSKey(t, "this-node")
+	ctx := context.Background()
+
+	s := newCkptStore(t)
+	seq := appendRecords(t, s, 3)
+	if err := storeVerifiedCheckpoint(s, signedCheckpointAt(t, s, seq, otherPriv), acceptAll, ""); err != nil {
+		t.Fatal(err)
+	}
+	self := CheckpointSigVerifierFor(selfPub)
+
+	floor := filepath.Join(t.TempDir(), "floor.json")
+	ok, err := CheckpointBootGate(ctx, s, self, floor, 0, 0, 0)
+	if err != nil || ok {
+		t.Fatalf("no floor: want skip (false, nil), got ok=%v err=%v", ok, err)
+	}
+	if _, has, _ := ckptfloor.Load(floor); has {
+		t.Fatal("no floor: the floor must not be raised to another node's checkpoint")
+	}
+
+	if _, err := CheckpointBootGate(ctx, s, self, "", seq, 0, 0); !errors.Is(err, ErrCheckpointBadSignature) {
+		t.Fatalf("min_seq set: want ErrCheckpointBadSignature, got %v", err)
+	}
+
+	if err := ckptfloor.Raise(floor, 7, seq, mustCheckpoint(t, s, seq).Head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckpointBootGate(ctx, s, self, floor, 0, 0, 0); !errors.Is(err, ErrCheckpointBadSignature) {
+		t.Fatalf("floor present: want ErrCheckpointBadSignature, got %v", err)
+	}
+}
+
+// The foreign-checkpoint skip covers the signature only: a tampered log under
+// this node's own checkpoint still fails with no floor.
+func TestBootGateOwnCheckpointTamperedLogFails(t *testing.T) {
+	selfPriv, selfPub := testBLSKey(t, "this-node")
+	s := newCkptStore(t)
+	seq := appendRecords(t, s, 3)
+	c := signedCheckpointAt(t, s, seq, selfPriv)
+	c.Head = make([]byte, 32) // head that the log does not produce
+	sig, err := blssign.BLSSign(selfPriv, checkpoint.CanonicalCheckpointBytes(c))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Signature = sig
+	if err := checkpoint.Store(s, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckpointBootGate(context.Background(), s, CheckpointSigVerifierFor(selfPub), "", 0, 0, 0); !errors.Is(err, checkpoint.ErrHeadMismatch) {
+		t.Fatalf("want ErrHeadMismatch, got %v", err)
+	}
+}
+
+func mustCheckpoint(t *testing.T, s kv.Store, seq uint64) *checkpoint.Checkpoint {
+	t.Helper()
+	c, err := checkpoint.Get(s, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}

@@ -194,8 +194,29 @@ needs to be configured. Two optional hardening steps:
   log prints the value in use as `signer_bls_pub`). With it set, replacing the
   key file on the data volume does not let a forged checkpoint through.
 - `checkpoint.min_seq`: after each restart the log prints `checkpoint_seq`.
-  Copying it into the config makes the floor survive a whole-volume restore,
-  which rolls the floor file back with the store.
+  Copying it into the sequencer's config makes the floor survive a
+  whole-volume restore, which rolls the floor file back with the store. Set it
+  only on a node that signs checkpoints; on any other node it stops the boot.
+
+Every node checks only its own checkpoints. A node restored from another node's
+snapshot (with no floor file) logs a warning and skips the check until it signs
+a checkpoint of its own.
+
+#### Rotating the signing key
+
+Existing checkpoints are signed with the old key, so the first boot with the new
+key fails the check. To rotate:
+
+1. Stop the node, install the new key, and set `checkpoint.boot_fail_closed:
+   false`. If `checkpoint.signer_bls_pub` is set, change it to the new public key.
+2. Start the node. The boot logs the verification failure and continues.
+3. Wait for `[checkpoint] committee-signed chain-head checkpoint stored` in the
+   log: a checkpoint signed with the new key now exists.
+4. Set `checkpoint.boot_fail_closed: true` again. The next boot verifies the new
+   checkpoint.
+
+Do not pin `signer_bls_pub` to the old key instead: the node boots, but every new
+checkpoint is refused.
 
 Start the services:
 

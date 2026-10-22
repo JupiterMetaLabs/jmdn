@@ -50,6 +50,18 @@ func TestCorruptFileIsAnError(t *testing.T) {
 	}
 }
 
+// A head that is not hex must not read as "no head": the boot check would
+// skip the head comparison.
+func TestNonHexHeadIsAnError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "floor.json")
+	if err := os.WriteFile(p, []byte(`{"chain_id":1,"seq":99,"head":"not-hex!!"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(p); err == nil {
+		t.Fatal("expected an error for a non-hex head")
+	}
+}
+
 func TestEmptyPathDisables(t *testing.T) {
 	if err := Raise("", 1, 1, []byte{1}); err != nil {
 		t.Fatal(err)

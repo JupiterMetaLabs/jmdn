@@ -371,7 +371,8 @@ func storeVerifiedCheckpoint(store kv.Store, c *checkpoint.Checkpoint, verify ch
 //   - (true, nil):  a checkpoint exists, is at or above the floor, and verifies.
 //     The floor file is raised to it.
 //   - (false, nil): no checkpoint and no floor (a node that has never had one —
-//     every non-sequencer, and a sequencer before its first signing).
+//     a node that has never signed one, and a node whose store was restored
+//     from another node with no floor of its own).
 //   - (false, err): anything else. The caller applies boot_fail_closed.
 //
 // Verification that cannot run because the committee source is unavailable is
@@ -423,6 +424,15 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 		case <-time.After(wait):
 		}
 	}
+	if err != nil && !floor.Required && notSignedByThisNode(err) {
+		// The latest checkpoint was signed by another key and this node has no
+		// floor: the store came from another node (a snapshot restore). Its
+		// checkpoints say nothing about this node, so there is nothing to check
+		// until this node signs its own. Same outcome as having no checkpoint.
+		log.Warn().Err(err).Str("floor_file", floorPath).
+			Msg("[checkpoint] latest checkpoint was signed by another node's key and there is no floor — store restored from another node; boot gate skipped")
+		return false, nil
+	}
 	if err != nil {
 		if errors.Is(err, checkpoint.ErrNoCheckpoint) || errors.Is(err, checkpoint.ErrCheckpointBelowFloor) {
 			return false, fmt.Errorf("%w (floor file %s; delete it only after a deliberate restore from an older snapshot)", err, floorPath)
@@ -438,10 +448,18 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 			// restore rolls both back. checkpoint.min_seq in the read-only
 			// config is the floor such a restore cannot undo.
 			log.Info().Uint64("checkpoint_seq", latest.Seq).Uint64("configured_min_seq", minSeq).
-				Msg("[checkpoint] to make this floor survive a volume restore, set checkpoint.min_seq to checkpoint_seq in jmdn.yaml")
+				Msg("[checkpoint] to make this floor survive a volume restore, set checkpoint.min_seq to checkpoint_seq in this node's jmdn.yaml")
 		}
 	}
 	return verified, nil
+}
+
+// notSignedByThisNode reports whether a boot verification error is only that the
+// checkpoint's signature does not match this node's signer key. A
+// recomputed-head mismatch is never this case, and neither is a committee
+// verification failure (a node with no key of its own).
+func notSignedByThisNode(err error) bool {
+	return errors.Is(err, ErrCheckpointBadSignature)
 }
 
 // checkpointStateRoot picks the state digest the checkpoint covers. It prefers

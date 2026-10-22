@@ -74,8 +74,9 @@ type CheckpointSettings struct {
 	// a deliberate restore from an older snapshot. "" disables the floor.
 	FloorFile string `mapstructure:"floor_file" yaml:"floor_file"`
 
-	// MinSeq is an operator-pinned floor (canonical-log sequence). When > 0 a
-	// checkpoint at or above it is required at boot, even with no floor file.
+	// MinSeq is an operator-pinned floor (canonical-log sequence). Set it only on
+	// a node that signs checkpoints: when > 0 a checkpoint of this node's own at
+	// or above it is required at boot, even with no floor file.
 	// Kept in the read-only config, it survives a whole-volume restore that
 	// rolls the floor file back with the store. The boot log prints the value
 	// to set after each successful verification.
