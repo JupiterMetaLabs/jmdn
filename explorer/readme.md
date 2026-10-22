@@ -115,46 +115,16 @@ Modern, responsive web interface:
 
 ## API Endpoints
 
-### Address Endpoints
-```
-GET /api/addresses/                    # List all addresses with pagination
-GET /api/addresses/:address            # Get specific address details
-GET /api/addresses/:address/transactions # Get transactions for an address
-```
-
-### Block Endpoints
-```
-GET /api/block/all                     # List all blocks with pagination
-GET /api/block/id/:id                  # Get block by hash
-GET /api/block/number/:number          # Get block by number
-GET /api/block/latest/:count           # Get latest N blocks
-GET /api/block/missing/:number         # Get missing blocks from a given number
-```
-
-### Transaction Endpoints
-```
-GET /api/block/transactions/all        # List all transactions with pagination
-GET /api/block/transactions/:hash     # Get transaction by hash
-GET /api/block/transactions/block/:number # Get transactions in a specific block
-```
-
-### Statistics Endpoints
-```
-GET /api/stats/                        # Get network statistics
-```
-
-### WebSocket Endpoints
-```
-WS /api/sockets/blocks                 # Stream real-time block updates
-```
+The full endpoint reference, with request and response examples, is in
+[API_DOCUMENTATION.md](./API_DOCUMENTATION.md).
 
 ## Usage
 
 ### Starting the Explorer
 
 ```bash
-# Start the node with explorer enabled
-./jmdn -api 8085 -explorer
+# Start the node with the explorer API on port 8085
+./jmdn -api 8085
 ```
 
 ### Accessing the Web Interface

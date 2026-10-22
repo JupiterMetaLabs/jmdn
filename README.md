@@ -4,7 +4,7 @@
 
 Restoring authenticity in digital infrastructure by privately verifying humans, and decentralising their data.
 
-**Whitepaper**: [JMDT White Paper (PDF)](./docs/JMDT_Layer_2_Blockchain.pdf)
+**Whitepaper**: [JMDT White Paper (PDF)](./docs/JMDT-WP.pdf)
 
 [![CERT-IN Security Audit](https://img.shields.io/badge/CERT--IN_Audit-Passed-brightgreen?logo=shield&logoColor=white)](./audits/2026-03-terasoft-certin-vapt/VERIFICATION.md)
 [![Auditor](https://img.shields.io/badge/Auditor-Terasoft_Technologies-blue)](./audits/2026-03-terasoft-certin-vapt/TERA_CERT-IN_03_2026_CR_16_Certificate.pdf)
@@ -39,102 +39,80 @@ The system is built on a modular architecture combining several advanced distrib
 
 ## Technology Stack
 
-- **Zero-Knowledge Proofs (ZKPs)**: Uses zk-SNARKs and zk-STARKs for privacy-preserving identity verifications and transactions.
+- **Zero-Knowledge Proofs (ZKPs)**: zk-SNARKs and zk-STARKs for privacy-preserving identity verification and transactions.
 - **Decentralized Identity (DID)**: W3C-standardized self-sovereign identities without PII exposure.
 - **AVC Consensus**:
-    - VRF-based Buddy Node Selection
-    - Zero-Knowledge Proof Integration
-    - Gossip Protocol & Bloom Filters
-    - CRDT-based Conflict Resolution
-    - ImmuDB Append-Only Ledger
-
-## JMDN - Decentralized Node Operation
-
-Run a node to participate in the JMDT network.
-
-### Setup & Requirements
-
-#### System Requirements
-- **Operating System**: Ubuntu 18.04+, Debian 10+, elementaryOS, or Linux Mint
-- **Architecture**: x86_64, ARM64, or ARMv7
-- **Memory**: Minimum 2GB RAM
-- **Storage**: At least 10GB free space
-- **Network**: Internet connection for initial setup
-
-#### Dependencies
-- **Go 1.25+**: Programming language runtime
-- **Yggdrasil**: Decentralized mesh networking protocol
-- **ImmuDB**: Tamper-proof database (installed automatically via setup script)
-- **Redis**: Account sync worker queue (installed automatically via setup script; optional — the node falls back to direct ImmuDB writes if unavailable)
-
-### Quick Setup — From Source
-
-```bash
-# Install Go, ImmuDB, Yggdrasil, and Redis
-sudo ./Scripts/setup_dependencies.sh
-
-# Build the binary
-./Scripts/build.sh
-
-# Run the node
-./jmdn -config /etc/jmdn/config.env
-```
-
-For full setup including configuration, firewall rules, and systemd service installation, see **[GETTING_STARTED.md](./GETTING_STARTED.md)**.
-
-> **Docker** (v1.2.0+): Container-based deployment is available for operators who prefer it. See [DOCKER.md](./DOCKER.md) for the full setup guide.
+    - VRF-based buddy node selection from an authenticated committee
+    - BLS-signed votes bound to block hash, chain id and height; `2f+1` quorum
+    - libp2p gossip for block and vote propagation
+- **ThebeDB storage**: append-only KV log (BadgerDB) with a PostgreSQL projection for queries.
+- **Ethereum compatibility**: JSON-RPC and WebSocket facade, EVM execution for smart contracts.
 
 ## Running a Node
 
-Basic node startup (requires configuration file):
+### Requirements
+
+- **OS**: Linux (Ubuntu/Debian, RHEL/CentOS, Arch, Alpine) or macOS for development
+- **Architecture**: x86_64, ARM64 or ARMv7
+- **Memory / disk**: 2 GB RAM, 10 GB free disk minimum
+- **Go**: the version in `go.mod`; CGO and GCC are required
+- **PostgreSQL**: ThebeDB's SQL projection
+- **Redis**: account sync queue
+- **Yggdrasil**: optional mesh messaging
+
+### Quick start (from source)
 
 ```bash
-./jmdn -config /etc/jmdn/config.env
-```
-
-### Configuration
-
-**Manual Configuration (Recommended):**
-Copy the default template and manually inject your Node Alias and secrets:
-
-```bash
+sudo ./Scripts/setup_dependencies.sh
+./Scripts/build.sh
+sudo mkdir -p /etc/jmdn
 sudo cp jmdn_default.yaml /etc/jmdn/jmdn.yaml
 sudo nano /etc/jmdn/jmdn.yaml
+./jmdn
 ```
 
-*(Note: The legacy `setup_config.sh` tool is deprecated as it lacks automated secrets injection).*
+The node reads `jmdn.yaml` from `/etc/jmdn/` or the working directory. Most
+settings can also be overridden with `JMDN_`-prefixed environment variables.
+Set the PostgreSQL connection in `thebe.sql_dsn` (or `THEBE_SQL_DSN`).
 
-Alternatively, you can configure via flags (see `jmdn --help`):
+For systemd services, snapshot bootstrap and troubleshooting, see
+**[GETTING_STARTED.md](./GETTING_STARTED.md)**. For the container stack
+(node + PostgreSQL + Redis), see **[DOCKER.md](./DOCKER.md)**.
 
-| Flag                     | Description                          | Default   |
-| ------------------------ | ------------------------------------ | --------- |
-| `-config`              | Path to config file                  | ""        |
-| `-seed`                | Run as a seed node                   | `false` |
-| `-connect <multiaddr>` | Connect to a seed node               | ""        |
-| `-metrics <port>`      | Prometheus metrics port              | "8080"    |
-| `-logdir <path>`       | Log directory                        | "./logs"  |
-| `-console`             | Log to console                       | `false` |
-| `-ygg`                 | Enable Yggdrasil messaging           | `true`  |
-| `-explorer <port>`     | Run blockchain explorer (0=disabled) | 0         |
-| `-api <port>`          | Run ImmuDB API (0=disabled)          | 0         |
+### Common flags
 
-### Available Commands
+Run `./jmdn --help` for the full list. Ports set here override `ports:` in `jmdn.yaml`.
 
-| Command                                     | Description                           |
-| ------------------------------------------- | ------------------------------------- |
-| `msg <peer_multiaddr> <message>`          | Send a message via libp2p             |
-| `ygg <peer_multiaddr\|ygg_ipv6> <message>` | Send a message via Yggdrasil          |
-| `file <peer_multiaddr> <filepath>`        | Send a file to a peer                 |
-| `addpeer <peer_multiaddr>`                | Add a peer to managed nodes           |
-| `removepeer <peer_id>`                    | Remove a peer from managed list       |
-| `listpeers`                               | Show all managed peers                |
-| `peers`                                   | Request updated peer list from seed   |
-| `stats`                                   | Show messaging statistics             |
-| `broadcast <message>`                     | Broadcast to all connected peers      |
-| `fastsync <peer_multiaddr>`               | Fast sync blockchain data with a peer        |
-| `catchup <peer_multiaddr> <from_block>`   | CatchUpSync from a specific block with a peer |
-| `dbstate`                                 | Show current ImmuDB database state           |
-| `exit`                                    | Exit the program                             |
+| Flag | Description | Default |
+| --- | --- | --- |
+| `-seednode <host:port>` | Seed node gRPC URL for peer registration | `""` |
+| `-alias <name>` | Peer alias registered with the seed node | `""` |
+| `-api <port>` | Explorer API (0 = disabled) | `0` |
+| `-facade <port>` | Ethereum JSON-RPC | `8545` |
+| `-ws <port>` | Ethereum WebSocket RPC | `8546` |
+| `-metrics <port>` | Prometheus metrics (empty = disabled) | `""` |
+| `-chainID <id>` | Chain ID | `7000700` |
+| `-cmd <command>` | Run one CLI command against a running node and exit | `""` |
+| `-version` | Print version information and exit | `false` |
+
+Operator commands (`listpeers`, `stats`, `dbstate`, `fastsync`, `catchup`, ...)
+are documented in **[CLI_COMMANDS.md](./CLI_COMMANDS.md)**.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [GETTING_STARTED.md](./GETTING_STARTED.md) | Install, configure and run a node from source |
+| [DOCKER.md](./DOCKER.md) | Docker / Docker Compose deployment |
+| [PORTS.md](./PORTS.md) | Every port, its exposure and firewall guidance |
+| [CLI_COMMANDS.md](./CLI_COMMANDS.md) | Operator CLI commands |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Package layout and data flow |
+| [explorer/API_DOCUMENTATION.md](./explorer/API_DOCUMENTATION.md) | Explorer REST API |
+| [Block/README_GRPC.md](./Block/README_GRPC.md) | Block gRPC server |
+| [SmartContract/README.md](./SmartContract/README.md) | EVM and smart contract module |
+| [docs/quickstart-foundry.md](./docs/quickstart-foundry.md) | Using Foundry against a JMDT node |
+| [CONTRIBUTING.md](./CONTRIBUTING.md), [RELEASING.md](./RELEASING.md), [CHANGELOG.md](./CHANGELOG.md) | Development workflow, releases, history |
+| [docs/audit/](./docs/audit/) | Consensus and storage design reviews and incident write-ups |
 
 ## Security
 
@@ -149,5 +127,5 @@ The full VAPT report is available on request — contact security@jupitermeta.io
 To report a vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ---
-**Document Version**: Based on JMDT White Paper 1.3 | Updated Jun 2026
+**Document Version**: Based on JMDT White Paper 1.3 | Updated Oct 2026
 **Copyright**: © 2026 JMDT | Jupiter Meta Labs Foundation | Seychelles
