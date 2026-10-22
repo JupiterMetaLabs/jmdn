@@ -1,22 +1,39 @@
 name: Nightly
 
-# The slow checks live here, out of the PR gate.
+# The slow and the exhaustive checks live here, out of the PR gate.
 #
-# WHY: ci.yml runs on every push and every PR. `go test -short -race` and the
-# security scanners took the bulk of that wall time, and none of them block a
-# merge today — a gate nobody can act on is pure latency between a push and a
-# merge. ci.yml is now build + tidy + format + lint only, and everything slow
-# runs here on a schedule or on demand.
+# ci.yml (the "Quality Gate" required on every PR) is build + tidy + fmt + lint
+# only. Everything that is slow, needs the race detector, needs a build tag, or
+# depends on a daily-moving database (vulnerability DB) runs here.
 #
-# SCHEDULING CAVEAT: GitHub runs `schedule` only from the repository's DEFAULT
-# branch, using the workflow file as it exists there. Until this file reaches
-# main the cron will not fire, so use "Run workflow" (workflow_dispatch) in the
-# Actions tab. The checkout below always names the ref explicitly, so a
-# scheduled run still tests v3base rather than the default branch.
+# HOW THIS TRIGGERS
+#   * schedule — GitHub evaluates `schedule` ONLY against the workflow file on
+#       the repository's DEFAULT branch (main). Until this file is on main the
+#       cron never fires. Once it is, the run checks out and tests v3base (the
+#       `gate` job resolves the ref), not main.
+#   * push to v3base — every merge into the release line gets the full suite.
+#   * workflow_dispatch — Actions -> Nightly -> "Run workflow": pick the branch
+#       that CONTAINS this file, type the ref to test. Always runs, even if the
+#       ref was already tested.
+#
+# SKIP WHEN NOTHING CHANGED
+#   The `gate` job resolves the ref to a commit and compares it with the commit
+#   the last SUCCESSFUL run tested for that same ref (stored as an artifact
+#   named tested-sha-<ref>). A scheduled run on an already-tested commit stops
+#   after the gate (~20 s of runner time). A failed run leaves no artifact, so
+#   the next night retries the same commit — intentional: it tells you whether
+#   the failure was a flake.
+#
+# FAILURE POLICY
+#   Vet, build and test jobs FAIL the run (deterministic; red nightlies must be
+#   noticed). Scanners keep continue-on-error because the vulnerability database
+#   and rule sets change daily and would otherwise go red with no code change.
 on:
   schedule:
     # 18:00 UTC = 23:30 IST, after the working day.
     - cron: "0 18 * * *"
+  push:
+    branches: ["v3base"]
   workflow_dispatch:
     inputs:
       ref:
@@ -25,22 +42,114 @@ on:
         default: "v3base"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.ref || 'v3base' }}
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name || 'v3base' }}
   cancel-in-progress: true
 
+env:
+  CGO_ENABLED: "1"
+  # Pin tool versions here so a nightly cannot change behaviour because a tool
+  # released overnight. Bump deliberately. golangci-lint must be a release
+  # built with the Go in go.mod or newer (v2.10.1, built with go1.26, refuses a
+  # module targeting 1.27). Keep equal to ci.yml's pin.
+  GOLANGCI_LINT_VERSION: v2.15.0
+  # staticcheck 2026.2.2 declares go 1.26.0 and is expected to refuse the 1.27
+  # module until a 1.27-built release ships; its step is informational.
+  STATICCHECK_VERSION: "2026.2.2"
+  DEADCODE_XTOOLS_VERSION: v0.52.0
+  GOVULNCHECK_VERSION: v1.9.0
+  GOSEC_VERSION: v2.29.0
+  # Every custom build tag in the tree. A tag-gated file is invisible to the
+  # default build, so anything it references can be deleted without the PR gate
+  # noticing (this happened in #250: -tags applygate stopped compiling).
+  # Keep in sync with: grep -rh '^//go:build' --include=*.go . | sort -u
+  ALL_TAGS: "applygate,sequencertest,pgtest"
+
 jobs:
-  test:
-    name: Test (-race)
+  # ── Resolve the ref and decide whether anything needs to run ────────────
+  gate:
+    name: Gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      CGO_ENABLED: "1"
+      actions: read # to list previous runs and download their tested-sha artifact
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_REF: ${{ inputs.ref }}
+          PUSH_REF: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch) ref="${INPUT_REF:-v3base}" ;;
+            push)              ref="$PUSH_REF" ;;
+            *)                 ref="v3base" ;;   # schedule: always the release line
+          esac
+          # Resolve to a commit without a checkout. Works for branch names and
+          # full/short SHAs that exist on origin.
+          sha=$(git ls-remote --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "refs/heads/$ref" | cut -f1)
+          if [ -z "$sha" ]; then
+            sha="$ref" # not a branch: treat the input as a commit SHA
+          fi
+          echo "ref=$ref"  >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"  >> "$GITHUB_OUTPUT"
+          echo "Testing $ref @ $sha"
+
+      - name: Compare with the last successful run of this ref
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ steps.resolve.outputs.ref }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "manual run: always executes"; exit 0
+          fi
+          name="tested-sha-$(echo "$REF" | tr '/' '_')"
+          last=""
+          # Newest successful runs of this workflow, any trigger. The artifact
+          # name carries the ref, so a main-triggered schedule run and a push
+          # run both count as long as they tested the same ref.
+          for id in $(gh run list --workflow "${GITHUB_WORKFLOW}" --status success --limit 15 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -n "$name" -D /tmp/last 2>/dev/null; then
+              last=$(cat /tmp/last/sha); break
+            fi
+          done
+          if [ "$last" = "$SHA" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$REF is still at $SHA, already tested successfully — nothing to do."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "last tested: ${last:-<none>}; now: $SHA — running."
+          fi
+
+  # ── Compile + vet under every build-tag combination ─────────────────────
+  vet:
+    name: Vet (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: default,       tags: "" }
+          - { name: applygate,     tags: "applygate" }
+          - { name: sequencertest, tags: "sequencertest" }
+          - { name: pgtest,        tags: "pgtest" }
+          - { name: all-tags,      tags: "applygate,sequencertest,pgtest" }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || 'v3base' }}
+          ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -61,51 +170,183 @@ jobs:
           echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      # -short skips integration tests that need live infra (they must gate on
-      # testing.Short()); -race catches data races in the unit + consensus
-      # tests. If a package fails for lack of infra, gate that test behind
-      # testing.Short() rather than disabling the step.
-      #
-      # NON-BLOCKING while the open-PR backlog lands: v3base is red on arrival
-      # and the failures predate every open PR. Delete continue-on-error once
-      # the suite is green, and move this job back into ci.yml as a hard gate.
-      - name: Test
-        continue-on-error: true
-        run: go test -short -race ./...
+      - name: Verify module checksums
+        run: go mod verify
 
-      # The sequencertest-tagged seams, which the default build deliberately
-      # excludes.
-      #
-      # #240 (D-49) moved SealerCancelledForTest, ClearSealerForTest and
-      # SeedSealResultForTest out of the production files and behind
-      # //go:build sequencertest, so they no longer compile into the release
-      # binary. Correct - but nothing passed the tag, so the nine tests that
-      # exercise those seams stopped running anywhere: VDF sealer cancellation
-      # (5), the consensus-fields seam tests (2), and the sealer concurrency
-      # and latch helpers (1 each).
-      #
-      # A separate step, not a tag added to the step above: the tagged files
-      # replace untagged ones, so a single tagged run would skip the default
-      # variants. Both have to run.
-      - name: Test (sequencertest seams)
-        continue-on-error: true
-        run: go test -short -race -tags sequencertest ./...
+      # `go build` covers non-test files; `go vet` additionally type-checks every
+      # _test.go, which is where tag-gated seams usually live.
+      - name: Build (tags=${{ matrix.tags || 'none' }})
+        run: go build -tags "${{ matrix.tags }}" ./...
 
-  security:
-    name: Security
+      - name: Vet (tags=${{ matrix.tags || 'none' }})
+        run: go vet -tags "${{ matrix.tags }}" ./...
+
+      # Analyzers go vet does not enable by default (all verified to exist in go1.26/1.27).
+      - name: Vet (extra analyzers)
+        run: |
+          go vet -tags "${{ matrix.tags }}" -atomic -bools -copylocks -loopclosure -lostcancel -nilfunc -printf -shift -unreachable -unsafeptr -unusedresult ./...
+
+  # ── Static analysis beyond the PR gate ──────────────────────────────────
+  static:
+    name: Static analysis
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # go-ethereum needs cgo; keep it on so package loading (govulncheck/gosec)
-    # matches the real build (see Makefile: CGO_ENABLED=1).
-    env:
-      CGO_ENABLED: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || 'v3base' }}
-          # gitleaks scans git history; fetch it all so old commits are covered.
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/${{ env.GOLANGCI_LINT_VERSION }}/install.sh \
+            | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
+
+      # Same config as the PR gate, but with tests included and every build tag
+      # on, so tag-gated and test-only code is linted too.
+      - name: golangci-lint (tests + all tags)
+        run: golangci-lint run --tests --build-tags "${{ env.ALL_TAGS }}" --timeout 15m
+
+      # The full staticcheck suite is staged for the PR gate (see .golangci.yml);
+      # until then it runs here, informational.
+      - name: staticcheck (full SA/ST/S/QF suite)
+        continue-on-error: true
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }}
+          staticcheck -tags "${{ env.ALL_TAGS }}" ./...
+
+      # Unreachable-function inventory (RTA, tests as roots). Informational:
+      # a growing number is the signal to schedule the next cleanup PR.
+      - name: deadcode inventory
+        continue-on-error: true
+        run: |
+          go install golang.org/x/tools/cmd/deadcode@${{ env.DEADCODE_XTOOLS_VERSION }}
+          echo "== unreachable from any binary or test (default tags) =="
+          deadcode -test ./... | tee deadcode-default.txt
+          echo "== unreachable with every build tag on =="
+          deadcode -test -tags "${{ env.ALL_TAGS }}" ./... | tee deadcode-alltags.txt
+          echo "default: $(wc -l < deadcode-default.txt) functions; all-tags: $(wc -l < deadcode-alltags.txt) functions"
+
+      - name: Upload static-analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis
+          path: deadcode-*.txt
+          if-no-files-found: ignore
+
+  # ── Tests: every mode we care about, each as its own matrix leg ─────────
+  test:
+    name: Test (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The nightly as it was: fast tests under the race detector.
+          - { name: short-race,          args: "-short -race" }
+          # Everything, including the slow tests, under the race detector.
+          - { name: full-race,           args: "-race -timeout 30m" }
+          # Order-dependence and flakiness: shuffle test order and run twice.
+          - { name: shuffle-x2,          args: "-short -shuffle=on -count=2" }
+          # Tag-gated seams. One leg per tag so a broken seam names itself in
+          # the job title.
+          - { name: tags-sequencertest,  args: "-short -race -tags sequencertest" }
+          - { name: tags-applygate,      args: "-short -race -tags applygate" }
+          - { name: tags-pgtest,         args: "-short -race -tags pgtest" }
+          - { name: tags-all,            args: "-short -race -tags applygate,sequencertest,pgtest" }
+          # Coverage profile as an artifact (plain run; -race skews timings).
+          - { name: coverage,            args: "-short -covermode=atomic -coverprofile=cover.out" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Access private Go modules
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      # -count=1 defeats the test cache so a nightly always executes.
+      # The full log is kept as an artifact; the summary printed here keeps the
+      # Actions page readable. The exit status is go test's own (pipefail).
+      - name: go test ${{ matrix.args }}
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -v ${{ matrix.args }} ./... 2>&1 \
+            | tee test-${{ matrix.name }}.log \
+            | grep -E '^(ok|FAIL|--- FAIL|panic:|WARNING: DATA RACE)' || true
+          # `|| true` protected the grep, not go test: re-derive the status from the log.
+          if grep -qE '^(FAIL|panic:|WARNING: DATA RACE)' test-${{ matrix.name }}.log; then
+            echo "::error::go test ${{ matrix.args }} reported failures — see artifact test-${{ matrix.name }}"
+            exit 1
+          fi
+
+      - name: Coverage summary
+        if: matrix.name == 'coverage'
+        run: go tool cover -func=cover.out | tail -1
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-${{ matrix.name }}
+          path: |
+            test-${{ matrix.name }}.log
+            cover.out
+          if-no-files-found: ignore
+
+  # ── Security scanners (daily-moving inputs: informational) ──────────────
+  security:
+    name: Security
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -119,52 +360,75 @@ jobs:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
         run: |
           if [ -z "$GO_MODULES_TOKEN" ]; then
-            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions."
+            echo "::error::GO_MODULES_TOKEN is not set."
             exit 1
           fi
           echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      # ── Known-vulnerability scan ────────────────────────────────────────
-      # Reports CVEs in dependencies, so it can turn red with no change to
-      # this repo and a finding is rarely attributable to one PR. Non-blocking
-      # here; triage the findings, then make it a hard gate again.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
 
-      - name: Run govulncheck
+      # Source mode reports only vulnerabilities REACHABLE from this code (the
+      # actionable list) and includes the stdlib of the toolchain in use.
+      - name: govulncheck (source, reachable only)
         continue-on-error: true
-        run: govulncheck ./...
+        run: govulncheck -tags "${{ env.ALL_TAGS }}" ./...
 
-      # ── Static analysis ─────────────────────────────────────────────────
+      # Module mode lists every vulnerable module in go.mod whether reachable or not.
+      - name: govulncheck (every module in go.mod)
+        continue-on-error: true
+        run: govulncheck -mode=module ./...
+
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
 
       - name: Run gosec
         continue-on-error: true
         run: |
-          # -severity medium / -confidence medium: drops low-severity and
-          #   low-confidence noise on first rollout.
-          # -exclude-generated: skip *.pb.go and other generated files.
-          # -exclude=G115: integer-overflow-on-conversion is extremely noisy on
-          #   a codebase full of uint64<->int block-height/index conversions;
-          #   drop this exclude once those sites are audited.
           gosec \
             -severity medium \
             -confidence medium \
             -exclude-generated \
             -exclude=G115 \
+            -tags "${{ env.ALL_TAGS }}" \
+            -fmt sarif -out gosec.sarif -stdout \
             ./...
 
-      # ── Secret scan ─────────────────────────────────────────────────────
-      # gitleaks/gitleaks-action@v2.3.9 pinned to its commit SHA, so a
-      # compromised upstream tag cannot silently run new code in CI.
-      # NOTE: requires GITLEAKS_LICENSE for ORGANIZATION-owned repos (free only
-      # for personal public repos). Add it as a repo/org secret, or swap this
-      # step for the gitleaks binary (`gitleaks detect --source .`).
       - name: Secret scan (gitleaks)
         continue-on-error: true
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: gosec.sarif
+          if-no-files-found: ignore
+
+  # ── Record what was tested, only when everything that can fail passed ───
+  record:
+    name: Record tested commit
+    needs: [gate, vet, static, test, security]
+    if: needs.gate.outputs.run == 'true' && success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Write tested sha
+        env:
+          REF: ${{ needs.gate.outputs.ref }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          mkdir -p out && echo "$SHA" > out/sha
+          echo "name=tested-sha-$(echo "$REF" | tr '/' '_')" >> "$GITHUB_ENV"
+      - name: Upload tested sha
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.name }}
+          path: out/sha
+          retention-days: 30
