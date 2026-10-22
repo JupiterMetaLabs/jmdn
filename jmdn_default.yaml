@@ -71,6 +71,19 @@ thebe:
     dlq_path: ./data/dlq/DLQ.log
     max_lag_bytes: 104857600            # 100MB lag alert threshold
 
+# ── Chain-head checkpoints ───────────────────────────────
+# The sequencer signs the canonical-log head once per committee epoch; every
+# node verifies the latest checkpoint at boot. floor_file records the highest
+# checkpoint seen and must sit OUTSIDE thebe.kv_path (ideally another volume):
+# a store rolled back below it, or with its checkpoints deleted, will not start.
+# Delete floor_file only after a deliberate restore from an older snapshot.
+checkpoint:
+  enabled: true
+  boot_fail_closed: true
+  cadence_blocks: 0                    # 0 = per committee epoch
+  floor_file: "./checkpoint-floor.json"
+  min_seq: 0                           # operator-pinned floor; 0 = none
+
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
 # OTEL_EXPORTER_OTLP_ENDPOINT are replaced by this section.

@@ -178,6 +178,11 @@ sudo rm /opt/jmdn/.bootstrapped
 sudo SNAPSHOT_SHA256=<sha256> ./Scripts/bootstrap_sync.sh
 ```
 
+On the sequencer, a snapshot older than the node's last checkpoint will not
+boot: `checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`)
+remembers the highest checkpoint and the boot check treats an older store as a
+rollback. After a deliberate restore, delete that file before starting the node.
+
 Start the services:
 
 ```bash

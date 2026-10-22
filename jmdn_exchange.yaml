@@ -82,6 +82,16 @@ thebe:
     slot_name: thebe_eventlog
     publication: thebe_pub
 
+# ── Chain-head checkpoints ───────────────────────────────────────────────────
+# Exchange/RPC nodes never sign; they run the boot check, which is a no-op until
+# a floor_file exists. Keep floor_file outside thebe.kv_path.
+checkpoint:
+  enabled: true
+  boot_fail_closed: true
+  cadence_blocks: 0
+  floor_file: "./checkpoint-floor.json"
+  min_seq: 0
+
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:
   level: "info"
