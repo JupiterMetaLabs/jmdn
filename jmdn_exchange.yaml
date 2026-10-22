@@ -91,7 +91,7 @@ checkpoint:
   cadence_blocks: 0
   floor_file: "/opt/jmdn/checkpoint-floor.json"
   min_seq: 0
-  signer_bls_pub: ""
+  signer_bls_pub: ""                 # optional pin; empty = node key
 
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:
