@@ -72,17 +72,22 @@ thebe:
     max_lag_bytes: 104857600            # 100MB lag alert threshold
 
 # ── Chain-head checkpoints ───────────────────────────────
-# The sequencer signs the canonical-log head once per committee epoch; every
-# node verifies the latest checkpoint at boot. floor_file records the highest
-# checkpoint seen and must sit OUTSIDE thebe.kv_path (ideally another volume):
-# a store rolled back below it, or with its checkpoints deleted, will not start.
-# Delete floor_file only after a deliberate restore from an older snapshot.
+# Every node verifies the latest checkpoint at boot. The sequencer signs the
+# canonical-log head once per committee epoch, but only once signer_bls_pub is
+# set to its own BLS public key (its boot log prints the value to use).
+# floor_file records the highest checkpoint seen; a store rolled back below it,
+# or with its checkpoints deleted, will not start. It shares the data volume
+# with the store, so a whole-volume restore rolls it back too: on the sequencer
+# also copy the logged checkpoint_seq into min_seq here (this file is mounted
+# read-only, outside the volume). Delete floor_file and lower min_seq only after
+# a deliberate restore from an older snapshot.
 checkpoint:
   enabled: true
   boot_fail_closed: true
   cadence_blocks: 0                    # 0 = per committee epoch
-  floor_file: "./checkpoint-floor.json"
-  min_seq: 0                           # operator-pinned floor; 0 = none
+  floor_file: "/opt/jmdn/checkpoint-floor.json"
+  min_seq: 0                           # restore-safe floor; 0 = none
+  signer_bls_pub: ""                   # sequencer BLS public key (hex)
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
