@@ -72,7 +72,7 @@ func Test_GetMultipleAccounts(t *testing.T) {
 
 		err = DB_OPs.CreateAccount(conn, didAddress, address, metadata)
 		if err != nil {
-			// Integration test: needs a wired ThebeDB handle (SetGlobalHandleFactory),
+			// Integration test: needs a wired ThebeDB handle (DB_OPs.SetGlobalHandle),
 			// which only main.go installs after ThebeDB init. Unit runs (go test ./...)
 			// have none, so skip cleanly instead of failing (and later panicking on an
 			// empty result). Run it against a live node / in the integration harness.

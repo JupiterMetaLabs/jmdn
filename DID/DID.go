@@ -482,11 +482,6 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	}, nil
 }
 
-// StartDIDServer starts the DID gRPC server
-func StartDIDServer(h host.Host, address string, existingClient *config.PooledConnection) error {
-	return StartDIDServerWithContext(context.Background(), h, address, existingClient)
-}
-
 // StartDIDServerWithContext starts the DID gRPC server and gracefully stops it when ctx is cancelled.
 func StartDIDServerWithContext(ctx context.Context, h host.Host, address string, existingClient *config.PooledConnection) error {
 	lis, err := net.Listen("tcp", address)

@@ -55,13 +55,6 @@ func (st *SubscriptionTracker) MarkPeerAccepted(peerID peer.ID, role string) {
 	}
 }
 
-// IsPeerAccepted checks if a peer is accepted
-func (st *SubscriptionTracker) IsPeerAccepted(peerID peer.ID) bool {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-	return st.AcceptedPeers[peerID]
-}
-
 // GetActiveCount returns the current active count
 func (st *SubscriptionTracker) GetActiveCount() int {
 	st.mutex.RLock()
@@ -85,34 +78,6 @@ func (st *SubscriptionTracker) GetBuddyNodes() map[peer.ID]string {
 		result[peerID] = role
 	}
 	return result
-}
-
-// GetMainPeers returns only the main peers
-func (st *SubscriptionTracker) GetMainPeers() []peer.ID {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	var mainPeers []peer.ID
-	for peerID, role := range st.BuddyNodes {
-		if role == "main" {
-			mainPeers = append(mainPeers, peerID)
-		}
-	}
-	return mainPeers
-}
-
-// GetBackupPeers returns only the backup peers
-func (st *SubscriptionTracker) GetBackupPeers() []peer.ID {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	var backupPeers []peer.ID
-	for peerID, role := range st.BuddyNodes {
-		if role == "backup" {
-			backupPeers = append(backupPeers, peerID)
-		}
-	}
-	return backupPeers
 }
 
 // Reset resets the tracker

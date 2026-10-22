@@ -148,12 +148,6 @@ func AdvanceAppliedAnchorContiguous(_ *config.PooledConnection, block uint64) (u
 	return advanceAnchor(block, true)
 }
 
-// AdvanceAppliedAnchorTo applies reconciliation's rule: monotonic max to
-// target. Returns the anchor after the call and whether it moved.
-func AdvanceAppliedAnchorTo(_ *config.PooledConnection, target uint64) (uint64, bool, error) {
-	return advanceAnchor(target, false)
-}
-
 // advanceAnchor is the single locked read-decide-write cycle for both writers.
 func advanceAnchor(target uint64, contiguous bool) (uint64, bool, error) {
 	appliedAnchorMu.Lock()
@@ -178,36 +172,4 @@ func advanceAnchor(target uint64, contiguous bool) (uint64, bool, error) {
 		return current, false, err
 	}
 	return next, true, nil
-}
-
-// SeedAppliedAnchor writes the anchor ONLY if the key does not exist yet.
-// Migration path: older nodes tracked reconciliation in SQLite
-// (fastsync:last_reconciled_block); reconciliation-applied txs carry NO
-// tx_processed markers, so re-reconciling that range would double-apply.
-// Seeding from the legacy value trades a bounded, repairable risk (the legacy
-// value may be dishonestly HIGH → some effects stay missing until the repair
-// job runs) against guaranteed corruption (systematic double-apply).
-//
-// CALLERS MUST CAP legacy via CapAnchorTarget(legacy, localTip) first — the
-// legacy SQLite value can carry the MaxUint64 poison. Returns whether a seed
-// write happened.
-func SeedAppliedAnchor(_ *config.PooledConnection, legacy uint64) (bool, error) {
-	if legacy == 0 {
-		return false, nil
-	}
-
-	appliedAnchorMu.Lock()
-	defer appliedAnchorMu.Unlock()
-
-	_, found, err := readAnchorLocked()
-	if err != nil {
-		return false, err
-	}
-	if found {
-		return false, nil
-	}
-	if err := writeAnchorLocked(legacy); err != nil {
-		return false, err
-	}
-	return true, nil
 }

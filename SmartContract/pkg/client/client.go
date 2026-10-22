@@ -21,7 +21,7 @@ type Client struct {
 
 // NewClient creates a new SmartContract client connection
 func NewClient(address string) (*Client, error) {
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to smart contract server: %w", err)
 	}
@@ -38,12 +38,23 @@ func (c *Client) Close() error {
 }
 
 // CheckConnectivity verifies connection to the server
+//
+// The connection is created lazily, so this starts connecting and waits until
+// it is ready, fails, or ctx ends.
 func (c *Client) CheckConnectivity(ctx context.Context) error {
-	state := c.conn.GetState()
-	if state == connectivity.Ready || state == connectivity.Idle {
-		return nil
+	c.conn.Connect()
+	for {
+		state := c.conn.GetState()
+		switch state {
+		case connectivity.Ready:
+			return nil
+		case connectivity.TransientFailure, connectivity.Shutdown:
+			return fmt.Errorf("connection not ready: %s", state)
+		}
+		if !c.conn.WaitForStateChange(ctx, state) {
+			return fmt.Errorf("connection not ready: %s: %w", state, ctx.Err())
+		}
 	}
-	return fmt.Errorf("connection not ready: %s", state)
 }
 
 // CompileContract compiles Solidity source code

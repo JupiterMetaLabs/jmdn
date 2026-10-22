@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/config"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,24 +21,6 @@ var streamRegistry = struct {
 	clients map[chan string]struct{}
 }{
 	clients: make(map[chan string]struct{}),
-}
-
-// BroadcastNewBlock sends new block data to all connected clients
-func BroadcastNewBlock(block *config.ZKBlock) {
-	event := StreamEvent{
-		EventType: "new_block",
-		Data:      block,
-	}
-	sendEventToClients(event)
-}
-
-// BroadcastNewTransaction sends new transaction data to all connected clients
-func BroadcastNewTransaction(tx *config.Transaction) {
-	event := StreamEvent{
-		EventType: "new_transaction",
-		Data:      tx,
-	}
-	sendEventToClients(event)
 }
 
 func sendEventToClients(event StreamEvent) {

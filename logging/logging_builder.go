@@ -8,50 +8,8 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 )
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func NewLoggingBuilder() *Logging {
-	return &Logging{}
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (lb *Logging) SetFileName(fileName string) *Logging {
-	lb.FileName = fileName
-	return lb
-}
-
-func (lb *Logging) SetTopic(topic string) *Logging {
-	lb.Topic = topic
-	return lb
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (lb *Logging) NewNamedLogger(globalLogger *ion.Ion) *Logging {
-	// Named() returns ion.Logger (interface), but we need *ion.Ion
-	// Type assert ion.Logger interface to *ion.Ion pointer
-	ionLogger := globalLogger.Named(lb.Topic)
-	namedLoggerPtr, ok := ionLogger.(*ion.Ion)
-	if !ok {
-		// If type assertion fails, we can't store it
-		// This should not happen if globalLogger is *ion.Ion
-		return lb
-	}
-	lb.NamedLogger = namedLoggerPtr
-	return lb
-}
-
 func (lb *Logging) GetNamedLogger() *ion.Ion {
 	return lb.NamedLogger
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (lb *Logging) GetLoggingMetadata() *LoggingMetadata {
-	return lb.LoggingMetadata
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (lb *Logging) SetLoggingMetadata(loggingMetadata *LoggingMetadata) *Logging {
-	lb.LoggingMetadata = loggingMetadata
-	return lb
 }
 
 func (lb *Logging) Close() error {
@@ -61,11 +19,4 @@ func (lb *Logging) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return lb.NamedLogger.Shutdown(ctx)
-}
-
-func (lb *Logging) Sync() error {
-	if lb.NamedLogger == nil {
-		return fmt.Errorf("NamedLogger is not initialized")
-	}
-	return lb.NamedLogger.Sync()
 }

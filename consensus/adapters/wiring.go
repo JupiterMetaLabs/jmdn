@@ -4,11 +4,6 @@ import (
 	"fmt"
 
 	avccfg "github.com/JupiterMetaLabs/avc/config"
-	"github.com/JupiterMetaLabs/avc/engine"
-	"github.com/JupiterMetaLabs/avc/interfaces"
-
-	blssigner "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	"gossipnode/config/settings"
 )
 
 // RESOLVED BLOCKER (kept for history): importing avc/engine used to pull
@@ -74,62 +69,4 @@ func BuildAVCConfig(chainID uint64, committeeSize int, networkSalt, seedNodeURL 
 		return avccfg.Config{}, fmt.Errorf("adapters.BuildAVCConfig: invalid avc config: %w", err)
 	}
 	return c, nil
-}
-
-// BuildAVCConfigFromSettings is the production convenience: it sources the chain
-// id from jmdn's authoritative runtime accessor (blssigner.DomainChainID) and
-// the committee size from jmdn settings, then delegates to BuildAVCConfig.
-//
-// MUST be called AFTER settings.Load() — otherwise DomainChainID() returns the
-// 8000800 fallback, which is NOT jmdn's production chain id. networkSalt is
-// passed explicitly by the caller because it must match jmdn's VRF salt exactly
-// (a mismatch selects a different committee); pass "" only to accept avc's
-// default salt in a single-network dev setup.
-func BuildAVCConfigFromSettings(networkSalt string) (avccfg.Config, error) {
-	cfg := settings.Get()
-	committeeSize := cfg.Consensus.MaxValidators
-	if committeeSize <= 0 {
-		// MaxValidators==0 means "cap disabled" in jmdn; avc needs a concrete
-		// committee size, so fall back to the documented default rather than 0.
-		committeeSize = 13
-	}
-	return BuildAVCConfig(blssigner.DomainChainID(), committeeSize, networkSalt, cfg.Network.SeedNode)
-}
-
-// BuildEngine assembles a ready-to-Start avc engine from the host adapters.
-//
-// seedClient MUST surface AUTHORITY-VERIFIED committee BLS keys (use
-// *SeedNodeAdapter) — that is what makes Fix #2's committee authorization real.
-// validationDepth selects the pre-vote check: interfaces.DepthStructural
-// (hash/merkle only) or interfaces.DepthFull.
-//
-// DEPTHFULL CAVEAT (#5 stateful checks): DepthFull requires a validator that
-// runs stateful (balance/nonce) checks against a PER-BLOCK account cache loaded
-// from ImmuDB. StatefulChecker (stateful_checker.go) implements the checks, but
-// its cache must be (re)loaded per block, which a single injected BlockValidator
-// does not do on its own. Passing DepthFull with a structural-only validator
-// silently runs only structural checks; passing it with a FullValidator whose
-// cache is not per-block-loaded fails closed (rejects). Real stateful validation
-// therefore still needs a per-block validator/cache lifecycle (the
-// runFullValidatorAgainstDB pattern in shadow.go). Pass DepthStructural until
-// that lifecycle is wired.
-//
-// Nothing here starts consensus; activation stays gated behind
-// Features.AvcValidation (Enabled + Mode + Network.Environment=="testnet").
-func BuildEngine(
-	cfg avccfg.Config,
-	pubSub interfaces.PubSubPublisher,
-	node interfaces.NodeConfigProvider,
-	peerLister interfaces.PeerLister,
-	seedClient interfaces.SeedNodeClient,
-	sink interfaces.VoteResultSink,
-	validator interfaces.BlockValidator,
-	validationDepth interfaces.ValidationDepth,
-) (*engine.Engine, error) {
-	if seedClient == nil {
-		return nil, fmt.Errorf("adapters.BuildEngine: nil seedClient (need verified-committee source for Fix #2 authorization)")
-	}
-	eng := engine.New(cfg, pubSub, node, peerLister, seedClient, sink, validator)
-	eng.SetValidationDepth(validationDepth)
-	return eng, nil
 }

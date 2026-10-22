@@ -43,7 +43,7 @@ func Test_GetBlocksRange(t *testing.T) {
 	start := time.Now()
 	retrievedBlocks, err := DB_OPs.GetBlocksRange(conn, startBlockNum, startBlockNum+uint64(count)-1)
 	if err != nil && strings.Contains(err.Error(), "no ThebeHandle available") {
-		// Integration test: needs a wired ThebeDB handle (SetGlobalHandleFactory),
+		// Integration test: needs a wired ThebeDB handle (DB_OPs.SetGlobalHandle),
 		// only installed by main.go after ThebeDB init. Skip cleanly in unit runs
 		// instead of failing and then panicking on an empty result slice.
 		t.Skipf("integration: requires a wired ThebeDB handle, not available in unit runs (%v)", err)

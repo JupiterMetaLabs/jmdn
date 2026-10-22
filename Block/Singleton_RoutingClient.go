@@ -57,11 +57,6 @@ func GetRoutingClient() (*RoutingClient, error) {
 	return routingclient, nil
 }
 
-// SetRoutingClient sets the singleton routing client (mainly for testing or manual override)
-func SetRoutingClient(client *RoutingClient) {
-	routingclient = client
-}
-
 // GetFeeStatistics gets fee statistics from the routing service
 func (r *RoutingClient) GetFeeStatistics(ctx context.Context) (*pb.FeeStatistics, error) {
 	return r.client.GetFeeStatistics(ctx, &empty.Empty{})

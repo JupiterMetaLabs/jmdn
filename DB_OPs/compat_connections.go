@@ -142,11 +142,6 @@ func CountAccountsConn(ctx context.Context, conn *config.PooledConnection) (uint
 	return h.CountAccounts(ctx)
 }
 
-// GetAccountsByNonces returns accounts matching any of the given nonces via ThebeDB.
-func GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, error) {
-	return GetAccountsByNoncesConn(ctx, nil, nonces)
-}
-
 // GetAccountsByNoncesConn is GetAccountsByNonces on the given task connection
 // (nil = process handle).
 func GetAccountsByNoncesConn(ctx context.Context, conn *config.PooledConnection, nonces []uint64) ([]*Account, error) {
@@ -190,7 +185,7 @@ func SaveAccount(conn *config.PooledConnection, acc *Account) error {
 // embedded handle is process-wide — reachable iff the handle is installed.
 // The conn parameter is accepted for call-site compatibility and unused.
 // InitAccountsPool is a compat shim: pool construction is factory-based now
-// (config.SetGlobalHandleFactory at ThebeDB init). Legacy tests call it before
+// (SetGlobalHandle at ThebeDB init). Legacy tests call it before
 // exercising account paths; those paths surface their own errors when no
 // handle/DB is available, which the tests treat as skip conditions.
 func InitAccountsPool() error { return nil }

@@ -17,15 +17,10 @@ const (
 	ColorGreen  = "\033[1;32m"
 	ColorCyan   = "\033[1;36m"
 	ColorYellow = "\033[1;33m"
-	ColorRed    = "\033[1;31m"
 )
 
 const PeerFile = "./config/peer.json"
 const BLSFile = "./config/bls.json"
-
-const (
-	DefaultProfilerPort = "6060" // Default port for the profiler server
-)
 
 const (
 	MaxMainPeers     = 7 // Production committee size (voting set; keep == consensus.max_validators). n=7 → BFT quorum 2f+1=5 with f=2; n=5 was unsafe (quorum 3, intersection 2q-n=1 < f+1=2).
@@ -53,40 +48,18 @@ const MaxPeriod uint64 = 1024
 // or peers reject each other's gossip. Sized for large many-tx blocks (8 MiB).
 const MaxBlockMessageBytes = 8 * 1024 * 1024
 
-// Time-bounded message handling constants
-const (
-	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds
-	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
-	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
-)
-
 var (
 	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
 	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
 )
 
-var SeedNodeURL string = "" // Default seed node URL, can be updated via SetSeedNodeURL
-
-// SetSeedNodeURL sets the seed node URL for the application
-func SetSeedNodeURL(url string) {
-	SeedNodeURL = url
-}
-
-// GetSeedNodeURL returns the current seed node URL
-func GetSeedNodeURL() string {
-	return SeedNodeURL
-}
-
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
-	SeedProtocol              protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
 	PeerDiscoveryProtocol     protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
 	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"
-	RegisterProtocol          protocol.ID = "/seednode/register/1.0.0" // For peer registration
 	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
-	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0" // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
-	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
+	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0"    // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
 	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/3.0.0"  // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
 	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/3.0.0" // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
 
@@ -101,8 +74,7 @@ const (
 	// that does not speak it fails to connect rather than silently mis-routing
 	// into the vote path. Same 1:1 direct-stream shape as the vote path, so it
 	// is still "T1" in the architecture doc's transport inventory.
-	RevealPushProtocol   protocol.ID = "/p2p/randao/reveal/1.0.0"
-	BFTConsensusProtocol protocol.ID = "/p2p/bft/consensus/3.0.0" // v3 protocol: signed PREPARE/COMMIT + ConsensusHash/v4-vote rollout isolation
+	RevealPushProtocol protocol.ID = "/p2p/randao/reveal/1.0.0"
 
 	// VDFProofRequestProtocol carries the entropy-epoch VDF proof pull: "do you
 	// have the VDF proof for entropy epoch E?".
@@ -119,13 +91,11 @@ const (
 
 const (
 	Delimiter               = 0x1E
-	PubSub_ConsensusChannel = "pubsub-consensus/3.0.0"     // v3 protocol: chain-id-bound votes + vote sync-gate + ConsensusHash/v4-vote rollout isolation
-	PubSub_BFTConsensus     = "pubsub-bft-consensus/3.0.0" // v3 protocol: signed BFT messages + ConsensusHash/v4-vote rollout isolation
+	PubSub_ConsensusChannel = "pubsub-consensus/3.0.0" // v3 protocol: chain-id-bound votes + vote sync-gate + ConsensusHash/v4-vote rollout isolation
 	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
 	PubSub_L1CommitChannel = "pubsub-l1-commit"
-	Pubsub_MessageBuffer   = "pubsub-buffer"
 	Pubsub_CRDTSync        = "pubsub-crdt-sync"
 	// PubSub_BlockPropagation is a persistent topic for fanning finalized,
 	// committee-certified blocks to the whole fleet (not just directly-connected
@@ -141,8 +111,6 @@ const (
 	Type_EndPubSub          = "END_PUBSUB"
 	Type_Publish            = "PUBLISH"
 	Type_ToBeProcessed      = "PROCESS_MESSAGE"
-	Type_Subscribe          = "SUBSCRIBE"
-	Type_Unsubscribe        = "UNSUBSCRIBE"
 	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"
 
 	// Verify
@@ -160,16 +128,10 @@ const (
 	// For CRDT Synchronization
 	Type_CRDT_SYNC = "CRDT_SYNC"
 
-	Topic_SYNCRequest   = "SYNC_REQUEST"
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
-	Type_BFTPrepare     = "BFT_PREPARE"
 	Type_BFTPrepareVote = "BFT_PREPARE_VOTE"
 	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
 	Type_BFTResult      = "BFT_RESULT"
-
-	// For BLS Voting - BLS Voting would be listening on the message transfer protocol
-	Type_BLSRequest = "BLS_REQUEST"
-	Type_BLSVote    = "BLS_VOTE"
 
 	// L1 finality broadcast — sent by the node that received the commit confirmation
 	Type_L1Commit      = "L1_COMMIT"
@@ -177,14 +139,6 @@ const (
 
 	// Finalized-block gossip fan-out (PubSub_BlockPropagation)
 	Type_BlockPropagation = "BLOCK_PROPAGATION"
-)
-
-// Increase buffer sizes
-const (
-	BufferSize            = 1024 * 1024 * 8 // 8MB
-	CHUNK_SIZE            = 1024 * 1024 * 4 // 4MB chunks
-	MAX_CONCURRENT_CHUNKS = 4               // Concurrent chunks
-	FlowControlWindowSize = 7168000         // 7MB
 )
 
 const (
@@ -215,9 +169,6 @@ const (
 
 // SeedNodeConfig defines configuration for seed nodes
 const (
-	MaxTrackedPeers           = 1000 // Maximum number of peers to track
-	PeerTTL                   = 3600 // Time in seconds before a peer is considered stale
-	AdvertiseInterval         = 300  // How often seed nodes advertise themselves (seconds)
 	HeartbeatFailureThreshold = 3
 	HeartbeatRemovalThreshold = 9
 )
@@ -251,10 +202,6 @@ var (
 	// Database location and name
 	DBPath = "./DB/gossipnode.db"
 
-	// Table names
-	PeersTable     = "peers"           // For seed node peer tracking
-	KeyValueTable  = "key_value"       // For general key-value storage
-	MerkleTable    = "merkle_hashes"   // For storing Merkle tree hashes
 	ConnectedPeers = "connected_peers" // For tracking connected peers
 )
 

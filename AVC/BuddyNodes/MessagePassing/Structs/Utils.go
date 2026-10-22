@@ -13,18 +13,13 @@ import (
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	voteaggregation "gossipnode/AVC/VoteModule"
-	Publisher "gossipnode/Pubsub/Publish"
-	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
 	"gossipnode/seednode"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // voteCRDTV2Enabled is the read-side half of the D-26(a)/D-51 cutover: the
@@ -62,100 +57,6 @@ func envOnStructs(key string, def bool) bool {
 	default:
 		return true
 	}
-}
-
-type UtilsBuddyNode struct {
-	BuddyNode *PubSubMessages.BuddyNode
-}
-
-// GetBuddyNodes returns a copy of the current buddy nodes list
-func (buddy *UtilsBuddyNode) GetBuddyNodes() []peer.ID {
-	buddy.BuddyNode.Mutex.RLock()
-	defer buddy.BuddyNode.Mutex.RUnlock()
-
-	nodes := make([]peer.ID, len(buddy.BuddyNode.BuddyNodes.Buddies_Nodes))
-	copy(nodes, buddy.BuddyNode.BuddyNodes.Buddies_Nodes)
-	return nodes
-}
-
-// GetBuddyNodesCount returns the number of buddy nodes (excluding self)
-func (buddy *UtilsBuddyNode) GetBuddyNodesCount() int {
-	buddy.BuddyNode.Mutex.RLock()
-	defer buddy.BuddyNode.Mutex.RUnlock()
-
-	count := 0
-	for _, peerID := range buddy.BuddyNode.BuddyNodes.Buddies_Nodes {
-		if peerID != buddy.BuddyNode.PeerID {
-			count++
-		}
-	}
-	return count
-}
-
-// GetMetadata returns a copy of the current metadata
-func (buddy *UtilsBuddyNode) GetMetadata() PubSubMessages.MetaData {
-	buddy.BuddyNode.Mutex.RLock()
-	defer buddy.BuddyNode.Mutex.RUnlock()
-	return PubSubMessages.MetaData{
-		Received:  buddy.BuddyNode.MetaData.Received,
-		Sent:      buddy.BuddyNode.MetaData.Sent,
-		Total:     buddy.BuddyNode.MetaData.Total,
-		UpdatedAt: buddy.BuddyNode.MetaData.UpdatedAt,
-	}
-}
-
-func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPubSub, ListenerNode *PubSubMessages.BuddyNode) error {
-	// Check if this is a vote message
-	var voteData map[string]interface{}
-	if err := json.Unmarshal([]byte(msg.Message), &voteData); err != nil {
-		logger().Error(logger_ctx, "Failed to unmarshal vote message", err,
-			ion.String("function", "Structs.SubmitMessage"))
-		return errors.New("failed to unmarshal vote message: %v")
-	}
-
-	// Check if this is a vote message by looking for vote field
-	if _, exists := voteData["vote"]; exists {
-
-		// Create OP struct for vote
-		OP := &Types.OP{
-			NodeID: msg.Sender,
-			OpType: int8(1), // 1 for add, -1 for remove
-			KeyValue: Types.KeyValue{
-				Key:   msg.Sender.String(), // key would be the peer id of the sender
-				Value: msg.Message,         // Store the full vote message as value
-			},
-		}
-
-		// Adding data to the CRDT First - Before PubSub
-		if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-			logger().Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
-				ion.String("function", "Structs.SubmitMessage"))
-			return errors.New("failed to add vote to local CRDT Engine: " + err.(error).Error())
-		}
-	} else {
-		// This is a regular message, try to unmarshal as OP
-		OP := &Types.OP{}
-		if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
-			logger().Error(logger_ctx, "Failed to unmarshal message", err,
-				ion.String("function", "Structs.SubmitMessage"))
-			return errors.New("failed to unmarshal message: " + err.Error())
-		}
-
-		// Adding data to the CRDT First - Before PubSub
-		if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-			logger().Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
-				ion.String("function", "Structs.SubmitMessage"))
-			return errors.New("failed to add vote to local CRDT Engine: " + err.(error).Error())
-		}
-	}
-
-	// Now Submit to the publish function in the pubsub using config.PubSub_ConsensusChannel
-	if err := Publisher.Publish(logger_ctx, PubSub, config.PubSub_ConsensusChannel, msg, map[string]string{}); err != nil {
-		logger().Error(logger_ctx, "Failed to publish message to pubsub", err,
-			ion.String("function", "Structs.SubmitMessage"))
-		return errors.New("failed to publish message to pubsub: %v")
-	}
-	return nil
 }
 
 // ErrNoVotesInCRDT is returned by ProcessVotesFromCRDT when no counted vote for

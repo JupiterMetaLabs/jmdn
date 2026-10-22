@@ -186,20 +186,3 @@ var DefaultSlotStore = NewSlotStore()
 func LiveSlotFor(height uint64) uint64 {
 	return DefaultSlotStore.Current() + DefaultProposerPeriods.PeriodFor(height) + 1
 }
-
-// CurrentEpoch returns the selection epoch that is live RIGHT NOW on the
-// proposer, including the failed rounds the next height has burned so far -
-// composed from DefaultSlotStore (committed history) and
-// DefaultProposerPeriods (the proposer's in-flight retry counter). A single
-// height can burn enough failed rounds to cross an epoch boundary before it
-// ever commits (§3.1/§7.1). nextHeight is the height not yet committed (i.e.
-// current chain tip + 1).
-//
-// Deliberately NOT built on LiveSlotFor's "+1": CurrentEpoch answers "what
-// epoch is live if nextHeight committed AT ITS CURRENT PERIOD right now",
-// which is the already-resolved contribution only - the "+1" in LiveSlotFor
-// is for stamping the block IN FLIGHT, a slot that hasn't resolved yet and
-// so must not be counted as already-elapsed epoch progress.
-func CurrentEpoch(nextHeight uint64) uint64 {
-	return EpochForSlot(DefaultSlotStore.Current() + DefaultProposerPeriods.PeriodFor(nextHeight))
-}

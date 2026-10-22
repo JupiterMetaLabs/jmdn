@@ -141,12 +141,6 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 	return Txn
 }
 
-// Convert the address string to common.Address
-// __DEAD_CODE_AUDIT_PUBLIC__
-func ConvertAddress(address string) common.Address {
-	return common.HexToAddress(address)
-}
-
 // ConvertAddressCaseInsensitive converts address string to common.Address in a case-insensitive manner
 func ConvertAddressCaseInsensitive(address string) common.Address {
 	// Remove 0x prefix if present
@@ -162,16 +156,6 @@ func ConvertAddressCaseInsensitive(address string) common.Address {
 	return common.HexToAddress("0x" + addr)
 }
 
-// ConvertAddressCaseInsensitiveWithFallback tries case-insensitive conversion first, then falls back to exact match
-func ConvertAddressCaseInsensitiveWithFallback(address string) common.Address {
-	// First try case-insensitive conversion
-	normalized := ConvertAddressCaseInsensitive(address)
-
-	// For now, return the normalized version
-	// In a real implementation, we might need to try both and see which one works
-	return normalized
-}
-
 // Convert the balance string to big.Int
 func ConvertBalance(balance string) (*big.Int, error) {
 	balanceInt, status := new(big.Int).SetString(balance, 10)
@@ -179,31 +163,6 @@ func ConvertBalance(balance string) (*big.Int, error) {
 		return nil, fmt.Errorf("failed to convert balance from string to big.Int: invalid big.Int %q (base 10)", balance)
 	}
 	return balanceInt, nil
-}
-
-// convertLogsToMap converts receipt logs to a map format suitable for JSON serialization
-// __DEAD_CODE_AUDIT_PUBLIC__
-func ConvertLogsToMap(logs []config.Log) []map[string]any {
-	logMaps := make([]map[string]any, len(logs))
-	for i, log := range logs {
-		topics := make([]string, len(log.Topics))
-		for j, topic := range log.Topics {
-			topics[j] = topic.Hex()
-		}
-
-		logMaps[i] = map[string]any{
-			"address":     log.Address.Hex(),
-			"topics":      topics,
-			"data":        fmt.Sprintf("%x", log.Data),
-			"blockNumber": fmt.Sprintf("%x", log.BlockNumber),
-			"blockHash":   log.BlockHash.Hex(),
-			"txHash":      log.TxHash.Hex(),
-			"txIndex":     fmt.Sprintf("%x", log.TxIndex),
-			"logIndex":    fmt.Sprintf("%x", log.LogIndex),
-			"removed":     log.Removed,
-		}
-	}
-	return logMaps
 }
 
 // Conversion

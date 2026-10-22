@@ -2,7 +2,6 @@ package helper
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,11 +21,6 @@ type BroadcastHandler interface {
 // Our global broadcast handler
 var broadcastHandler BroadcastHandler
 
-// SetBroadcastHandler sets the broadcast handler for notifications
-func SetBroadcastHandler(handler BroadcastHandler) {
-	broadcastHandler = handler
-}
-
 func ConvertBigToUint256(b *big.Int) (*uint256.Int, bool) {
 	u, overflow := uint256.FromBig(b)
 	if overflow {
@@ -39,7 +33,6 @@ func ConvertBigToUint256(b *big.Int) (*uint256.Int, bool) {
 	return u, overflow
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
 func BigIntToUint64Safe(b *big.Int) (uint64, error) {
 	if b.Sign() < 0 {
 		return 0, fmt.Errorf("cannot convert negative big.Int to uint64")
@@ -48,13 +41,6 @@ func BigIntToUint64Safe(b *big.Int) (uint64, error) {
 		return 0, fmt.Errorf("big.Int too large for uint64")
 	}
 	return b.Uint64(), nil
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func Uint64ToBytes(n uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, n)
-	return b
 }
 
 // NotifyBroadcast sends a notification to the broadcast handler
@@ -83,12 +69,4 @@ func NotifyBroadcast(msg config.BlockMessage) {
 	broadcastHandler.HandleBroadcast(data)
 	logger().Debug(ctx, "Block notification sent to broadcaster",
 		ion.String("block_id", msg.ID))
-}
-
-func ToJSON(v interface{}) []byte {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return []byte("{}")
-	}
-	return data
 }

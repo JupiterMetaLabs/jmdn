@@ -126,33 +126,6 @@ func GetTransactionsPaginated(_ *config.PooledConnection, offset, limit int) ([]
 	return txs, int(total), nil
 }
 
-// GetTransactionsByAccountPaginated returns a page of transactions for address.
-func GetTransactionsByAccountPaginated(_ *config.PooledConnection, address *common.Address, offset, limit int) ([]*config.Transaction, int, error) {
-	if address == nil {
-		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: nil address")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	h, err := getHandle(nil)
-	if err != nil {
-		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: %w", err)
-	}
-	recs, err := h.GetTransactionsByAddress(ctx, address.Hex(), limit+offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: %w", err)
-	}
-	if offset >= len(recs) {
-		return nil, len(recs), nil
-	}
-	page := recs[offset:]
-	txs := make([]*config.Transaction, 0, len(page))
-	for _, r := range page {
-		txs = append(txs, txRecordToConfig(r))
-	}
-	stampTxTimestamps(ctx, h, page, txs)
-	return txs, len(recs), nil
-}
-
 // ── Account reads ────────────────────────────────────────────────────────────
 
 // GetAccountByDID retrieves an account by its DID string.
@@ -283,31 +256,6 @@ func Exists(conn *config.PooledConnection, key string) (bool, error) {
 	return true, nil
 }
 
-// GetAllKeys is a stub — ImmuDB prefix scans are removed.
-// Use ThebeDB SQL queries instead.
-func GetAllKeys(_ *config.PooledConnection, prefix string) ([]string, error) {
-	return nil, fmt.Errorf("GetAllKeys: ImmuDB removed; use ThebeDB SQL queries instead")
-}
-
 // ── Merkle ───────────────────────────────────────────────────────────────────
 
-// GetMerkleRoot is a stub — the Merkle root is derived from the KV canonical
-// log by JMDN-FastSync, not stored as a DB column.
-func GetMerkleRoot(_ *config.PooledConnection) ([]byte, error) {
-	return nil, fmt.Errorf("GetMerkleRoot: not available — Merkle root is derived from the KV canonical log")
-}
-
 // ── ImmuDB transaction stubs ─────────────────────────────────────────────────
-
-// Transaction executes fn in a logical transaction context.
-// Legacy stub — fn is invoked directly (no atomic KV batch).
-// Callers use this to mark processed tx/block keys, which are now no-ops.
-func Transaction(fn func() error) error {
-	return fn()
-}
-
-// Set records a processing-marker key. No-op — processing markers are
-// derived from SQL state in ThebeDB.
-func Set(_ string, _ interface{}) error {
-	return nil
-}
