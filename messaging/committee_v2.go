@@ -52,6 +52,7 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+	"gossipnode/metrics"
 
 	"github.com/rs/zerolog/log"
 )
@@ -711,10 +712,26 @@ type blsVerifier struct {
 	bindings      string
 	consensusHash string // must be non-empty — VerifyForBlock rejects an empty ConsensusHash
 	orig          map[string]BLS_Signer.BLSresponse
+	// seated is the seated committee's peer ids, used ONLY to bound the
+	// legacy-vote classification below. It never affects what verifies:
+	// committee.Tally owns the membership decision and makes it after this
+	// verifier returns.
+	seated map[string]struct{}
 }
 
 func voteKey(peerID string, sig []byte) string {
 	return peerID + "|" + hex.EncodeToString(sig)
+}
+
+// seatedPeerIDs indexes the seated committee by peer id. Used only to bound
+// the legacy-vote classification in VerifyVote — never to decide membership,
+// which is committee.Tally's job.
+func seatedPeerIDs(seated []committee.Member) map[string]struct{} {
+	out := make(map[string]struct{}, len(seated))
+	for _, m := range seated {
+		out[m.PeerID] = struct{}{}
+	}
+	return out
 }
 
 func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []byte) bool {
@@ -730,7 +747,24 @@ func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []by
 		return true
 	}
 	if !RejectLegacyVotes {
-		return BLS_Verifier.Verify(resp, vote) == nil
+		if BLS_Verifier.Verify(resp, vote) == nil {
+			metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSiteCommitteeV2).Inc()
+			log.Warn().Str("peer", v.PeerID).Msg("legacy (unbound) BLS vote accepted (reject_legacy_votes is off)")
+			return true
+		}
+		return false
+	}
+	// reject_legacy_votes is ON: refused either way, but classify so the
+	// metric detects a validator still signing the legacy domain.
+	//
+	// Bounded to seated members on purpose. committee.Tally calls this
+	// verifier BEFORE its membership check — deliberately, so a forged vote
+	// never reaches the membership map — and the vote slice is
+	// attacker-supplied with no length cap, so classifying every failure
+	// would sell a flood of garbage signatures a second BLS verification each.
+	if _, seated := b.seated[v.PeerID]; seated && BLS_Verifier.Verify(resp, vote) == nil {
+		metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSiteCommitteeV2).Inc()
+		log.Warn().Str("peer", v.PeerID).Msg("legacy (unbound) BLS vote detected and refused (reject_legacy_votes is on)")
 	}
 	return false
 }
@@ -975,7 +1009,7 @@ func TallyAgainst(
 		BlockHash: blockHash,
 		Committee: seated,
 		Votes:     votes,
-		Verifier:  blsVerifier{bindings: blockHashHex, consensusHash: consensusHashHex, orig: orig},
+		Verifier:  blsVerifier{bindings: blockHashHex, consensusHash: consensusHashHex, orig: orig, seated: seatedPeerIDs(seated)},
 		// Members carrying a bound key are always checked. This flag only
 		// decides whether an EMPTY bound key is tolerated, and the legacy
 		// source supplies empty keys - so requiring the binding is safe exactly

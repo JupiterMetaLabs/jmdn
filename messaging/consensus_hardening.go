@@ -672,8 +672,23 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensu
 		if !verified && !RejectLegacyVotes {
 			if BLS_Verifier.Verify(r, vote) == nil {
 				verified = true
-				metrics.ConsensusLegacyVotesTotal.Inc()
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
 				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote accepted (reject_legacy_votes is off)")
+			}
+		} else if !verified {
+			// reject_legacy_votes is ON: the vote is refused either way, but
+			// classify it so the metric still DETECTS a validator signing the
+			// legacy domain. Without this the counter is pinned at zero on
+			// every node that is not the sequencer, and a flat zero reads as
+			// "no legacy votes" when it means "not instrumented here".
+			//
+			// Bounded on purpose: the extra verification runs only for a peer
+			// already in the committee map. responses is attacker-supplied and
+			// has no length cap, so classifying every failure would sell a
+			// flood of garbage signatures a second BLS verification each.
+			if _, known := committee[r.PeerID]; known && BLS_Verifier.Verify(r, vote) == nil {
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
+				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote detected and refused (reject_legacy_votes is on)")
 			}
 		}
 		if !verified {

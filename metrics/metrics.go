@@ -25,6 +25,14 @@ var DefaultRegistry = prometheus.NewRegistry()
 // Create a factory that uses our DefaultRegistry
 var factory = promauto.With(DefaultRegistry)
 
+// Verification sites for ConsensusLegacyVotesTotal's "site" label. Fixed
+// strings chosen here, never derived from a message, so the label is bounded.
+const (
+	LegacyVoteSiteSequencer   = "sequencer"    // Sequencer per-vote alerting loop
+	LegacyVoteSiteCommitteeV2 = "committee_v2" // seated-committee certificate tally
+	LegacyVoteSitePoolTally   = "pool_tally"   // countEligibleYes: legacy and pool-wide tallies
+)
+
 // GetLibp2pRegisterer returns a registerer suitable for libp2p metrics
 func GetLibp2pRegisterer() prometheus.Registerer {
 	// This creates a registerer that will add the "libp2p_" prefix to all metrics
@@ -60,15 +68,26 @@ var (
 		Help: "The number of active (responding) peers",
 	})
 
-	// Heartbeat metrics
-	// ConsensusLegacyVotesTotal counts BLS votes that verified only as legacy
-	// unbound "vote:<v>" signatures (not bound to a block). Expected to stay at
-	// zero; a rise means some validators still sign the legacy domain.
-	ConsensusLegacyVotesTotal = factory.NewCounter(prometheus.CounterOpts{
+	// ConsensusLegacyVotesTotal counts BLS votes that verified only as a legacy
+	// unbound "vote:<v>" signature instead of the block-bound v3 message.
+	//
+	// It counts DETECTION, not acceptance. With reject_legacy_votes on (the
+	// default) such a vote is counted here and then refused — that is the
+	// point: the metric is how an operator finds validators still signing the
+	// legacy domain, and a metric that only fired once the flag was already
+	// off would arrive too late to be used for anything.
+	//
+	// The "site" label names the verification layer that saw the vote, because
+	// the three layers do not see the same traffic: only a sequencer runs
+	// "sequencer", and only a node checking a certificate runs the other two.
+	// A vote seen by two layers is counted once under each, so read the
+	// per-site series rather than summing them.
+	ConsensusLegacyVotesTotal = factory.NewCounterVec(prometheus.CounterOpts{
 		Name: "consensus_legacy_votes_total",
-		Help: "BLS votes accepted only as legacy unbound signatures",
-	})
+		Help: "BLS votes that verified only as a legacy unbound signature, by verification site",
+	}, []string{"site"})
 
+	// Heartbeat metrics
 	HeartbeatSentCounter = factory.NewCounter(prometheus.CounterOpts{
 		Name: "p2p_heartbeats_sent_total",
 		Help: "The total number of heartbeats sent",
