@@ -181,7 +181,23 @@ sudo SNAPSHOT_SHA256=<sha256> ./Scripts/bootstrap_sync.sh
 On the sequencer, a snapshot older than the node's last checkpoint will not
 boot: `checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`)
 remembers the highest checkpoint and the boot check treats an older store as a
-rollback. After a deliberate restore, delete that file before starting the node.
+rollback. After a deliberate restore, delete that file (and lower
+`checkpoint.min_seq` if you set it) before starting the node.
+
+### Sequencer checkpoints
+
+The sequencer signs a chain-head checkpoint once per committee epoch, but only
+after you pin its key:
+
+1. Start the sequencer once. Its log prints `[checkpoint] not signing: set
+   checkpoint.signer_bls_pub ...` with `this_node_bls_pub`.
+2. Put that value in `/etc/jmdn/jmdn.yaml` under `checkpoint.signer_bls_pub`
+   and restart. Checkpoints are verified against this key only, so committee
+   changes cannot stop the sequencer from restarting.
+3. After each restart the log prints `checkpoint_seq`. Copy it into
+   `checkpoint.min_seq` from time to time. The floor file sits on the data
+   volume and is rolled back with it by a volume restore; `min_seq` in the
+   config file is not.
 
 Start the services:
 

@@ -380,8 +380,9 @@ docker logs -f jmdn                    # follow startup
 docker stop jmdn && docker rm jmdn     # volume jmdn-data is preserved
 docker volume rm jmdn-data             # full reset (deletes all chain data)
 
-# Force re-bootstrap (on the sequencer, also remove the checkpoint floor —
-# an older snapshot is otherwise refused as a rollback)
+# Force re-bootstrap (on the sequencer, also remove the checkpoint floor and
+# lower checkpoint.min_seq in jmdn.yaml — an older snapshot is otherwise
+# refused as a rollback; see GETTING_STARTED "Sequencer checkpoints")
 docker exec jmdn rm -f /opt/jmdn/.bootstrapped /opt/jmdn/checkpoint-floor.json && docker restart jmdn
 ```
 

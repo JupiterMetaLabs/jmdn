@@ -89,8 +89,9 @@ checkpoint:
   enabled: true
   boot_fail_closed: true
   cadence_blocks: 0
-  floor_file: "./checkpoint-floor.json"
+  floor_file: "/opt/jmdn/checkpoint-floor.json"
   min_seq: 0
+  signer_bls_pub: ""
 
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:
