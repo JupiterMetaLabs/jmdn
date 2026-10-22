@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -2182,8 +2183,17 @@ func main() {
 		// use). Only the sequencer signs.
 		isSequencer := !cfg.FastSync.EnableCatchup
 
+		// Resolve the floor file once so every log line names the real path; a
+		// relative path depends on the working directory.
+		floorFile := cfg.Checkpoint.FloorFile
+		if floorFile != "" {
+			if abs, absErr := filepath.Abs(floorFile); absErr == nil {
+				floorFile = abs
+			}
+		}
+
 		verified, verr := messaging.CheckpointBootGate(context.Background(), checkpointKV,
-			messaging.CheckpointSigVerifier(), cfg.Checkpoint.FloorFile, cfg.Checkpoint.MinSeq,
+			messaging.CheckpointSigVerifierFor(cfg.Checkpoint.SignerBLSPub), floorFile, cfg.Checkpoint.MinSeq,
 			12, 10*time.Second)
 		switch {
 		case verr != nil && cfg.Checkpoint.BootFailClosed:
@@ -2193,16 +2203,17 @@ func main() {
 		case !verified:
 			log.Info().Msg("[checkpoint] no checkpoint and no floor on this node — boot gate skipped")
 		default:
-			log.Info().Str("floor_file", cfg.Checkpoint.FloorFile).Msg("[checkpoint] boot verification passed — canonical head matches its committee-signed checkpoint")
+			log.Info().Str("floor_file", floorFile).Msg("[checkpoint] boot verification passed — canonical head matches its signed checkpoint")
 		}
 
 		// Wire the per-committed-block signing hook (sequencer-only; no-op on
 		// non-sequencers and when the cadence does not fire).
-		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), cfg.Checkpoint.FloorFile)
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, cfg.Checkpoint.SignerBLSPub)
 		log.Info().
 			Bool("sequencer", isSequencer).
+			Bool("signer_pinned", cfg.Checkpoint.SignerBLSPub != "").
 			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
-			Str("floor_file", cfg.Checkpoint.FloorFile).
+			Str("floor_file", floorFile).
 			Msg("[checkpoint] chain-head checkpoint feature enabled")
 	}
 

@@ -2,12 +2,14 @@ package messaging
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
+	blssign "gossipnode/AVC/BLS/bls-sign"
 	"gossipnode/internal/ckptfloor"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/checkpoint"
@@ -173,5 +175,84 @@ func TestBootGateRetriesUnavailableCommittee(t *testing.T) {
 	calls = 0
 	if _, err := CheckpointBootGate(context.Background(), s, flaky, "", 0, 1, time.Millisecond); !errors.Is(err, ErrCheckpointCommitteeUnavailable) {
 		t.Fatalf("expected unavailable after retries ran out, got %v", err)
+	}
+}
+
+// signedCheckpointAt is checkpointAt with a real BLS signature from priv.
+func signedCheckpointAt(t *testing.T, s kv.Store, seq uint64, priv []byte) *checkpoint.Checkpoint {
+	t.Helper()
+	c := checkpointAt(t, s, seq)
+	sig, err := blssign.BLSSign(priv, checkpoint.CanonicalCheckpointBytes(c))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	c.Signature = sig
+	return c
+}
+
+func testBLSKey(t *testing.T, seed string) (priv []byte, pubHex string) {
+	t.Helper()
+	// The helper maps sha256(seed) straight to a scalar, which is out of range
+	// for some seeds; step the seed until one is valid (deterministic).
+	for i := 0; i < 16; i++ {
+		priv, pub, err := blssign.GenerateBLSKeyPairFromRawPrivKey([]byte(fmt.Sprintf("%s/%d", seed, i)))
+		if err == nil {
+			return priv, hex.EncodeToString(pub)
+		}
+	}
+	t.Fatalf("keygen: no valid key for seed %q", seed)
+	return nil, ""
+}
+
+// The sequencer signs while its key K is in the committee; later K drops out
+// of the eligible set (pool change, cap, blocklist). Checked against the
+// committee, its own genuine checkpoint now fails at boot — the restart trap.
+// Checked against the pinned key, committee changes do not matter.
+func TestCheckpointCommitteeRotationVsPinnedKey(t *testing.T) {
+	seqPriv, seqPub := testBLSKey(t, "sequencer-key")
+	_, otherPub := testBLSKey(t, "validator-key")
+
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
+		return map[string]string{"peerSeq": seqPub, "peerVal": otherPub}, nil
+	})
+	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
+
+	s := newCkptStore(t)
+	seq := appendRecords(t, s, 3)
+	if err := storeVerifiedCheckpoint(s, signedCheckpointAt(t, s, seq, seqPriv), CheckpointSigVerifierFor(""), ""); err != nil {
+		t.Fatalf("store while in committee: %v", err)
+	}
+
+	// K leaves the eligible set.
+	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
+		return map[string]string{"peerVal": otherPub}, nil
+	})
+
+	_, err := CheckpointBootGate(context.Background(), s, CheckpointSigVerifierFor(""), "", 0, 0, 0)
+	if !errors.Is(err, ErrCheckpointSignerNotInCommittee) {
+		t.Fatalf("committee verifier after rotation: want ErrCheckpointSignerNotInCommittee, got %v", err)
+	}
+
+	ok, err := CheckpointBootGate(context.Background(), s, CheckpointSigVerifierFor(seqPub), "", 0, 0, 0)
+	if err != nil || !ok {
+		t.Fatalf("pinned verifier after rotation: want pass, got ok=%v err=%v", ok, err)
+	}
+}
+
+// A checkpoint signed by any other key fails against the pin.
+func TestPinnedVerifierRejectsOtherSigner(t *testing.T) {
+	_, seqPub := testBLSKey(t, "sequencer-key")
+	otherPriv, _ := testBLSKey(t, "attacker-key")
+	s := newCkptStore(t)
+	seq := appendRecords(t, s, 2)
+	c := signedCheckpointAt(t, s, seq, otherPriv)
+	err := CheckpointSigVerifierFor(seqPub)(checkpoint.CanonicalCheckpointBytes(c), c.Signature, c.Epoch)
+	if !errors.Is(err, ErrCheckpointBadSignature) {
+		t.Fatalf("want ErrCheckpointBadSignature, got %v", err)
+	}
+	// And storeVerifiedCheckpoint refuses it (a sequencer whose own key is not
+	// the pinned one never stores a checkpoint).
+	if err := storeVerifiedCheckpoint(s, c, CheckpointSigVerifierFor(seqPub), ""); err == nil {
+		t.Fatal("stored a checkpoint not signed by the pinned key")
 	}
 }

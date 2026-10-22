@@ -325,8 +325,9 @@ func DefaultConfig() NodeConfig {
 			// it is a second, separate opt-in.
 			PendingTxByHash: false,
 		},
-		// Committee-signed chain-head checkpoints: ON. The sequencer signs one per
-		// committee epoch and raises the floor file; every node runs the boot gate.
+		// Committee-signed chain-head checkpoints: ON. Every node runs the boot
+		// gate. The sequencer signs one per committee epoch once
+		// signer_bls_pub is set to its key, and raises the floor file.
 		// A node with no checkpoint and no floor (every non-sequencer today) boots
 		// as before. cadence_blocks 0 = per-epoch (see CheckpointSettings).
 		Checkpoint: CheckpointSettings{

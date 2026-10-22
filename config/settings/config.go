@@ -76,7 +76,18 @@ type CheckpointSettings struct {
 
 	// MinSeq is an operator-pinned floor (canonical-log sequence). When > 0 a
 	// checkpoint at or above it is required at boot, even with no floor file.
+	// Kept in the read-only config, it survives a whole-volume restore that
+	// rolls the floor file back with the store. The boot log prints the value
+	// to set after each successful verification.
 	MinSeq uint64 `mapstructure:"min_seq" yaml:"min_seq"`
+
+	// SignerBLSPub is the sequencer's BLS public key (hex). Checkpoints are
+	// verified against this key only, so committee changes cannot fail a
+	// genuine checkpoint at boot. The sequencer signs only when this is set and
+	// matches its own key; its boot log prints the value to use. Empty: no
+	// checkpoints are signed, and existing ones are checked against the current
+	// committee.
+	SignerBLSPub string `mapstructure:"signer_bls_pub" yaml:"signer_bls_pub"`
 }
 
 // TxStatusSettings controls transaction-status resolution for transactions that

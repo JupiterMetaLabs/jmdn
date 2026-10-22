@@ -386,6 +386,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("checkpoint.cadence_blocks", d.Checkpoint.CadenceBlocks)
 	v.SetDefault("checkpoint.floor_file", d.Checkpoint.FloorFile)
 	v.SetDefault("checkpoint.min_seq", d.Checkpoint.MinSeq)
+	v.SetDefault("checkpoint.signer_bls_pub", d.Checkpoint.SignerBLSPub)
 }
 
 // mergeStructs merges src into dest generically.
