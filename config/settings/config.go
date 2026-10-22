@@ -46,16 +46,16 @@ type NodeConfig struct {
 // Env: JMDN_CHECKPOINT_ENABLED, JMDN_CHECKPOINT_BOOT_FAIL_CLOSED,
 // JMDN_CHECKPOINT_CADENCE_BLOCKS.
 type CheckpointSettings struct {
-	// Enabled is the master switch. Default false — opt-in only. When false the
-	// boot gate is skipped entirely and no checkpoint is ever signed or stored.
+	// Enabled is the master switch. Default true. When false the boot gate is
+	// skipped entirely and no checkpoint is ever signed or stored.
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// BootFailClosed only matters when Enabled=true. When true (default), a boot
 	// verification ERROR (a stored checkpoint whose signature or recomputed head
-	// fails) is fatal — the node refuses to start rather than serve a tampered
-	// log. When false (debug/rollout), the same error is logged and the node
-	// continues. A fresh chain with NO checkpoint yet is never an error under
-	// either setting (expected before the first signing).
+	// fails, or a checkpoint below the floor) is fatal — the node refuses to
+	// start rather than serve a tampered or rolled-back log. When false
+	// (debug/rollout), the same error is logged and the node continues. A node
+	// with NO checkpoint and NO floor is never an error under either setting.
 	BootFailClosed bool `mapstructure:"boot_fail_closed" yaml:"boot_fail_closed"`
 
 	// CadenceBlocks controls how often the sequencer signs a checkpoint. 0 (the
@@ -66,6 +66,17 @@ type CheckpointSettings struct {
 	// only at genesis — an operator enabling checkpoints should set a non-zero
 	// cadence_blocks (or a real committee_epoch_blocks).
 	CadenceBlocks uint64 `mapstructure:"cadence_blocks" yaml:"cadence_blocks"`
+
+	// FloorFile records the highest checkpoint this node has verified or
+	// created. At boot the latest stored checkpoint must be at or above it, so a
+	// rolled-back store or deleted checkpoint keys stop the node. It must live
+	// OUTSIDE thebe.kv_path; ideally on a different volume. Delete it only after
+	// a deliberate restore from an older snapshot. "" disables the floor.
+	FloorFile string `mapstructure:"floor_file" yaml:"floor_file"`
+
+	// MinSeq is an operator-pinned floor (canonical-log sequence). When > 0 a
+	// checkpoint at or above it is required at boot, even with no floor file.
+	MinSeq uint64 `mapstructure:"min_seq" yaml:"min_seq"`
 }
 
 // TxStatusSettings controls transaction-status resolution for transactions that
