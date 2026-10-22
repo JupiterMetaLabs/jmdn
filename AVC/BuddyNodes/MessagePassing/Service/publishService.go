@@ -2,11 +2,8 @@ package Service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -48,22 +45,5 @@ func (s *PublishService) HandlePublish(logger_ctx context.Context, gossipMessage
 	// pattern — but there's no vote data here to preserve a fallback for;
 	// SubmitMessageToCRDT itself is left defined, just unreferenced.
 
-	return nil
-}
-
-func SubmitMessageToCRDT(msg string, ListenerNode *PubSubMessages.BuddyNode) error {
-	OP := &Types.OP{}
-	Vote := &PubSubMessages.Vote{}
-	if err := json.Unmarshal([]byte(msg), Vote); err != nil {
-		return errors.New("failed to unmarshal message: %v")
-	}
-	OP.NodeID = ListenerNode.PeerID
-	OP.OpType = Types.ADD
-	OP.KeyValue = *Vote.ReturnOP(ListenerNode.PeerID)
-
-	// Adding data to the CRDT First - Before PubSub
-	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-		return errors.New("failed to add vote to local CRDT Engine: %v")
-	}
 	return nil
 }

@@ -83,11 +83,11 @@ func TestConstantTimeEqual_MatchAndMismatch(t *testing.T) {
 	if constantTimeEqual("abc", "abcd") {
 		t.Error("expected different-length strings to not match")
 	}
-	if constantTimeEqual("", "") {
-		// subtle.ConstantTimeCompare with empty slices returns 1,
-		// but two empty tokens both being "" should match
-		// Actually subtle.ConstantTimeCompare([]byte(""), []byte("")) == 1
-		// This is debatable but technically correct
+	// subtle.ConstantTimeCompare reports two empty inputs as equal. Empty
+	// configured tokens are rejected before this comparison (see
+	// empty_secret_test.go), so this only pins the primitive's behaviour.
+	if !constantTimeEqual("", "") {
+		t.Error("expected two empty strings to compare equal")
 	}
 }
 

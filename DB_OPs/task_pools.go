@@ -149,15 +149,6 @@ func TaskPoolStats() []TaskPoolStat {
 	return out
 }
 
-// TotalTaskConnections sums the configured budgets of the given pools.
-func TotalTaskConnections(sizes map[DBTask]int) int {
-	n := 0
-	for _, v := range sizes {
-		n += v
-	}
-	return n
-}
-
 // CheckServerConnectionBudget compares the sum of task budgets with the
 // server's max_connections minus superuser_reserved_connections. It returns a
 // non-nil error describing the shortfall; the caller decides whether to fail

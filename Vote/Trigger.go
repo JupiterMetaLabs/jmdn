@@ -71,10 +71,6 @@ func (vt *VoteTrigger) setVote(Vote *PubSubMessages.Vote) error {
 	return nil
 }
 
-func (vt *VoteTrigger) GetVote() *PubSubMessages.Vote {
-	return vt.Vote
-}
-
 func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
 	jsonData, err := json.Marshal(vote)
 	if err != nil {
@@ -518,11 +514,6 @@ func (vt *VoteTrigger) SubmitVote() error {
 	}
 
 	return fmt.Errorf("failed to submit vote after %d attempts", maxAttempts)
-}
-
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (vt *VoteTrigger) PickListner(PeerID peer.ID) PubSubMessages.Buddy_PeerMultiaddr {
-	return vt.PickListnerWithOffset(PeerID, 0)
 }
 
 // PickListnerWithOffset picks a listener node using consistent hashing with an offset

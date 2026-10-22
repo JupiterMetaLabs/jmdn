@@ -2,7 +2,6 @@ package selection
 
 import (
 	"context"
-	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 )
@@ -175,12 +174,6 @@ func GroupNodesByRegion(nodes []Node) map[string][]Node {
 	return regionMap
 }
 
-// GetEligibleCount returns count of nodes that would pass filters
-func GetEligibleCount(myNodeID string, nodes []Node, config FilterConfig) int {
-	eligible := FilterEligible(myNodeID, nodes, config)
-	return len(eligible)
-}
-
 // FilterStats provides statistics about filtering
 type FilterStats struct {
 	TotalNodes         int
@@ -192,66 +185,4 @@ type FilterStats struct {
 	FilteredTimeout    int
 	EligibleNodes      int
 	RegionCount        int // Number of unique regions
-}
-
-// GetFilterStats returns detailed filtering statistics
-func GetFilterStats(myNodeID string, nodes []Node, config FilterConfig) FilterStats {
-	stats := FilterStats{
-		TotalNodes: len(nodes),
-	}
-
-	now := time.Now().UTC()
-	timeoutDuration := time.Duration(config.NodeTimeoutMinutes) * time.Minute
-
-	for i := range nodes {
-		node := &nodes[i]
-
-		if node.PeerId == myNodeID {
-			stats.FilteredSelf++
-			continue
-		}
-
-		if !node.IsActive {
-			stats.FilteredInactive++
-			continue
-		}
-
-		if node.SelectionScore < config.MinSelectionScore {
-			stats.FilteredLowScore++
-			continue
-		}
-
-		if node.SelectionScore >= config.MaxSelectionScore {
-			stats.FilteredHighScore++
-			continue
-		}
-
-		if config.MinReputationScore > 0 && node.ReputationScore < config.MinReputationScore {
-			stats.FilteredReputation++
-			continue
-		}
-
-		if now.Sub(node.LastSeen) > timeoutDuration {
-			stats.FilteredTimeout++
-			continue
-		}
-
-		stats.EligibleNodes++
-	}
-
-	// Calculate region diversity counts
-	regionSet := make(map[string]bool)
-
-	for _, node := range nodes {
-		// Count regions
-		region := node.Region
-		if region == "" || region == "UNKNOWN" {
-			region = "REGION-UNKNOWN"
-		}
-		regionSet[region] = true
-	}
-
-	stats.RegionCount = len(regionSet)
-
-	return stats
 }

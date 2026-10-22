@@ -25,14 +25,13 @@ import (
 
 // TTL constants — immutable data gets long TTL, mutable gets short.
 const (
-	TTLAccount      = 30 * time.Second
-	TTLLatestBlock  = 30 * time.Second // changes every block — short TTL
-	TTLBlock        = 1 * time.Hour
-	TTLTransaction  = 1 * time.Hour
-	TTLSnapshot     = 1 * time.Hour
-	TTLZKProof      = 1 * time.Hour
-	TTLL1Finality   = 1 * time.Hour
-	TTLContractCode = 24 * time.Hour // immutable after deploy — Phase 7
+	TTLAccount     = 30 * time.Second
+	TTLLatestBlock = 30 * time.Second // changes every block — short TTL
+	TTLBlock       = 1 * time.Hour
+	TTLTransaction = 1 * time.Hour
+	TTLSnapshot    = 1 * time.Hour
+	TTLZKProof     = 1 * time.Hour
+	TTLL1Finality  = 1 * time.Hour
 )
 
 // LatestBlockKey returns the Redis cache key for the latest block.
@@ -75,10 +74,4 @@ func L1FinalityKey(confirmation string) string {
 // Distinct from TransactionKey to prevent cache collision between receipts and txs.
 func ContractReceiptKey(txHash string) string {
 	return "jmdn:contract:receipt:" + txHash
-}
-
-// ContractCodeKey returns the Redis cache key for contract bytecode by address.
-// Phase 7 — no matching ThebeReader.GetContractCode yet; wired when contract KV layer lands.
-func ContractCodeKey(address string) string {
-	return "jmdn:contract:code:" + address
 }

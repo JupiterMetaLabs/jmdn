@@ -176,6 +176,7 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 	fmt.Println("Checking Tx2 (Double Spend): Send 50 Wei...")
 	valid, err = cache.CheckBalanceWithCache(tx2, ctx)
 	// CheckBalanceWithCache returns false, nil if insufficient funds
+	assert.NoError(t, err)
 	assert.False(t, valid, "Tx2 should fail insufficient funds (40 < 50)")
 	if !valid {
 		fmt.Println("Tx2 Failed as expected (Insufficient Funds)")
@@ -192,6 +193,7 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 
 	fmt.Println("Checking Tx3: Send 30 Wei...")
 	valid, err = cache.CheckBalanceWithCache(tx3, ctx)
+	assert.NoError(t, err)
 	assert.True(t, valid, "Tx3 should be valid (40 >= 30)")
 
 	// Verify Final State

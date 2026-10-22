@@ -52,10 +52,6 @@ func (s *HTTPServer) WithSyncMonitor(m *syncmonitor.Monitor) *HTTPServer {
 	return s
 }
 
-func (s *HTTPServer) Serve(addr string) error {
-	return s.ServeWithContext(context.Background(), addr)
-}
-
 func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	// Set GIN mode to release for production
 	gin.SetMode(gin.ReleaseMode)

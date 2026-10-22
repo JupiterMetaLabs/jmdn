@@ -25,8 +25,6 @@ const (
 	TOPIC      = "mempool"
 	BLOCKTOPIC = "block"
 	KEEP_LOGS  = true
-	BATCH_SIZE = 100
-	BATCH_WAIT = 10 * time.Second
 	TIMEOUT    = 5 * time.Second
 )
 
@@ -118,108 +116,6 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 	return nil
 }
 
-// SubmitTransactions submits a batch of transactions to the mempool
-func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.BatchSubmitResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Longer timeout for batches
-	defer cancel()
-
-	// Log batch submission
-	logger().Debug(ctx, "Submitting transactions to mempool", ion.Int("count", len(txs)))
-
-	pbTxs := make([]*pb.Transaction, len(txs))
-	for i, tx := range txs {
-		// The ZKBlockTransaction should have a pre-computed hash.
-		if tx.Hash == (common.Hash{}) {
-			return nil, fmt.Errorf("transaction at index %d has no hash", i)
-		}
-		pbTxs[i] = convertToPbTransaction(tx, tx.Hash.Hex())
-	}
-
-	batch := &pb.TransactionBatch{
-		Transactions: pbTxs,
-	}
-
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, err
-	}
-
-	logger().Debug(ctx, "Calling SubmitTransactions on routing client", ion.String("timeout", "15s"))
-	start := time.Now().UTC()
-	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
-	duration := time.Since(start)
-
-	if err != nil {
-		logger().Error(ctx, "Failed to submit transactions to mempool", err, ion.Duration("duration", duration))
-		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
-	}
-	logger().Debug(ctx, "SubmitTransactions call completed successfully", ion.Duration("duration", duration))
-
-	if !resp.Success {
-		// The response itself is returned to allow the caller to inspect partial successes if applicable.
-		logger().Warn(ctx, "Mempool rejected transaction batch", ion.Err(fmt.Errorf("%s", resp.Error)))
-		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)
-	}
-
-	logger().Debug(ctx, "Transactions successfully submitted to mempool", ion.Int("count", int(resp.Count)))
-	return resp, nil
-}
-
-// GetTransaction retrieves a specific transaction from the mempool by its hash
-func (m *MempoolClient) GetTransaction(hash string) (*pb.Transaction, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req := &pb.GetTransactionRequest{Hash: hash}
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, err
-	}
-	tx, err := RoutingClient.client.GetTransaction(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get transaction %s: %v", hash, err)
-	}
-
-	return tx, nil
-}
-
-// GetPendingTransactions retrieves a list of pending transactions from the mempool
-func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatch, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req := &pb.GetPendingRequest{Limit: limit}
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, err
-	}
-	batch, err := RoutingClient.client.GetPendingTransactions(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending transactions: %v", err)
-	}
-
-	return batch, nil
-}
-
-// GetMempoolStats gets the current mempool statistics
-func (m *MempoolClient) GetMempoolStats() (*pb.MREStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get routing client: %v", err)
-	}
-
-	// Use the empty.Empty type directly
-	stats, err := RoutingClient.GetMempoolStats(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mempool stats: %v", err)
-	}
-
-	return stats, nil
-}
-
 type GasFeeStats struct {
 	MaxFee          uint64
 	MinFee          uint64
@@ -240,48 +136,6 @@ func GetFeeStatisticsFromRouting() (*GasFeeStats, error) {
 	}
 
 	stats, err := routingClient.GetFeeStatistics(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
-	}
-
-	return &GasFeeStats{
-		MaxFee:          stats.MaxFee,
-		MinFee:          stats.MinFee,
-		MedianFee:       stats.MedianFee,
-		MeanFee:         stats.MeanFee,
-		RecommendedFees: stats.RecommendedFees,
-	}, nil
-}
-
-// GetFeeStatistics gets detailed fee statistics from the mempool
-func (m *MempoolClient) GetFeeStatistics() (*pb.FeeStatistics, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get routing client: %v", err)
-	}
-
-	stats, err := RoutingClient.GetFeeStatistics(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
-	}
-
-	return stats, nil
-}
-
-// Wrapper function for getting FeeStatistics from mempool service
-func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	RoutingClient, err := GetRoutingClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get routing client: %v", err)
-	}
-
-	stats, err := RoutingClient.GetFeeStatistics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
 	}
@@ -456,11 +310,4 @@ func recordSubmitAttempt(tx *config.Transaction, txHash string, forwardErr error
 	// Explorer lifecycle: QUEUED — the sequencer has received this tx (pre-proposal).
 	// Best-effort, guarded; never affects the submit path.
 	lifecycle.MarkQueued(rec.Hash)
-}
-
-func ReturnMempoolObject() (*MempoolClient, error) {
-	if globalMempoolClient == nil {
-		return nil, fmt.Errorf("mempool client not initialized. Call InitMempoolClient() first")
-	}
-	return globalMempoolClient, nil
 }

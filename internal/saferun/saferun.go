@@ -32,17 +32,6 @@ func report(where string, r any) {
 		Msg("panic recovered at network-ingress boundary — message dropped, node keeps running")
 }
 
-// Recover is deferred at the top of a goroutine or handler:
-//
-//	defer saferun.Recover("rpc.batch")
-//
-// It must be called directly by defer (recover only works there).
-func Recover(where string) {
-	if r := recover(); r != nil {
-		report(where, r)
-	}
-}
-
 // RecoverInto is Recover plus a callback (e.g. to write an error response).
 // onPanic runs only when a panic was recovered, after it has been reported.
 func RecoverInto(where string, onPanic func(r any)) {
@@ -67,16 +56,4 @@ func Stream(where string, h network.StreamHandler) network.StreamHandler {
 		}()
 		h(s)
 	}
-}
-
-// Go runs f on a new goroutine behind a panic boundary.
-func Go(where string, f func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				report(where, r)
-			}
-		}()
-		f()
-	}()
 }

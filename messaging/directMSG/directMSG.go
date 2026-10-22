@@ -113,9 +113,10 @@ func StartYggdrasilListener(ctx context.Context) {
 
 				conn, err := listener.Accept()
 				if err != nil {
-					// Check if the error is temporary
-					if ne, ok := err.(net.Error); ok && ne.Temporary() {
-						log.Debug().Err(err).Msg("Temporary error accepting Yggdrasil connection")
+					// The accept deadline above expires every second; a
+					// timeout just means no connection arrived yet.
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						log.Debug().Err(err).Msg("Accept timeout on Yggdrasil listener")
 						time.Sleep(100 * time.Millisecond)
 						continue
 					}

@@ -102,8 +102,10 @@ func makeBlock(t *testing.T, num uint64, prev common.Hash, txs []config.Transact
 		GasLimit:     30_000_000,
 	}
 	blk.BlockHash = Security.RecomputeBlockHashFromContents(txs)
-	if err := DB_OPs.EnrichBlockAccountNonces(blk); err != nil {
-		t.Fatalf("EnrichBlockAccountNonces(block %d): %v", num, err)
+	// EnrichBlockAccountNonces was removed as dead code; it was exactly
+	// EnrichBlockAccountNoncesWithPredicted(block, nil).
+	if err := DB_OPs.EnrichBlockAccountNoncesWithPredicted(blk, nil); err != nil {
+		t.Fatalf("EnrichBlockAccountNoncesWithPredicted(block %d): %v", num, err)
 	}
 	return blk
 }

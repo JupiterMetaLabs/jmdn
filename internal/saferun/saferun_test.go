@@ -30,8 +30,7 @@ func TestStream_RecoversAndResets(t *testing.T) {
 	const proto = "/test/panic/1.0.0"
 	before := testutil.ToFloat64(metrics.HandlerPanicsCounter.WithLabelValues(proto))
 	b.SetStreamHandler(proto, Stream(proto, func(s network.Stream) {
-		var m map[string]int
-		m["boom"] = 1 // nil-map write: panics
+		panic("boom")
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

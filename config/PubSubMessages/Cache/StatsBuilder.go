@@ -56,13 +56,6 @@ func (stats *Stats) GetTotalPeers() int {
 	return stats.TotalPeers
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func (stats *Stats) SetTimeTaken(timeTaken time.Duration) {
-	stats.mu.Lock()
-	defer stats.mu.Unlock()
-	stats.TimeTaken = timeTaken
-}
-
 func (stats *Stats) GetTimeTaken() time.Duration {
 	stats.mu.RLock()
 	defer stats.mu.RUnlock()

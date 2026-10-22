@@ -354,23 +354,3 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 
 	return verificationResponses, nil
 }
-
-// GetVerificationStats returns statistics about the verification process
-func (s *VerificationService) GetVerificationStats() map[string]interface{} {
-	if s.buddyNode == nil {
-		return map[string]interface{}{
-			"error": "buddy node not available",
-		}
-	}
-
-	s.buddyNode.PubSub.Mutex.RLock()
-	defer s.buddyNode.PubSub.Mutex.RUnlock()
-
-	return map[string]interface{}{
-		"subscribed_topics":    len(s.buddyNode.PubSub.Topics),
-		"connected_peers":      len(s.buddyNode.PubSub.Peers),
-		"consensus_subscribed": s.buddyNode.PubSub.Topics[config.PubSub_ConsensusChannel],
-		"peer_id":              s.buddyNode.PeerID.String(),
-		"host_id":              s.buddyNode.Host.ID().String(),
-	}
-}

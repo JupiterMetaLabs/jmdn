@@ -47,12 +47,10 @@ func (blsresponse *BLSresponse) GetSignature() string {
 	return blsresponse.Signature
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetAgree() bool {
 	return blsresponse.Agree
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetPubKey() string {
 	return blsresponse.PubKey
 }
@@ -61,7 +59,6 @@ func (blsresponse *BLSresponse) GetPeerID() string {
 	return blsresponse.PeerID
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetRejectionReasons() map[string]string {
 	return blsresponse.RejectionReasons
 }

@@ -86,8 +86,7 @@ func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub) *SubscriptionService
 
 // HandleAskForSubscription handles subscription requests
 func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.GossipMessage) error {
-	logger_ctx := context.WithValue(context.Background(), "logger", logger)
-	defer logger_ctx.Done()
+	logger_ctx := context.Background()
 	// start trace
 	tracer := logger().Tracer("SubscriptionService")
 	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionService.HandleAskForSubscription")
@@ -133,8 +132,7 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.
 
 // HandleEndPubSub handles unsubscription requests
 func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMessage) error {
-	logger_ctx := context.WithValue(context.Background(), "logger", logger)
-	defer logger_ctx.Done()
+	logger_ctx := context.Background()
 	logger().Info(logger_ctx, "Handling end pubsub message",
 		ion.String("channel", config.PubSub_ConsensusChannel),
 		ion.String("topic", log.SubscriptionService),
@@ -760,23 +758,6 @@ func (s *SubscriptionService) handleBFTCommitVote(logger_ctx context.Context, ms
 		return err
 	}
 	return handler.HandleCommitVote(msg)
-}
-
-// SetMyBuddyID sets the buddy ID
-func (s *SubscriptionService) SetMyBuddyID(id string) {
-	s.myBuddyID = id
-}
-
-// SetBFTFactory sets the BFT factory
-func (s *SubscriptionService) SetBFTFactory(factory BFTFactory) {
-	s.bftFactory = factory
-}
-
-// InitBFTHandlers initializes the BFT handlers map if not already done
-func (s *SubscriptionService) InitBFTHandlers() {
-	if s.bftHandlers == nil {
-		s.bftHandlers = make(map[string]BFTMessageHandler)
-	}
 }
 
 // handleL1Commit updates the local block with L1 finality data received via gossip.

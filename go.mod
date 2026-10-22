@@ -6,7 +6,6 @@ toolchain go1.27.3
 
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.4
-	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
 	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.2
 	github.com/JupiterMetaLabs/avc v0.1.0-v3base.5
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
@@ -46,6 +45,7 @@ require (
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v1.0.0 // indirect
+	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/VictoriaMetrics/fastcache v1.13.0 // indirect
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect

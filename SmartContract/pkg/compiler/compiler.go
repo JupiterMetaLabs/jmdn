@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 )
 
 // CompiledContract holds compilation results
@@ -220,13 +219,4 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	}
 
 	return contracts, nil
-}
-
-// ParseABI parses the ABI JSON string into a structured ABI
-func ParseABI(abiJSON string) (*abi.ABI, error) {
-	parsedABI, err := abi.JSON(strings.NewReader(abiJSON))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ABI: %w", err)
-	}
-	return &parsedABI, nil
 }
