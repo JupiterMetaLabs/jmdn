@@ -664,8 +664,30 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensu
 		if !verified && !RejectLegacyVotes {
 			if BLS_Verifier.Verify(r, vote) == nil {
 				verified = true
-				metrics.ConsensusLegacyVotesTotal.Inc()
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
 				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote accepted (reject_legacy_votes is off)")
+			}
+		} else if !verified {
+			// reject_legacy_votes is ON: the vote is refused either way, but
+			// classify it so the metric still DETECTS a validator signing the
+			// legacy domain. Without this the counter is pinned at zero on
+			// every node that is not the sequencer, and a flat zero reads as
+			// "no legacy votes" when it means "not instrumented here".
+			//
+			// Bounded on purpose: the extra verification runs only for a peer
+			// already in the committee map. responses is attacker-supplied and
+			// has no length cap, so classifying every failure would sell a
+			// flood of garbage signatures a second BLS verification each.
+			//
+			// Key-bound on purpose: Verify checks the signature against the
+			// pubkey CARRIED IN THE RESPONSE, so without this the detector could
+			// be fired by anyone who names a committee peer_id and signs the
+			// legacy domain with a key of their own — blaming an innocent
+			// validator. Same binding rule as the accept path below: when the
+			// snapshot bound a key to this peer_id, the response must carry it.
+			if legacyDetectable(committee, r) && BLS_Verifier.Verify(r, vote) == nil {
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
+				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote detected and refused (reject_legacy_votes is on)")
 			}
 		}
 		if !verified {
@@ -710,6 +732,20 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensu
 // de-duplication: trim, lowercase, strip an optional "0x" prefix.
 func normalizeBLSPub(s string) string {
 	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
+}
+
+// legacyDetectable reports whether a legacy-vote classification may run for
+// response r against committee (peer_id -> snapshot-bound bls_pub, "" when the
+// snapshot carried no binding). It is the membership + key-binding rule of the
+// accept path applied BEFORE the extra BLS verification, so the
+// consensus_legacy_votes_total detector only ever attributes a legacy
+// signature to the validator whose own key produced it.
+func legacyDetectable(committee map[string]string, r BLS_Signer.BLSresponse) bool {
+	boundKey, known := committee[r.PeerID]
+	if !known {
+		return false
+	}
+	return boundKey == "" || normalizeBLSPub(r.PubKey) == boundKey
 }
 
 // ---- Canonical body binding --------------------------------------------------
