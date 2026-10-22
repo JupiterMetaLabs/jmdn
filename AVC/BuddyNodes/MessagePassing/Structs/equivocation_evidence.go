@@ -44,7 +44,9 @@ func SignedEquivocation(c *avctypes.Controller, height uint64, blockHash, peerID
 	recs := tally.Signatures[peerID]
 	tasks := make([]tallySigTask, 0, len(values))
 	for i, v := range values {
-		if i >= len(recs) || avcvotes.IsUnsignedValidatorVote(recs[i]) {
+		// An unsigned record never counts: its empty signature fails
+		// VerifyForBlock below.
+		if i >= len(recs) {
 			continue
 		}
 		tasks = append(tasks, tallySigTask{peerID: peerID, vote: v, rec: recs[i]})
