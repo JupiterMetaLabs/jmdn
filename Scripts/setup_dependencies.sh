@@ -46,8 +46,8 @@ source "${SCRIPT_DIR}/lib/platform.sh"
 
 # Config
 GO_INSTALL_DIR="/usr/local"
-# Known stable versions as fallbacks (matching current prod)
-GO_FALLBACK_VER="1.25.3"
+# Pinned versions installed by this script (Go must satisfy go.mod)
+GO_FALLBACK_VER="1.27.3"
 YGG_FALLBACK_VER="0.5.12"
 PG_APP_USER="${PG_APP_USER:-thebedb}"
 # No shared default password: generate a unique one unless the caller sets it.
@@ -318,7 +318,7 @@ install_go() {
 	tmp_dir=$(mktemp -d)
 
 	log_info "Downloading from $url..."
-	if curl -L -o "$tmp_dir/$filename" "$url"; then
+	if curl -fL -o "$tmp_dir/$filename" "$url"; then
 		# Remove old version
 		rm -rf "$GO_INSTALL_DIR/go"
 

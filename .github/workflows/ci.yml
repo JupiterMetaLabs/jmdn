@@ -15,7 +15,7 @@ concurrency:
 env:
   # Single source of truth for the linter version.
   # Update here when you upgrade golangci-lint locally.
-  GOLANGCI_LINT_VERSION: v2.10.1
+  GOLANGCI_LINT_VERSION: v2.15.0
 
 jobs:
   quality-gate:
