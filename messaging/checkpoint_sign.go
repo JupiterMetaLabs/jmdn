@@ -76,6 +76,7 @@ var (
 	checkpointCadence     uint64 // 0 => per-epoch
 	checkpointSelfPeerID  string
 	checkpointFloorPath   string // "" => no floor file kept
+	checkpointSignerPub   string // pinned sequencer BLS pub (hex); "" => do not sign
 )
 
 // ErrCheckpointCommitteeUnavailable marks a verification that could not run
@@ -83,6 +84,16 @@ var (
 // signature that ran and failed. The boot gate retries on it before applying
 // its fail-closed policy.
 var ErrCheckpointCommitteeUnavailable = errors.New("checkpoint verify: committee source unavailable")
+
+// ErrCheckpointSignerNotInCommittee: the signature did not verify against any
+// key in the CURRENT authorized committee. Either the signature is forged or
+// the signer has since left the (capped, sorted) eligible set — the committee
+// path cannot tell which. Pin checkpoint.signer_bls_pub to avoid the second.
+var ErrCheckpointSignerNotInCommittee = errors.New("checkpoint verify: signature not from any current committee member")
+
+// ErrCheckpointBadSignature: the signature does not verify against the pinned
+// signer key.
+var ErrCheckpointBadSignature = errors.New("checkpoint verify: signature does not match the pinned signer key")
 
 // EnableCheckpointSigning wires committee-signed chain-head checkpoint creation.
 // It is a NO-OP for signing unless enabled is true and store is non-nil; when
@@ -100,9 +111,13 @@ var ErrCheckpointCommitteeUnavailable = errors.New("checkpoint verify: committee
 //     only; not part of the signed bytes).
 //   - floorPath:   config checkpoint.floor_file; raised after every stored
 //     checkpoint ("" keeps no floor).
+//   - signerPub:   config checkpoint.signer_bls_pub. The sequencer signs only
+//     when this is set and equals its own BLS public key: a checkpoint that a
+//     later boot can only check against the rotating committee could stop the
+//     sequencer from restarting once its key leaves the eligible set.
 //
 // Safe to call concurrently.
-func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID, floorPath string) {
+func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID, floorPath, signerPub string) {
 	checkpointMu.Lock()
 	defer checkpointMu.Unlock()
 	checkpointKV = store
@@ -111,6 +126,7 @@ func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceB
 	checkpointCadence = cadenceBlocks
 	checkpointSelfPeerID = strings.TrimSpace(selfPeerID)
 	checkpointFloorPath = strings.TrimSpace(floorPath)
+	checkpointSignerPub = normalizeBLSPub(signerPub)
 }
 
 // CheckpointSigVerifier returns a checkpoint.SigVerifier that verifies a
@@ -135,9 +151,35 @@ func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceB
 // verification could reject a genuine older checkpoint (fail-closed, never
 // fail-open). Documented deliberately rather than silently resolving "current".
 func CheckpointSigVerifier() checkpoint.SigVerifier {
+	return CheckpointSigVerifierFor("")
+}
+
+// CheckpointSigVerifierFor returns the verifier the boot gate uses.
+//
+// With signerPubHex set (config checkpoint.signer_bls_pub, read from the config
+// file, outside the store) the signature must verify against that key and
+// nothing else; committee membership is irrelevant, so a committee change can
+// never fail a genuine checkpoint. A mismatch returns ErrCheckpointBadSignature.
+//
+// With it empty, the signature is checked against the CURRENT authorized
+// committee (see CheckpointSigVerifier for the epoch-pinning caveat): no match
+// returns ErrCheckpointSignerNotInCommittee, an unavailable source returns
+// ErrCheckpointCommitteeUnavailable. Both fail closed.
+func CheckpointSigVerifierFor(signerPubHex string) checkpoint.SigVerifier {
+	pinned := normalizeBLSPub(signerPubHex)
 	return func(canonicalBytes, sig []byte, epoch uint64) error {
 		if len(sig) == 0 {
 			return fmt.Errorf("checkpoint verify: empty signature (fail closed, epoch %d)", epoch)
+		}
+		if pinned != "" {
+			pub, err := hex.DecodeString(pinned)
+			if err != nil {
+				return fmt.Errorf("checkpoint verify: checkpoint.signer_bls_pub is not hex: %w", err)
+			}
+			if blssign.BLSVerify(pub, canonicalBytes, sig) != nil {
+				return fmt.Errorf("%w (epoch %d)", ErrCheckpointBadSignature, epoch)
+			}
+			return nil
 		}
 		committee, err := AuthorizedCommittee()
 		if err != nil {
@@ -161,7 +203,7 @@ func CheckpointSigVerifier() checkpoint.SigVerifier {
 				return nil // v0: one valid committee-member signature is accepted.
 			}
 		}
-		return fmt.Errorf("checkpoint verify: signature not from any eligible committee member (fail closed, epoch %d)", epoch)
+		return fmt.Errorf("%w (fail closed, epoch %d)", ErrCheckpointSignerNotInCommittee, epoch)
 	}
 }
 
@@ -213,6 +255,7 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 	cadence := checkpointCadence
 	selfPeerID := checkpointSelfPeerID
 	floorPath := checkpointFloorPath
+	signerPub := checkpointSignerPub
 	checkpointMu.RUnlock()
 
 	if !enabled || store == nil || !isSeq {
@@ -222,7 +265,11 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 		return
 	}
 
-	if err := signAndStoreCheckpoint(store, block, selfPeerID, floorPath); err != nil {
+	if signerPub == "" {
+		warnSignerNotPinnedOnce()
+		return
+	}
+	if err := signAndStoreCheckpoint(store, block, selfPeerID, floorPath, signerPub); err != nil {
 		log.Warn().Err(err).
 			Uint64("block_number", block.BlockNumber).
 			Msg("[checkpoint] sign/store failed (non-fatal; block commit unaffected)")
@@ -236,7 +283,7 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 // signAndStoreCheckpoint reads the current canonical head from the KV store,
 // builds+signs a checkpoint, and persists it. Kept separate so the cadence hook
 // stays trivial.
-func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, floorPath string) error {
+func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, floorPath, signerPub string) error {
 	raw, err := store.Get([]byte(chainHeadKey))
 	if err != nil {
 		return fmt.Errorf("read %s: %w", chainHeadKey, err)
@@ -259,7 +306,21 @@ func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, f
 	if err != nil {
 		return err
 	}
-	return storeVerifiedCheckpoint(store, c, CheckpointSigVerifier(), floorPath)
+	return storeVerifiedCheckpoint(store, c, CheckpointSigVerifierFor(signerPub), floorPath)
+}
+
+var signerNotPinnedOnce sync.Once
+
+// warnSignerNotPinnedOnce tells the operator, once per process, why the
+// sequencer is not signing and what to set.
+func warnSignerNotPinnedOnce() {
+	signerNotPinnedOnce.Do(func() {
+		ev := log.Warn()
+		if _, pub, err := BLS_Signer.LocalBLSKeypair(); err == nil {
+			ev = ev.Str("this_node_bls_pub", hex.EncodeToString(pub))
+		}
+		ev.Msg("[checkpoint] not signing: set checkpoint.signer_bls_pub in jmdn.yaml to this node's BLS public key to enable sequencer checkpoints")
+	})
 }
 
 // storeVerifiedCheckpoint stores c only if it verifies with the same verifier
@@ -296,6 +357,15 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 		return false, err
 	}
 	floor := checkpoint.Floor{Required: hasFloor || minSeq > 0, MinSeq: minSeq}
+	if !hasFloor && floorPath != "" {
+		// Expected on the first boot after the floor was introduced. Anything
+		// else means the file was deleted or the node started from another
+		// directory — the rollback check is not active for this boot.
+		if latest, ok, lerr := checkpoint.Latest(store); lerr == nil && ok {
+			log.Warn().Str("floor_file", floorPath).Uint64("latest_checkpoint_seq", latest.Seq).
+				Msg("[checkpoint] checkpoints exist but the floor file is missing — rollback check inactive for this boot; it is recreated below if verification passes")
+		}
+	}
 	if hasFloor {
 		if rec.Seq > floor.MinSeq {
 			floor.MinSeq = rec.Seq
@@ -339,6 +409,11 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 			if rerr := ckptfloor.Raise(floorPath, latest.ChainID, latest.Seq, latest.Head); rerr != nil {
 				log.Warn().Err(rerr).Str("floor_file", floorPath).Msg("[checkpoint] verified, but the floor file could not be raised")
 			}
+			// The floor file shares a volume with the store, so a whole-volume
+			// restore rolls both back. checkpoint.min_seq in the read-only
+			// config is the floor such a restore cannot undo.
+			log.Info().Uint64("checkpoint_seq", latest.Seq).Uint64("configured_min_seq", minSeq).
+				Msg("[checkpoint] to make this floor survive a volume restore, set checkpoint.min_seq to checkpoint_seq in jmdn.yaml")
 		}
 	}
 	return verified, nil
