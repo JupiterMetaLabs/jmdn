@@ -97,7 +97,6 @@ type anchorEnv struct {
 	nextSlot uint64
 	auth     testAuthority
 	kvPuts   int
-	blockFn  func(uint64) (*config.ZKBlock, error)
 }
 
 func withAnchoring(t *testing.T, activation uint64) *anchorEnv {

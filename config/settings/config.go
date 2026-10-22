@@ -636,6 +636,13 @@ type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
 
+	// EnableSolcCompile exposes the solc_compile JSON-RPC method. Off by
+	// default; when on, callers must present the admin token.
+	EnableSolcCompile bool `mapstructure:"enable_solc_compile" yaml:"enable_solc_compile"`
+	// EnableDebugTrace exposes debug_traceTransaction. Off by default; when
+	// on, callers must present the admin token.
+	EnableDebugTrace bool `mapstructure:"enable_debug_trace" yaml:"enable_debug_trace"`
+
 	// AvcValidation controls the staged rollout of the avc-based consensus
 	// validator (consensus/adapters) alongside jmdn's existing
 	// Security.CheckZKBlockValidation. See AvcValidationSettings for the

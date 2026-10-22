@@ -1451,11 +1451,6 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 		ion.String("function", "MessagePassing.sendSubscriptionResponse"))
 }
 
-// GetResponseHandler returns the current ResponseHandler
-func (lh *ListenerHandler) GetResponseHandler() AVCStruct.ResponseHandler {
-	return lh.responseHandler
-}
-
 // handleVoteResultRequest handles request for vote aggregation result from a buddy node
 func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
@@ -2057,7 +2052,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 				}
 				matched += "pubsub"
 			}
-			logger().Info(context.Background(), "⚠️ Filtering out self: %s (matches %s)")
+			logger().Info(context.Background(), "Filtering out self",
+				ion.String("buddy", buddyIDStr), ion.String("matches", matched))
 		}
 	}
 

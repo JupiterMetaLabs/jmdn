@@ -217,26 +217,6 @@ func CreateChannel(gps *PubSubMessages.GossipPubSub, channelName string, isPubli
 	return nil
 }
 
-// RemovePeerFromChannel removes a peer from the allowed list of a channel
-func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) error {
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
-	access, exists := gps.ChannelAccess[channelName]
-	if !exists {
-		return fmt.Errorf("channel %s does not exist", channelName)
-	}
-
-	// Only creator can remove peers
-	if gps.Host.ID() != access.Creator {
-		return fmt.Errorf("only channel creator can remove peers")
-	}
-
-	delete(gps.ChannelAccess[channelName].AllowedPeers, peerID)
-	log.Printf("Removed peer %s from channel %s", peerID, channelName)
-	return nil
-}
-
 // Gossip receive-path bounds (audit NET-03/NET-04).
 const (
 	gossipStreamReadTimeout = 30 * time.Second // slow-drip peers cannot pin a goroutine
@@ -418,36 +398,6 @@ func readMessage(s network.Stream) ([]byte, error) {
 	return msg, nil
 }
 
-// GetTopics returns a list of subscribed topics
-func GetTopics(gps *PubSubMessages.GossipPubSub) []string {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-
-	topics := make([]string, 0, len(gps.Topics))
-	for topic := range gps.Topics {
-		topics = append(topics, topic)
-	}
-	return topics
-}
-
-// GetPeerCount returns the number of connected peers
-func GetPeerCount(gps *PubSubMessages.GossipPubSub) int {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-	return len(gps.Peers)
-}
-
-// GetPeers returns a list of connected peers
-func GetPeers(gps *PubSubMessages.GossipPubSub) []peer.ID {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-
-	peers := make([]peer.ID, 0, len(gps.Peers))
-	peers = append(peers, gps.Peers...)
-
-	return peers
-}
-
 // Close closes the gossip pub/sub instance
 func Close(gps *PubSubMessages.GossipPubSub) error {
 	gps.Mutex.Lock()
@@ -464,53 +414,4 @@ func Close(gps *PubSubMessages.GossipPubSub) error {
 	}
 
 	return nil
-}
-
-// HandlePeerFound is called when a new peer is discovered
-func HandlePeerFound(gps *PubSubMessages.GossipPubSub, pi peer.AddrInfo) {
-	log.Printf("Peer discovered: %s", pi.ID)
-
-	// Don't add ourselves
-	if pi.ID == gps.Host.ID() {
-		log.Printf("Skipping self-discovery for peer: %s", pi.ID)
-		return
-	}
-
-	// Validate that peer has addresses
-	if len(pi.Addrs) == 0 {
-		log.Printf("Peer %s has no addresses, skipping", pi.ID)
-		return
-	}
-
-	// Check for duplicate peers before adding
-	gps.Mutex.Lock()
-	peerAlreadyExists := false
-	for _, existingPeer := range gps.Peers {
-
-		if existingPeer == pi.ID {
-			peerAlreadyExists = true
-			break
-		}
-	}
-
-	if !peerAlreadyExists {
-		// Use the largest multiaddr (following the pattern from utils.go)
-		if pi.ID != "" {
-			gps.Peers = append(gps.Peers, pi.ID)
-			log.Printf("Added peer %s to peers list with address: %s", pi.ID, pi.Addrs)
-		}
-	} else {
-		log.Printf("Peer %s already exists in peers list", pi.ID)
-	}
-	gps.Mutex.Unlock()
-
-	// Connect to the discovered peer
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := gps.Host.Connect(ctx, pi); err != nil {
-		log.Printf("Failed to connect to discovered peer %s: %v", pi.ID, err)
-	} else {
-		log.Printf("Connected to peer: %s", pi.ID)
-	}
 }

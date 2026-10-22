@@ -169,27 +169,3 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 
 	return result, err
 }
-
-// CanTransfer checks if the account has enough balance to transfer the specified amount
-func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
-	balance := db.GetBalance(addr)
-
-	uintAmount, overflow := uint256.FromBig(amount)
-	if overflow {
-		return false
-	}
-	return balance.Cmp(uintAmount) >= 0
-}
-
-// Transfer moves amount from sender to recipient.
-// Returns an error if the amount overflows uint256 — callers should handle this
-// rather than the process crashing.
-func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) error {
-	amount256, overflow := helper.ConvertBigToUint256(amount)
-	if overflow {
-		return fmt.Errorf("transfer amount overflow: sender=%s amount=%s", sender.Hex(), amount.String())
-	}
-	db.SubBalance(sender, amount256, tracing.BalanceChangeTransfer)
-	db.AddBalance(recipient, amount256, tracing.BalanceChangeTransfer)
-	return nil
-}

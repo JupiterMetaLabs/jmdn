@@ -99,18 +99,6 @@ func GetNodeManagerInterface() *NodeManager {
 	return NodeManagerInterface
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func ClearNodeManagerInterface() {
-	nodeManagerMutex.Lock()
-	defer nodeManagerMutex.Unlock()
-	NodeManagerInterface = nil
-}
-
-// NewNodeManager creates a new node manager for the host
-func NewNodeManager(node *config.Node) (*NodeManager, error) {
-	return NewNodeManagerWithLogger(node)
-}
-
 func NewNodeManagerWithLogger(node *config.Node) (*NodeManager, error) {
 	// Singleton check: if NodeManager already exists, return it
 	nodeManagerMutex.RLock()

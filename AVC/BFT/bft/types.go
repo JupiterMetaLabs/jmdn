@@ -113,12 +113,3 @@ type Messenger interface {
 	ReceivePrepare() <-chan *PrepareMessage
 	ReceiveCommit() <-chan *CommitMessage
 }
-
-func Return_pubsubMessenger(adapter *BFTPubSubAdapter, roundID string) *pubsubMessenger {
-	return &pubsubMessenger{
-		adapter:     adapter,
-		roundID:     roundID,
-		prepareChan: adapter.prepareVotes[roundID],
-		commitChan:  adapter.commitVotes[roundID],
-	}
-}

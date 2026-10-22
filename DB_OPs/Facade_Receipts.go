@@ -190,15 +190,6 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	return receipt
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.Receipt) ([]byte, error) {
-	receiptRoot, err := utils.GenerateReceiptRoot(receipts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate receipt root: %w", err)
-	}
-	return receiptRoot, nil
-}
-
 func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Receipt, error) {
 	// Get Transactions of block and then get receipts for each transaction
 	transactions, err := GetTransactionsOfBlock(mainDBClient, blockNumber)

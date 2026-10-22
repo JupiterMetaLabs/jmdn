@@ -264,6 +264,8 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.use_legacy_bft", d.Features.UseLegacyBFT)
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
+	v.SetDefault("features.enable_solc_compile", d.Features.EnableSolcCompile)
+	v.SetDefault("features.enable_debug_trace", d.Features.EnableDebugTrace)
 
 	// FastSync
 	v.SetDefault("contracts.enabled", d.Contracts.Enabled)
@@ -287,6 +289,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.trusted_clients", d.Security.TrustedClients)
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+	v.SetDefault("security.admin_token", d.Security.AdminToken)
 
 	// Register defaults for all predefined Security Services so Viper can pick up ENV overrides
 	for svcName, policy := range d.Security.Services {

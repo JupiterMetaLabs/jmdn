@@ -10,6 +10,7 @@ import (
 	"gossipnode/pkg/gatekeeper"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -40,11 +41,18 @@ func NewClient(addr string) (*Client, error) {
 		return nil, fmt.Errorf("failed to load client credentials for admin connection: %w", err)
 	}
 
-	grpcConn, err := grpc.DialContext(ctx, addr,
-		grpc.WithTransportCredentials(creds),
-		grpc.WithBlock())
+	grpcConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to gRPC server: %w", err)
+	}
+	// Wait until the connection is ready or ctx expires, so a node that is
+	// not running fails here rather than on the first call.
+	grpcConn.Connect()
+	for state := grpcConn.GetState(); state != connectivity.Ready; state = grpcConn.GetState() {
+		if !grpcConn.WaitForStateChange(ctx, state) {
+			_ = grpcConn.Close()
+			return nil, fmt.Errorf("failed to connect to gRPC server: %w", ctx.Err())
+		}
 	}
 
 	return &Client{
@@ -138,12 +146,6 @@ func (c *Client) PropagateDID(did, publicKey, balance string) (*pb.OperationResp
 	})
 }
 
-// FastSync performs fast synchronization with a peer
-func (c *Client) FastSync(peerAddr string) (*pb.SyncStats, error) {
-	ctx := context.Background()
-	return c.conn.FastSync(ctx, &pb.PeerRequest{Peer: peerAddr})
-}
-
 // FastSyncV2 performs fast sync using the V2 engine
 func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
 	ctx := context.Background()
@@ -154,18 +156,6 @@ func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
 func (c *Client) AccountSync(peerAddr string) (*pb.SyncStats, error) {
 	ctx := context.Background()
 	return c.conn.AccountSync(ctx, &pb.PeerRequest{Peer: peerAddr})
-}
-
-// FirstSync performs first synchronization with a peer (server or client mode)
-func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) {
-	// ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-	// defer cancel()
-	ctx := context.Background()
-	defer ctx.Done()
-	return c.conn.FirstSync(ctx, &pb.FirstSyncRequest{
-		Peer: peerAddr,
-		Mode: mode,
-	})
 }
 
 // CatchUpSync reconciles blocks [fromBlock..remoteTip] without Merkle bisection.

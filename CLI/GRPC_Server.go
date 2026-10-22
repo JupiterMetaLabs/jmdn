@@ -375,11 +375,6 @@ func convertMetadataToString(metadata map[string]interface{}) string {
 	return string(jsonData)
 }
 
-// StartGRPCServer starts the gRPC server
-func StartGRPCServer(handler *CommandHandler, bindAddr string, port int) error {
-	return StartGRPCServerWithContext(context.Background(), handler, bindAddr, port)
-}
-
 // StartGRPCServerWithContext starts the gRPC server and gracefully stops it when ctx is cancelled.
 func StartGRPCServerWithContext(ctx context.Context, handler *CommandHandler, bindAddr string, port int) error {
 	// 1. Setup Logger

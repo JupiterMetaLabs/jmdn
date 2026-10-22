@@ -552,7 +552,7 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 docker compose up -d --build
 ```
 
-Two stages: builder (`golang:1.26.9-bookworm`, pinned by digest, `CGO_ENABLED=1`) then runtime (`debian:bookworm-slim`, pinned by digest). The final image contains no Go toolchain or source.
+Two stages: builder (`golang:1.27.3-bookworm`, pinned by digest, `CGO_ENABLED=1`) then runtime (`debian:bookworm-slim`, pinned by digest). The final image contains no Go toolchain or source.
 
 ---
 

@@ -10,13 +10,11 @@ import (
 type dbBlockHeaderIterator struct{}
 
 // Time Complexity: O(1)
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (sync *sync_struct) NewBlockHeaderIterator() types.BlockHeader {
 	return &dbBlockHeaderIterator{}
 }
 
 // Time Complexity: O(N) where N is the number of block headers requested
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block.Header, error) {
 	var headers []*block.Header
 
@@ -54,7 +52,6 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 }
 
 // Time Complexity: O(N) where N is the end - start range
-// __DEAD_CODE_AUDIT_PUBLIC__
 func (i *dbBlockHeaderIterator) GetBlockHeadersRange(start, end uint64) ([]*block.Header, error) {
 	blocks, err := DB_OPs.GetBlocksRange(DB_OPs.TaskConn(DB_OPs.TaskSync), start, end)
 	if err != nil {

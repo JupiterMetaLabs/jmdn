@@ -33,10 +33,9 @@ type Transaction struct {
 }
 
 // HasZKProof reports whether a block carries ANY ZK proof data and should
-// therefore ship its proof over sync. It is the single shared gate used by BOTH
-// NonHeaders converters — the peer-serving path (DB_OPs/Nodeinfo.convertZKBlockToNonHeaders)
-// and the PoTS WAL-dump path (FastsyncV2.zkBlockToProtoNonHeaders) — so they can
-// never drift.
+// therefore ship its proof over sync. It is the shared gate used by the
+// peer-serving NonHeaders converter (DB_OPs/Nodeinfo.convertZKBlockToNonHeaders);
+// any future converter must use it too so the gates never drift.
 //
 // Gating on ProofHash alone dropped Auspex proofs: proof_hash was Espresso-derived
 // and is empty for Auspex-produced blocks, so a block with a real StarkProof +

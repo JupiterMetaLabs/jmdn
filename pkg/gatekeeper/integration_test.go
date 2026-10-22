@@ -119,7 +119,7 @@ func TestGRPC_mTLS_Enforcement(t *testing.T) {
 
 	// Case 1: No TLS (Plaintext) -> Should Fail
 	t.Run("Reject_Plaintext", func(t *testing.T) {
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		require.NoError(t, err)
 		defer conn.Close()
 
@@ -135,7 +135,7 @@ func TestGRPC_mTLS_Enforcement(t *testing.T) {
 			RootCAs: caPool, // Trust the server
 			// No Certificates field -> No client cert
 		})
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(creds))
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 		require.NoError(t, err)
 		defer conn.Close()
 
@@ -155,7 +155,7 @@ func TestGRPC_mTLS_Enforcement(t *testing.T) {
 			RootCAs:      caPool,
 			Certificates: []tls.Certificate{clientCert},
 		})
-		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(creds))
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 		require.NoError(t, err)
 		defer conn.Close()
 

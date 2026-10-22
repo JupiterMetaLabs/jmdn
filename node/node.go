@@ -435,7 +435,3 @@ func GetPeerIDFromJSON() string {
 		ion.String("peer", config.PeerID))
 	return config.PeerID
 }
-
-func GetHost() host.Host {
-	return localNode.Host
-}

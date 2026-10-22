@@ -107,11 +107,6 @@ func NewExplorerServer() (*ExplorerServer, error) {
 	return server, nil
 }
 
-// __DEAD_CODE_AUDIT_PUBLIC__
-func CloseExplorerServer(server *ExplorerServer) {
-	server.Close()
-}
-
 // setupRoutes configures the API routes
 func (s *ExplorerServer) setupRoutes() {
 	gin.DefaultWriter = os.Stdout
@@ -257,12 +252,6 @@ func (s *ExplorerServer) setupRoutes() {
 
 }
 
-// Start runs the HTTP server until it exits.
-// Prefer StartWithContext in long-running processes so shutdown can be graceful.
-func (s *ExplorerServer) Start(addr string) error {
-	return s.StartWithContext(context.Background(), addr)
-}
-
 // StartWithContext runs the HTTP server and shuts it down when ctx is cancelled.
 func (s *ExplorerServer) StartWithContext(ctx context.Context, addr string) error {
 	// Create span for server start
@@ -350,28 +339,6 @@ func (s *ExplorerServer) StartWithContext(ctx context.Context, addr string) erro
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
 		return err
-	}
-}
-
-// Close cleans up resources
-func (s *ExplorerServer) Close() {
-	if s.defaultdb.Handle != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
-		defer span.End()
-
-		span.SetAttributes(
-			attribute.String("database", config.DBName),
-			attribute.String("function", "ExplorerAPI.Close"),
-		)
-
-		logger().Info(spanCtx, "Closing the ExplorerAPI server",
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ExplorerAPI.Close"))
 	}
 }
 

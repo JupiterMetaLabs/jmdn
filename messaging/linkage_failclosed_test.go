@@ -23,8 +23,7 @@ func blkAt(num uint64, prev common.Hash) *config.ZKBlock {
 // distinct, VALID, non-zero hashes (HexToHash on non-hex text silently yields
 // the zero hash, which would make unequal-looking values compare equal).
 var (
-	hashTip   = common.BytesToHash([]byte{0xaa})
-	hashWrong = common.BytesToHash([]byte{0xbb})
+	hashTip = common.BytesToHash([]byte{0xaa})
 )
 
 func TestLinkageDecision(t *testing.T) {

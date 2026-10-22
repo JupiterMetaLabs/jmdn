@@ -27,6 +27,7 @@ import (
 	"gossipnode/internal/reputation"
 	"gossipnode/internal/streamread"
 	"gossipnode/messaging"
+	"gossipnode/metrics"
 	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -1492,8 +1493,6 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		logger().Debug(trace_ctx, "Processing vote", ion.Int("vote_index", i+1))
 		logger().Debug(trace_ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
 		logger().Debug(trace_ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
-		if i < len(votes)-1 {
-		}
 	}
 
 	span.SetAttributes(
@@ -2407,6 +2406,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		if legacyOK {
 			// Legacy unbound vote — not bound to a specific block. Alert to
 			// Telegram with the offending peer ID.
+			metrics.ConsensusLegacyVotesTotal.Inc()
 			logger().Warn(trace_ctx, "SECURITY: legacy (unbound) BLS vote received",
 				ion.String("peer_id", r.PeerID),
 				ion.String("block_hash", blockHashHex),
@@ -2576,54 +2576,4 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		Description(msg).
 		Send()
 	return false
-}
-
-// IsListenerActive checks if the listener node is active and ready to collect votes
-func (consensus *Consensus) IsListenerActive() bool {
-	// Check global singleton
-	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-	return listenerNode != nil
-}
-
-// StartVoteCollection starts the vote collection process
-// This method demonstrates how the consensus system is ready to collect votes
-func (consensus *Consensus) StartVoteCollection(blockHash string) error {
-	logger_ctx := context.Background()
-	tracer := logger().Tracer("Consensus")
-	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.StartVoteCollection")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("block_hash", blockHash),
-		attribute.String("protocol", string(config.SubmitMessageProtocol)),
-		attribute.String("vote_stage", string(config.Type_SubmitVote)),
-	)
-
-	logger().Info(trace_ctx, "Starting vote collection",
-		ion.String("block_hash", blockHash),
-		ion.String("function", "Consensus.StartVoteCollection"))
-
-	if !consensus.IsListenerActive() {
-		err := fmt.Errorf("listener node not active - cannot collect votes")
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "listener_not_active"))
-		logger().Error(trace_ctx, "Listener node not active",
-			err,
-			ion.String("function", "Consensus.StartVoteCollection"))
-		return err
-	}
-
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(
-		attribute.Float64("duration", duration),
-		attribute.String("status", "success"),
-	)
-	logger().Info(trace_ctx, "Vote collection started successfully",
-		ion.String("block_hash", blockHash),
-		ion.String("protocol", string(config.SubmitMessageProtocol)),
-		ion.String("vote_stage", string(config.Type_SubmitVote)),
-		ion.Float64("duration", duration),
-		ion.String("function", "Consensus.StartVoteCollection"))
-	return nil
 }

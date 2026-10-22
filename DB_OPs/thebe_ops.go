@@ -88,39 +88,6 @@ func isNotFoundError(err error) bool {
 // from the SQL-backed store — as missing, not as a transient failure.
 func IsNotFound(err error) bool { return isNotFoundError(err) }
 
-// ReadJSON retrieves a value by key and unmarshals it into dest.
-func ReadJSON(key string, dest interface{}) error {
-	var err error
-	var data []byte
-
-	data, err = Read(nil, key)
-	if err != nil {
-		return err
-	}
-
-	if err := json.Unmarshal(data, dest); err != nil {
-		return fmt.Errorf("failed to unmarshal data: %w", err)
-	}
-
-	return nil
-}
-
-// Update updates an existing key with a new value.
-// sentinel keys: no-op — SQL derives latest_block and header_latest_block from MAX(block_number).
-func Update(key string, value interface{}) error {
-	if key == "latest_block" || key == "header_latest_block" {
-		return nil
-	}
-	// block:<number> or block:hash:<hash> keys: write via StoreBlock
-	if strings.HasPrefix(key, PREFIX_BLOCK) {
-		if b, ok := value.(*config.ZKBlock); ok {
-			return StoreZKBlock(nil, b)
-		}
-	}
-	// unknown key: no-op (ImmuDB index; SQL handles via table columns)
-	return nil
-}
-
 // GetDatabaseState returns the current state of the database.
 // ImmuDB removed — returns a zeroed DatabaseState.
 func GetDatabaseState(_ *config.PooledConnection) (*DatabaseState, error) {
@@ -561,46 +528,9 @@ func GetDBTransactionsByAccountInRange(accountAddr *common.Address, fromBlock, t
 	return out, nil
 }
 
-// GetTransactionsByAccountInRange retrieves transactions where the account is
-// sender or receiver within [fromBlock, toBlock] inclusive, via ThebeDB SQL.
-// Hot path for CatchUp ReconcileWithDeltas — uses composite (addr, block_number) indexes.
-func GetTransactionsByAccountInRange(PooledConnection *config.PooledConnection, accountAddr *common.Address, fromBlock, toBlock uint64) ([]*config.Transaction, error) {
-	if accountAddr == nil {
-		return nil, fmt.Errorf("GetTransactionsByAccountInRange: nil address")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	h, err := getHandle(nil)
-	if err != nil {
-		return nil, fmt.Errorf("GetTransactionsByAccountInRange: %w", err)
-	}
-	recs, err := h.GetTransactionsByAddressInRange(ctx, accountAddr.Hex(), fromBlock, toBlock)
-	if err != nil {
-		return nil, fmt.Errorf("GetTransactionsByAccountInRange(%s): %w", accountAddr.Hex(), err)
-	}
-	txs := make([]*config.Transaction, 0, len(recs))
-	for _, r := range recs {
-		txs = append(txs, txRecordToConfig(r))
-	}
-	stampTxTimestamps(ctx, h, recs, txs)
-	return txs, nil
-}
-
 // ========================================
 // ART NONCE (from account_immuclient.go)
 // ========================================
-
-var artNonceCounter uint64
-
-// [AUDIT OK]: Atomic counter and bit shift mathematically proven safe against overflow (51 bits for micro + 12 for counter = 63 bits); 1 call site in CreateAccount.
-// GenerateARTNonce generates a locally unique Nonce for Fastsync ART routing.
-// This is strictly used when this node originates an account (e.g., manual DID creation).
-// Accounts synced from the network MUST preserve the sender's ART Nonce.
-func GenerateARTNonce() uint64 {
-	ts := uint64(time.Now().UTC().UnixMicro())
-	c := atomic.AddUint64(&artNonceCounter, 1)
-	return (ts << 12) | (c & 0xFFF)
-}
 
 // ========================================
 // CONVERSION HELPERS (from account_immuclient.go)

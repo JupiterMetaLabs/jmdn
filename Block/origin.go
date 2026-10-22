@@ -28,12 +28,6 @@ func OriginGRPC(remoteAddr string) TxOrigin {
 	return TxOrigin{Transport: "grpc", RemoteAddr: remoteAddr, trusted: IsLoopbackAddr(remoteAddr)}
 }
 
-// OriginInternal marks an in-process (same-binary) Go caller as trusted. Use
-// ONLY for direct calls, never for anything reachable from a network surface.
-func OriginInternal() TxOrigin {
-	return TxOrigin{Transport: "internal", trusted: true}
-}
-
 // OriginUntrusted is the fail-closed default for a caller that cannot prove its
 // peer (e.g. a public JSON-RPC facade with no socket peer in context).
 func OriginUntrusted(transport string) TxOrigin {
