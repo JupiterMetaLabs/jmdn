@@ -407,19 +407,11 @@ func ValidateCommitteeSource() error {
 	return err
 }
 
-// ValidateCommitteeRegistry is retained as a back-compat alias for callers and
-// now validates the dynamic eligibility source.
-func ValidateCommitteeRegistry() error { return ValidateCommitteeSource() }
-
 // CommitteeKeyAuthorized reports whether a vote from (peerID,pubHex) is from an
 // eligible committee member. Exported for the sequencer's vote-aggregation path
 // (Sequencer/Consensus.go). FAIL CLOSED: returns false when the eligibility
 // source is missing or failing.
 func CommitteeKeyAuthorized(peerID, pubHex string) bool { return keyAuthorized(peerID, pubHex) }
-
-// RegistryConfigured reports whether a valid, non-empty eligible committee is
-// available. Retained for callers outside this package.
-func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
 // ---- Certificate verification ------------------------------------------------
 

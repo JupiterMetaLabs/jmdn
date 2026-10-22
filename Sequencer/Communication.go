@@ -408,42 +408,6 @@ func createRouter(gps *PubSubMessages.GossipPubSub) *Router.Router {
 	return Router.NewRouter(buddyNode)
 }
 
-// ProcessVerificationMessage processes incoming verification messages using the Router
-func ProcessVerificationMessage(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, gossipMessage *PubSubMessages.GossipMessage) error {
-	// Create Router instance for centralized verification handling
-	router := createRouter(gps)
-	defer router.Close()
-	// Use the Router to process the verification message
-	return router.ProcessCompleteVerification(logger_ctx, gossipMessage)
-}
-
-// CheckNodeSubscriptionStatus checks if a node is subscribed using the Router
-func CheckNodeSubscriptionStatus(gps *PubSubMessages.GossipPubSub) (bool, error) {
-	// Create Router instance for centralized verification handling
-	router := createRouter(gps)
-	defer router.Close()
-	// Use the Router to check subscription status
-	return router.CheckSubscriptionStatus()
-}
-
-// SendVerificationResponseWithRouter sends verification response using the Router
-func SendVerificationResponseWithRouter(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, accepted bool) error {
-	// Create Router instance for centralized verification handling
-	router := createRouter(gps)
-	defer router.Close()
-	// Use the Router to send verification response with validation
-	return router.SendVerificationResponseWithValidation(logger_ctx, accepted)
-}
-
-// GetVerificationStatsWithRouter gets verification statistics using the Router
-func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string]interface{} {
-	// Create Router instance for centralized verification handling
-	router := createRouter(gps)
-
-	// Use the Router to get verification stats
-	return router.GetVerificationStats()
-}
-
 // askPeersForSubscription asks a list of peers for subscription
 func askPeersForSubscription(
 	Listener *MessagePassing.StructListener,

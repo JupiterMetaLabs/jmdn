@@ -1,7 +1,6 @@
 package selection
 
 import (
-	"fmt"
 	"sync"
 
 	sharedselection "gossipnode/shared/selection"
@@ -31,28 +30,6 @@ func (r *Registry) Register(name string, factory Factory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.algorithms[name] = factory
-}
-
-func (r *Registry) Get(name string) (Factory, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	factory, exists := r.algorithms[name]
-	if !exists {
-		return nil, fmt.Errorf("algorithm '%s' not found", name)
-	}
-	return factory, nil
-}
-
-func (r *Registry) List() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.algorithms))
-	for name := range r.algorithms {
-		names = append(names, name)
-	}
-	return names
 }
 
 // Auto-register VRF algorithm

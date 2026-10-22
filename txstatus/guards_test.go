@@ -94,7 +94,7 @@ func TestTokenBucket_RefillsAndCaps(t *testing.T) {
 
 	// A long idle period must not mint unbounded tokens.
 	now = now.Add(time.Hour)
-	if !b.allow() || !b.allow() {
+	if first, second := b.allow(), b.allow(); !first || !second {
 		t.Error("refill after idle should restore the burst")
 	}
 	if b.allow() {
@@ -173,7 +173,7 @@ func TestBreaker_HalfOpenAdmitsOneProbeThenRecovers(t *testing.T) {
 	}
 
 	b.recordSuccess()
-	if !b.allow() || !b.allow() {
+	if first, second := b.allow(), b.allow(); !first || !second {
 		t.Error("a successful probe should close the breaker")
 	}
 }

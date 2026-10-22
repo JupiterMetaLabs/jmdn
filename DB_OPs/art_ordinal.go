@@ -158,23 +158,6 @@ func BumpARTOrdinalFloor(floor uint64) error {
 	return nil
 }
 
-// EnrichBlockAccountNonces populates block.AccountNonces with the canonical
-// ART nonce for every distinct sender and receiver in the block:
-//
-//   - account present in accountsdb → its stored nonce (apply-side ADOPT heals
-//     nodes holding a different value), and
-//   - account missing (this block creates it) → a freshly reserved ordinal,
-//     assigned in ascending-address order so the assignment is reproducible.
-//
-// SEQUENCER-ONLY, called between block validation and consensus start. The
-// field is advisory (not part of the canonical block hash), so enrichment does
-// not invalidate BlockHash. Fail-closed: any DB error aborts enrichment and
-// the caller must reject the block — proposing a block that creates accounts
-// WITHOUT carried identities would push every node back to local minting.
-func EnrichBlockAccountNonces(block *config.ZKBlock) error {
-	return EnrichBlockAccountNoncesWithPredicted(block, nil)
-}
-
 // EnrichBlockAccountNoncesWithPredicted is EnrichBlockAccountNonces plus the
 // accounts the block's contract txs are PREDICTED to touch during EVM execution
 // (BlockProcessing.PredictContractCreatedAccounts: internal CALL{value}

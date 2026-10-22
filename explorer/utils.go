@@ -216,10 +216,3 @@ func checkForNewBlocks(DBclient *ExplorerServer) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 }
-
-// GetLastBlockNumber returns the last processed block number
-func GetLastBlockNumber() uint64 {
-	blockMutex.RLock()
-	defer blockMutex.RUnlock()
-	return lastBlockNumber
-}

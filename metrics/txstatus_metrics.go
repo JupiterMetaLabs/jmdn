@@ -131,8 +131,3 @@ func (TxStatusObserver) ObserveBreakerTrips(_ int64) {
 func (TxStatusObserver) ObserveNegativeCache(event string) {
 	TxStatusNegativeCacheCounter.WithLabelValues(event).Inc()
 }
-
-// SetTxStatusSubmitLogSize publishes the current submit-log occupancy.
-func SetTxStatusSubmitLogSize(n int) {
-	TxStatusSubmitLogSize.Set(float64(n))
-}

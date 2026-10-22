@@ -130,7 +130,7 @@ func NewClient(seedNodeURL string) (*Client, error) {
 	}
 
 	// Create gRPC connection with appropriate credentials
-	conn, err := grpc.Dial(seedNodeURL, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(seedNodeURL, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to seed node: %w", err)
 	}
@@ -781,128 +781,6 @@ func (c *Client) registerNewPeerWithAlias(h host.Host, alias string) error {
 	fmt.Printf("Successfully registered new peer with alias '%s': %s\n", alias, response.Message)
 	return nil
 }
-
-/* UNUSED
-// updateExistingPeerWithAlias updates an existing peer record with an alias
-func (c *Client) updateExistingPeerWithAlias(h host.Host, alias string, existingPeer *peerpb.SignedPeerRecord) error {
-	// Get current peer addresses - try to use public IP first
-	var multiaddrs []string
-
-	// Try to get public IP and use it with the detected port
-	publicIP, err := getPublicIP()
-	if err == nil {
-		// Find the first TCP port from the host's listening addresses
-		var tcpPort string
-		for _, addr := range h.Addrs() {
-			addrStr := addr.String()
-			if strings.Contains(addrStr, "/tcp/") {
-				// Extract port from multiaddress like /ip4/0.0.0.0/tcp/15000
-				parts := strings.Split(addrStr, "/tcp/")
-				if len(parts) > 1 {
-					portParts := strings.Split(parts[1], "/")
-					if len(portParts) > 0 {
-						tcpPort = portParts[0]
-						break
-					}
-				}
-			}
-		}
-
-		// Use default port if none found
-		if tcpPort == "" {
-			tcpPort = "15000"
-		}
-
-		// Use the public IP with the detected port
-		publicAddr := fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", publicIP, tcpPort, h.ID().String())
-		fullAddr, err := multiaddr.NewMultiaddr(publicAddr)
-		if err == nil {
-			multiaddrs = append(multiaddrs, fullAddr.String())
-		}
-	}
-
-	// Also include local addresses as fallback
-	for _, addr := range h.Addrs() {
-		// Skip localhost and private addresses for external registration
-		if isPublicAddress(addr.String()) {
-			// Use proper multiaddress construction
-			fullAddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("%s/p2p/%s", addr.String(), h.ID().String()))
-			if err == nil {
-				multiaddrs = append(multiaddrs, fullAddr.String())
-			}
-		}
-	}
-
-	// If still no addresses found, include all addresses as final fallback
-	if len(multiaddrs) == 0 {
-		for _, addr := range h.Addrs() {
-			fullAddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("%s/p2p/%s", addr.String(), h.ID().String()))
-			if err == nil {
-				multiaddrs = append(multiaddrs, fullAddr.String())
-			}
-		}
-	}
-
-	// Create updated peer record with incremented sequence number
-	updatedPeerRecord := &peerpb.SignedPeerRecord{
-		PeerId:        h.ID().String(),
-		Multiaddrs:    multiaddrs,
-		Seq:           existingPeer.Seq + 1, // Increment sequence number
-		CurrentStatus: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
-		Region:        "",                  // No region specified
-		Labels:        existingPeer.Labels, // Preserve existing labels
-		// Signature fields will be populated by signPeerRecord
-		V: "",
-		R: "",
-		S: "",
-	}
-
-	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
-	// so the identity signature covers bls_pub. No-op unless
-	// JMDN_EMIT_COMMITTEE_BLS=1.
-	AttachRewardAddress(updatedPeerRecord)
-	if err = AttachCommitteeBLS(updatedPeerRecord); err != nil {
-		return fmt.Errorf("failed to attach committee bls key: %w", err)
-	}
-
-	// Sign the updated peer record
-	err = SignPeerRecord(updatedPeerRecord, h)
-	if err != nil {
-		return fmt.Errorf("failed to sign updated peer record: %w", err)
-	}
-
-	// Update the existing peer record
-	err = c.UpdatePeer(updatedPeerRecord)
-	if err != nil {
-		return fmt.Errorf("failed to update existing peer: %w", err)
-	}
-
-	// Create peer alias
-	peerAlias := &peerpb.PeerAlias{
-		Name:   alias,
-		PeerId: h.ID().String(),
-		// Signature fields will be populated by signAlias
-		V: "",
-		R: "",
-		S: "",
-	}
-
-	// Sign the alias
-	err = SignAlias(peerAlias, h)
-	if err != nil {
-		return fmt.Errorf("failed to sign alias: %w", err)
-	}
-
-	// Create the alias for the existing peer
-	err = c.CreateAlias(peerAlias)
-	if err != nil {
-		return fmt.Errorf("failed to create alias for existing peer: %w", err)
-	}
-
-	fmt.Printf("Successfully updated existing peer with alias '%s' (seq: %d)\n", alias, updatedPeerRecord.Seq)
-	return nil
-}
-*/
 
 // RegisterPeer registers this peer with the seed node
 func (c *Client) RegisterPeer(h host.Host) error {

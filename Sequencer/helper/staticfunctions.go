@@ -51,28 +51,6 @@ func QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 
 // #static function
 
-/*
-This function extracts unique peer IDs from a slice of buddy peers.
-What it does:
-Takes a slice of Buddy_PeerMultiaddr objects (buddies)
-Extracts unique peer IDs from them, avoiding duplicates
-Returns a slice of unique peer.ID values
-*/
-// __DEAD_CODE_AUDIT_PUBLIC__
-func GetUniquePeerIDs(buddies []PubSubMessages.Buddy_PeerMultiaddr) ([]peer.ID, error) {
-	peerIDs := make([]peer.ID, 0)
-	seenPeers := make(map[string]bool) // Track seen peer IDs to avoid duplicates
-
-	for _, buddy := range buddies {
-		peerIDStr := buddy.PeerID.String()
-		if !seenPeers[peerIDStr] {
-			peerIDs = append(peerIDs, buddy.PeerID)
-			seenPeers[peerIDStr] = true
-		}
-	}
-	return peerIDs, nil
-}
-
 // #static function
 /*
 This function deduplicates buddy peers by peer ID, keeping the full Buddy_PeerMultiaddr objects.

@@ -9,7 +9,6 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Pubsub"
 	"gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Alerts"
@@ -40,15 +39,14 @@ type PeerList struct {
 	BackupPeers []peer.ID
 }
 type Consensus struct {
-	mu               *sync.RWMutex
-	Channel          string
-	PeerList         PeerList
-	Host             host.Host
-	gossipnode       *Pubsub.StructGossipPubSub
-	ListenerNode     *MessagePassing.StructListener
-	ResponseHandler  *ResponseHandler
-	DiscoveryService *Service.NodeDiscoveryService
-	ZKBlockData      *PubSubMessages.ConsensusMessage
+	mu              *sync.RWMutex
+	Channel         string
+	PeerList        PeerList
+	Host            host.Host
+	gossipnode      *Pubsub.StructGossipPubSub
+	ListenerNode    *MessagePassing.StructListener
+	ResponseHandler *ResponseHandler
+	ZKBlockData     *PubSubMessages.ConsensusMessage
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string

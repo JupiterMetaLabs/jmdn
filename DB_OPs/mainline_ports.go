@@ -77,16 +77,3 @@ func ListAccountsPaginatedFrom(conn *config.PooledConnection, limit int, seekKey
 	}
 	return accs, []byte(accs[len(accs)-1].Address.Hex()), nil
 }
-
-// CountAccountsWithTimeout returns the total number of accounts, bounded by
-// countTimeout. Used by the one-time explorer stats seed in main.go — off the
-// request path, so a long deadline is fine.
-func CountAccountsWithTimeout(countTimeout time.Duration) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
-	defer cancel()
-	n, err := CountAccountsCtx(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return int(n), nil
-}

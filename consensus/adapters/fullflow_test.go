@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/JupiterMetaLabs/avc/interfaces"
@@ -29,17 +30,31 @@ import (
 
 // recordingStateless records the hex hash of every tx it is asked to check,
 // so the test can prove the adapter delivered exactly the block's transactions.
+//
+// Phase 1 runs through avc's ParallelStatelessValidator, so CheckTx is called
+// from several worker goroutines at once; the recorder must be goroutine-safe
+// or -race flags the test (and a lost append makes the count check flaky).
 type recordingStateless struct {
+	mu      sync.Mutex
 	seen    []string
 	failAll bool
 }
 
 func (c *recordingStateless) CheckTx(_ context.Context, tx interfaces.Transaction) error {
+	c.mu.Lock()
 	c.seen = append(c.seen, hex.EncodeToString(tx.TxHashBytes()))
+	c.mu.Unlock()
 	if c.failAll {
 		return errors.New("stub stateless failure")
 	}
 	return nil
+}
+
+// snapshot returns a copy of the recorded hashes, taken under the lock.
+func (c *recordingStateless) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.seen...)
 }
 
 // recordingStateful records the order it applied transactions in, proving
@@ -100,12 +115,13 @@ func TestFullFlow_AdapterFeedsAllThreeStages(t *testing.T) {
 	}
 
 	want := wantHashes(txs)
-	if len(stateless.seen) != len(want) {
+	seen := stateless.snapshot()
+	if len(seen) != len(want) {
 		t.Fatalf("Phase 1 saw %d txs, want %d — adapter did not deliver all transactions",
-			len(stateless.seen), len(want))
+			len(seen), len(want))
 	}
 	seenSet := map[string]bool{}
-	for _, h := range stateless.seen {
+	for _, h := range seen {
 		seenSet[h] = true
 	}
 	for _, h := range want {

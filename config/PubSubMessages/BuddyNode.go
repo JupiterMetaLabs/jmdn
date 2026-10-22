@@ -60,16 +60,6 @@ func NewBuddiesBuilder(buddies []peer.ID) *Buddies {
 	return &Buddies{}
 }
 
-func (buddies *Buddies) AddBuddies(buddyNodes []peer.ID) *Buddies {
-	buddies.Buddies_Nodes = append(buddies.Buddies_Nodes, buddyNodes...)
-	return buddies
-}
-
-func (buddies *Buddies) RemoveBuddies(buddyNodes []peer.ID) *Buddies {
-	buddies.Buddies_Nodes = removeBuddies(buddies.Buddies_Nodes, buddyNodes)
-	return buddies
-}
-
 func (buddies *Buddies) GetBuddies() []peer.ID {
 	return buddies.Buddies_Nodes
 }

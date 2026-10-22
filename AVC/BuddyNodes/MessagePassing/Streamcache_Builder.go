@@ -206,19 +206,6 @@ func (sc *StructStreamCache) CloseStream(peerID peer.ID) {
 	sc.removeEntry(peerID)
 }
 
-// CloseAll closes all streams in the cache and unregisters from global cleanup
-func (sc *StructStreamCache) CloseAll() {
-	sc.StreamCache.Mutex.Lock()
-	defer sc.StreamCache.Mutex.Unlock()
-
-	for peerID := range sc.StreamCache.Streams {
-		sc.removeEntry(peerID)
-	}
-
-	// Unregister from global cleanup routine to prevent memory leak
-	sc.unregisterStreamCache()
-}
-
 // CleanupExpiredStreams removes streams that have exceeded their TTL
 func (sc *StructStreamCache) CleanupExpiredStreams() {
 	sc.StreamCache.Mutex.Lock()
@@ -241,24 +228,6 @@ func (sc *StructStreamCache) CleanupExpiredStreams() {
 	}
 }
 
-// GetStats returns cache statistics
-func (sc *StructStreamCache) GetStats() map[string]interface{} {
-	sc.StreamCache.Mutex.RLock()
-	defer sc.StreamCache.Mutex.RUnlock()
-
-	totalAccesses := int64(0)
-	for _, entry := range sc.StreamCache.Streams {
-		totalAccesses += entry.AccessCount
-	}
-
-	return map[string]interface{}{
-		"active_streams": len(sc.StreamCache.Streams),
-		"max_streams":    sc.StreamCache.MaxStreams,
-		"ttl_seconds":    sc.StreamCache.TTL.Seconds(),
-		"total_accesses": totalAccesses,
-	}
-}
-
 // registerStreamCache adds a StreamCache instance to the global registry
 func (sc *StructStreamCache) registerStreamCache() {
 	globalStreamCachesMutex.Lock()
@@ -272,23 +241,6 @@ func (sc *StructStreamCache) registerStreamCache() {
 	}
 
 	globalStreamCaches = append(globalStreamCaches, sc.StreamCache)
-}
-
-// unregisterStreamCache removes a StreamCache instance from the global registry
-func (sc *StructStreamCache) unregisterStreamCache() {
-	globalStreamCachesMutex.Lock()
-	defer globalStreamCachesMutex.Unlock()
-
-	for i, cache := range globalStreamCaches {
-		if cache == sc.StreamCache {
-			// Create a new slice to avoid issues with underlying array
-			newCaches := make([]*AVCStruct.StreamCache, 0, len(globalStreamCaches)-1)
-			newCaches = append(newCaches, globalStreamCaches[:i]...)
-			newCaches = append(newCaches, globalStreamCaches[i+1:]...)
-			globalStreamCaches = newCaches
-			return
-		}
-	}
 }
 
 // ParallelCleanUpRoutine starts a single global cleanup routine for all StreamCache instances
