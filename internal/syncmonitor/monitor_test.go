@@ -16,6 +16,7 @@ package syncmonitor_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -174,6 +175,9 @@ func TestFix1_StartupJitter(t *testing.T) {
 	// Two monitors with the same base interval should fire their first check
 	// at different times due to random jitter.
 	interval := 200 * time.Millisecond
+	// fires is written from each monitor's check goroutine and read here after
+	// the sleep; guard it so -race does not flag the test itself.
+	var firesMu sync.Mutex
 	fires := make([]time.Time, 2)
 
 	for i := 0; i < 2; i++ {
@@ -182,7 +186,11 @@ func TestFix1_StartupJitter(t *testing.T) {
 		sc := &stubSeedClient{isSynced: true}
 		mon := syncmonitor.New(bi, sc, interval)
 		mon.SetReconcileFunc(func(_ context.Context, _ []syncmonitor.PeerInfo) error { return nil })
-		mon.SetOnCheck(func() { fires[i] = time.Now() }) // hook for test observability
+		mon.SetOnCheck(func() { // hook for test observability
+			firesMu.Lock()
+			fires[i] = time.Now()
+			firesMu.Unlock()
+		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -194,6 +202,8 @@ func TestFix1_StartupJitter(t *testing.T) {
 	// Wait for both to fire at least once.
 	time.Sleep(2 * time.Second)
 
+	firesMu.Lock()
+	defer firesMu.Unlock()
 	diff := fires[0].Sub(fires[1])
 	if diff < 0 {
 		diff = -diff
