@@ -6,6 +6,7 @@ import (
 
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/sequencerid"
 
 	"github.com/JupiterMetaLabs/ion"
 )
@@ -22,6 +23,20 @@ func Router(message *AVCStruct.GossipMessage) error {
 	}
 	if message.Data.ACK == nil {
 		return fmt.Errorf("message ACK is nil")
+	}
+
+	// H5 (2026-10-22 audit): subscribing to, and unsubscribing from, the
+	// consensus channel is the sequencer's call. From anyone else these
+	// messages could stack subscriptions or cut a validator off from gossip.
+	// Dropped quietly (Warn, nil error) so a sender cannot flood error logs.
+	switch message.Data.ACK.Stage {
+	case config.Type_AskForSubscription, config.Type_EndPubSub:
+		if ok, _ := sequencerid.AuthorizeSender(message.Sender.String(), message.SenderAuthenticated); !ok {
+			logger().Warn(context.Background(), "Router: dropping subscription control message not sent by the sequencer",
+				ion.String("stage", message.Data.ACK.Stage),
+				ion.String("sender", message.Sender.String()))
+			return nil
+		}
 	}
 
 	logger_ctx, cancel := context.WithCancel(context.Background())

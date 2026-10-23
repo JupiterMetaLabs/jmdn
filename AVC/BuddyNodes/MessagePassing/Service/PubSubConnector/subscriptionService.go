@@ -15,6 +15,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/l1finality"
 	log "gossipnode/logging"
 
@@ -170,6 +171,15 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	// Check if the message has valid data
 	if msg.Data == nil {
 		return fmt.Errorf("received message has no data")
+	}
+
+	// H5 (2026-10-22 audit): these control messages belong to the sequencer.
+	if !sequencerControlAllowed(msg) {
+		logger().Warn(logger_ctx, "Dropping sequencer-only control message not published by the sequencer",
+			ion.String("stage", msg.Data.ACK.Stage),
+			ion.String("sender", msg.Sender.String()),
+			ion.String("function", "SubscriptionService.handleReceivedMessage"))
+		return nil
 	}
 
 	// Process the message based on its type
@@ -881,4 +891,16 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		ion.Int64("skipped", int64(skipped)),
 		ion.String("function", "PubSubConnector.handleL1CommitRange"))
 	return nil
+}
+
+// sequencerControlAllowed reports whether msg may be acted on. Sequencer-only
+// control messages pass only when gossipsub signed them (SenderAuthenticated)
+// and the publisher is the sequencer; every other stage passes unchanged.
+func sequencerControlAllowed(msg *AVCStruct.GossipMessage) bool {
+	switch msg.Data.ACK.Stage {
+	case config.Type_BFTRequest, config.Type_AskForSubscription:
+		ok, _ := sequencerid.AuthorizeSender(msg.Sender.String(), msg.SenderAuthenticated)
+		return ok
+	}
+	return true
 }

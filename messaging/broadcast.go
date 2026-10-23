@@ -20,7 +20,6 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
-	"gossipnode/config/settings"
 	"gossipnode/explorer/lifecycle"
 	"gossipnode/internal/l1auth"
 	"gossipnode/internal/proposalguard"
@@ -612,14 +611,25 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct, from peer.ID) {
 
 const voteTriggerBroadcastType = "vote_trigger"
 
-// voteTriggerPinnedSequencer returns the configured sequencer pin. A variable
-// so tests can set it without loading the settings file.
-var voteTriggerPinnedSequencer = func() string {
-	if !settings.IsLoaded() {
-		return ""
-	}
-	return settings.Get().Consensus.SequencerPinnedPeerID
-}
+// voteTriggerPinnedSequencer returns the fleet sequencer peer ID a vote trigger
+// must come from. A variable so tests can set it without loading a config file
+// — the same seam blockSenderPin uses.
+//
+// H4: this used to read consensus.sequencer_pinned_peer_id DIRECTLY out of the
+// loaded config, while AuthorizeBlockSender resolved the same identity through
+// pinnedSequencerID -> sequencerid.Get(), which ALSO accepts the sequencer
+// carried in the seed-signed committee snapshot. On a node running
+// seed_authority_bls_pub without a config pin the two disagreed: block
+// admission was enforced (enforced=true) while the vote trigger was not
+// (enforced=false, every sender accepted), so any peer could overwrite this
+// node's buddy list, poison its consensus-message cache, and have it BLS-sign
+// a vote on the attacker's block. The production posture permits that config,
+// so no misconfiguration was needed to reach it.
+//
+// Delegating to pinnedSequencerID rather than resolving the identity a second
+// time keeps ONE source of truth for "who is the sequencer", so the two
+// admission paths cannot drift apart again. Keep them equal.
+var voteTriggerPinnedSequencer = pinnedSequencerID
 
 // voteTriggerSenderAuthorized reports whether a vote trigger from the
 // transport-authenticated peer `from` may be acted on. Same contract as
