@@ -52,11 +52,23 @@ func SignedEquivocation(c *avctypes.Controller, height uint64, blockHash, peerID
 		tasks = append(tasks, tallySigTask{peerID: peerID, vote: v, rec: recs[i]})
 	}
 	ok := verifyTallySigTasksConcurrently(tasks, BLS_Signer.DomainChainID(), height, blockHash, consensusHash)
-	seen := make(map[int8]bool, 2)
+	found := avcvotes.BlockTally{
+		AuthorizedVotesByPeer: map[string][]int8{},
+		Signatures:            map[string][]avcvotes.VoteRecord{},
+	}
 	for i, t := range tasks {
 		if ok[i] {
-			seen[t.vote] = true
+			found.AuthorizedVotesByPeer[peerID] = append(found.AuthorizedVotesByPeer[peerID], t.vote)
+			found.Signatures[peerID] = append(found.Signatures[peerID], t.rec)
 		}
+	}
+	// A-3: a junk record ahead of one of the peer's two genuine values would
+	// otherwise hide the equivocation.
+	rescueShadowedVotes(c, &found, height, blockHash, consensusHash, authorized, peerID)
+
+	seen := make(map[int8]bool, 2)
+	for _, v := range found.AuthorizedVotesByPeer[peerID] {
+		seen[v] = true
 	}
 	return len(seen) >= 2
 }

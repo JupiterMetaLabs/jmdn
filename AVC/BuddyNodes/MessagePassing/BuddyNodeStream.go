@@ -159,6 +159,10 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 	// For all other message types, delegate to the service layer via Router
 	// Convert Message to GossipMessage for Router
 	gossipMessage := AVCStruct.NewGossipMessageBuilder(nil).SetMesssage(message)
+	// The stream peer is the transport-authenticated sender; the Router's
+	// sequencer check (H5) needs it.
+	gossipMessage.Sender = remotePeer
+	gossipMessage.SenderAuthenticated = true
 	if err := Router.Router(gossipMessage); err != nil {
 		streamSpan.RecordError(err)
 		streamSpan.SetAttributes(attribute.String("status", "router_failed"))

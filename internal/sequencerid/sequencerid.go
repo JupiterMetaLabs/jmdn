@@ -24,6 +24,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/config/settings"
+	"gossipnode/internal/l1auth"
 )
 
 // Unknown is returned under production posture when no sequencer is known. It
@@ -97,4 +98,23 @@ func productionPosture() bool {
 		return false
 	}
 	return settings.Get().ProductionPosture()
+}
+
+// AuthorizeSender reports whether a control message from the peer `sender`
+// may be acted on as coming from the sequencer. Same contract as
+// messaging.AuthorizeBlockSender: with a sequencer known (config pin or the
+// seed snapshot) only that peer is accepted (enforced=true); under production
+// posture with none known, Get returns Unknown and nobody is accepted; with
+// neither, every sender is accepted (enforced=false, pre-pin testnet
+// behaviour).
+//
+// `sender` must be a transport identity: the libp2p stream peer, or a
+// gossipsub publisher whose envelope was signed (authenticated=true). An
+// unauthenticated sender never passes while enforcement is on.
+func AuthorizeSender(sender string, authenticated bool) (ok, enforced bool) {
+	pin := Get()
+	if !l1auth.Enforced(pin) {
+		return true, false
+	}
+	return authenticated && l1auth.IsSequencer(sender, pin), true
 }

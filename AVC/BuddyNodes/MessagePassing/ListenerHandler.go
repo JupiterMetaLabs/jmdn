@@ -19,6 +19,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/internal/streamread"
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
@@ -243,6 +244,17 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	bftRequestSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
+
+	// H5 (2026-10-22 audit): only the sequencer may start a BFT round here.
+	// Without this, any peer could open channels and register keys, and would
+	// be recorded as this listener's sequencer below.
+	if ok, _ := sequencerid.AuthorizeSender(remotePeer.String(), true); !ok {
+		bftRequestSpan.SetAttributes(attribute.String("status", "sender_not_sequencer"))
+		logger().Warn(bftRequestSpanCtx, "Dropping BFT request not sent by the sequencer",
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("function", "MessagePassing.handleBFTRequest"))
+		return
+	}
 
 	if ListenerHandlerLocal == nil {
 		var err error
@@ -1176,6 +1188,17 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	subSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
+
+	// H5 (2026-10-22 audit): only the sequencer asks buddies to subscribe
+	// (Sequencer/Communication.go). Any other peer could otherwise stack
+	// subscriptions to the consensus channel.
+	if ok, _ := sequencerid.AuthorizeSender(remotePeer.String(), true); !ok {
+		subSpan.SetAttributes(attribute.String("status", "sender_not_sequencer"))
+		logger().Warn(subSpanCtx, "Dropping subscription request not sent by the sequencer",
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("function", "MessagePassing.handleAskForSubscription"))
+		return
+	}
 
 	logger().Info(subSpanCtx, "Received subscription request from peer",
 		ion.String("remote_peer_id", remotePeer.String()),

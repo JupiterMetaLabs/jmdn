@@ -34,8 +34,46 @@ func BLSSign(privateKey, message []byte) ([]byte, error) {
 	return sig.MarshalBinary()
 }
 
+// PublicKeyLen and SignatureLen are the exact encoded sizes on this curve
+// (BN256: a public key is a G2 point, a signature a G1 point).
+const (
+	PublicKeyLen = 128
+	SignatureLen = 64
+)
+
+var (
+	// ErrBadPublicKey rejects a key of the wrong length or the identity point.
+	ErrBadPublicKey = errors.New("bls: public key must be 128 bytes and not the identity point")
+	// ErrBadSignature rejects a signature of the wrong length or the identity point.
+	ErrBadSignature = errors.New("bls: signature must be 64 bytes and not the identity point")
+)
+
+// checkPoint enforces the exact encoded length and rejects the identity point,
+// which encodes as all zeros. The identity key paired with the identity
+// signature verifies EVERY message, and the decoder ignores trailing bytes, so
+// without this a malformed key or signature could pass as valid. Every caller
+// (votes, committee snapshots and their PoP, checkpoints, entropy aggregates)
+// gets the check (2026-10-22 audit, A-6).
+func checkPoint(b []byte, n int, errBad error) error {
+	if len(b) != n {
+		return errBad
+	}
+	for _, x := range b {
+		if x != 0 {
+			return nil
+		}
+	}
+	return errBad
+}
+
 // BLSVerify verifies (pubKey, message, signature).
 func BLSVerify(pubKey, message, signature []byte) error {
+	if err := checkPoint(pubKey, PublicKeyLen, ErrBadPublicKey); err != nil {
+		return err
+	}
+	if err := checkPoint(signature, SignatureLen, ErrBadSignature); err != nil {
+		return err
+	}
 	pk, err := bls.NewPublicKey(pubKey)
 	if err != nil {
 		return err
@@ -62,12 +100,22 @@ func BLSAggregate(signatures ...[]byte) ([]byte, error) {
 }
 
 // BLSFastAggregateVerify verifies aggregated signature against all pubkeys for the same message.
+//
+// Plain BLS aggregation is only sound if every key was registered with a proof
+// of possession; otherwise a rogue key lets its holder forge the aggregate
+// alone. The committee source enforces that (seednode/committee PoP check).
 func BLSFastAggregateVerify(pubKeys [][]byte, message, aggSig []byte) (bool, error) {
 	if len(pubKeys) == 0 {
 		return false, errors.New("no pubkeys provided")
 	}
+	if err := checkPoint(aggSig, SignatureLen, ErrBadSignature); err != nil {
+		return false, err
+	}
 	pubs := make([]crypto.PublicKey, len(pubKeys))
 	for i, p := range pubKeys {
+		if err := checkPoint(p, PublicKeyLen, ErrBadPublicKey); err != nil {
+			return false, err
+		}
 		pk, err := bls.NewPublicKey(p)
 		if err != nil {
 			return false, err

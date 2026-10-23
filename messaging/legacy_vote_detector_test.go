@@ -95,7 +95,7 @@ func TestLegacyVoteDetector_CommitteeV2_CountsOwnKeyRefusesForeignKey(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			orig[voteKey(r.PeerID, sig)] = r
+			orig[voteKey(r.PeerID, blsKeyBytes(r.PubKey), sig)] = r
 		}
 		return blsVerifier{bindings: blockHashHex, consensusHash: testBlockConsensusHash, orig: orig, seated: seatedPeerKeys(seated)}
 	}

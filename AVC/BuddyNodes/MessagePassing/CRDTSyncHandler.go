@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -815,7 +816,35 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 		return 0, fmt.Errorf("unmarshaling v2 CRDT: %w", err)
 	}
 
+	// A-3 (D-52): a votesig: record arriving by sync names another peer as its
+	// voter, so a buddy could merge junk records that sort ahead of a peer's
+	// genuine one or fill its cap. Verify each new record the way the tally
+	// does before storing it, so only genuine records reach the cap. When this
+	// node cannot verify yet (voter set unavailable, block not seen), it keeps
+	// the previous unverified behaviour and the tally's rescue still protects
+	// the vote.
+	var sigVerifier *Structs.SigMergeVerifier
+	var local map[string]struct{}
+	if strings.HasPrefix(key, "votesig:") {
+		if v, verr := Structs.NewSigMergeVerifier(key); verr == nil {
+			sigVerifier = v
+			elems, _ := listenerNode.VoteCRDTLayer.CRDTLayer.GetSet(key)
+			local = make(map[string]struct{}, len(elems))
+			for _, e := range elems {
+				local[e] = struct{}{}
+			}
+		}
+	}
+
 	for element := range remoteCRDT.Adds {
+		if sigVerifier != nil {
+			if _, have := local[element]; have {
+				continue // already stored: nothing to verify or count
+			}
+			if !sigVerifier.Verify(element) {
+				continue
+			}
+		}
 		peerID, _, found := strings.Cut(element, ":")
 		if found && avcvotes.CountElementsForPeer(listenerNode.VoteCRDTLayer, key, peerID) >= avcvotes.MaxElementsPerPeerPerBlock {
 			// Ingest cap reached for this peer on this key — same bound
