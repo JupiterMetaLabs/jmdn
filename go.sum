@@ -10,8 +10,8 @@ github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
 github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4 h1:7f8wvILePUfO3kkGdbpGpqd5FB6MoWZliPZHn4GehbI=
 github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4/go.mod h1:4BpzrgYQC1fU+CKuZiPm2Typ8F2w+6t1HL35Xfem7t0=
-github.com/JupiterMetaLabs/avc v0.1.0-v3base.5 h1:JfiClh323gYT7oSW0ozWfuN5MLG6/VumVrR4xtBPOBg=
-github.com/JupiterMetaLabs/avc v0.1.0-v3base.5/go.mod h1:33EHuBbzrRwds0XqvEScjfWeLJkEi7GIrR9ZfdHATaE=
+github.com/JupiterMetaLabs/avc v0.1.0-v3base.7 h1:eMCjOAVOEX/AV2NDkMExVWHSN5InARRas7iLvz3uVsk=
+github.com/JupiterMetaLabs/avc v0.1.0-v3base.7/go.mod h1:VXIf/zMAS3DUQOkMDGj7LS7PJMHI3oNN+HOk0CY4CHk=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5/go.mod h1:SNkJRVlUwZM7Lt5ZhojWaimBljLg/pV6IKgn8oyViOA=
 github.com/JupiterMetaLabs/ion v0.5.0 h1:9Y/czy10/0558bxKEO5fHIUu93ryibaFfN7G72Tshtc=

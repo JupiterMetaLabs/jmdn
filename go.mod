@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.5
 	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4
-	github.com/JupiterMetaLabs/avc v0.1.0-v3base.5
+	github.com/JupiterMetaLabs/avc v0.1.0-v3base.7
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.5.0
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -232,6 +232,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260825221802-da73d73af1c5 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
