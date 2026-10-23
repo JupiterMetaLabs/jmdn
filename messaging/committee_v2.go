@@ -720,8 +720,15 @@ type blsVerifier struct {
 	seated map[string]string
 }
 
-func voteKey(peerID string, sig []byte) string {
-	return peerID + "|" + hex.EncodeToString(sig)
+// voteKey identifies one response by peer, public key AND signature. The key
+// must be part of it: committee.Tally checks the key binding against the
+// vote's own BLSPub, so VerifyVote has to verify with that same key. Keyed by
+// (peer, sig) alone, a second response {P, attackerKey, S} overwrote
+// {P, P's bound key, S}; the first then verified under the attacker's key and
+// passed the binding under P's, so one attacker signature counted once for
+// every seated member (2026-10-22 audit, C1).
+func voteKey(peerID string, pub, sig []byte) string {
+	return peerID + "|" + hex.EncodeToString(pub) + "|" + hex.EncodeToString(sig)
 }
 
 // seatedPeerKeys indexes the seated committee by peer id, carrying each
@@ -740,7 +747,7 @@ func seatedPeerKeys(seated []committee.Member) map[string]string {
 }
 
 func (b blsVerifier) VerifyVote(v committee.Vote, chainID, height uint64, _ []byte) bool {
-	resp, ok := b.orig[voteKey(v.PeerID, v.Signature)]
+	resp, ok := b.orig[voteKey(v.PeerID, v.BLSPub, v.Signature)]
 	if !ok {
 		return false
 	}
@@ -1010,7 +1017,7 @@ func TallyAgainst(
 			Signature: sigBytes,
 		}
 		votes = append(votes, v)
-		orig[voteKey(v.PeerID, v.Signature)] = r
+		orig[voteKey(v.PeerID, v.BLSPub, v.Signature)] = r
 	}
 
 	res, err := committee.Tally(committee.TallyInput{

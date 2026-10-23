@@ -172,6 +172,15 @@ func processVotesFromCRDT_v2(logger_ctx context.Context, listenerNode *PubSubMes
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("function", "Structs.processVotesFromCRDT_v2"))
 	}
+	// A-3: TallyBlock looks at one record per (peer, vote), the first in sorted
+	// order, so a merged junk record can hide a genuine one. Recover any pair
+	// that some other candidate record still proves.
+	if rescued := rescueShadowedVotes(listenerNode.VoteCRDTLayer, &verified, height, targetBlockHash, consensusHash, authorized, ""); rescued > 0 {
+		logger().Warn(logger_ctx, "Recovered votes hidden behind invalid signature records (v2 path)",
+			ion.Int("rescued", rescued),
+			ion.String("target_block_hash", targetBlockHash),
+			ion.String("function", "Structs.processVotesFromCRDT_v2"))
+	}
 	tally = verified
 
 	// "Count every validator's vote in the buddy tally again" LLD, §4c: one
