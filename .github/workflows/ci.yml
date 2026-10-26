@@ -27,6 +27,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Required by the telemetry gate below: --new-from-rev resolves the PR
+          # base SHA, which a shallow clone does not contain. Without this the
+          # step hits its skip branch on every run and silently enforces nothing.
+          fetch-depth: 0
 
       # Reads the `go` directive directly from go.mod — no version duplication.
       - name: Set up Go
@@ -122,3 +127,27 @@ jobs:
 
           # MODE B: uncomment the line below and comment out MODE A to enforce diff-only.
           # golangci-lint run --new-from-rev=HEAD~1
+
+      # ── Telemetry conventions (new code only) ────────────────────────────
+      # Separate config (.golangci-telemetry.yml) and separate step, so the
+      # existing backlog never blocks this and this never destabilises the
+      # Lint step above. Full-tree tracking lives in nightly.yml's static job.
+      #
+      # ADVISORY until 2026-11-09, then set continue-on-error: false.
+      # Rationale and rollout: docs/telemetry/opus/STEP-1-CI-GATE-PATCH.md
+      - name: Telemetry conventions (new code only)
+        continue-on-error: true
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then BASE="${{ github.event.before }}"; fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::notice::no diff base available (first push on this branch); skipping"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "::warning::diff base $BASE not present in the clone; checkout needs fetch-depth: 0"
+            exit 0
+          fi
+          golangci-lint run \
+            --config .golangci-telemetry.yml \
+            --new-from-rev "$BASE"

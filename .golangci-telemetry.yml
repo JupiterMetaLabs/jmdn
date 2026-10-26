@@ -1,0 +1,117 @@
+version: "2"
+
+# ── Telemetry convention gate ────────────────────────────────────────────────
+#
+# Kept SEPARATE from .golangci.yml on purpose. The main config drives a
+# full-tree Mode A run in ci.yml; adding these linters there would fail it
+# immediately on the existing backlog (~570 fmt.Print* sites, 36 files
+# importing zerolog). A separate config lets the new rules run diff-only
+# without destabilising the gate that already works.
+#
+# Two callers:
+#   ci.yml       diff-only (--new-from-rev)  — blocks NEW violations
+#   nightly.yml  full tree, informational    — tracks the backlog burning down
+#
+# Rationale, evidence and the migration plan: docs/telemetry/
+# ─────────────────────────────────────────────────────────────────────────────
+
+run:
+  timeout: 5m
+
+  # Deliberately differs from .golangci.yml, which sets tests: false.
+  # New test code is held to the same conventions as new production code.
+  tests: true
+
+  modules-download-mode: readonly
+  relative-path-mode: gomod
+
+linters:
+  default: none
+
+  enable:
+    - depguard
+    - forbidigo
+    # Required, not optional: nolintlint is what forces every exemption to name
+    # a linter AND carry a reason. Those annotations become the reviewed
+    # allowlist — see the note at the bottom of this file.
+    - nolintlint
+
+  settings:
+    depguard:
+      rules:
+        logging:
+          deny:
+            - pkg: "github.com/rs/zerolog"
+              desc: "use the injected telemetry logger; zerolog is being removed in v3 (see docs/telemetry/)"
+            - pkg: "go.uber.org/zap"
+              desc: "use the injected telemetry logger; ion already wraps zap internally"
+
+        # Enable once internal/telemetry/ exists (workstream W2). Until then it
+        # would fire on all 119 files that legitimately import ion today.
+        #
+        # telemetry-capability:
+        #   files:
+        #     - "!**/internal/telemetry/**"
+        #     - "!**/main.go"
+        #   deny:
+        #     - pkg: "github.com/JupiterMetaLabs/ion"
+        #       desc: "domain code receives an injected EventLogger / Tracer / metric set, not the ion root"
+
+    forbidigo:
+      # Resolve the real package of the call rather than matching on text, so a
+      # local variable named `fmt` cannot smuggle a print through.
+      analyze-types: true
+
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: >-
+            terminal output needs an explicit exemption:
+            //nolint:forbidigo // CLI output: <reason>. Library code uses the injected logger.
+
+        - pattern: '^fmt\.Fprint(f|ln)?$'
+          msg: >-
+            stderr and report writing need an explicit exemption; buffer and hash
+            writers are legitimate — say which in the //nolint reason.
+
+        # NOT HERE: context.Background() passed into a log call.
+        #
+        # A pattern targeting that argument is INERT. forbidigo matches the
+        # identifier of the function being CALLED, resolved via analyze-types —
+        # it does not regex the whole call expression, so an ARGUMENT can never
+        # match. Measured: with the pattern present, forbidigo reported 610
+        # issues against 620 print-family sites and 433 ctx.Background sites;
+        # the rule contributed ~0.
+        #
+        # Shipping it would mean a rule that reports nothing and looks enforced
+        # — the same defect as a metric that reads healthy through an outage.
+        # The 433 severed contexts are assigned to the `ctxlog` custom analyzer
+        # (workstream W5), which has the type information to separate the ~163
+        # real bugs from sites with no context in scope. See docs/telemetry/.
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-no-explanation: []
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+# ── How exemptions work ──────────────────────────────────────────────────────
+#
+# A file- or directory-level allowlist is not defensible here: main.go holds two
+# different programs (runCommand, a CLI dispatcher, and main(), the node service
+# entry), so any path-scoped exemption would wave through service diagnostics
+# alongside genuine terminal output.
+#
+# Instead every exemption is written at the call site and must justify itself:
+#
+#     //nolint:forbidigo // CLI output: prints the balance table to the operator
+#     fmt.Printf("balance: %s\n", bal)
+#
+# nolintlint rejects a bare //nolint, rejects a blanket one, and rejects one with
+# no reason. The surviving annotations ARE the output manifest, accrued at the
+# point of change and reviewable in the diff that introduces them:
+#
+#     make telemetry-manifest
+# ─────────────────────────────────────────────────────────────────────────────

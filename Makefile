@@ -16,6 +16,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
 .PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy \
+	telemetry-lint telemetry-backlog telemetry-manifest \
         local-replace local-replace-undo build-local verify-pins
 
 all: build
@@ -74,6 +75,21 @@ lint:
 # Useful when a lint backlog exists and you don't want to be blocked by old violations.
 lint-new:
 	golangci-lint run --new-from-rev=HEAD~1
+
+# ── Telemetry conventions (docs/telemetry/) ──────────────────────────────────
+# Mirrors the PR gate: only code you changed relative to the v3base merge point.
+telemetry-lint:
+	golangci-lint run --config .golangci-telemetry.yml \
+	  --new-from-rev=$$(git merge-base HEAD origin/v3base)
+
+# Mirrors nightly: the full outstanding backlog, informational.
+telemetry-backlog:
+	@golangci-lint run --config .golangci-telemetry.yml --tests 2>&1 | tail -1
+
+# The output allowlist, extracted from the //nolint reasons that justify it.
+telemetry-manifest:
+	@grep -rn "nolint:forbidigo" --include='*.go' . \
+	  | sed 's/:.*nolint:forbidigo *\/\/ */ -> /' | sort
 
 # ── Offline build via local replaces (no git credentials needed) ──────────────
 # Point the private/sibling JupiterMetaLabs modules at local checkouts sitting
