@@ -262,7 +262,7 @@ freeze and assert `depguard` flags each.
 
 | | Workstream | Days | Notes |
 |---|---|---:|---|
-| **W1** | Incident gate | 8–12 + SRE | The §B detector. Needs a **deployed, owned** Prometheus — see §I |
+| **W1** | Incident gate | 8–12 + SRE | The §B detector. Needs a **deployed** Prometheus — owner resolved, see §I |
 | **W2** | Telemetry kernel | 16–23 | `internal/telemetry.Runtime`, capability-separated injection, `schema` package. **Includes the 505 free-function reads with no constructor to inject into** |
 | **W3** | Historical metric convergence | 6–9 | 32 declarations dispositioned, package-init `promauto` removed. ~30% smaller than scoped — the team already deleted 12 |
 | **W4** | Logging structure + call sites | 21–29 | The four high-volume keys, the output manifest, stdlib/zerolog migration, 163 context bugs |
@@ -282,18 +282,20 @@ conversion function) and `FastsyncV2/` (113 stdlib `log` calls in 2 files, bulk 
 
 ---
 
-## I. The blocker
+## I. Observability ownership — resolved for v3, open for production
 
-**No named production owner for Prometheus, Grafana and trace storage.** Open since the first review
-round. It cannot be closed from source, and it gates W1 step 3 — "deployed Prometheus with a named
-owner" — and therefore all of W1.
+**Resolved 2026-10-26: the operator acts as POC, with a second agent.** This unblocks W1 — including
+step 3, "deployed Prometheus with a named owner" — for devnet and staging. The programme proceeds.
 
-Scale of the gap: `grafana/provisioning/datasources/datasource.yml` points at `prometheus:9090` and
-`loki:3100`. **Neither host is defined in any compose file in either repo**, and has not been for the
-life of that directory. A compose service is not an operating model; this needs a person with
-retention, HA and missing-telemetry detection in their remit.
+**It is not yet an operating model for production promotion.** The architecture's own acceptance
+criteria call for retention, HA and missing-telemetry detection, which a single POC cannot cover.
+Two things follow, and the second is a design constraint rather than a staffing note:
 
-**Escalate this on day one.** Everything except §G is downstream of it.
+1. Scale of the existing gap: `grafana/provisioning/datasources/datasource.yml` points at `prometheus:9090` and `loki:3100`, and **neither host is defined in any compose file in either repo** — nor has been for the life of that directory. W1 step 3 means standing those up for real, not referencing them.
+
+2. **Missing-telemetry detection must be external to the pipeline it watches.** An alert that depends on the Prometheus it monitors cannot fire when that Prometheus is the thing that failed. Design it as an outside-in heartbeat or scrape check from day one — retrofitting it later is how you end up with a monitoring stack that reports healthy because it is down. That is the 2026-09-17 shape exactly: absence of signal read as health.
+
+**Status: satisfied for v3 delivery, open for production promotion.**
 
 ---
 

@@ -18,7 +18,9 @@ disagreements and their resolutions are the most useful part of the record.
 | **`opus/JMDN-V3-TELEMETRY-ARCHITECTURE.md`** | **CURRENT, FROZEN** (normative) | Before writing code in an area it covers. §-numbered; §11 is the migration plan |
 | **`sol/TELEMETRY-ARCHITECTURE-V3.md`** | **CURRENT, FROZEN** (normative, parallel) | For the second independent treatment. Converged with opus; not a competing spec |
 | **`opus/REBASE-PLAN.md`** | **CURRENT** | Before trusting any `file:line` in the architecture — records what moved across the 113 commits since the freeze |
-| **`opus/STEP-1-CI-GATE-PATCH.md`** | **CURRENT, actionable** | Doing the first task. Rebased 2026-10-26 |
+| **`opus/STEP-1-CI-GATE-PATCH.md`** | **CURRENT** — now implemented on `ci/telemetry-conventions-gate` | The design behind the gate |
+| **`VALIDATION.md`** *(on the gate branch)* | **CURRENT** — the gate's test record | Before merging the gate, or when adding a rule to it |
+| **`baseline.sh` + `baseline-<sha>.txt`** *(on the gate branch)* | **CURRENT** — run before and after any telemetry change | Every time. Static, no toolchain needed |
 | **`sol/BASELINE-EVIDENCE-AND-HANDOFF.md`** | **CURRENT** — sol's evidence ledger + full round-by-round record | Checking how a decision was reached from sol's side |
 | **`opus/DECISION-RECORD.md`** | **CURRENT** — opus's convergence history | When tempted to reopen a settled decision |
 
@@ -47,13 +49,29 @@ round 6 and are already applied to the opus normative document:
 | **Scope** | v3 = structural convergence (one runtime, one schema, all 32 metrics migrated, package-init `promauto` removed, production logging on injected loggers). v3.1 = domain coverage + cross-process tracing |
 | **Effort** | 55–85 engineer-days + 6–10 SRE, provisional until two spikes (`gETH/`, `FastsyncV2/`) measure it |
 | **First task** | `opus/STEP-1-CI-GATE-PATCH.md` — ~half a day, blocks nothing, depends on nothing |
-| **Blocker** | **No named production owner for Prometheus/Grafana/trace storage.** Organisational; cannot be closed from source; gates W1 |
+| **Observability owner** | **Operator, as POC**, with a second agent. Enough to unblock W1 for devnet and staging. See the risk below before production promotion |
+| **CI gate** | Built and validated on branch `ci/telemetry-conventions-gate`. See `opus/STEP-1-CI-GATE-PATCH.md` and `VALIDATION.md` |
 
-### Open questions neither document can answer
+### Questions — all three answered 2026-10-26
 
-- Does this programme PR into `v3base` or `main`? `CONTRIBUTING.md` says `main`; every recent merge is a squash onto `v3base`.
-- Is the disabled `SonarQube / SonarQube Analysis` check still *required* by branch protection? `sonarqube.yml:15` is `if: false` while `CONTRIBUTING.md:47` still lists it.
-- **Who owns production observability?**
+| Question | Answer |
+|---|---|
+| PR into `v3base` or `main`? | **`v3base`.** `CONTRIBUTING.md` says `main` and is stale — every recent merge is a squash onto `v3base`, and `nightly.yml` schedules exclusively against it |
+| Is the disabled SonarQube check still *required* by branch protection? | **No.** Safe to proceed |
+| Who owns production observability? | **The operator, as POC**, with a second agent |
+
+#### Observability ownership — satisfied for v3, open for production
+
+This unblocks W1 for devnet and staging, and the programme proceeds on it.
+
+It is **not** an operating model for production promotion, and the architecture's own acceptance
+criteria say as much: retention, HA and *missing-telemetry detection* need coverage a single person
+cannot give. One consequence is concrete and must be designed in from the start —
+**missing-telemetry detection has to be external to the pipeline it watches.** An alert that depends
+on the Prometheus it monitors cannot fire when that Prometheus is the thing that failed. That is the
+2026-09-17 shape exactly: absence of signal read as health.
+
+Treat as **satisfied for v3 delivery, open for production promotion.**
 
 ---
 
