@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.5
 	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4
-	github.com/JupiterMetaLabs/avc v0.1.0-v3base.7
+	github.com/JupiterMetaLabs/avc v0.1.0-v3base.8
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.5.0
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -34,6 +34,7 @@ require (
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/yahoo/coname v0.0.0-20170609175141-84592ddf8673
 	go.dedis.ch/dela v0.2.0
+	go.dedis.ch/kyber/v3 v3.1.0
 	go.opentelemetry.io/otel v1.46.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.57.0
@@ -194,7 +195,6 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.dedis.ch/fixbuf v1.0.3 // indirect
-	go.dedis.ch/kyber/v3 v3.1.0 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/otelzap v0.20.1 // indirect

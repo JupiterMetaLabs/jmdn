@@ -68,8 +68,8 @@ const (
 	//
 	// Its own protocol ID rather than another case on SubmitMessageProtocol's
 	// envelope, deliberately: a reveal is not a vote, it is verified by a
-	// completely different mechanism (ed25519 against the peer ID, not BLS
-	// against the committee snapshot), and giving it its own ID means a node
+	// different check (a BLS signature over an epoch message, not a vote over a
+	// block), and giving it its own ID means a node
 	// that does not speak it fails to connect rather than silently mis-routing
 	// into the vote path. Same 1:1 direct-stream shape as the vote path, so it
 	// is still "T1" in the architecture doc's transport inventory.

@@ -29,6 +29,9 @@ import (
 
 const vdfIdentityDomain = "jmdn/vdf-identity/v1"
 
+// vdfIdentityCanonicalDomain tags the identity of epochs sealed with the fixed VDF rule (from the cut-over).
+const vdfIdentityCanonicalDomain = "jmdn/vdf-identity/canonical-output"
+
 // VDFIdentityDigest returns the fleet-checked VDF parameter identity:
 //
 //	sha256( domain ‖ u64:len(group) ‖ group ‖ u64:len(digest) ‖ digest ‖ u64:T )
@@ -85,3 +88,21 @@ func LocalVDFIdentity() string {
 // this node's. This is the error D-54 said was missing: it names the cause
 // (group ‖ modulus ‖ T), rather than surfacing as a nameless vdf.Verify failure.
 var ErrVDFIdentityMismatch = errors.New("entropy: VDF parameter identity mismatch (group/modulus/T disagreement across the fleet)")
+
+// VDFIdentityForEpoch is the identity a boundary block for epoch must carry.
+// Before VDFCutoverEpoch it is exactly LocalVDFIdentity, so those blocks stay
+// byte-identical to what the old build stamped. From it, it is
+// sha256(canonical-output domain || identity): a node still on the old build stamps
+// and expects the old value and is refused at the cut-over, by name
+// (ErrVDFIdentityMismatch), instead of silently computing different entropy.
+// Empty on Stage 1.
+func VDFIdentityForEpoch(epoch uint64) string {
+	id := LocalVDFIdentity()
+	if id == "" || epoch < VDFCutoverEpoch() {
+		return id
+	}
+	h := sha256.New()
+	h.Write([]byte(vdfIdentityCanonicalDomain))
+	h.Write([]byte(id))
+	return hex.EncodeToString(h.Sum(nil))
+}

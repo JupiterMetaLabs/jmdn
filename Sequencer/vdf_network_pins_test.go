@@ -29,6 +29,7 @@ func withNetworkPin(t *testing.T, rec vdf.ProvenanceRecord) {
 // A modulus pinned by jmdn (not by the avc library) installs with NO override:
 // the network pin is a first-class pin, not an escape hatch.
 func TestInstallAVCBeaconFromEnv_NetworkPin_MatchingDigest_InstallsWithoutOverride(t *testing.T) {
+	withBeaconPrereqs(t)
 	resetVDFWiringState(t)
 	n := testFixtureModulus(t)
 	digest, err := vdf.ModulusDigest(n)

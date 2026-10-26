@@ -221,6 +221,48 @@ func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
 	return group, nil
 }
 
+// ErrBeaconNeedsAnchoring refuses to install the Stage-2 beacon without
+// committee anchoring (consensus.committee_anchor_activation_height). From the
+// chain's entropy cut-over on, RANDAO reveals are BLS signatures verified
+// under each member's snapshot-bound key, and only a chain-anchored pool gives
+// every node the same keys; without it no epoch from the cut-over on could
+// take a reveal and every one would fall back.
+var ErrBeaconNeedsAnchoring = errors.New("entropy: the Stage-2 beacon requires committee anchoring (consensus.committee_anchor_activation_height)")
+
+// ErrBeaconNeedsAggCert refuses to install the Stage-2 beacon without
+// aggregate certificates (consensus.flags.agg_cert / JMDN_AVC_AGG_CERT=1). An
+// epoch that cannot mix - a member withheld, or no anchored pool yet - takes
+// the fallback seed, which folds the committed blocks' aggregate certificates.
+// Without them the fallback never completes ("fallback deadline exceeded"),
+// no entropy is sealed, and the chain stops at the next epoch boundary.
+var ErrBeaconNeedsAggCert = errors.New("entropy: the Stage-2 beacon requires aggregate certificates (consensus.flags.agg_cert / JMDN_AVC_AGG_CERT=1)")
+
+// beaconAnchoringEnabled and beaconAggCertEnabled report the two
+// prerequisites. Variables only so install tests, which load no settings, can
+// turn them on.
+var (
+	beaconAnchoringEnabled = messaging.CommitteeAnchoringEnabled
+	beaconAggCertEnabled   = func() bool { return messaging.AggCertEnabled }
+)
+
+// vdfCutoverEpoch is the first epoch sealed with the fixed VDF rule (A-1,
+// messaging/entropy_cutover.go). A variable only so tests can place it.
+var vdfCutoverEpoch = messaging.VDFCutoverEpoch
+
+func checkRevealAnchoring(anchoring bool) error {
+	if !anchoring {
+		return ErrBeaconNeedsAnchoring
+	}
+	return nil
+}
+
+func checkBeaconAggCert(aggCert bool) error {
+	if !aggCert {
+		return ErrBeaconNeedsAggCert
+	}
+	return nil
+}
+
 // InstallAVCBeaconFromEnv builds and installs the Stage-2 beacon pipeline
 // from environment configuration, if and only if every required value is
 // present and passes validation.
@@ -358,7 +400,21 @@ func InstallAVCBeaconFromEnv() (installed bool, err error) {
 		}
 	}
 
-	pipeline, err := beacon.New(group, difficulty, sink)
+	// A-2: from the entropy cut-over on, reveals are BLS signatures verified
+	// under each member's snapshot-bound key, and only a chain-anchored pool
+	// gives every node the same keys. Refuse to install rather than run a
+	// beacon that can never take a reveal after the cut-over.
+	if err := checkRevealAnchoring(beaconAnchoringEnabled()); err != nil {
+		return false, err
+	}
+	if err := checkBeaconAggCert(beaconAggCertEnabled()); err != nil {
+		return false, err
+	}
+	// A-1: entropy from vdfCutoverEpoch() on is sealed and verified with the
+	// fixed VDF rule (one output per input). Earlier epochs keep the legacy
+	// functions only so existing history still verifies; a chain not listed in
+	// entropyCutoverByChain has no such epochs.
+	pipeline, err := beacon.NewWithCutover(group, difficulty, sink, vdfCutoverEpoch())
 	if err != nil {
 		return false, err
 	}

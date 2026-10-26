@@ -71,22 +71,24 @@ type RevealPushMessage struct {
 	// verification message includes the epoch, so a mismatch simply fails.
 	Epoch uint64 `json:"epoch"`
 
-	// PeerID of the revealing member. Self-certifying: the receiver extracts
-	// the ed25519 public key from this and needs no key directory.
+	// PeerID of the revealing member. Before the entropy cut-over the receiver
+	// extracts the ed25519 key from it; from the cut-over it looks up the BLS
+	// key the epoch's anchored committee binds to it (entropy_reveal_bls.go).
 	PeerID string `json:"peer_id"`
 
-	// Reveal is the 64-byte ed25519 signature (Decision A).
+	// Reveal is the 64-byte signature (Decision A): Ed25519 before the
+	// cut-over, BLS from it (A-2).
 	Reveal []byte `json:"reveal"`
 }
 
 // HandleRevealPushStream is the receive side, registered on
 // config.RevealPushProtocol at node startup.
 //
-// Verifies before filing (AddInboundReveal does the ed25519 check) and sends
-// no reply — see this file's note on why an ACK would be worthless. A rejected
-// push is logged at warn with the sender's peer ID: under Decision A a reveal
-// either verifies or is forged, so a failure here is a protocol violation
-// worth seeing, not a transient condition.
+// Verifies before filing (AddInboundReveal checks it under its epoch's
+// scheme) and sends no reply — see this file's note on why an ACK would be
+// worthless. A rejected push is logged at warn with the sender's peer ID:
+// under Decision A a reveal either verifies or is forged, so a failure here is
+// a protocol violation worth seeing, not a transient condition.
 func HandleRevealPushStream(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer()
@@ -138,7 +140,7 @@ func HandleRevealPushStream(s network.Stream) {
 // tell, we must assume it has not landed and keep pushing. Assuming success on
 // an unknown is exactly how a reveal gets silently dropped.
 func RevealAlreadyLanded(epoch uint64) bool {
-	_, peerID, err := nodeIdentity()
+	peerID, err := nodeIdentity()
 	if err != nil {
 		return false
 	}
@@ -176,7 +178,7 @@ func PushOwnRevealForSlot(slot uint64, proposer peer.ID) error {
 		return nil // reveal window closed; pushing now would be pointless
 	}
 
-	_, peerID, err := nodeIdentity()
+	peerID, err := nodeIdentity()
 	if err != nil {
 		return nil // no identity: nothing to contribute, not an error
 	}
@@ -189,7 +191,10 @@ func PushOwnRevealForSlot(slot uint64, proposer peer.ID) error {
 
 	reveal, err := ProduceRevealForEpoch(epoch)
 	if err != nil {
-		return nil // not seated, or no beacon yet: nothing to push
+		if errors.Is(err, ErrRevealBLSKeyMismatch) {
+			return err // seated with the wrong BLS key: a real failure, not "nothing to push"
+		}
+		return nil // not seated, no beacon or no anchored pool yet: nothing to push
 	}
 
 	h := getHostInstance()

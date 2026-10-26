@@ -150,7 +150,7 @@ func VerifyAndAcceptVDFProof(block *config.ZKBlock) error {
 	// proposer leaves it empty and Stage-1 nodes have no local identity. Once the
 	// fleet is upgraded every boundary block carries it, and a node with the
 	// wrong parameters detects itself here (the audit's core complaint).
-	if local := LocalVDFIdentity(); local != "" && block.VdfParamsDigest != "" && block.VdfParamsDigest != local {
+	if local := VDFIdentityForEpoch(declaredEpoch); local != "" && block.VdfParamsDigest != "" && block.VdfParamsDigest != local {
 		log.Error().Uint64("height", block.BlockNumber).Uint64("for_epoch", declaredEpoch).
 			Str("local_vdf_identity", local).Str("block_vdf_identity", block.VdfParamsDigest).
 			Msg("entropy: VdfProof REJECTED — the block's VDF parameter identity (group ‖ modulus ‖ T) " +

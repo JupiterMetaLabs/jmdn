@@ -102,6 +102,7 @@ func TestPublishBootstrapEntropy_EmptyListIsNoop(t *testing.T) {
 // the same key, which BeaconSource refuses -> SealResult.Err -> boundary
 // block 503. onEpochFinalised must therefore not start a sealer for it.
 func TestOnEpochFinalised_SkipsSealerForBootstrapSuccessorEpoch(t *testing.T) {
+	withBeaconPrereqs(t)
 	resetVDFWiringState(t)
 	resetBootstrapState(t)
 	n := testFixtureModulus(t)

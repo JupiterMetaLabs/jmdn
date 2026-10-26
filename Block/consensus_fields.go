@@ -49,7 +49,7 @@ import (
 // RandaoReveals is now populated — CHANGED 2026-08-20. It was previously left
 // at zero with the note "the entropy-committee reveal pipeline (M4) is not
 // built yet, so there is no real value to put in them." M4's reveal mechanism
-// now exists (Architecture §4.3 Decision A: deterministic ed25519 signatures),
+// now exists (Architecture §4.3 Decision A: deterministic signatures, BLS from the A-2 cut-over),
 // and messaging.RevealsForBlock supplies the real, already-verified values.
 //
 // This assignment was THE missing link in the entropy pipeline. Every stage
@@ -203,7 +203,8 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		// D-39/D-54 — stamp this node's fleet-checked VDF identity
 		// (group ‖ modulus ‖ T) so every adopter compares parameters explicitly
 		// and a disagreement names the cause. Empty on Stage-1 (no beacon).
-		block.VdfParamsDigest = messaging.LocalVDFIdentity()
+		// Per epoch, so it also names the VDF proof rule in force (A-1 cut-over).
+		block.VdfParamsDigest = messaging.VDFIdentityForEpoch(epoch)
 	}
 
 	// BlockHash is the orchestrator-submitted, transactions-only identity and is

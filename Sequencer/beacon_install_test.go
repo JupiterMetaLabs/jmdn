@@ -119,6 +119,7 @@ func TestInstallAVCBeaconFromEnv_ZeroDifficulty_ReturnsError(t *testing.T) {
 }
 
 func TestInstallAVCBeaconFromEnv_AllValid_InstallsPipelineAndHook(t *testing.T) {
+	withBeaconPrereqs(t)
 	resetVDFWiringState(t)
 	n := testFixtureModulus(t)
 	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))
@@ -221,6 +222,7 @@ func TestInstallAVCBeaconFromEnv_UnpinnedOverride_StillEnforcesKnownShape(t *tes
 // that is the local/testnet case it exists for, where no published shape is
 // on file to check against.
 func TestInstallAVCBeaconFromEnv_UnpinnedOverride_AllowsUnknownName(t *testing.T) {
+	withBeaconPrereqs(t)
 	resetVDFWiringState(t)
 	n := testFixtureModulus(t)
 	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))
@@ -259,6 +261,7 @@ func TestInstallAVCBeaconFromEnv_DifficultyAboveCeiling_ReturnsError(t *testing.
 
 // A T exactly AT the ceiling must still be accepted — the check is > , not >=.
 func TestInstallAVCBeaconFromEnv_DifficultyAtCeiling_Installs(t *testing.T) {
+	withBeaconPrereqs(t)
 	resetVDFWiringState(t)
 	n := testFixtureModulus(t)
 	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))

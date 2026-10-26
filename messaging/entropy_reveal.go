@@ -1,7 +1,12 @@
 package messaging
 
 // Stage B/C of the M4 pipeline — REWRITTEN 2026-08-20 for Architecture §4.3
-// "Decision A": reveals are ed25519 signatures, not commit-reveal secrets.
+// "Decision A": reveals are signatures, not commit-reveal secrets. From the
+// chain's entropy cut-over (entropy_cutover.go, 2026-10-22 audit A-2) the
+// signature is a BLS signature under the member's committee key
+// (entropy_reveal_bls.go). Epochs before the cut-over keep the Ed25519 reveal,
+// which a member could grind by choosing its nonce, only so a chain's
+// existing history still verifies.
 //
 // # What changed from the previous version, and why
 //
@@ -20,31 +25,26 @@ package messaging
 //     before Accumulator.Fold permanently broke the legitimate fold — a sharp
 //     edge that needed a documented discipline to avoid.
 //
-// An ed25519 reveal has none of these. It is a deterministic signature over a
+// A signature reveal has none of these. It is a deterministic signature over a
 // domain-separated, epoch-bound message, so there is no secret, no commit
 // phase, and nothing to persist: a node that restarts mid-epoch simply
-// re-derives the identical reveal. See avc/randao/ed25519_reveal_verifier.go.
+// re-derives the identical reveal. See avc/randao/bls_reveal_verifier.go and
+// ed25519_reveal_verifier.go.
 //
-// # What is still NOT live, stated plainly rather than implied
+// # When this is live
 //
-// This is real wiring, not a stub, but the pipeline remains inert end-to-end
-// for reasons that are upstream of this file:
-//
-//   - block.RandaoReveals is empty on every real block today, because nothing
-//     yet attaches a produced reveal to a proposal (see
-//     entropy_reveal_produce.go — the producer exists now; the transport that
-//     carries its output into a block does not).
-//   - entropyAccumulatorFor depends on SelectEntropyCommittee (Stage A), which
-//     needs a live BeaconSource (Stage F). SetBeaconSource still has no
-//     production caller, so this fails closed on every real block.
-//
-// The difference from the previous version is that the failure is now purely a
-// wiring gap. There is no longer a missing *mechanism*.
+// Only under Stage 2. Sequencer.InstallAVCBeaconFromEnv installs the beacon
+// (SetBeaconSource); without it entropyAccumulatorFor fails closed with
+// ErrNoBeaconInstalled. With it, a proposer fills block.RandaoReveals from the
+// reveal inbox (Block/consensus_fields.go → RevealsForBlock), and every node
+// folds them here on commit, sync and replay (entropy_block_effects.go). From
+// the entropy cut-over, an epoch whose committee pool is not chain-anchored
+// has no verifier and takes the fallback (entropy_reveal_bls.go).
 //
 // # A wire-field naming wart, deliberately not fixed here
 //
-// config.Reveal.Secret (json "secret") now carries a 64-byte ed25519
-// SIGNATURE, which is public, not a secret. The name is wrong under Decision
+// config.Reveal.Secret (json "secret") now carries a 64-byte SIGNATURE
+// (Ed25519 before the cut-over, BLS from it), which is public, not a secret. The name is wrong under Decision
 // A. It is left alone on purpose: config/ZKBlock.go is consensus-critical, and
 // renaming a field there is a wire-format change that belongs with M2a/M2b
 // (Architecture §8) so all the block-field changes land as one deliberate
@@ -92,22 +92,19 @@ var defaultEntropyAccumulatorStore = &entropyAccumulatorStore{
 	accs: make(map[uint64]*randao.Accumulator),
 }
 
-// revealVerifier is the single shared, stateless Decision-A verifier. It needs
-// no configuration: an ed25519 peer ID self-certifies its own public key, so
-// there is nothing to inject, register, or snapshot for signature checking.
-//
-// Membership — WHO was expected to reveal — is a separate question, answered by
-// the expected set below, and it carries the same open dependency
-// (Architecture §10 decision 2) that every candidate reveal mechanism does.
-var revealVerifier randao.RevealVerifier = randao.NewEd25519RevealVerifier()
+// ed25519RevealVerifier checks the reveals of epochs BEFORE the entropy
+// cut-over (entropy_cutover.go). It needs no configuration: an ed25519 peer ID
+// self-certifies its own public key. From the cut-over on it is never used:
+// revealVerifierFor picks the BLS verifier by epoch.
+var ed25519RevealVerifier randao.RevealVerifier = randao.NewEd25519RevealVerifier()
 
 // entropyAccumulatorFor returns epoch's Accumulator, constructing it on first
 // use.
 //
-// Fails closed if the entropy committee for this epoch cannot be resolved
-// (SelectEntropyCommittee, Stage A) — which today means always, since Stage F
-// is unbuilt. Constructing against a fabricated stand-in committee would be
-// exactly the kind of placeholder this codebase avoids elsewhere.
+// Fails closed if the epoch's entropy committee cannot be resolved: no beacon
+// installed, or - from the cut-over - no chain-anchored pool for the epoch
+// (blsRevealCommittee). Constructing against a fabricated stand-in committee
+// would be exactly the kind of placeholder this codebase avoids elsewhere.
 func entropyAccumulatorFor(epoch uint64) (*randao.Accumulator, error) {
 	defaultEntropyAccumulatorStore.mu.Lock()
 	defer defaultEntropyAccumulatorStore.mu.Unlock()
@@ -116,9 +113,28 @@ func entropyAccumulatorFor(epoch uint64) (*randao.Accumulator, error) {
 		return acc, nil
 	}
 
-	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
-	if err != nil {
-		return nil, err
+	// From the cut-over, reveals are BLS signatures under each member's
+	// snapshot-bound key, so the committee must come from the anchored pool:
+	// then the expected set and the members' keys are the same on every node
+	// (entropy_reveal_bls.go). Such an epoch with no anchored pool returns
+	// ErrBLSRevealNeedsAnchoredPool, which decideEpoch turns into the
+	// deterministic fallback. Before the cut-over the epoch keeps the rules it
+	// was revealed under: the Ed25519 verifier and SelectEntropyCommittee.
+	var members []committee.Member
+	var verifier randao.RevealVerifier
+	var err error
+	if afterEntropyCutover(epoch) {
+		if members, err = blsRevealCommittee(epoch); err != nil {
+			return nil, err
+		}
+		if verifier, err = blsRevealVerifierFor(epoch, members); err != nil {
+			return nil, err
+		}
+	} else {
+		if members, err = SelectEntropyCommittee(committee.EntropyEpoch(epoch)); err != nil {
+			return nil, err
+		}
+		verifier = ed25519RevealVerifier
 	}
 	expected := make([]string, 0, len(members))
 	for _, m := range members {
@@ -137,7 +153,7 @@ func entropyAccumulatorFor(epoch uint64) (*randao.Accumulator, error) {
 	var prevSeed randao.Seed
 
 	acc, err := randao.NewAccumulator(
-		BLS_Signer.DomainChainID(), epoch, expected, prevSeed, revealVerifier, randao.Options{},
+		BLS_Signer.DomainChainID(), epoch, expected, prevSeed, verifier, randao.Options{},
 	)
 	if err != nil {
 		return nil, err
@@ -187,13 +203,13 @@ func foldBlockDeclaredReveals(block *config.ZKBlock) {
 	}
 
 	for _, r := range block.RandaoReveals {
-		// r.Secret carries the ed25519 signature under Decision A — see this
-		// file's note on the field name.
+		// r.Secret carries the member's reveal signature (Ed25519 before the
+		// cut-over, BLS from it) — see this file's note on the field name.
 		if err := acc.Fold(block.BlockNumber, r.ProposerID, r.Secret); err != nil {
 			log.Error().Err(err).Str("proposer", r.ProposerID).
 				Uint64("height", block.BlockNumber).Uint64("epoch", epoch).
 				Int("reveal_len", len(r.Secret)).
-				Msg("entropy: declared reveal failed to fold (rejected by the ed25519 verifier, or already folded) — block was already persisted by this point, see this file's ordering-hazard note")
+				Msg("entropy: declared reveal failed to fold (rejected by the epoch's reveal verifier, or already folded) — block was already persisted by this point, see this file's ordering-hazard note")
 		}
 	}
 }
