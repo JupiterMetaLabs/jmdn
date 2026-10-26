@@ -98,7 +98,9 @@ func TestMergeVoteCRDTElement_EnforcesPerPeerIngestCap(t *testing.T) {
 
 	// One peer offering 6 distinct elements in a single merge — well beyond
 	// avcvotes.MaxElementsPerPeerPerBlock (3) — must be capped, not admitted
-	// wholesale.
+	// wholesale. Only "<peer>:1" is a valid vote among them (A-3 pre-fill:
+	// the other values used to be stored and filled the cap), so exactly one
+	// element is admitted.
 	elems := make([]string, 0, 6)
 	for i := 0; i < 6; i++ {
 		elems = append(elems, attackerID.String()+":"+string(rune('0'+i)))
@@ -119,8 +121,7 @@ func TestMergeVoteCRDTElement_EnforcesPerPeerIngestCap(t *testing.T) {
 	if !ok {
 		t.Fatal("expected the key to exist with the admitted elements")
 	}
-	if len(set) != avcvotes.MaxElementsPerPeerPerBlock {
-		t.Fatalf("got %d elements admitted for one peer, want exactly the cap (%d): %v",
-			len(set), avcvotes.MaxElementsPerPeerPerBlock, set)
+	if len(set) != 1 || set[0] != attackerID.String()+":1" {
+		t.Fatalf("want only the valid vote element admitted for one peer, got %d: %v", len(set), set)
 	}
 }

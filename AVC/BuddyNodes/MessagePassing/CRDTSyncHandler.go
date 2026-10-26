@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"sort"
 	"sync"
 	"time"
 
@@ -816,42 +816,40 @@ func mergeVoteCRDTElement(listenerNode *AVCStruct.BuddyNode, senderPeerID peer.I
 		return 0, fmt.Errorf("unmarshaling v2 CRDT: %w", err)
 	}
 
-	// A-3 (D-52): a votesig: record arriving by sync names another peer as its
-	// voter, so a buddy could merge junk records that sort ahead of a peer's
-	// genuine one or fill its cap. Verify each new record the way the tally
-	// does before storing it, so only genuine records reach the cap. When this
-	// node cannot verify yet (voter set unavailable, block not seen), it keeps
-	// the previous unverified behaviour and the tally's rescue still protects
-	// the vote.
-	var sigVerifier *Structs.SigMergeVerifier
-	var local map[string]struct{}
-	if strings.HasPrefix(key, "votesig:") {
-		if v, verr := Structs.NewSigMergeVerifier(key); verr == nil {
-			sigVerifier = v
-			elems, _ := listenerNode.VoteCRDTLayer.CRDTLayer.GetSet(key)
-			local = make(map[string]struct{}, len(elems))
-			for _, e := range elems {
-				local[e] = struct{}{}
-			}
-		}
+	// A-3 (D-52) and its pre-fill follow-up, H7: an element arriving by sync
+	// names another peer as its voter, so a buddy could merge junk that sorts
+	// ahead of a peer's genuine record, fill the cap AddVote checks, or grow a
+	// key without bound. Structs.VoteMergeGuard admits only well-formed
+	// elements from the height's voters, verifies votesig: records when this
+	// node can, and bounds what it cannot verify yet, so junk never locks out
+	// a genuine vote. It reads the stored set once (H7: the cap used to be
+	// recounted per element).
+	stored, _ := listenerNode.VoteCRDTLayer.CRDTLayer.GetSet(key)
+	guard, err := Structs.NewVoteMergeGuard(key, stored)
+	if err != nil {
+		return 0, err
+	}
+	local := make(map[string]struct{}, len(stored))
+	for _, e := range stored {
+		local[e] = struct{}{}
 	}
 
+	// Sorted, so every node offers a given merge to the guard in the same
+	// order and keeps the same elements.
+	elements := make([]string, 0, len(remoteCRDT.Adds))
 	for element := range remoteCRDT.Adds {
-		if sigVerifier != nil {
-			if _, have := local[element]; have {
-				continue // already stored: nothing to verify or count
-			}
-			if !sigVerifier.Verify(element) {
-				continue
-			}
+		elements = append(elements, element)
+	}
+	sort.Strings(elements)
+
+	for _, element := range elements {
+		if _, have := local[element]; have {
+			continue // already stored: nothing to check or count
 		}
-		peerID, _, found := strings.Cut(element, ":")
-		if found && avcvotes.CountElementsForPeer(listenerNode.VoteCRDTLayer, key, peerID) >= avcvotes.MaxElementsPerPeerPerBlock {
-			// Ingest cap reached for this peer on this key — same bound
-			// AddVote enforces, applied here since a merge can inject many
-			// elements at once, unlike AddVote's one-call-one-vote shape.
+		if !guard.Admit(element) {
 			continue
 		}
+		local[element] = struct{}{}
 		if err := avcdatalayer.Add(listenerNode.VoteCRDTLayer, senderPeerID, key, element); err != nil {
 			logger().Info(context.Background(), "⚠️ Failed to add v2 vote element for key",
 				ion.String("args", fmt.Sprintf("⚠️ Failed to add v2 vote element for key %s: %v", key, err)))
