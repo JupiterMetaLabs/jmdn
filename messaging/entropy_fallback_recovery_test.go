@@ -171,10 +171,9 @@ func TestRecoveryToleratesHistoryHoles(t *testing.T) {
 	}
 }
 
-// TestRecoveryUsesParentSlotNotHeight pins the mapping rule. AdvanceOnCommit
-// does slot += period+1, so a block that burned a timeout sits more than one
-// slot after its parent. Reconstructing the slot arithmetically instead of
-// reading block.Slot would record against a slot that never had a block.
+// TestRecoveryUsesParentSlotNotHeight pins the mapping rule: a block's slot is
+// its block number whatever its Period, so its parent's slot is Slot-1 even
+// for a block that committed after failed rounds.
 func TestRecoveryUsesParentSlotNotHeight(t *testing.T) {
 	ResetAggSigStoreForTest()
 	t.Cleanup(ResetAggSigStoreForTest)
@@ -183,13 +182,9 @@ func TestRecoveryUsesParentSlotNotHeight(t *testing.T) {
 	AggCertEnabled = true
 	t.Cleanup(func() { AggCertEnabled = orig })
 
-	// Height 50 committed at period 2 => it sits 3 slots after its parent.
-	b := &config.ZKBlock{Slot: 60, Period: 2}
-	wantParentSlot := b.Slot - (b.Period + 1) // 57, not 59
-	if wantParentSlot != 57 {
-		t.Fatalf("test arithmetic wrong: got %d", wantParentSlot)
-	}
-	if b.Slot-1 == wantParentSlot {
-		t.Fatal("this test is vacuous unless period > 0 makes Slot-1 differ from the parent slot")
+	// Height 60 committed at period 2 => still slot 60, parent at slot 59.
+	b := &config.ZKBlock{BlockNumber: 60, Slot: 60, Period: 2}
+	if got := b.Slot - 1; got != 59 {
+		t.Fatalf("parent slot = %d, want 59", got)
 	}
 }

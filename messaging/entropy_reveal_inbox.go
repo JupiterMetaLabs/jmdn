@@ -242,7 +242,7 @@ const (
 // revealCurrentEpoch reports this node's current entropy epoch, or false
 // before the slot clock has advanced (startup), when no bound can be applied.
 var revealCurrentEpoch = func() (uint64, bool) {
-	if !DefaultSlotStore.haveCommittedForRecoveryCheck() {
+	if !DefaultSlotStore.hasCommitted() {
 		return 0, false
 	}
 	return EpochForSlot(DefaultSlotStore.Current()), true

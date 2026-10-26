@@ -83,10 +83,9 @@ import (
 // (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8): a node whose slot/epoch
 // clock has not been recovered from its own committed history (see
 // messaging.RecoverSlotStoreAtStartup / SlotStoreReady) must not PROPOSE
-// either, not only vote — block.Slot below is read straight off
-// DefaultSlotStore via LiveSlotFor, and stamping a wrong slot onto a
-// proposed block is exactly as dangerous as voting on one, arguably worse
-// since it is this node's own error propagating outward to every voter.
+// either, not only vote: a node that cannot read its own committed tip has no
+// business stamping consensus fields onto a block. block.Slot below is the
+// block number (messaging.LiveSlotFor), the rule every verifier enforces.
 // Mirrors the vote-side gate in
 // AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go's consensusVoteReady;
 // same knob (messaging.EnforceSlotRecoveryGate), so one env var controls both.

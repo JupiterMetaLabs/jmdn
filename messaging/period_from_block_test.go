@@ -48,7 +48,7 @@ func TestVerifySyncedBlockCertificate_PeriodComesFromTheBlock(t *testing.T) {
 	// the Period-1 block, so the test proves the period picks the committee.
 	for i := range 64 {
 		prev := common.HexToHash(fmt.Sprintf("0x%064x", i+1))
-		atP1 := &config.ZKBlock{BlockNumber: 885, Slot: 886, Period: 1, PrevHash: prev, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
+		atP1 := &config.ZKBlock{BlockNumber: 885, Slot: 885, Period: 1, PrevHash: prev, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 		atP0 := &config.ZKBlock{BlockNumber: 885, Slot: 885, Period: 0, PrevHash: prev, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
 		if rc := RoundContextForBlock(atP1); rc.Period != 1 {

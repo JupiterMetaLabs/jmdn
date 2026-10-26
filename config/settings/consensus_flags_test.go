@@ -14,7 +14,7 @@ func TestConsensusFlags_DefaultsMatchLegacyEnvDefaults(t *testing.T) {
 		"committee_snapshot_anchor": false, "committee_v2": true, "reject_legacy_votes": true,
 		"enforce_committee_registry": true, "enforce_block_linkage": true, "enforce_body_binding": true,
 		"agg_cert":                   true,
-		"enforce_slot_recovery_gate": true, "slot_recovery_preslot_migration": false, "enforce_sync_gate": true,
+		"enforce_slot_recovery_gate": true, "enforce_sync_gate": true,
 		"emit_block_bound_votes": true, "validator_voter_set": true, "validator_vote_ingest": true,
 		"emit_committee_bls": true, "allow_new_receiver_accounts": true, "block_gossip": true,
 	}
@@ -22,7 +22,7 @@ func TestConsensusFlags_DefaultsMatchLegacyEnvDefaults(t *testing.T) {
 		"committee_snapshot_anchor": f.CommitteeSnapshotAnchor, "committee_v2": f.CommitteeV2, "reject_legacy_votes": f.RejectLegacyVotes,
 		"enforce_committee_registry": f.EnforceCommitteeRegistry, "enforce_block_linkage": f.EnforceBlockLinkage, "enforce_body_binding": f.EnforceBodyBinding,
 		"agg_cert":                   f.AggCert,
-		"enforce_slot_recovery_gate": f.EnforceSlotRecoveryGate, "slot_recovery_preslot_migration": f.SlotRecoveryPreslotMigration, "enforce_sync_gate": f.EnforceSyncGate,
+		"enforce_slot_recovery_gate": f.EnforceSlotRecoveryGate, "enforce_sync_gate": f.EnforceSyncGate,
 		"emit_block_bound_votes": f.EmitBlockBoundVotes, "validator_voter_set": f.ValidatorVoterSet, "validator_vote_ingest": f.ValidatorVoteIngest,
 		"emit_committee_bls": f.EmitCommitteeBLS, "allow_new_receiver_accounts": f.AllowNewReceiverAccounts, "block_gossip": f.BlockGossip,
 	}

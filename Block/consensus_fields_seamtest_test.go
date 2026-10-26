@@ -34,7 +34,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_AttachesProofWhenReady(t *testing
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Proof: want})
 	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	if err := attachAVCConsensusFields(block); err != nil {
 		t.Fatalf("attachAVCConsensusFields: unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAttachAVCConsensusFields_BoundarySlot_FailsClosedWhenSealingErrored(t *
 	Sequencer.SeedSealResultForTest(1, Sequencer.SealResult{ForEpoch: 1, Err: sealErr})
 	t.Cleanup(func() { Sequencer.ClearSealerForTest(1) })
 
-	block := &config.ZKBlock{BlockNumber: 1}
+	block := &config.ZKBlock{BlockNumber: boundaryHeight}
 	err := attachAVCConsensusFields(block)
 	if !errors.Is(err, sealErr) {
 		t.Fatalf("attachAVCConsensusFields error = %v, want errors.Is(..., sealErr)", err)

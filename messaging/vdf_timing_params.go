@@ -30,7 +30,7 @@ import (
 // other epoch-timing constant in this package (FallbackFoldBufferB,
 // FallbackFoldMaxSlotOffset, and ValidateVDFTimingParams below) is derived
 // against. NOT enforced anywhere yet — Architecture §10 decision 3b is
-// still open: slots advance on block commit (SlotStore.AdvanceOnCommit),
+// still open: slots advance on block commit (slot == block number),
 // there is no wall-clock floor in the consensus round timer. This constant
 // makes that already-relied-upon assumption explicit and checkable instead
 // of leaving it as unlinked doc-comment arithmetic repeated in three files.

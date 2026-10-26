@@ -1,13 +1,10 @@
 package messaging
 
-// Tests for the slot-restart fail-closed recovery wiring
-// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8's "remaining integration
-// step" — RecoverSlotStoreAtStartup/EnsureSlotStoreRecovered/SlotStoreReady).
-// SeedFromCommittedTip itself is already tested in slot_store_reseed_test.go
-// (fresh-store adopt, refuse-once-live, correct subsequent advance, no
-// regression on stale height) — these tests cover the layer ABOVE it: the
-// getTip contract, the readiness gate, and the "must fail closed, never
-// silently permit" property the whole finding was about.
+// Tests for slot recovery at startup and after catch-up
+// (RecoverSlotStoreAtStartup / EnsureSlotStoreRecovered / SlotStoreReady).
+// The slot is the block number, so recovery only records the committed tip;
+// what remains to test is the getTip contract, the readiness gate, and that
+// catch-up always moves the slot up to the new tip.
 
 import (
 	"errors"
@@ -15,21 +12,20 @@ import (
 	"testing"
 
 	"gossipnode/config"
+	"gossipnode/internal/roundlock"
 )
 
-// resetSlotStoreForRecoveryTest swaps in a fresh DefaultSlotStore and clears
-// the readiness gate for the duration of a test — same pattern
-// Block/consensus_fields_test.go's resetSlotAndPeriodStores uses, since
-// DefaultSlotStore and the readiness gate are both process-wide singletons
-// other tests may depend on.
+// resetSlotStoreForRecoveryTest swaps in fresh process-wide stores that
+// recovery writes to (slot store, signing ledger, proposer periods) and clears
+// the readiness gate for the duration of a test.
 func resetSlotStoreForRecoveryTest(t *testing.T) {
 	t.Helper()
-	saved := DefaultSlotStore
-	DefaultSlotStore = NewSlotStore()
+	savedSlots, savedPeriods, savedLedger := DefaultSlotStore, DefaultProposerPeriods, roundlock.Default
+	DefaultSlotStore, DefaultProposerPeriods, roundlock.Default = NewSlotStore(), NewProposerPeriods(), roundlock.NewLedger()
 	wasReady := SlotStoreReady()
 	ResetSlotStoreReadyForTest()
 	t.Cleanup(func() {
-		DefaultSlotStore = saved
+		DefaultSlotStore, DefaultProposerPeriods, roundlock.Default = savedSlots, savedPeriods, savedLedger
 		if wasReady {
 			MarkSlotStoreReady()
 		} else {
@@ -38,48 +34,98 @@ func resetSlotStoreForRecoveryTest(t *testing.T) {
 	})
 }
 
-func TestRecoverSlotStoreAtStartup_SeedsFromRealTip(t *testing.T) {
+func TestRecoverSlotStoreAtStartup_RecordsTheTipHeight(t *testing.T) {
 	resetSlotStoreForRecoveryTest(t)
 
-	tip := &config.ZKBlock{BlockNumber: 45, Slot: 123, Period: 0}
-	err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil })
-	if err != nil {
+	tip := &config.ZKBlock{BlockNumber: 45, Slot: 45}
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
 		t.Fatalf("RecoverSlotStoreAtStartup: unexpected error: %v", err)
 	}
 	if !SlotStoreReady() {
-		t.Fatal("expected SlotStoreReady() to be true after a successful recovery")
+		t.Fatal("expected SlotStoreReady() after a successful recovery")
 	}
-	if got := DefaultSlotStore.Current(); got != 123 {
-		t.Fatalf("DefaultSlotStore.Current() = %d, want 123 (the tip's own Slot)", got)
+	if got := DefaultSlotStore.Current(); got != 45 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 45", got)
 	}
-
-	// The next live commit must build on the recovered value, not restart
-	// from zero — this is the entire point of the fix.
-	next, advanced := DefaultSlotStore.AdvanceOnCommit(46, 0)
-	if !advanced {
-		t.Fatal("expected AdvanceOnCommit(46, 0) to advance after a fresh height")
+	if tip, ok := roundlock.Default.CommittedTip(); !ok || tip != 45 {
+		t.Fatalf("signing ledger committed tip = %d %v, want 45 (recovery arms the ledger too)", tip, ok)
 	}
-	if next != 124 {
-		t.Fatalf("DefaultSlotStore after next commit = %d, want 124 (123 + period(0) + 1)", next)
+	if next, advanced := DefaultSlotStore.AdvanceOnCommit(46); !advanced || next != 46 {
+		t.Fatalf("next commit: advanced=%v slot=%d, want true,46", advanced, next)
 	}
 }
 
-func TestRecoverSlotStoreAtStartup_EmptyChainIsReadyButUnseeded(t *testing.T) {
+// A tip written before slots were persisted (Slot 0 at a real height) used to
+// refuse startup unless JMDN_SLOT_RECOVERY_PRESLOT_MIGRATION=1. The slot is
+// the height, so it now recovers like any other tip, with no flag.
+func TestRecoverSlotStoreAtStartup_TipWithoutStoredSlotRecovers(t *testing.T) {
+	resetSlotStoreForRecoveryTest(t)
+
+	tip := &config.ZKBlock{BlockNumber: 100, Slot: 0, Period: 0}
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
+		t.Fatalf("a tip without a stored slot must recover: %v", err)
+	}
+	if !SlotStoreReady() {
+		t.Fatal("expected SlotStoreReady()")
+	}
+	if got := DefaultSlotStore.Current(); got != 100 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 100 (the tip height)", got)
+	}
+}
+
+// A tip stamped under the old rule (slot ahead of height after a failed round)
+// is flagged, but still recovers to its height: the warning is for the
+// operator, not a startup refusal.
+func TestRecoverSlotStoreAtStartup_MisalignedTipWarnsButRecovers(t *testing.T) {
+	resetSlotStoreForRecoveryTest(t)
+
+	tip := &config.ZKBlock{BlockNumber: 100, Slot: 102, Period: 0}
+	if !tipSlotMisaligned(tip) {
+		t.Fatal("tipSlotMisaligned = false for slot 102 at height 100, want true")
+	}
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
+		t.Fatalf("a misaligned tip must still recover: %v", err)
+	}
+	if !SlotStoreReady() {
+		t.Fatal("expected SlotStoreReady()")
+	}
+	if got := DefaultSlotStore.Current(); got != 100 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 100 (the tip height, not the stored slot)", got)
+	}
+}
+
+func TestTipSlotMisaligned(t *testing.T) {
+	cases := []struct {
+		height, slot uint64
+		want         bool
+	}{
+		{100, 100, false}, // aligned
+		{100, 0, false},   // written before slots were persisted
+		{0, 0, false},     // genesis
+		{100, 102, true},  // old rule after failed rounds
+		{100, 99, true},
+	}
+	for _, c := range cases {
+		if got := tipSlotMisaligned(&config.ZKBlock{BlockNumber: c.height, Slot: c.slot}); got != c.want {
+			t.Errorf("tipSlotMisaligned(height %d, slot %d) = %v, want %v", c.height, c.slot, got, c.want)
+		}
+	}
+}
+
+func TestRecoverSlotStoreAtStartup_EmptyChainIsReadyWithNothingRecorded(t *testing.T) {
 	resetSlotStoreForRecoveryTest(t)
 
 	err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) {
 		return nil, fmt.Errorf("wrapped: %w", ErrNoCommittedBlock)
 	})
 	if err != nil {
-		t.Fatalf("RecoverSlotStoreAtStartup: expected nil error on empty chain, got %v", err)
+		t.Fatalf("expected nil error on an empty chain, got %v", err)
 	}
 	if !SlotStoreReady() {
-		t.Fatal("expected SlotStoreReady() to be true on a legitimately empty chain")
+		t.Fatal("expected SlotStoreReady() on a legitimately empty chain")
 	}
-	// Must NOT have flipped haveCommitted — a later real tip (this node's own
-	// first commit, or a fast-sync catch-up) must still be able to seed it.
-	if DefaultSlotStore.haveCommittedForRecoveryCheck() {
-		t.Fatal("empty-chain recovery must not mark DefaultSlotStore live — it must remain seedable later")
+	if _, ok := roundlock.Default.CommittedTip(); ok {
+		t.Fatal("an empty chain must not record a committed tip")
 	}
 }
 
@@ -89,102 +135,74 @@ func TestRecoverSlotStoreAtStartup_ReadFailureFailsClosed(t *testing.T) {
 	readErr := errors.New("db unreachable")
 	err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return nil, readErr })
 	if err == nil {
-		t.Fatal("expected RecoverSlotStoreAtStartup to return an error on a genuine read failure")
+		t.Fatal("expected an error on a genuine read failure")
 	}
 	if !errors.Is(err, readErr) {
-		t.Fatalf("expected the returned error to wrap the underlying read error, got: %v", err)
+		t.Fatalf("expected the error to wrap the read error, got: %v", err)
 	}
 	if SlotStoreReady() {
-		t.Fatal("expected SlotStoreReady() to remain false after a failed recovery — must fail closed")
+		t.Fatal("SlotStoreReady() must stay false after a failed recovery")
 	}
 }
 
-func TestRecoverSlotStoreAtStartup_RefusesTipWithNoPersistedSlotAtRealHeight(t *testing.T) {
+// Recovery after live commits have started can only move the store up, never
+// rewind it: recording is order-independent.
+func TestRecoverSlotStoreAtStartup_NeverRewindsALiveStore(t *testing.T) {
 	resetSlotStoreForRecoveryTest(t)
+	NoteHeightCommitted(500)
 
-	// BlockNumber > 0 with Slot==0 && Period==0 can only mean the persistence
-	// fix predates this block, or the read-back conversion broke — either
-	// way, silently adopting slot=0 here is exactly the original bug.
-	tip := &config.ZKBlock{BlockNumber: 100, Slot: 0, Period: 0}
-	err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil })
-	if err == nil {
-		t.Fatal("expected RecoverSlotStoreAtStartup to refuse a real-height tip with no persisted slot/period")
+	stale := &config.ZKBlock{BlockNumber: 400, Slot: 400}
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return stale, nil }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if SlotStoreReady() {
-		t.Fatal("expected SlotStoreReady() to remain false when refusing an unrecoverable tip")
+	if got := DefaultSlotStore.Current(); got != 500 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 500 (a stale tip read must not rewind)", got)
 	}
 }
 
-func TestRecoverSlotStoreAtStartup_RefusesOnceStoreAlreadyLive(t *testing.T) {
-	resetSlotStoreForRecoveryTest(t)
-	// Simulate a live commit having already happened (the exact race this
-	// function's docs say must never occur if called at the right time —
-	// verified here as "refuses safely" rather than "corrupts state" in case
-	// some future caller gets the ordering wrong).
-	DefaultSlotStore.AdvanceOnCommit(1, 0)
-
-	tip := &config.ZKBlock{BlockNumber: 999, Slot: 999, Period: 0}
-	err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil })
-	if err == nil {
-		t.Fatal("expected RecoverSlotStoreAtStartup to refuse once DefaultSlotStore is already live")
-	}
-	if got := DefaultSlotStore.Current(); got != 1 {
-		t.Fatalf("DefaultSlotStore.Current() = %d, want unchanged 1 — a refused recovery must not clobber live progress", got)
-	}
-}
-
-func TestEnsureSlotStoreRecovered_NoOpsOnceLive(t *testing.T) {
-	resetSlotStoreForRecoveryTest(t)
-	DefaultSlotStore.AdvanceOnCommit(1, 0)
-	MarkSlotStoreReady()
-
-	called := false
-	err := EnsureSlotStoreRecovered(func() (*config.ZKBlock, error) {
-		called = true
-		return &config.ZKBlock{BlockNumber: 500, Slot: 500}, nil
-	})
-	if err != nil {
-		t.Fatalf("EnsureSlotStoreRecovered: unexpected error: %v", err)
-	}
-	if called {
-		t.Fatal("EnsureSlotStoreRecovered must not call getTip once the store is already live")
-	}
-	if got := DefaultSlotStore.Current(); got != 1 {
-		t.Fatalf("DefaultSlotStore.Current() = %d, want unchanged 1", got)
-	}
-}
-
-// TestEnsureSlotStoreRecovered_SeedsAfterFastSyncCatchesUp is the item-5
-// scenario from docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8: a node starts
-// with an empty local chain (recovery marks it ready-but-unseeded, per
-// TestRecoverSlotStoreAtStartup_EmptyChainIsReadyButUnseeded above), then
-// bulk fast-sync catches it up — which bypasses the live commit hooks
-// entirely, so DefaultSlotStore is still unseeded — and a second call, using
-// the now-populated tip, must finally seed it correctly.
-func TestEnsureSlotStoreRecovered_SeedsAfterFastSyncCatchesUp(t *testing.T) {
+// The stale-slot bug: a node that stays running, falls behind and catches up
+// in bulk (writes that bypass the live commit hooks) used to keep its old slot,
+// because the catch-up re-seed was skipped once the store was live. Now the
+// catch-up re-read moves it to the new tip.
+func TestEnsureSlotStoreRecovered_RunningNodeCatchesUpToTheTip(t *testing.T) {
 	resetSlotStoreForRecoveryTest(t)
 
-	// Step 1: startup, chain still empty.
+	// Running and live at height 19,900.
 	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) {
-		return nil, ErrNoCommittedBlock
+		return &config.ZKBlock{BlockNumber: 19_900, Slot: 19_900}, nil
 	}); err != nil {
-		t.Fatalf("initial (empty-chain) recovery: unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if got := DefaultSlotStore.Current(); got != 0 {
-		t.Fatalf("DefaultSlotStore.Current() before catch-up = %d, want 0", got)
-	}
+	NoteHeightCommitted(19_901)
 
-	// Step 2: fast-sync "happens" (bulk writes bypass AdvanceOnCommit, so
-	// haveCommitted is still false — nothing to simulate on DefaultSlotStore
-	// itself); the local tip now has real history.
-	tip := &config.ZKBlock{BlockNumber: 10_000, Slot: 480_000, Period: 0}
+	// Falls behind; bulk catch-up writes heights up to 20,000 without hooks.
+	tip := &config.ZKBlock{BlockNumber: 20_000, Slot: 20_000}
 	if err := EnsureSlotStoreRecovered(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
-		t.Fatalf("post-catch-up recovery: unexpected error: %v", err)
+		t.Fatalf("post-catch-up recovery: %v", err)
 	}
-	if got := DefaultSlotStore.Current(); got != 480_000 {
-		t.Fatalf("DefaultSlotStore.Current() after catch-up = %d, want 480000 (seeded from the real tip)", got)
+	if got := DefaultSlotStore.Current(); got != 20_000 {
+		t.Fatalf("DefaultSlotStore.Current() after catch-up = %d, want 20000", got)
 	}
-	if !SlotStoreReady() {
-		t.Fatal("expected SlotStoreReady() to be true after the post-catch-up seed")
+	if got, _ := roundlock.Default.CommittedTip(); got != 20_000 {
+		t.Fatalf("signing ledger tip after catch-up = %d, want 20000", got)
+	}
+	if got := LiveSlotFor(20_001); got != 20_001 {
+		t.Fatalf("next block's slot = %d, want 20001", got)
+	}
+}
+
+// A node that started empty and then synced its whole chain.
+func TestEnsureSlotStoreRecovered_EmptyThenSynced(t *testing.T) {
+	resetSlotStoreForRecoveryTest(t)
+
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return nil, ErrNoCommittedBlock }); err != nil {
+		t.Fatal(err)
+	}
+	tip := &config.ZKBlock{BlockNumber: 10_000, Slot: 10_000}
+	if err := EnsureSlotStoreRecovered(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
+		t.Fatalf("post-catch-up recovery: %v", err)
+	}
+	if got := DefaultSlotStore.Current(); got != 10_000 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 10000", got)
 	}
 }

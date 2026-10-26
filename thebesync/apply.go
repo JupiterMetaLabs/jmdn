@@ -22,6 +22,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// syncedParentFn reads an already-applied block by number. A package variable
+// so tests can supply the parent without a database.
+var syncedParentFn = func(number uint64) (*config.ZKBlock, error) {
+	return DB_OPs.GetZKBlockByNumber(nil, number)
+}
+
 // applyBlock verifies and applies one synced block, then stores it and advances
 // the tip. prevNumber/prevHash identify the last applied block (the parent this
 // block must link to). requireCert enforces the "once certified, always
@@ -73,7 +79,18 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, aerr)
 	}
 
-	// 2c. Period binding: the certificate below is checked against the
+	// 2c. Slot = block number (pre-slot history: Slot 0 under a Slot-0 parent).
+	if serr := messaging.CheckSyncedSlot(block, func() (uint64, error) {
+		parent, err := syncedParentFn(prevNumber)
+		if err != nil {
+			return 0, err
+		}
+		return parent.Slot, nil
+	}); serr != nil {
+		return false, fmt.Errorf("thebesync apply: %w", serr)
+	}
+
+	// 2d. Period binding: the certificate below is checked against the
 	//     committee of the block's own Period, so a non-zero Period must be
 	//     bound by the block's ConsensusHash first.
 	if perr := messaging.CheckSyncedPeriodBinding(block); perr != nil {
