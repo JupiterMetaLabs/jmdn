@@ -134,7 +134,7 @@ jobs:
       # Lint step above. Full-tree tracking lives in nightly.yml's static job.
       #
       # ADVISORY until 2026-11-09, then set continue-on-error: false.
-      # Rationale and rollout: docs/telemetry/opus/STEP-1-CI-GATE-PATCH.md
+      # Rationale, evidence and the validation record: docs/telemetry/VALIDATION.md
       - name: Telemetry conventions (new code only)
         continue-on-error: true
         run: |
@@ -145,8 +145,13 @@ jobs:
             exit 0
           fi
           if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "::warning::diff base $BASE not present in the clone; checkout needs fetch-depth: 0"
-            exit 0
+            # A base that exists but is absent from the clone is a
+            # misconfiguration, not a legitimate first push — that case is
+            # handled above. Exiting 0 here would report success for a run that
+            # never happened. Masked today by continue-on-error: true; it stops
+            # being masked at the same time that flag does.
+            echo "::error::diff base $BASE not present in the clone; checkout needs fetch-depth: 0"
+            exit 1
           fi
           golangci-lint run \
             --config .golangci-telemetry.yml \

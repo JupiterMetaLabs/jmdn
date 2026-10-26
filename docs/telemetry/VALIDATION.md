@@ -1,6 +1,6 @@
 # Validation gate — `ci/telemetry-conventions-gate`
 
-**Status: ALL CHECKS PASS. Two defects found and fixed. Merge-ready pending operator approval.**
+**Status: review round 2 complete. Six findings, all accepted and fixed. Needs ONE new test before merge — see "F1 regression test" below.**
 **Run by operator 2026-10-26 on macOS, golangci-lint 2.15.0 / go1.27.2.**
 **Branch:** `ci/telemetry-conventions-gate` @ `2cdd0b74`, local only, not pushed.
 **Base:** `ab4f5013` · **Baseline:** `docs/telemetry/baseline-ab4f5013.txt`
@@ -208,3 +208,113 @@ regression it was built for.**
 
 Clean diff against `baseline-ab4f5013.txt` apart from the timestamp, with the sentinel line present.
 The portability fix is confirmed on the platform that exposed the defect.
+
+
+---
+
+# Review round 2 — PR #261
+
+Six findings. **All six accepted; all six fixed.** One changes what the gate is
+understood to cover and is the reason this document now demands a test that did not
+previously exist.
+
+## F1 — the gate did not catch new zerolog *calls*. Accepted; fixed.
+
+`depguard` flags the **import line**. `--new-from-rev` reports issues only on
+**changed** lines. So a call added to a file that *already* imports zerolog changes
+no import line, and the gate passes it.
+
+**Verified independently against this repo's history.** `#260` (`a22f3bb5`):
+
+| | `2a52ec9b` (before) | `a22f3bb5` (after) |
+|---|---:|---:|
+| zerolog **calls** | 239 | **241** |
+| zerolog **files** | 36 | 36 |
+| files gaining the import | — | **none** |
+
+**The gate as merged would have passed `#260`.** The PR's motivating evidence was
+*call* growth (224 → 239); the gate only caught *file* growth (34 → 36). It would
+have stopped 2 of ~15 new calls.
+
+This is the failure mode this programme exists to catch — **a check that reports
+healthy while measuring the wrong thing** — in the gate built to prevent it. It is
+recorded here rather than quietly patched.
+
+**Fix: gate the call surface directly.**
+
+```yaml
+- pattern: '^log\.(Debug|Info|Warn|Error|Fatal)$'
+```
+
+Measured before adopting it: **all 241 zerolog calls in this repo are package-level
+`log.X()`**, so the pattern reaches every one, independent of the import. It does
+**not** touch the 174 stdlib `log.Print/Printf/Println/Fatalf` calls — different
+method names. The 7 ambiguous `log.Fatal(` sites are a legitimate target either
+way, since stdlib `log` is also being removed.
+
+### F1 regression test — REQUIRED, not yet run
+
+The existing acceptance test only proves the *import* path. It would have passed
+against the broken gate. This one targets the gap directly:
+
+```bash
+# Pick a file that ALREADY imports zerolog, add a call, and confirm the
+# gate catches it diff-only. This is what #260 looked like.
+git checkout -b tmp/f1-probe origin/v3base
+F=$(git grep -l "rs/zerolog" -- '*.go' | head -1)
+printf '\nfunc _f1probe() { log.Info().Msg("probe") }\n' >> "$F"
+git commit -qam "probe: zerolog call in a file that already imports it"
+
+golangci-lint run --config .golangci-telemetry.yml --new-from-rev=origin/v3base
+#   PASS: forbidigo flags the new log.Info call.
+#   FAIL: 0 issues -> F1 is NOT fixed; do not merge.
+
+git checkout - && git branch -D tmp/f1-probe && git checkout -- .
+```
+
+Also re-run check 1: forbidigo's full-tree count should rise from **610** to
+roughly **851** (610 + 241 zerolog calls).
+
+## F2 — nightly burn-down counts were wrong. Accepted; fixed.
+
+`grep -c 'forbidigo'` also matched golangci-lint's own `* forbidigo: N` summary
+line — off by one every run — and would have over-counted further on every
+`//nolint:forbidigo` line, so the error grew as the manifest grew. Replaced with
+`sed -n 's/^\* forbidigo: \([0-9]*\)$/\1/p'`.
+
+## F3 — the nightly label named a rule the config does not contain. Accepted; fixed.
+
+The label read `forbidigo (print family / ctx.Background)` after the
+`ctx.Background` pattern had been deliberately removed as inert. **The label
+recreated in the summary table exactly the illusion the deletion removed.** Now
+`forbidigo (print family, zerolog calls)`.
+
+## F4 — base-missing exited 0. Accepted; fixed.
+
+A base SHA that exists but is absent from the clone is a misconfiguration; the
+genuine first-push case is handled by the branch above it. `exit 0` reported
+success for a run that never happened. Now `::error::` + `exit 1`, which stops
+being masked at the same moment `continue-on-error` does.
+
+## F5 — `ci.yml` cited a file not in this PR. Accepted; fixed.
+
+`docs/telemetry/opus/STEP-1-CI-GATE-PATCH.md` lives on the docs branch. Now points
+at `docs/telemetry/VALIDATION.md`, which is in this PR.
+
+## F6 — the PR body contradicted itself. Accepted.
+
+*"blocks new violations"* vs *"advisory ... cannot block anyone"*. The second is
+correct while `continue-on-error: true`. Body text corrected.
+
+## Accepted without change
+
+The reviewer tested and confirmed: forbidigo catches all three print forms; a local
+variable named `fmt` is correctly **not** flagged (`analyze-types` holds); the
+`//nolint` exemption path works and bare/unexplained forms are rejected;
+`nolintlint` does not flag unrelated directives; `baseline.sh` reproduces all 14
+metrics exactly with the sentinel firing; `.golangci.yml` is untouched; only one
+`//nolint` exists tree-wide, so there is no migration risk.
+
+Their three "not verified" items stand as stated — the repo-wide 647/610 figures and
+the real-PR `--new-from-rev` path remain operator-side, and `VALIDATION.md` itself
+was not audited against the config.

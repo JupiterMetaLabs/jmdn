@@ -242,8 +242,13 @@ jobs:
             echo ""
             echo "| rule | outstanding |"
             echo "|---|---:|"
-            echo "| depguard (zerolog / zap imports) | $(grep -c 'depguard' telemetry-backlog.txt || echo 0) |"
-            echo "| forbidigo (print family / ctx.Background) | $(grep -c 'forbidigo' telemetry-backlog.txt || echo 0) |"
+            # Parse golangci-lint's own summary line ("* forbidigo: 3").
+            # grep -c would over-count: it matches the summary line itself, and
+            # every source line containing the linter name — including each
+            # //nolint:forbidigo exemption, so the error would grow with the
+            # manifest.
+            echo "| depguard (zerolog / zap imports) | $(sed -n 's/^\* depguard: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
+            echo "| forbidigo (print family, zerolog calls) | $(sed -n 's/^\* forbidigo: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The full staticcheck suite is staged for the PR gate (see .golangci.yml);

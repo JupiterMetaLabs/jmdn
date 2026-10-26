@@ -73,6 +73,23 @@ linters:
             stderr and report writing need an explicit exemption; buffer and hash
             writers are legitimate — say which in the //nolint reason.
 
+        # The zerolog CALL surface. depguard alone is not enough: it flags the
+        # import line, and --new-from-rev only reports issues on CHANGED lines,
+        # so calls added to a file that already imports zerolog change no import
+        # line and slip through. Measured on this repo's own history: #260 added
+        # 2 zerolog calls and no new zerolog file — depguard would have passed it.
+        #
+        # All 241 zerolog calls here are package-level log.X(), so this pattern
+        # reaches every one directly. It does not touch the 174 stdlib
+        # log.Print/Printf/Println/Fatalf calls (different method names); the 7
+        # ambiguous log.Fatal( sites are a legitimate target either way, since
+        # stdlib log is also being removed.
+        - pattern: '^log\.(Debug|Info|Warn|Error|Fatal)$'
+          msg: >-
+            zerolog is being removed in v3 — use the injected telemetry logger.
+            depguard only sees the import, so this rule catches calls added to a
+            file that already imports it. See docs/telemetry/.
+
         # NOT HERE: context.Background() passed into a log call.
         #
         # A pattern targeting that argument is INERT. forbidigo matches the
