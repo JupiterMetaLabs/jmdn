@@ -73,6 +73,45 @@ func TestRecoverSlotStoreAtStartup_TipWithoutStoredSlotRecovers(t *testing.T) {
 	}
 }
 
+// A tip stamped under the old rule (slot ahead of height after a failed round)
+// is flagged, but still recovers to its height: the warning is for the
+// operator, not a startup refusal.
+func TestRecoverSlotStoreAtStartup_MisalignedTipWarnsButRecovers(t *testing.T) {
+	resetSlotStoreForRecoveryTest(t)
+
+	tip := &config.ZKBlock{BlockNumber: 100, Slot: 102, Period: 0}
+	if !tipSlotMisaligned(tip) {
+		t.Fatal("tipSlotMisaligned = false for slot 102 at height 100, want true")
+	}
+	if err := RecoverSlotStoreAtStartup(func() (*config.ZKBlock, error) { return tip, nil }); err != nil {
+		t.Fatalf("a misaligned tip must still recover: %v", err)
+	}
+	if !SlotStoreReady() {
+		t.Fatal("expected SlotStoreReady()")
+	}
+	if got := DefaultSlotStore.Current(); got != 100 {
+		t.Fatalf("DefaultSlotStore.Current() = %d, want 100 (the tip height, not the stored slot)", got)
+	}
+}
+
+func TestTipSlotMisaligned(t *testing.T) {
+	cases := []struct {
+		height, slot uint64
+		want         bool
+	}{
+		{100, 100, false}, // aligned
+		{100, 0, false},   // written before slots were persisted
+		{0, 0, false},     // genesis
+		{100, 102, true},  // old rule after failed rounds
+		{100, 99, true},
+	}
+	for _, c := range cases {
+		if got := tipSlotMisaligned(&config.ZKBlock{BlockNumber: c.height, Slot: c.slot}); got != c.want {
+			t.Errorf("tipSlotMisaligned(height %d, slot %d) = %v, want %v", c.height, c.slot, got, c.want)
+		}
+	}
+}
+
 func TestRecoverSlotStoreAtStartup_EmptyChainIsReadyWithNothingRecorded(t *testing.T) {
 	resetSlotStoreForRecoveryTest(t)
 

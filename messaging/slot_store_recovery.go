@@ -97,11 +97,25 @@ func RecoverSlotStoreAtStartup(getTip func() (*config.ZKBlock, error)) error {
 	if tip == nil {
 		return fmt.Errorf("slot recovery: getTip returned a nil block with no error — refusing to treat that as success")
 	}
+	if tipSlotMisaligned(tip) {
+		// Warn, not refuse: the node itself runs correctly from here, and the
+		// tip alone cannot say how much history is affected. Peers syncing
+		// from this node will reject those blocks (CheckSyncedSlot), so the
+		// operator must run the scan.
+		log.Warn().Uint64("tip_height", tip.BlockNumber).Uint64("stored_slot", tip.Slot).
+			Msg("slot recovery: stored tip slot does not equal its block number — this chain predates the slot = block number rule; peers syncing from this node will reject those blocks. Run Scripts/check_slot_alignment.sh")
+	}
 	NoteHeightCommitted(tip.BlockNumber)
 	log.Info().Uint64("tip_height", tip.BlockNumber).Uint64("slot", DefaultSlotStore.Current()).
 		Msg("slot recovery: recorded local committed tip (slot = block number)")
 	MarkSlotStoreReady()
 	return nil
+}
+
+// tipSlotMisaligned reports whether a stored tip breaks the slot rule. Slot 0
+// is a tip written before slots were persisted, which sync also accepts.
+func tipSlotMisaligned(tip *config.ZKBlock) bool {
+	return tip.Slot != 0 && tip.Slot != tip.BlockNumber
 }
 
 // EnsureSlotStoreRecovered re-reads the committed tip and records it. Call it
