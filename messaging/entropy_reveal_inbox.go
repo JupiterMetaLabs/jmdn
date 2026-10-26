@@ -20,7 +20,8 @@ package messaging
 //
 // # Verification happens on the way IN, not only on the way out
 //
-// Every reveal is checked against the ed25519 verifier before it is stored.
+// Every reveal is checked against its epoch's verifier (Ed25519 before the
+// entropy cut-over, BLS from it) before it is stored.
 // That is deliberate belt-and-braces: `Accumulator.Fold` verifies again when
 // the block commits (Rule 2 — the block declares the set, and every node
 // re-verifies independently), so this check is not load-bearing for
@@ -50,12 +51,12 @@ package messaging
 // which matters because XOR is self-inverse and folding twice would CANCEL a
 // member's contribution.
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/rs/zerolog/log"
-
-	"github.com/JupiterMetaLabs/avc/committee"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
@@ -79,8 +80,9 @@ var defaultRevealInbox = &revealInbox{byEpoch: make(map[uint64]map[string][]byte
 // whether that is a protocol violation worth logging loudly (a pushed reveal)
 // or an internal bug (our own). First reveal for a peer wins: a second,
 // different value for the same (peer, epoch) is rejected rather than
-// overwriting, because under a correct ed25519 implementation there is exactly
-// one valid signature per (peer, epoch) — two different ones means one is
+// overwriting, because there is meant to be exactly one valid reveal per
+// (peer, epoch) - guaranteed for BLS reveals, and the reason Ed25519 ones are
+// replaced at the cut-over — two different ones means one is
 // forged, and silently taking the later one would let an attacker displace a
 // good reveal with a bad one.
 //
@@ -98,8 +100,12 @@ func AddInboundReveal(epoch uint64, peerID string, reveal []byte) error {
 	if err := checkRevealEpochWindow(epoch); err != nil {
 		return err
 	}
+	verifier, err := revealVerifierFor(epoch)
+	if err != nil {
+		return fmt.Errorf("%w: no verifier for epoch %d: %v", ErrRevealDidNotVerify, epoch, err)
+	}
 	chainID := BLS_Signer.DomainChainID()
-	if !revealVerifier.VerifyReveal(peerID, chainID, epoch, reveal) {
+	if !verifier.VerifyReveal(peerID, chainID, epoch, reveal) {
 		return ErrRevealDidNotVerify
 	}
 
@@ -137,7 +143,7 @@ func AddInboundReveal(epoch uint64, peerID string, reveal []byte) error {
 // most epochs, and a node without Stage F configured simply has nothing to
 // contribute. Only a genuine failure to sign while seated is logged.
 func ensureSelfReveal(epoch uint64) {
-	_, peerID, err := nodeIdentity()
+	peerID, err := nodeIdentity()
 	if err != nil {
 		return // no identity installed — nothing to contribute
 	}
@@ -151,12 +157,19 @@ func ensureSelfReveal(epoch uint64) {
 
 	sig, err := ProduceRevealForEpoch(epoch)
 	if err != nil {
-		// Not seated / no beacon are the common, expected cases.
+		// Not seated / no beacon / no anchored pool are the common, expected
+		// cases. A key mismatch is not: this node is seated but its BLS key is
+		// not the one its snapshot binds, so it will be counted as withheld
+		// and force the epoch to fallback every time it is seated.
+		if errors.Is(err, ErrRevealBLSKeyMismatch) {
+			log.Error().Err(err).Uint64("epoch", epoch).Str("peer", peerID).
+				Msg("entropy: seated on the entropy committee but this node's BLS key is not the one its committee snapshot binds — no reveal produced, the epoch will fall back; re-register the key or restore the right key file")
+		}
 		return
 	}
 	if err := AddInboundReveal(epoch, peerID, sig); err != nil {
 		log.Error().Err(err).Uint64("epoch", epoch).Str("peer", peerID).
-			Msg("entropy: this node's OWN reveal failed verification — its identity key and peer ID disagree, or the verifier changed; this node will be counted as withheld and the epoch will fall back")
+			Msg("entropy: this node's OWN reveal was refused by the inbox (failed verification under its epoch's scheme - its libp2p key before the cut-over, its snapshot-bound BLS key from it - or the inbox is full); this node will be counted as withheld and the epoch will fall back")
 	}
 }
 
@@ -202,6 +215,7 @@ func RevealsForBlock(slot uint64) []config.Reveal {
 // Also drops Accumulators more than one epoch older than that: the epoch just
 // finalised (epoch-1) keeps its Accumulator; anything before it is settled.
 func pruneRevealsBelow(epoch uint64) {
+	pruneBLSRevealCommitteesBelow(epoch)
 	defaultRevealInbox.mu.Lock()
 	for e := range defaultRevealInbox.byEpoch {
 		if e < epoch {
@@ -250,9 +264,10 @@ var revealCurrentEpoch = func() (uint64, bool) {
 
 // revealPeerSeated reports whether peerID is on epoch's entropy committee.
 // Only consulted once an epoch is at capacity. Unresolvable committee (no
-// beacon yet) counts as not seated: the inbox is already full of candidates.
+// beacon or no anchored pool yet) counts as not seated: the inbox is already
+// full of candidates.
 var revealPeerSeated = func(epoch uint64, peerID string) bool {
-	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
+	members, err := revealCommitteeFor(epoch)
 	if err != nil {
 		return false
 	}

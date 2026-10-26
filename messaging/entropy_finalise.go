@@ -179,6 +179,20 @@ func notifyEpochFinalisedWithOutcome(closedEpoch uint64, seed randao.Seed, outco
 // opened and holds zero signers at this exact instant.
 func decideEpoch(epoch uint64, block *config.ZKBlock) {
 	acc, err := entropyAccumulatorFor(epoch)
+	if errors.Is(err, ErrBLSRevealNeedsAnchoredPool) {
+		// No anchored pool precedes this epoch's freeze cutoff, so no member's
+		// key is known on every node and no reveal can be valid. That is
+		// decided from the chain, so every node lands here alike: take the
+		// fallback exactly as for an epoch where a member withheld. Returning
+		// without a decision instead (the generic branch below) would leave
+		// the next epoch with no entropy and stall committee selection there.
+		finaliseTrackMu.Lock()
+		pendingFallback[epoch] = struct{}{}
+		finaliseTrackMu.Unlock()
+		log.Warn().Err(err).Uint64("epoch", epoch).Uint64("height", block.BlockNumber).
+			Msg("entropy: epoch has no anchored entropy pool — no reveals possible, entering fallback")
+		return
+	}
 	if err != nil {
 		log.Error().Err(err).Uint64("epoch", epoch).Uint64("height", block.BlockNumber).
 			Msg("entropy: cannot decide epoch outcome — no accumulator")

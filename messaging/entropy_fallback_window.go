@@ -30,21 +30,23 @@ package messaging
 // widens into FallbackFoldMaxSlotOffset — a separate, independently-derived
 // slot deadline — until either B signers are found or the deadline passes.
 //
-// # THIS PATH CANNOT RUN TODAY — blocker B1, and that is deliberate
+// # Where the signers come from (blocker B1, resolved)
 //
-// §4.2a describes aggSig as already-present, zero-new-storage data. Verified
-// 2026-08-20 that this is not true at rest: no certificate or signer-bitmap
-// field exists on config.ZKBlock, and the aggregate is a transient local
-// variable discarded once a block verifies. Nothing can supply this collector,
-// so FallbackSeedForEpoch fails closed on every call.
+// §4.2a assumed aggSig was already stored; it was not (verified 2026-08-20),
+// so this collector once had no input and FallbackSeedForEpoch failed closed
+// on every call. That gap is closed: a block inside a fold window carries its
+// parent's buddy-committee certificate (config.ZKBlock.PrevAggCert, covered by
+// the block hash), and VerifyAndRecordPrevCert (entropy_aggsig.go), run from
+// the same commit hooks as foldBlockDeclaredReveals, verifies it, derives the
+// aggregate locally and records it here via RecordAggSigForFallback.
+// RecoverAggSigStoreAtStartup rebuilds the store from committed blocks after a
+// restart.
 //
-// That failure is the correct behaviour, not a TODO. The alternative — quietly
-// falling through to some other formula — is what would ship a wrong seed into
-// the next epoch's committee draw. Persisting aggSig as a hash-covered block
-// field is a wire-format change that belongs with M2b (Architecture §8, §10
-// decision 10), and RecordAggSigForFallback below is the exact seam it plugs
-// into when it lands: call it from the same commit hooks
-// foldBlockDeclaredReveals already uses, passing the verified certificate.
+// It requires consensus.flags.agg_cert (JMDN_AVC_AGG_CERT), ON by default and
+// fleet-wide, and the Stage-2 beacon refuses to install without it. With it
+// off nothing is recorded and FallbackSeedForEpoch still fails closed - never
+// falling through to some other formula, which would ship a wrong seed into
+// the next epoch's committee draw.
 import (
 	"errors"
 	"fmt"
@@ -102,10 +104,6 @@ const FallbackFoldBufferB = 5
 const FallbackFoldMaxSlotOffset = 7
 
 var (
-	// ErrAggSigUnavailable means the window's aggregate certificates are not
-	// obtainable — today, always, because they are never persisted (B1).
-	ErrAggSigUnavailable = errors.New("messaging: BLS aggregate certificates are not persisted on blocks (blocker B1), so Architecture §4.2a's fallback seed cannot be computed")
-
 	// ErrFallbackNotYetReady means fewer than FallbackFoldBufferB signers have
 	// been collected, but FallbackFoldMaxSlotOffset has not been reached
 	// either. The caller must keep the epoch pending and retry on the next
@@ -142,11 +140,8 @@ var defaultAggSigStore = &aggSigStore{sigs: make(map[uint64][]byte)}
 // RecordAggSigForFallback records one committed block's verified BLS aggregate
 // certificate against its slot.
 //
-// NOTHING CALLS THIS YET, and that is the whole of blocker B1. When aggSig
-// becomes a persisted, hash-covered block field (M2b), call this from the same
-// two commit hooks foldBlockDeclaredReveals uses — broadcast.go's
-// ProcessBlockLocally and blockPropagation.go's receive path — with the
-// certificate that was just verified for that block.
+// Called by VerifyAndRecordPrevCert (entropy_aggsig.go) on every committed
+// block, with the parent certificate that block carries, once verified.
 //
 // Rejects a malformed certificate rather than storing it: a wrong-length entry
 // would fail the fold later, at finalisation, where the cause would be far

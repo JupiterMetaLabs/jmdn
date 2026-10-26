@@ -1,16 +1,15 @@
 package messaging
 
-// Tests for entropy_reveal.go and entropy_reveal_produce.go — Stage B/C after
-// the 2026-08-20 rewrite to Architecture §4.3 Decision A (ed25519 reveals).
+// Tests for entropy_reveal.go and entropy_reveal_produce.go — Stage B/C under
+// Architecture §4.3 Decision A, with BLS reveals (2026-10-22 audit, A-2).
 //
-// The single biggest difference from the previous version of this file: the
-// old tests had to simulate a commit phase that no production code implements
-// (calling Round.AddCommit and Round.CloseCommit by hand) just to get a reveal
-// to verify at all. Under Decision A there is no commit phase to simulate — a
-// reveal is produced and verified with the node's own identity key and nothing
-// else — so these tests exercise the real production path end to end.
+// There is no commit phase to simulate: a reveal is a deterministic BLS
+// signature under the member's committee key, so these tests exercise the real
+// production path end to end. The committee comes from revealKeyring
+// (entropy_reveal_keys_test.go), which gives every member a real BLS key.
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -19,7 +18,6 @@ import (
 
 	"github.com/JupiterMetaLabs/avc/randao"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
 )
 
@@ -35,10 +33,10 @@ func resetEntropyAccumulatorStore(t *testing.T) {
 	t.Cleanup(func() { defaultEntropyAccumulatorStore = saved })
 }
 
-// newTestIdentity returns a real ed25519 libp2p identity — the same kind
-// node/node.go creates. Decision A verifies against the peer ID itself, so
-// tests need genuine self-certifying IDs; the "peer-00" placeholders
-// wireEligibility uses cannot carry a key.
+// newTestIdentity returns a real libp2p identity — the same kind node/node.go
+// creates (an Ed25519 node key). SetNodeIdentity checks the key derives the
+// peer ID, so tests that install a node identity need a genuine pair. It has
+// nothing to do with the reveal, which is a BLS signature.
 func newTestIdentity(t *testing.T) (ic.PrivKey, string) {
 	t.Helper()
 	priv, _, err := ic.GenerateKeyPair(ic.Ed25519, 0)
@@ -52,8 +50,7 @@ func newTestIdentity(t *testing.T) (ic.PrivKey, string) {
 	return priv, pid.String()
 }
 
-// wireEligibilityWithPeers is wireEligibility with caller-supplied peer IDs, so
-// the eligible pool can be made of real ed25519 identities.
+// wireEligibilityWithPeers is wireEligibility with caller-supplied peer IDs.
 func wireEligibilityWithPeers(t *testing.T, peerIDs []string) {
 	t.Helper()
 	SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
@@ -103,11 +100,12 @@ func TestFoldBlockDeclaredReveals_EmptyReveals_IsNoOp(t *testing.T) {
 func TestFoldBlockDeclaredReveals_NoBeaconInstalled_LogsAndDoesNotPanic(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
 	beaconSource = nil
+	pruneBLSRevealCommitteesBelow(^uint64(0))
 
 	block := &config.ZKBlock{
 		BlockNumber:   1,
 		Slot:          10,
-		RandaoReveals: []config.Reveal{{ProposerID: "v1", Secret: make([]byte, randao.Ed25519SigLen)}},
+		RandaoReveals: []config.Reveal{{ProposerID: "v1", Secret: make([]byte, randao.BLSRevealLen)}},
 	}
 	foldBlockDeclaredReveals(block) // must not panic
 
@@ -120,9 +118,8 @@ func TestFoldBlockDeclaredReveals_NoBeaconInstalled_LogsAndDoesNotPanic(t *testi
 
 func TestEntropyAccumulatorFor_ConstructsAndCaches(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
-	_, id := newTestIdentity(t)
-	withBeaconEntropy(t, map[uint64][]byte{3: fakeEntropy(0xAA, 32)})
-	wireEligibilityWithPeers(t, []string{id})
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
 
 	a1, err := entropyAccumulatorFor(3)
 	if err != nil {
@@ -137,43 +134,50 @@ func TestEntropyAccumulatorFor_ConstructsAndCaches(t *testing.T) {
 	}
 }
 
-func TestEntropyAccumulatorFor_ExpectedSetMatchesSelectedCommittee(t *testing.T) {
+func TestEntropyAccumulatorFor_ExpectedSetMatchesCommittee(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
-	_, id := newTestIdentity(t)
-	withBeaconEntropy(t, map[uint64][]byte{3: fakeEntropy(0xBB, 32)})
-	wireEligibilityWithPeers(t, []string{id}) // pool < m=13 -> committee is the whole pool
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	kr.add("peer-b")
+	kr.add("peer-c")
 
 	acc, err := entropyAccumulatorFor(3)
 	if err != nil {
 		t.Fatalf("entropyAccumulatorFor: %v", err)
 	}
-	if acc.Expected() != 1 {
-		t.Fatalf("Accumulator expects %d, want 1 (the single wired eligible peer)", acc.Expected())
+	if acc.Expected() != 3 {
+		t.Fatalf("Accumulator expects %d, want 3 (the committee's members)", acc.Expected())
+	}
+}
+
+// An epoch with no anchored pool has no accumulator, and says so by name.
+func TestEntropyAccumulatorFor_UnanchoredEpochIsNamed(t *testing.T) {
+	resetEntropyAccumulatorStore(t)
+	withRevealKeyring(t) // no members: the source reports "not anchored"
+
+	if _, err := entropyAccumulatorFor(3); !errors.Is(err, ErrBLSRevealNeedsAnchoredPool) {
+		t.Fatalf("err = %v, want ErrBLSRevealNeedsAnchoredPool", err)
+	}
+	if len(defaultEntropyAccumulatorStore.accs) != 0 {
+		t.Fatal("a failed Accumulator construction must not be cached")
 	}
 }
 
 // --- foldBlockDeclaredReveals: the live-fold path ---------------------------
 
-func TestFoldBlockDeclaredReveals_ValidEd25519Reveal_Folds(t *testing.T) {
+func TestFoldBlockDeclaredReveals_ValidBLSReveal_Folds(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
-	priv, id := newTestIdentity(t)
-	withBeaconEntropy(t, map[uint64][]byte{3: fakeEntropy(0xCC, 32)})
-	wireEligibilityWithPeers(t, []string{id})
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
 
 	acc, err := entropyAccumulatorFor(3)
 	if err != nil {
 		t.Fatalf("entropyAccumulatorFor: %v", err)
 	}
-
-	sig, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), 3, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
-
 	block := &config.ZKBlock{
 		BlockNumber:   100,
 		Slot:          3 * N, // EpochForSlot(3*N) == 3
-		RandaoReveals: []config.Reveal{{ProposerID: id, Secret: sig}},
+		RandaoReveals: []config.Reveal{{ProposerID: "peer-a", Secret: kr.reveal("peer-a", 3)}},
 	}
 	foldBlockDeclaredReveals(block)
 
@@ -183,42 +187,30 @@ func TestFoldBlockDeclaredReveals_ValidEd25519Reveal_Folds(t *testing.T) {
 }
 
 func TestFoldBlockDeclaredReveals_RejectsBadReveals(t *testing.T) {
-	priv, id := newTestIdentity(t)
-	otherPriv, otherID := newTestIdentity(t)
-	chainID := BLS_Signer.DomainChainID()
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	kr.add("peer-out")
+	kr.setMembers(3, "peer-a") // peer-out has a key but no seat in epoch 3
 
-	goodForEpoch3, err := randao.SignReveal(priv, chainID, 3, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
-	wrongEpoch, err := randao.SignReveal(priv, chainID, 4, id)
-	if err != nil {
-		t.Fatalf("SignReveal wrong epoch: %v", err)
-	}
-	otherPeersSig, err := randao.SignReveal(otherPriv, chainID, 3, otherID)
-	if err != nil {
-		t.Fatalf("SignReveal other peer: %v", err)
-	}
-	corrupted := append([]byte{}, goodForEpoch3...)
+	good := kr.reveal("peer-a", 3)
+	corrupted := append([]byte{}, good...)
 	corrupted[0] ^= 0xFF
 
 	cases := []struct {
 		name   string
 		reveal config.Reveal
 	}{
-		{"signature for a different epoch", config.Reveal{ProposerID: id, Secret: wrongEpoch}},
-		{"another peer's signature under this peer's ID", config.Reveal{ProposerID: id, Secret: otherPeersSig}},
-		{"corrupted signature", config.Reveal{ProposerID: id, Secret: corrupted}},
-		{"empty reveal", config.Reveal{ProposerID: id, Secret: nil}},
-		{"proposer not on the committee", config.Reveal{ProposerID: otherID, Secret: otherPeersSig}},
+		{"signature for a different epoch", config.Reveal{ProposerID: "peer-a", Secret: kr.reveal("peer-a", 4)}},
+		{"another peer's signature under this peer's ID", config.Reveal{ProposerID: "peer-a", Secret: kr.reveal("peer-out", 3)}},
+		{"corrupted signature", config.Reveal{ProposerID: "peer-a", Secret: corrupted}},
+		{"empty reveal", config.Reveal{ProposerID: "peer-a", Secret: nil}},
+		{"identity point", config.Reveal{ProposerID: "peer-a", Secret: make([]byte, randao.BLSRevealLen)}},
+		{"proposer not on the committee", config.Reveal{ProposerID: "peer-out", Secret: kr.reveal("peer-out", 3)}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resetEntropyAccumulatorStore(t)
-			withBeaconEntropy(t, map[uint64][]byte{3: fakeEntropy(0xDD, 32)})
-			wireEligibilityWithPeers(t, []string{id})
-
 			acc, err := entropyAccumulatorFor(3)
 			if err != nil {
 				t.Fatalf("entropyAccumulatorFor: %v", err)
@@ -239,26 +231,24 @@ func TestFoldBlockDeclaredReveals_RejectsBadReveals(t *testing.T) {
 
 func TestFoldBlockDeclaredReveals_EpochComesFromBlockSlot_NotLiveStores(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
-	priv, id := newTestIdentity(t)
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
 	// Deliberately leave DefaultSlotStore/DefaultProposerPeriods wherever other
 	// tests left them — the epoch must come only from block.Slot.
-	withBeaconEntropy(t, map[uint64][]byte{7: fakeEntropy(0xEE, 32)})
-	wireEligibilityWithPeers(t, []string{id})
-
-	sig, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), 7, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
 	block := &config.ZKBlock{
 		BlockNumber:   200,
 		Slot:          7 * N, // epoch 7
-		RandaoReveals: []config.Reveal{{ProposerID: id, Secret: sig}},
+		RandaoReveals: []config.Reveal{{ProposerID: "peer-a", Secret: kr.reveal("peer-a", 7)}},
 	}
 	foldBlockDeclaredReveals(block)
 
-	if _, ok := defaultEntropyAccumulatorStore.accs[7]; !ok {
+	acc, ok := defaultEntropyAccumulatorStore.accs[7]
+	if !ok {
 		t.Fatalf("expected an Accumulator for epoch 7 (block.Slot=%d); present: %v",
 			block.Slot, keysOfAccs(defaultEntropyAccumulatorStore.accs))
+	}
+	if acc.Count() != 1 {
+		t.Fatalf("epoch 7 reveal did not fold: Count() = %d", acc.Count())
 	}
 }
 
@@ -282,39 +272,39 @@ func TestSetNodeIdentity_RejectsBadInput(t *testing.T) {
 	if err := SetNodeIdentity(priv, ""); err == nil {
 		t.Fatal("empty peer ID must be rejected")
 	}
-	if err := SetNodeIdentity(priv, otherID); err == nil {
-		t.Fatal("a key that does not match the claimed peer ID must be rejected at install time, " +
-			"not silently accepted and then rejected by every verifier every epoch")
+	if err := SetNodeIdentity(priv, otherID); !errors.Is(err, ErrNodeIdentityMismatch) {
+		t.Fatalf("a key that does not match the claimed peer ID must be rejected at install time, got %v", err)
 	}
 }
 
 func TestProduceRevealForEpoch_FailsClosedWithoutIdentity(t *testing.T) {
 	nodeIdentityMu.Lock()
-	savedPriv, savedPeer := nodeIdentityPriv, nodeIdentityPeer
-	nodeIdentityPriv, nodeIdentityPeer = nil, ""
+	savedPeer := nodeIdentityPeer
+	nodeIdentityPeer = ""
 	nodeIdentityMu.Unlock()
 	t.Cleanup(func() {
 		nodeIdentityMu.Lock()
-		nodeIdentityPriv, nodeIdentityPeer = savedPriv, savedPeer
+		nodeIdentityPeer = savedPeer
 		nodeIdentityMu.Unlock()
 	})
 
-	if _, err := ProduceRevealForEpoch(3); err == nil {
-		t.Fatal("producing a reveal with no installed identity must fail closed")
+	if _, err := ProduceRevealForEpoch(3); !errors.Is(err, ErrNoNodeIdentity) {
+		t.Fatalf("producing a reveal with no installed identity must fail closed, got %v", err)
 	}
 }
 
 func TestProduceRevealForEpoch_NotSeated_ReturnsError(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
 	priv, id := newTestIdentity(t)
-	_, seatedID := newTestIdentity(t)
-
+	kr := withRevealKeyring(t)
+	kr.add(id)
+	kr.add("peer-seated")
+	kr.setMembers(3, "peer-seated") // a committee of one, and it isn't us
 	withNodeIdentity(t, priv, id)
-	withBeaconEntropy(t, map[uint64][]byte{3: fakeEntropy(0xAB, 32)})
-	wireEligibilityWithPeers(t, []string{seatedID}) // pool of one, and it isn't us
+	kr.useKeyOf(t, id)
 
-	if _, err := ProduceRevealForEpoch(3); err == nil {
-		t.Fatal("a node not on the entropy committee must not produce a reveal")
+	if _, err := ProduceRevealForEpoch(3); !errors.Is(err, ErrNotOnEntropyCommittee) {
+		t.Fatalf("a node not on the entropy committee must not produce a reveal, got %v", err)
 	}
 }
 
@@ -324,25 +314,28 @@ func TestProduceRevealForEpoch_NotSeated_ReturnsError(t *testing.T) {
 func TestProduceRevealForEpoch_RoundTripsThroughFold(t *testing.T) {
 	resetEntropyAccumulatorStore(t)
 	priv, id := newTestIdentity(t)
-
+	kr := withRevealKeyring(t)
+	kr.add(id)
 	withNodeIdentity(t, priv, id)
-	withBeaconEntropy(t, map[uint64][]byte{5: fakeEntropy(0xCD, 32)})
-	wireEligibilityWithPeers(t, []string{id})
+	kr.useKeyOf(t, id)
 
 	seated, err := SelfOnEntropyCommittee(5)
 	if err != nil {
 		t.Fatalf("SelfOnEntropyCommittee: %v", err)
 	}
 	if !seated {
-		t.Fatal("the only eligible peer must be seated on the entropy committee")
+		t.Fatal("the only member must be seated on the entropy committee")
 	}
 
 	sig, err := ProduceRevealForEpoch(5)
 	if err != nil {
 		t.Fatalf("ProduceRevealForEpoch: %v", err)
 	}
-	if len(sig) != randao.Ed25519SigLen {
-		t.Fatalf("reveal is %d bytes, want %d", len(sig), randao.Ed25519SigLen)
+	if len(sig) != randao.BLSRevealLen {
+		t.Fatalf("reveal is %d bytes, want %d", len(sig), randao.BLSRevealLen)
+	}
+	if string(sig) != string(kr.reveal(id, 5)) {
+		t.Fatal("produced reveal is not the member's BLS reveal")
 	}
 
 	// Determinism: re-producing after a simulated restart must give the same
@@ -370,5 +363,27 @@ func TestProduceRevealForEpoch_RoundTripsThroughFold(t *testing.T) {
 	}
 	if !acc.Complete() {
 		t.Fatal("the single expected member revealed, so the epoch must be complete (mix, not fallback)")
+	}
+}
+
+// A seated node whose BLS key is not the one its snapshot binds must not stay
+// silent: the push path reports the mismatch instead of "nothing to push".
+func TestPushOwnRevealForSlot_KeyMismatchIsReported(t *testing.T) {
+	resetEntropyAccumulatorStore(t)
+	resetRevealInbox(t)
+	priv, id := newTestIdentity(t)
+	_, proposerID := newTestIdentity(t)
+	proposer, err := peer.Decode(proposerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kr := withRevealKeyring(t)
+	kr.add(id)
+	kr.add("peer-other")
+	withNodeIdentity(t, priv, id)
+	kr.useKeyOf(t, "peer-other") // this node holds the wrong key
+
+	if err := PushOwnRevealForSlot(9*N, proposer); !errors.Is(err, ErrRevealBLSKeyMismatch) {
+		t.Fatalf("err = %v, want ErrRevealBLSKeyMismatch", err)
 	}
 }

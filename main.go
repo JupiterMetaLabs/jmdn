@@ -1552,18 +1552,16 @@ func main() {
 	messaging.SetHostInstance(n.Host)
 	profiler.RegisterHost(n.Host)
 
-	// AVC M4 Decision A — install this node's ed25519 identity so it can
-	// produce RANDAO reveals when it is drawn onto an entropy committee
-	// (Architecture §4.3). Added 2026-08-20; without this, ProduceRevealForEpoch
-	// has no key, so this node is counted as withheld in every epoch it is
-	// seated for, taking the whole epoch to fallback under Rule 1.
+	// AVC M4 Decision A — install this node's peer ID so it can produce RANDAO
+	// reveals when it is drawn onto an entropy committee (Architecture §4.3).
+	// Without this, ProduceRevealForEpoch has no identity, so this node is
+	// counted as withheld in every epoch it is seated for, taking the whole
+	// epoch to fallback under Rule 1.
 	//
-	// The key is the node's EXISTING libp2p identity, read back from the
-	// peerstore rather than threaded down from node.NewNode — no new key
-	// material and no new provisioning step. That reuse is safe because reveal
-	// signatures are domain-separated (randao.RevealMessage) from every other
-	// use of this key, and it is what lets any peer verify a reveal with no key
-	// directory at all: an ed25519 peer ID self-certifies its own public key.
+	// Before the chain's entropy cut-over (messaging/entropy_cutover.go) the
+	// reveal is an Ed25519 signature with this libp2p key; from the cut-over it
+	// is a BLS signature under the node's committee BLS key (A-2), and the
+	// libp2p key only proves the peer ID is this node's own.
 	//
 	// Non-fatal on failure. A node that cannot install an identity still
 	// validates, votes and commits normally; it simply cannot contribute

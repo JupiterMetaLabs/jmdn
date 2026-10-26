@@ -1,6 +1,7 @@
 package blssign
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 
 	"go.dedis.ch/dela/crypto"
 	"go.dedis.ch/dela/crypto/bls"
+	"go.dedis.ch/kyber/v3"
+	"go.dedis.ch/kyber/v3/pairing/bn256"
 )
 
 //
@@ -42,36 +45,71 @@ const (
 )
 
 var (
-	// ErrBadPublicKey rejects a key of the wrong length or the identity point.
-	ErrBadPublicKey = errors.New("bls: public key must be 128 bytes and not the identity point")
-	// ErrBadSignature rejects a signature of the wrong length or the identity point.
-	ErrBadSignature = errors.New("bls: signature must be 64 bytes and not the identity point")
+	// ErrBadPublicKey rejects a key of the wrong length, the identity point, a
+	// point not on the curve, or a non-canonical encoding.
+	ErrBadPublicKey = errors.New("bls: public key must be a canonical 128-byte encoding and not the identity point")
+	// ErrBadSignature rejects a signature of the wrong length, the identity
+	// point, a point not on the curve, or a non-canonical encoding.
+	ErrBadSignature = errors.New("bls: signature must be a canonical 64-byte encoding and not the identity point")
 )
 
-// checkPoint enforces the exact encoded length and rejects the identity point,
-// which encodes as all zeros. The identity key paired with the identity
-// signature verifies EVERY message, and the decoder ignores trailing bytes, so
-// without this a malformed key or signature could pass as valid. Every caller
-// (votes, committee snapshots and their PoP, checkpoints, entropy aggregates)
-// gets the check (2026-10-22 audit, A-6).
-func checkPoint(b []byte, n int, errBad error) error {
+// suite is the pairing dela's bls package signs on: signatures in G1, public
+// keys in G2.
+var suite = bn256.NewSuite()
+
+func checkPublicKey(b []byte) error {
+	return checkPoint(b, PublicKeyLen, ErrBadPublicKey, suite.G2().Point)
+}
+
+func checkSignature(b []byte) error {
+	return checkPoint(b, SignatureLen, ErrBadSignature, suite.G1().Point)
+}
+
+// checkPoint enforces the exact encoded length, rejects the identity point
+// (all zeros), and requires the one canonical encoding of the point. The
+// identity key paired with the identity signature verifies EVERY message, and
+// the decoder ignores trailing bytes, so without the first two checks a
+// malformed key or signature could pass as valid. Every caller (votes,
+// committee snapshots and their PoP, checkpoints, entropy aggregates, RANDAO
+// reveals) gets the check (2026-10-22 audit, A-6).
+//
+// The canonical check is decode, re-encode, compare. kyber's BN256 decoder
+// does not check that a coordinate is below the field prime p, so x and x+p
+// (whenever x+p < 2^256) decode to the same point: different bytes, same
+// valid signature. A vote record keyed by its signature, or a RANDAO reveal
+// hashed into the mix, would then have several valid values for one signer.
+// Same check as avc/bls (A-2 work, LLD §6.2).
+func checkPoint(b []byte, n int, errBad error, newPoint func() kyber.Point) error {
 	if len(b) != n {
 		return errBad
 	}
+	zero := true
 	for _, x := range b {
 		if x != 0 {
-			return nil
+			zero = false
+			break
 		}
 	}
-	return errBad
+	if zero {
+		return errBad
+	}
+	pt := newPoint()
+	if err := pt.UnmarshalBinary(b); err != nil {
+		return fmt.Errorf("%w: %v", errBad, err)
+	}
+	out, err := pt.MarshalBinary()
+	if err != nil || !bytes.Equal(out, b) {
+		return fmt.Errorf("%w: non-canonical encoding", errBad)
+	}
+	return nil
 }
 
 // BLSVerify verifies (pubKey, message, signature).
 func BLSVerify(pubKey, message, signature []byte) error {
-	if err := checkPoint(pubKey, PublicKeyLen, ErrBadPublicKey); err != nil {
+	if err := checkPublicKey(pubKey); err != nil {
 		return err
 	}
-	if err := checkPoint(signature, SignatureLen, ErrBadSignature); err != nil {
+	if err := checkSignature(signature); err != nil {
 		return err
 	}
 	pk, err := bls.NewPublicKey(pubKey)
@@ -108,12 +146,12 @@ func BLSFastAggregateVerify(pubKeys [][]byte, message, aggSig []byte) (bool, err
 	if len(pubKeys) == 0 {
 		return false, errors.New("no pubkeys provided")
 	}
-	if err := checkPoint(aggSig, SignatureLen, ErrBadSignature); err != nil {
+	if err := checkSignature(aggSig); err != nil {
 		return false, err
 	}
 	pubs := make([]crypto.PublicKey, len(pubKeys))
 	for i, p := range pubKeys {
-		if err := checkPoint(p, PublicKeyLen, ErrBadPublicKey); err != nil {
+		if err := checkPublicKey(p); err != nil {
 			return false, err
 		}
 		pk, err := bls.NewPublicKey(p)

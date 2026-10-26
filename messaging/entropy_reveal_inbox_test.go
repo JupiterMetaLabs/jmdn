@@ -4,11 +4,11 @@ package messaging
 // missing between "a reveal can be produced" and "a reveal reaches the fold".
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/JupiterMetaLabs/avc/randao"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
 )
 
@@ -21,31 +21,27 @@ func resetRevealInbox(t *testing.T) {
 
 func TestAddInboundReveal_AcceptsValidRejectsInvalid(t *testing.T) {
 	resetRevealInbox(t)
-	priv, id := newTestIdentity(t)
-	_, otherID := newTestIdentity(t)
-	chainID := BLS_Signer.DomainChainID()
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	kr.add("peer-b")
+	good := kr.reveal("peer-a", 4)
 
-	good, err := randao.SignReveal(priv, chainID, 4, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
-
-	if err := AddInboundReveal(4, id, good); err != nil {
+	if err := AddInboundReveal(4, "peer-a", good); err != nil {
 		t.Fatalf("a valid reveal was rejected: %v", err)
 	}
 	if got := InboxCountForEpoch(4); got != 1 {
 		t.Fatalf("inbox has %d, want 1", got)
 	}
 
-	// Wrong epoch, wrong claimed peer, junk bytes, empty peer — all must fail.
-	if err := AddInboundReveal(5, id, good); err == nil {
+	// Wrong epoch, wrong claimed peer, identity point, empty peer — all must fail.
+	if err := AddInboundReveal(5, "peer-a", good); err == nil {
 		t.Fatal("a reveal for epoch 4 must not be accepted as epoch 5")
 	}
-	if err := AddInboundReveal(4, otherID, good); err == nil {
+	if err := AddInboundReveal(4, "peer-b", good); err == nil {
 		t.Fatal("one peer's reveal must not be accepted under another peer's ID")
 	}
-	if err := AddInboundReveal(4, id, make([]byte, randao.Ed25519SigLen)); err == nil {
-		t.Fatal("a zero signature must not be accepted")
+	if err := AddInboundReveal(4, "peer-a", make([]byte, randao.BLSRevealLen)); err == nil {
+		t.Fatal("a zero (identity-point) signature must not be accepted")
 	}
 	if err := AddInboundReveal(4, "", good); err == nil {
 		t.Fatal("an empty peer ID must be rejected")
@@ -56,13 +52,11 @@ func TestAddInboundReveal_AcceptsValidRejectsInvalid(t *testing.T) {
 // window, so the same reveal arrives repeatedly by design.
 func TestAddInboundReveal_IdenticalRedeliveryIsNoOp(t *testing.T) {
 	resetRevealInbox(t)
-	priv, id := newTestIdentity(t)
-	sig, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), 4, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	sig := kr.reveal("peer-a", 4)
 	for i := 0; i < 5; i++ {
-		if err := AddInboundReveal(4, id, sig); err != nil {
+		if err := AddInboundReveal(4, "peer-a", sig); err != nil {
 			t.Fatalf("re-delivery %d rejected: %v", i, err)
 		}
 	}
@@ -75,12 +69,9 @@ func TestAddInboundReveal_IdenticalRedeliveryIsNoOp(t *testing.T) {
 // after the cutoff is one Finalise() has already stopped waiting for.
 func TestRevealsForBlock_OnlyInsideTheRevealWindow(t *testing.T) {
 	resetRevealInbox(t)
-	priv, id := newTestIdentity(t)
-	sig, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), 3, id)
-	if err != nil {
-		t.Fatalf("SignReveal: %v", err)
-	}
-	if err := AddInboundReveal(3, id, sig); err != nil {
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	if err := AddInboundReveal(3, "peer-a", kr.reveal("peer-a", 3)); err != nil {
 		t.Fatalf("AddInboundReveal: %v", err)
 	}
 
@@ -90,11 +81,11 @@ func TestRevealsForBlock_OnlyInsideTheRevealWindow(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("slot %d (inside the window) returned %d reveals, want 1", slot, len(got))
 		}
-		if got[0].ProposerID != id {
-			t.Fatalf("slot %d returned proposer %q, want %q", slot, got[0].ProposerID, id)
+		if got[0].ProposerID != "peer-a" {
+			t.Fatalf("slot %d returned proposer %q, want %q", slot, got[0].ProposerID, "peer-a")
 		}
-		if len(got[0].Secret) != randao.Ed25519SigLen {
-			t.Fatalf("reveal is %d bytes, want %d", len(got[0].Secret), randao.Ed25519SigLen)
+		if len(got[0].Secret) != randao.BLSRevealLen {
+			t.Fatalf("reveal is %d bytes, want %d", len(got[0].Secret), randao.BLSRevealLen)
 		}
 	}
 
@@ -111,19 +102,16 @@ func TestRevealsForBlock_OnlyInsideTheRevealWindow(t *testing.T) {
 // byte.
 func TestRevealsForBlock_SortedByPeerID(t *testing.T) {
 	resetRevealInbox(t)
-	chainID := BLS_Signer.DomainChainID()
+	kr := withRevealKeyring(t)
 
-	ids := make([]string, 0, 5)
-	for i := 0; i < 5; i++ {
-		priv, id := newTestIdentity(t)
-		sig, err := randao.SignReveal(priv, chainID, 2, id)
-		if err != nil {
-			t.Fatalf("SignReveal: %v", err)
-		}
-		if err := AddInboundReveal(2, id, sig); err != nil {
+	ids := []string{"peer-d", "peer-b", "peer-e", "peer-a", "peer-c"} // added out of order
+	for _, id := range ids {
+		kr.add(id)
+	}
+	for _, id := range ids {
+		if err := AddInboundReveal(2, id, kr.reveal(id, 2)); err != nil {
 			t.Fatalf("AddInboundReveal: %v", err)
 		}
-		ids = append(ids, id)
 	}
 
 	got := RevealsForBlock(uint64(2) * N)
@@ -147,14 +135,11 @@ func TestRevealsForBlock_SortedByPeerID(t *testing.T) {
 
 func TestPruneRevealsBelow_DropsClosedEpochs(t *testing.T) {
 	resetRevealInbox(t)
-	chainID := BLS_Signer.DomainChainID()
+	kr := withRevealKeyring(t)
 	for epoch := uint64(1); epoch <= 5; epoch++ {
-		priv, id := newTestIdentity(t)
-		sig, err := randao.SignReveal(priv, chainID, epoch, id)
-		if err != nil {
-			t.Fatalf("SignReveal: %v", err)
-		}
-		if err := AddInboundReveal(epoch, id, sig); err != nil {
+		id := fmt.Sprintf("peer-%d", epoch)
+		kr.add(id)
+		if err := AddInboundReveal(epoch, id, kr.reveal(id, epoch)); err != nil {
 			t.Fatalf("AddInboundReveal: %v", err)
 		}
 	}
@@ -173,17 +158,17 @@ func TestPruneRevealsBelow_DropsClosedEpochs(t *testing.T) {
 	}
 }
 
-// End to end through the real production path: install an identity, be the sole
-// eligible peer, and confirm the reveal makes it all the way from
+// End to end through the real production path: install an identity and a BLS
+// key, be the sole member, and confirm the reveal makes it all the way from
 // ProduceRevealForEpoch into what a block would declare, and then folds.
 func TestEndToEnd_ProduceToBlockToFold(t *testing.T) {
 	resetRevealInbox(t)
 	resetEntropyAccumulatorStore(t)
 	priv, id := newTestIdentity(t)
-
+	kr := withRevealKeyring(t)
+	kr.add(id)
 	withNodeIdentity(t, priv, id)
-	withBeaconEntropy(t, map[uint64][]byte{6: fakeEntropy(0x5A, 32)})
-	wireEligibilityWithPeers(t, []string{id})
+	kr.useKeyOf(t, id)
 
 	// Block assembly at a slot inside epoch 6's reveal window.
 	slot := uint64(6) * N

@@ -14,28 +14,25 @@ package messaging
 // ordering to get wrong — which is why this is a small file rather than the
 // secret-store subsystem the old design needed.
 //
-// # What is wired, and the one seam that is not
+// # Who calls it
 //
-// ProduceRevealForEpoch is complete: it decides whether this node is on the
-// epoch's entropy committee and, if so, returns the exact bytes to publish.
-// What does NOT exist yet is the transport that carries that value into a
-// proposed block (Architecture §4.4's RevealPush, and the block-assembly step
-// that fills config.ZKBlock.RandaoReveals). Until that lands, nothing calls
-// this in production and block.RandaoReveals stays empty — the same
-// honest-inert state every other M4 stage is in.
+// ProduceRevealForEpoch decides whether this node is on the epoch's entropy
+// committee and, if so, returns the exact bytes to publish. Two callers carry
+// them on: ensureSelfReveal files them in this node's own inbox, for blocks it
+// proposes (entropy_reveal_inbox.go), and RevealPush sends them to the slot's
+// proposer (entropy_reveal_push.go).
 //
 // Deliberately NOT done here: attaching to a block. That belongs with the
-// proposal path, and faking it (e.g. writing into a block struct this package
-// happens to see) would create a reveal path that bypasses §4.4's delivery
-// design entirely.
+// proposal path (RevealsForBlock), so every reveal reaches a block through the
+// verified inbox.
 import (
 	"errors"
 	"fmt"
 	"sync"
 
-	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 	ic "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 )
@@ -54,25 +51,27 @@ var ErrNotOnEntropyCommittee = errors.New("messaging: this node is not on the en
 // Node identity registration. Same install-at-startup pattern as
 // SetBeaconSource — messaging cannot reach into the node package (which
 // already depends on messaging), so the owner registers itself here.
+//
+// The libp2p key signs this node's reveals for epochs BEFORE the entropy
+// cut-over (Ed25519, self-certified by the peer ID). From the cut-over on,
+// reveals are signed with the committee BLS key (entropy_reveal_bls.go) and
+// the libp2p key only proves the peer ID is this node's own.
 var (
 	nodeIdentityMu   sync.RWMutex
 	nodeIdentityPriv ic.PrivKey
 	nodeIdentityPeer string
 )
 
-// SetNodeIdentity installs this node's libp2p identity — the same key pair
-// node/node.go creates with crypto.GenerateKeyPair(crypto.Ed25519, 0), and the
-// peer ID derived from it.
+// ErrNodeIdentityMismatch means the private key passed to SetNodeIdentity does
+// not derive the peer ID passed with it.
+var ErrNodeIdentityMismatch = errors.New("messaging: private key does not match the peer ID")
+
+// SetNodeIdentity installs this node's libp2p peer ID — the identity its
+// reveals are filed under and its entropy-committee seat is looked up by.
 //
-// It is the ed25519 identity key, reused rather than a new key: the peer ID
-// self-certifies it, so no registration or key-distribution step is needed for
-// other nodes to verify this node's reveals. Domain separation
-// (randao.RevealMessage's tag) is what keeps that reuse safe against a reveal
-// signature being replayable as libp2p handshake auth.
-//
-// Call once at startup. Passing a nil key or empty peer ID is rejected rather
-// than stored, so a misconfigured caller fails here instead of producing
-// unverifiable reveals later.
+// priv must be the libp2p (ed25519) key that peerID is derived from; a
+// mismatch is refused, so a misconfigured caller fails at startup instead of
+// revealing under someone else's peer ID. Call once at startup.
 func SetNodeIdentity(priv ic.PrivKey, peerID string) error {
 	if priv == nil {
 		return fmt.Errorf("%w: nil private key", ErrNoNodeIdentity)
@@ -80,9 +79,17 @@ func SetNodeIdentity(priv ic.PrivKey, peerID string) error {
 	if peerID == "" {
 		return fmt.Errorf("%w: empty peer ID", ErrNoNodeIdentity)
 	}
-	// Verify the pair actually matches before storing it. randao.SignReveal
-	// checks this too, but catching it at install time turns a
-	// silently-rejected-every-epoch failure into a startup error.
+	derived, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		return fmt.Errorf("messaging: refusing to install node identity: %w", err)
+	}
+	if derived.String() != peerID {
+		return fmt.Errorf("messaging: refusing to install node identity: %w (key gives %s, claimed %s)",
+			ErrNodeIdentityMismatch, derived, peerID)
+	}
+	// The key must also be able to sign a pre-cut-over (Ed25519) reveal;
+	// catching that here turns a silently-rejected-every-epoch failure into a
+	// startup error.
 	if _, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), 0, peerID); err != nil {
 		return fmt.Errorf("messaging: refusing to install node identity: %w", err)
 	}
@@ -94,29 +101,41 @@ func SetNodeIdentity(priv ic.PrivKey, peerID string) error {
 	return nil
 }
 
-// nodeIdentity returns the installed identity, or an error if none is.
-func nodeIdentity() (ic.PrivKey, string, error) {
+// nodeIdentityKey returns the installed libp2p key, for pre-cut-over reveals.
+func nodeIdentityKey() (ic.PrivKey, error) {
 	nodeIdentityMu.RLock()
 	defer nodeIdentityMu.RUnlock()
-	if nodeIdentityPriv == nil || nodeIdentityPeer == "" {
-		return nil, "", ErrNoNodeIdentity
+	if nodeIdentityPriv == nil {
+		return nil, ErrNoNodeIdentity
 	}
-	return nodeIdentityPriv, nodeIdentityPeer, nil
+	return nodeIdentityPriv, nil
+}
+
+// nodeIdentity returns the installed peer ID, or an error if none is.
+func nodeIdentity() (string, error) {
+	nodeIdentityMu.RLock()
+	defer nodeIdentityMu.RUnlock()
+	if nodeIdentityPeer == "" {
+		return "", ErrNoNodeIdentity
+	}
+	return nodeIdentityPeer, nil
 }
 
 // SelfOnEntropyCommittee reports whether this node is one of epoch's m
 // revealers.
 //
-// Derived by running the same SelectEntropyCommittee draw every other node
-// runs — never transmitted, never trusted from a peer. That is the same
-// "committee is derived, never received" property block-committee selection
-// already relies on (Communication-Flow Stage 3).
+// Derived by running the same committee draw every other node runs
+// (revealCommitteeFor: the anchored committee from the cut-over on) — never
+// transmitted, never trusted from a peer. That is the same "committee is
+// derived, never received" property block-committee selection already relies
+// on (Communication-Flow Stage 3). A BLS epoch with no anchored pool returns
+// an error: nobody is expected to reveal in it.
 func SelfOnEntropyCommittee(epoch uint64) (bool, error) {
-	_, peerID, err := nodeIdentity()
+	peerID, err := nodeIdentity()
 	if err != nil {
 		return false, err
 	}
-	members, err := SelectEntropyCommittee(committee.EntropyEpoch(epoch))
+	members, err := revealCommitteeFor(epoch)
 	if err != nil {
 		return false, err
 	}
@@ -129,7 +148,8 @@ func SelfOnEntropyCommittee(epoch uint64) (bool, error) {
 }
 
 // ProduceRevealForEpoch returns this node's reveal for epoch — the 64-byte
-// ed25519 signature to publish — or an error explaining why it has none.
+// signature to publish (Ed25519 before the cut-over, BLS from it) — or an
+// error explaining why it has none.
 //
 // Deterministic: calling it repeatedly within an epoch returns identical bytes.
 // That is the property that makes retrying safe, and it is what lets §4.4's
@@ -138,11 +158,12 @@ func SelfOnEntropyCommittee(epoch uint64) (bool, error) {
 // that same retry pattern would have needed the persisted secret to still be
 // there.
 //
-// Fails closed in every branch: no identity, no resolvable committee, or not
-// seated all return an error and no bytes. There is no path here that returns
-// a reveal this node cannot prove.
+// Fails closed in every branch: no identity, no resolvable committee, not
+// seated, or a BLS key that is not the one the snapshot binds all return an
+// error and no bytes. There is no path here that returns a reveal this node
+// cannot prove.
 func ProduceRevealForEpoch(epoch uint64) ([]byte, error) {
-	priv, peerID, err := nodeIdentity()
+	peerID, err := nodeIdentity()
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +176,19 @@ func ProduceRevealForEpoch(epoch uint64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: epoch %d", ErrNotOnEntropyCommittee, epoch)
 	}
 
+	// A-2: from the cut-over the reveal is a BLS signature under the
+	// committee BLS key (entropy_reveal_bls.go).
+	if afterEntropyCutover(epoch) {
+		sig, err := produceBLSReveal(epoch, peerID)
+		if err != nil {
+			return nil, fmt.Errorf("messaging: producing BLS reveal for epoch %d: %w", epoch, err)
+		}
+		return sig, nil
+	}
+	priv, err := nodeIdentityKey()
+	if err != nil {
+		return nil, err
+	}
 	sig, err := randao.SignReveal(priv, BLS_Signer.DomainChainID(), epoch, peerID)
 	if err != nil {
 		return nil, fmt.Errorf("messaging: producing reveal for epoch %d: %w", epoch, err)
@@ -168,10 +202,11 @@ var (
 	// ErrEmptyRevealPeer means a reveal arrived with no claimed peer ID.
 	ErrEmptyRevealPeer = errors.New("messaging: reveal has no proposer ID (fail closed)")
 
-	// ErrRevealDidNotVerify means the ed25519 check failed. Under Decision A a
-	// reveal is a signature over a fixed, epoch-bound message, so this is a
-	// protocol violation — not a transient condition.
-	ErrRevealDidNotVerify = errors.New("messaging: reveal failed ed25519 verification (fail closed)")
+	// ErrRevealDidNotVerify means the epoch's reveal check failed (Ed25519
+	// before the entropy cut-over, BLS from it). A reveal is a signature over a
+	// fixed, epoch-bound message, so this is a protocol violation — not a
+	// transient condition.
+	ErrRevealDidNotVerify = errors.New("messaging: reveal failed verification (fail closed)")
 
 	// ErrRevealEpochOutOfWindow means a reveal names an epoch too far from
 	// this node's current one to be useful.

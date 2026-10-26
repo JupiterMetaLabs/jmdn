@@ -52,7 +52,9 @@ func resetFinaliseTracking(t *testing.T) {
 func TestDecideEpoch_FallbackOutcomeBecomesPendingNotImmediatelyResolved(t *testing.T) {
 	resetFinaliseTracking(t)
 	resetEntropyAccumulatorStore(t)
-	wireEligibilityWithPeers(t, []string{"peer-a", "peer-b"}) // 2 expected, none revealed -> fallback
+	kr := withRevealKeyring(t)
+	kr.add("peer-a")
+	kr.add("peer-b") // 2 expected, none revealed -> fallback
 	withBeaconEntropy(t, map[uint64][]byte{20: fakeEntropy(0x11, 32)})
 
 	var notified bool
@@ -81,7 +83,9 @@ func TestDecideEpoch_MixedOutcomeFinalisesImmediately(t *testing.T) {
 	resetRevealInbox(t)
 	priv, id := newTestIdentity(t)
 	withNodeIdentity(t, priv, id)
-	wireEligibilityWithPeers(t, []string{id})
+	kr := withRevealKeyring(t)
+	kr.add(id)
+	kr.useKeyOf(t, id)
 	withBeaconEntropy(t, map[uint64][]byte{21: fakeEntropy(0x22, 32)})
 
 	declared := RevealsForBlock(uint64(21) * N)

@@ -175,6 +175,9 @@ consensus:
   seed_authority_bls_pub: ""
   # Optional: pin the sequencer peer ID explicitly (wins over the seed value).
   sequencer_pinned_peer_id: ""
+  # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
+  # has one valid output per input, always. It requires
+  # committee_anchor_activation_height and refuses to install without it.
   flags:
     committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
     committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.

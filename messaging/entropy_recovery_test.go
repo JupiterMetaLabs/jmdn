@@ -2,7 +2,7 @@ package messaging
 
 // Restart-recovery tests for the entropy pipeline (entropy_recovery.go).
 //
-// The harness drives the REAL pipeline: real ed25519 identities and reveals,
+// The harness drives the REAL pipeline: real node identities and BLS reveals,
 // real randao Accumulators, the real decide/fallback code and the real mix
 // store. Only storage (the mix KV) and the chain (a height->block map) are
 // in-memory. A "restart" wipes every piece of process memory the pipeline
@@ -13,6 +13,7 @@ package messaging
 //   epoch 8: reveal window slots 400..402, cutoff 403
 
 import (
+	"encoding/hex"
 	"errors"
 	"sync"
 	"testing"
@@ -34,6 +35,7 @@ type entropyWorld struct {
 	t       *testing.T
 	privs   []ic.PrivKey
 	ids     []string
+	keys    *revealKeyring
 	blocks  map[uint64]*config.ZKBlock
 	stored  uint64 // highest height in the "database"
 	mu      sync.Mutex
@@ -76,7 +78,10 @@ func newEntropyWorld(t *testing.T) *entropyWorld {
 	t.Cleanup(disarmEntropyRecovery)
 
 	withBeaconEntropy(t, map[uint64][]byte{7: fakeEntropy(0x77, 32), 8: fakeEntropy(0x88, 32)})
-	wireEligibilityWithPeers(t, w.ids)
+	w.keys = withRevealKeyring(t)
+	for _, id := range w.ids {
+		w.keys.add(id)
+	}
 
 	prevPersist, prevLoad := entropyMixPersist, entropyMixLoad
 	entropyMixPersist = func(e uint64, s randao.Seed, _ string) error {
@@ -127,17 +132,26 @@ func newEntropyWorld(t *testing.T) *entropyWorld {
 	return w
 }
 
-// revealFor produces member m's reveal through the production path.
+// revealFor produces member m's reveal through the production path, as that
+// member: its node identity and its BLS key.
 func (w *entropyWorld) revealFor(m int, epoch uint64) []byte {
 	w.t.Helper()
 	nodeIdentityMu.Lock()
 	sp, si := nodeIdentityPriv, nodeIdentityPeer
 	nodeIdentityMu.Unlock()
+	prevKey := loadRevealBLSKey
 	defer func() {
 		nodeIdentityMu.Lock()
 		nodeIdentityPriv, nodeIdentityPeer = sp, si
 		nodeIdentityMu.Unlock()
+		loadRevealBLSKey = prevKey
 	}()
+	k := w.keys.keys[w.ids[m]]
+	pub, err := hex.DecodeString(k.pubHex)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	loadRevealBLSKey = func() ([]byte, []byte, error) { return k.priv, pub, nil }
 	if err := SetNodeIdentity(w.privs[m], w.ids[m]); err != nil {
 		w.t.Fatal(err)
 	}
