@@ -227,6 +227,30 @@ jobs:
       - name: golangci-lint (tests + all tags)
         run: golangci-lint run --tests --build-tags "${{ env.ALL_TAGS }}" --timeout 15m
 
+      # Telemetry convention backlog. The PR gate (ci.yml) blocks NEW violations
+      # diff-only; this counts what is still outstanding, so the burn-down is
+      # visible without anyone running a local scan. Informational by the same
+      # rule as the scanners below.
+      - name: Telemetry conventions (full tree, informational)
+        continue-on-error: true
+        run: |
+          golangci-lint run --config .golangci-telemetry.yml \
+            --tests --build-tags "${{ env.ALL_TAGS }}" --timeout 15m \
+            2>&1 | tee telemetry-backlog.txt || true
+          {
+            echo "### Telemetry convention backlog"
+            echo ""
+            echo "| rule | outstanding |"
+            echo "|---|---:|"
+            # Parse golangci-lint's own summary line ("* forbidigo: 3").
+            # grep -c would over-count: it matches the summary line itself, and
+            # every source line containing the linter name — including each
+            # //nolint:forbidigo exemption, so the error would grow with the
+            # manifest.
+            echo "| depguard (zerolog / zap imports) | $(sed -n 's/^\* depguard: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
+            echo "| forbidigo (print family, zerolog calls) | $(sed -n 's/^\* forbidigo: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The full staticcheck suite is staged for the PR gate (see .golangci.yml);
       # until then it runs here, informational.
       - name: staticcheck (full SA/ST/S/QF suite)
@@ -252,7 +276,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: static-analysis
-          path: deadcode-*.txt
+          path: |
+            deadcode-*.txt
+            telemetry-backlog.txt
           if-no-files-found: ignore
 
   # ── Tests: every mode we care about, each as its own matrix leg ─────────
