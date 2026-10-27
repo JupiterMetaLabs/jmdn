@@ -5,7 +5,7 @@ go 1.27.0
 toolchain go1.27.3
 
 require (
-	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.5
+	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.6
 	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4
 	github.com/JupiterMetaLabs/avc v0.1.0-v3base.8
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
