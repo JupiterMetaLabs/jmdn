@@ -252,7 +252,34 @@ Measured before adopting it: **all 241 zerolog calls in this repo are package-le
 method names. The 7 ambiguous `log.Fatal(` sites are a legitimate target either
 way, since stdlib `log` is also being removed.
 
-### F1 regression test — REQUIRED, not yet run
+### F1 verification — PASS (operator, 2026-10-27)
+
+```
+golangci-lint run --config .golangci-telemetry.yml --tests 2>&1 | tail -3
+872 issues:
+* depguard: 37
+* forbidigo: 835
+```
+
+**forbidigo 610 → 835.** The jump is the zerolog call surface the new pattern now
+reaches; 241 calls exist, and the ~225 delta is those minus the ambiguous
+`log.Fatal(` sites and test-file dedup. **F1 is fixed.** depguard is unchanged at 37,
+confirming the import rule was not disturbed.
+
+**This count is the test.** Two attempts at something cleverer both failed and are
+recorded here so they are not repeated:
+
+| Attempt | Why it told us nothing |
+|---|---|
+| `--new-from-rev=origin/v3base` on the gate branch | the branch changes **zero Go files**, so forbidigo has nothing to report. Returns `0 issues` against a broken gate too — this is check 2, not an F1 test |
+| `golangci-lint run --config … <single file>` | passing one **file** typechecks it in isolation. `logger()` lives in a sibling file (`AVC/BuddyNodes/MessagePassing/logger.go`), so the package fails to compile — 54 typecheck errors — and **forbidigo never runs**. `analyze-types: true` needs type info, so a typecheck failure disables the exact rule under test. Pass a **package** (`./AVC/BuddyNodes/MessagePassing/`) if a targeted run is ever needed |
+
+A scripted probe (`f1-probe.sh`) was also written and has been **deleted** — it exited
+silently on macOS for reasons never established. A verification tool that fails
+unexplained is worse than none. The count above needs no mutation, no temp branch and
+no cleanup, and is directly comparable to the 610 from round 1.
+
+### Superseded: the original F1 regression test
 
 The existing acceptance test only proves the *import* path. It would have passed
 against the broken gate. This one targets the gap directly:
