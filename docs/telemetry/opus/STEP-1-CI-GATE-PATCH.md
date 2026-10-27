@@ -1,5 +1,20 @@
 # Step 1 — the telemetry CI gate
 
+> ## ⚠ IMPLEMENTED AND SUPERSEDED — this is the original proposal, kept as a record
+>
+> The gate shipped in **#261** and is **BLOCKING**, not advisory. The operator removed the
+> advisory window on 2026-10-27: there was no technical reason to let regressions keep landing
+> while people got used to it. The `2026-11-09` flip date in the diffs below was invented by
+> me and is withdrawn.
+>
+> The gate also now covers the **zerolog call surface**, not just imports — review finding F1,
+> which the diffs below predate.
+>
+> **Do not follow the diffs in this document.** For what is actually deployed, read
+> `.github/workflows/ci.yml` and `docs/telemetry/VALIDATION.md`. This file is retained because
+> the reasoning — why a separate config, why per-call-site exemptions rather than a path
+> allowlist — is still the rationale for the design that shipped.
+
 **Rebased 2026-10-26 onto `ab4f5013`.** Supersedes the 2026-10-13 draft, which was written against `efa45013` and is stale in three ways: Patch 1 has shipped, the linter pin moved `v2.10.1` → **`v2.15.0`**, and a **`nightly.yml`** now exists that is a better home for the full-tree scan than anything the original proposed.
 
 **Prerequisite:** none. **Blocks:** nothing. **Stops:** the one telemetry metric moving backwards (zerolog 224 → 239 calls, 34 → 36 files, against a surface that shrank 8–13% everywhere else).

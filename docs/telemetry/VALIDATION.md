@@ -17,7 +17,7 @@ Go toolchain and no `golangci-lint`, so **the config schema is unverified agains
 | Check | Result |
 |---|---|
 | All three YAML files parse (`yaml.safe_load`) | ✅ |
-| Telemetry step is in `quality-gate`, is last, `continue-on-error: true` | ✅ |
+| Telemetry step is in `quality-gate`, is last | ✅ *(it carried `continue-on-error: true` at the time of this check; the gate is **blocking** as shipped — see the rollout table)* |
 | `checkout` carries `fetch-depth: 0` | ✅ |
 | Nightly step sits in `static`, between lint and staticcheck | ✅ |
 | Makefile recipes use real tabs; `.PHONY` updated | ✅ |
@@ -103,7 +103,7 @@ nothing, which is worse than no step at all.
 |---|---|
 | Gate above passes | Open the PR against **`v3base`** |
 | First PR merged | Confirm points 1–4 on a live PR |
-| **2026-11-09** | Flip `continue-on-error: false` in `ci.yml`. The date is in the file |
+| **At merge** | Gate is **blocking**. Operator decision 2026-10-27: no advisory window, because there is no technical reason to let regressions keep landing while people get used to it. The earlier 2026-11-09 flip date was invented and is withdrawn |
 
 **Rollback:** delete `.golangci-telemetry.yml` and revert the two workflow steps. No code change, no
 runtime effect, nothing to unwind in a release.
@@ -331,7 +331,7 @@ at `docs/telemetry/VALIDATION.md`, which is in this PR.
 ## F6 — the PR body contradicted itself. Accepted.
 
 *"blocks new violations"* vs *"advisory ... cannot block anyone"*. The second is
-correct while `continue-on-error: true`. Body text corrected.
+correct while `continue-on-error: true`, which is what the step carried at the time. Body text corrected, and the gate is **blocking** as shipped.
 
 ## Accepted without change
 

@@ -133,10 +133,18 @@ jobs:
       # existing backlog never blocks this and this never destabilises the
       # Lint step above. Full-tree tracking lives in nightly.yml's static job.
       #
-      # ADVISORY until 2026-11-09, then set continue-on-error: false.
+      # BLOCKING. A new zerolog/zap import, a new zerolog call, or a new
+      # fmt.Print*/Fprint* fails the build.
+      #
+      # Existing violations are untouched: --new-from-rev inspects only CHANGED
+      # lines, so the ~835 already in the tree are invisible here. They are
+      # removed by the migration, not by this gate.
+      #
+      # Escape hatch, enforced by nolintlint (needs a named linter AND a reason):
+      #     //nolint:forbidigo // CLI output: <why this one is terminal output>
+      #
       # Rationale, evidence and the validation record: docs/telemetry/VALIDATION.md
       - name: Telemetry conventions (new code only)
-        continue-on-error: true
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           if [ -z "$BASE" ]; then BASE="${{ github.event.before }}"; fi
@@ -148,8 +156,9 @@ jobs:
             # A base that exists but is absent from the clone is a
             # misconfiguration, not a legitimate first push — that case is
             # handled above. Exiting 0 here would report success for a run that
-            # never happened. Masked today by continue-on-error: true; it stops
-            # being masked at the same time that flag does.
+            # never happened, so it fails loudly instead. The gate is blocking, so a
+            # broken fetch-depth stops PRs rather than silently enforcing nothing,
+            # which is the right outcome for a check that cannot do its job.
             echo "::error::diff base $BASE not present in the clone; checkout needs fetch-depth: 0"
             exit 1
           fi
