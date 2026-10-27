@@ -177,6 +177,11 @@ func splitSigKey(key string) (uint64, string, bool) {
 	if !ok {
 		return 0, "", false
 	}
+	return splitHeightHash(rest)
+}
+
+// splitHeightHash splits the "<height>:<blockHash>" part of a block vote key.
+func splitHeightHash(rest string) (uint64, string, bool) {
 	heightStr, blockHash, found := strings.Cut(rest, ":")
 	if !found || blockHash == "" {
 		return 0, "", false
