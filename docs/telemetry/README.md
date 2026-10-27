@@ -8,6 +8,24 @@ disagreements and their resolutions are the most useful part of the record.
 
 **Start at [`opus/HANDOVER.md`](opus/HANDOVER.md).** It is the only file you need to read first.
 
+> ### ⚠ What "v3" means in these documents
+>
+> **"v3" here is the line of work, not the `v3.0.0` tag.** These documents were written
+> before the release plan settled, and they use "v3" for the structural telemetry increment
+> and "v3.1" for the coverage increment.
+>
+> **`v3.0.0` is expected to ship before any of this lands.** Telemetry rolls out in a later
+> `v3.x.x`. So when a document says "in v3", read it as **"in the first telemetry
+> increment"** — it is a scope boundary between the two increments, not a claim about which
+> tag contains what.
+>
+> Concretely: `v3.0.0` will ship with the telemetry described in §"Current state" — one
+> private registry, metrics unreachable by default, no span error status — and **that is
+> expected**, not a regression against these documents.
+>
+> The one thing that does land early is the **CI convention gate**, because its whole job is
+> to stop the codebase accruing more telemetry debt while the rest waits.
+
 ---
 
 ## Status of every file
@@ -19,8 +37,8 @@ disagreements and their resolutions are the most useful part of the record.
 | **`sol/TELEMETRY-ARCHITECTURE-V3.md`** | **CURRENT, FROZEN** (normative, parallel) | For the second independent treatment. Converged with opus; not a competing spec |
 | **`opus/REBASE-PLAN.md`** | **CURRENT** | Before trusting any `file:line` in the architecture — records what moved across the 113 commits since the freeze |
 | **`opus/STEP-1-CI-GATE-PATCH.md`** | **CURRENT** — now implemented on `ci/telemetry-conventions-gate` | The design behind the gate |
-| **`VALIDATION.md`** *(on the gate branch)* | **CURRENT** — the gate's test record | Before merging the gate, or when adding a rule to it |
-| **`baseline.sh` + `baseline-<sha>.txt`** *(on the gate branch)* | **CURRENT** — run before and after any telemetry change | Every time. Static, no toolchain needed |
+| **`VALIDATION.md`** | **CURRENT** — the gate's test record | Before merging the gate, or when adding a rule to it |
+| **`baseline.sh` + `baseline-<sha>.txt`** | **CURRENT** — run before and after any telemetry change | Every time. Static, no toolchain needed |
 | **`sol/BASELINE-EVIDENCE-AND-HANDOFF.md`** | **CURRENT** — sol's evidence ledger + full round-by-round record | Checking how a decision was reached from sol's side |
 | **`opus/DECISION-RECORD.md`** | **CURRENT** — opus's convergence history | When tempted to reopen a settled decision |
 
@@ -50,7 +68,7 @@ round 6 and are already applied to the opus normative document:
 | **Effort** | 55–85 engineer-days + 6–10 SRE, provisional until two spikes (`gETH/`, `FastsyncV2/`) measure it |
 | **First task** | `opus/STEP-1-CI-GATE-PATCH.md` — ~half a day, blocks nothing, depends on nothing |
 | **Observability owner** | **Operator, as POC**, with a second agent. Enough to unblock W1 for devnet and staging. See the risk below before production promotion |
-| **CI gate** | Built and validated on branch `ci/telemetry-conventions-gate`. See `opus/STEP-1-CI-GATE-PATCH.md` and `VALIDATION.md` |
+| **CI gate** | Merged and live, advisory. Design: `opus/STEP-1-CI-GATE-PATCH.md`. Test record: `VALIDATION.md` |
 
 ### Questions — all three answered 2026-10-26
 

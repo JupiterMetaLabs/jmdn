@@ -5,6 +5,11 @@
 is blocked until that is satisfied; the technical architecture is not.
 **Amendment rule:** if executable evidence falsifies a frozen assumption, amend the affected section
 with the failing probe and its impact. Do not reopen settled decisions by preference.
+
+**Versioning:** "v3" throughout this document is the **first telemetry increment**, not the
+`v3.0.0` release tag. `v3.0.0` is expected to ship before this work lands; telemetry rolls out in a
+later `v3.x.x`. "v3" and "v3.1" are the scope boundary between the structural and coverage
+increments — they are not claims about which tag contains what. See `docs/telemetry/README.md`.
 **Target:** jmdn `v3base` (HEAD `efa4501`) · **Reference incident:** 2026-09-17 chain halt (>1h, undiagnosed)
 **Operator goal for v3:** unify logging + metrics, pristine clean structure.
 **Companion:** `DECISION-RECORD.md` — what was contested across four review rounds, how each item was settled, and what remains open.
