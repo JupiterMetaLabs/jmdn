@@ -68,7 +68,7 @@ round 6 and are already applied to the opus normative document:
 | **Effort** | 55–85 engineer-days + 6–10 SRE, provisional until two spikes (`gETH/`, `FastsyncV2/`) measure it |
 | **First task** | `opus/STEP-1-CI-GATE-PATCH.md` — ~half a day, blocks nothing, depends on nothing |
 | **Observability owner** | **Operator, as POC**, with a second agent. Enough to unblock W1 for devnet and staging. See the risk below before production promotion |
-| **CI gate** | Merged and live, advisory. Design: `opus/STEP-1-CI-GATE-PATCH.md`. Test record: `VALIDATION.md` |
+| **CI gate** | Merged and live, **blocking**. A new zerolog/zap import, zerolog call or `fmt.Print*` fails CI; the ~835 existing violations are untouched. Design: `opus/STEP-1-CI-GATE-PATCH.md`. Test record: `VALIDATION.md` |
 
 ### Questions — all three answered 2026-10-26
 
