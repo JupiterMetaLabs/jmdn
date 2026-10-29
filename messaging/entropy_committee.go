@@ -43,7 +43,7 @@ package messaging
 // travels with the code, not just the doc:
 //
 //   - The eligible pool is the SAME pinned/eligible validator set used for
-//     block-production committees (committeeSnapshotFor) — §4.7's
+//     block-production committees (fleetCommitteeSnapshotFor) — §4.7's
 //     `pinnedPool`. There is no separate "entropy revealer" registry
 //     anywhere in this codebase (verified 2026-08-19) — reusing the
 //     block-committee pool is the only option available today, not a
@@ -136,7 +136,7 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 		return nil, fmt.Errorf("messaging: ENTROPY-%d unavailable (needed to seed epoch %d's entropy committee): %w", epoch, epoch, err)
 	}
 
-	// Deliberately NOT committeeSnapshotFor(uint64(epoch)): that function
+	// Deliberately NOT fleetCommitteeSnapshotFor(uint64(epoch)): that function
 	// pins by SelectionPeriod (EpochForHeight, the block-counted clock), a
 	// different clock from EntropyEpoch (EpochForSlot, a fixed 50-slot
 	// window) with a different divisor. Passing this epoch's raw uint64
@@ -148,7 +148,7 @@ func SelectEntropyCommittee(epoch committee.EntropyEpoch) ([]committee.Member, e
 	// number alone (no slot-to-height mapping flows through this call
 	// path), so until one exists, the entropy committee's pool is always
 	// the LIVE eligible set, never pinned. Inert difference from
-	// committeeSnapshotFor today (pinning is globally off, so both
+	// fleetCommitteeSnapshotFor today (pinning is globally off, so both
 	// resolve identically), but structurally correct once pinning is not.
 	//
 	// W1: once the pool is chain-anchored, the entropy committee's pool is the

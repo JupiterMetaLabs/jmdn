@@ -116,7 +116,7 @@ type SelectionPeriod uint64
 
 type RoundContext struct {
 	// SelectionPeriod selects the frozen validator-pool snapshot
-	// (committeeSnapshotFor) — the buddy committee's own clock, refreshed
+	// (fleetCommitteeSnapshotFor) — the buddy committee's own clock, refreshed
 	// every consensus.committee_epoch_blocks blocks. Feeds ONLY the pool
 	// fetch, never entropy.
 	SelectionPeriod SelectionPeriod
@@ -281,7 +281,15 @@ func SelectCommitteeWithSize(rc RoundContext, k int) ([]committee.Member, error)
 	if CommitteeV2Enabled && !seedAuthorityPinned() {
 		return nil, ErrLegacySourceUnderV2
 	}
-	snap, err := committeeSnapshotFor(uint64(rc.SelectionPeriod))
+	// H3 (2026-10-22 audit): the seats come from the fleet pool, WITHOUT this
+	// node's block_buddy blocklist. The seats set n and the threshold, and the
+	// seed-ranked draw ranks the whole pool, so drawing from a locally filtered
+	// pool gave a blocklisting node a smaller committee (n=6, quorum 4 where
+	// every peer had n=7, quorum 5) or a different committee altogether, and it
+	// accepted blocks its peers rejected. A blocked peer keeps its seat here;
+	// TallyAgainst does not count its vote. Same rule as VerifyCertificate
+	// (CON-12) and the entropy fold (D-36).
+	snap, err := fleetCommitteeSnapshotFor(uint64(rc.SelectionPeriod))
 	if err != nil {
 		return nil, err
 	}
@@ -427,36 +435,28 @@ func requirePinnedCommittee() bool {
 	return settings.Get().Consensus.RequirePinnedCommittee
 }
 
-// committeeSnapshotFor builds the pure-package snapshot from the authenticated
-// eligible set, WITHOUT the alphabetical cap, PINNED BY SelectionPeriod (the
-// block-height clock, EpochForHeight) when require_pinned_committee is on.
+// fleetCommitteeSnapshotFor builds the pure-package snapshot from the
+// authenticated eligible set — WITHOUT the alphabetical cap and WITHOUT this
+// node's local block_buddy blocklist, the pool every honest node agrees on —
+// PINNED BY SelectionPeriod (the block-height clock, EpochForHeight) when
+// require_pinned_committee is on. Block committees are seated from it
+// (SelectCommitteeWithSize), and the entropy fold sizes its quorum from it.
 //
 // Dropping the cap here is F2. The cap's purpose was to make every node compute
 // the same n and therefore the same threshold; seed-ranked selection preserves
 // that property exactly, and adds rotation the cap could never have.
+//
+// Dropping the blocklist is D-36 and H3: anything that sizes a THRESHOLD, or
+// any other value that must be identical across the fleet, must not move when
+// one operator edits their own config. The local blocklist only decides whose
+// vote this node counts. See FleetEligibleForEpoch for the full reasoning and
+// the CON-12 precedent in VerifyCertificate.
 //
 // Callers MUST pass a SelectionPeriod value here, never a raw EntropyEpoch —
 // the two are different clocks with different divisors (committee_epoch_blocks
 // vs the fixed 50-slot entropy window) and are not interchangeable once
 // pinning is live. See SelectEntropyCommittee's doc comment for the call site
 // this bit — it deliberately does NOT go through this function.
-func committeeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
-	eligible, err := pinnedEligibleForEpoch(epoch)
-	if err != nil {
-		return committee.Snapshot{}, err
-	}
-	return snapshotFromEligible(epoch, eligible), nil
-}
-
-// fleetCommitteeSnapshotFor is committeeSnapshotFor WITHOUT this node's local
-// block_buddy blocklist applied — the pool every honest node agrees on.
-//
-// D-36: use this wherever a snapshot sizes a THRESHOLD or any other value that
-// must be identical across the fleet. committeeSnapshotFor's pool passes
-// through eligibleMembersUncappedForEpoch, which subtracts the local blocklist,
-// so a threshold derived from it moves when one operator edits their own
-// config. See FleetEligibleForEpoch for the full reasoning and the CON-12
-// precedent in VerifyCertificate.
 func fleetCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 	// W1: the fleet-agreed (no blocklist) anchored pool for this period.
 	if pool, handled, err := anchoredPoolForPeriod(epoch, false); handled {
@@ -485,10 +485,10 @@ func fleetCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
 }
 
 // snapshotFromEligible builds the pure-package Snapshot from an
-// already-resolved eligible set — the part of committeeSnapshotFor that has
-// nothing to do with HOW the set was resolved (pinned-by-epoch, or live).
-// Shared by committeeSnapshotFor (SelectionPeriod-pinned, block committees)
-// and SelectEntropyCommittee (always-live, entropy committee).
+// already-resolved eligible set — the part of fleetCommitteeSnapshotFor that
+// has nothing to do with HOW the set was resolved (pinned-by-epoch, or live).
+// Shared by fleetCommitteeSnapshotFor (SelectionPeriod-pinned, block
+// committees) and SelectEntropyCommittee (always-live, entropy committee).
 func snapshotFromEligible(epoch uint64, eligible map[string]string) committee.Snapshot {
 	ids := make([]string, 0, len(eligible))
 	for pid := range eligible {
@@ -618,11 +618,14 @@ func activeBeacon() *committee.BeaconSource { return beaconSource }
 // certificate would sit below threshold: a halt, produced by a warmup that
 // looked correct.
 //
-// F-7: THIS MUST STAY POOL-IDENTICAL TO committeeSnapshotFor. Both used to
+// F-7: THIS MUST STAY POOL-IDENTICAL TO fleetCommitteeSnapshotFor, minus this
+// node's local block_buddy blocklist. The seats include blocked peers (H3:
+// they still size n), but this node does not count their votes, so it does
+// not dial them either. Both pools used to
 // call eligibleMembersUncapped() (the live view), and stayed identical only
 // because pinnedEligibleForEpoch's pinned branch is not reachable yet (W1's
 // prerequisite - see its own doc comment). The moment
-// consensus.require_pinned_committee flips on, committeeSnapshotFor draws the
+// consensus.require_pinned_committee flips on, the seat snapshot draws the
 // SEATED committee from the epoch-FROZEN snapshot while this function, called
 // unconditionally live, would keep authorizing warmup/candidate membership
 // against the CURRENT pool. A peer seated from the frozen snapshot but since
@@ -633,8 +636,8 @@ func activeBeacon() *committee.BeaconSource { return beaconSource }
 // instead closes it: with pinning off this is byte-identical to the old
 // always-live call (pinnedEligibleForEpoch's own unpinned branch ignores epoch
 // and reads the live source, same as before); with pinning on, it resolves the
-// SAME frozen snapshot committeeSnapshotFor uses for this epoch, so the two
-// pools cannot diverge again.
+// SAME frozen snapshot fleetCommitteeSnapshotFor uses for this epoch, so the
+// two pools cannot diverge again.
 //
 // With v2 off this returns exactly what it returned before - the capped set -
 // so the warmup path is unchanged until the flag flips.
@@ -936,7 +939,8 @@ type poolWideResult struct {
 
 // verifySyncedCertificatePoolWide counts distinct verified +1 votes from ANY
 // member of the fleet-eligible pool (uncapped, no local blocklist — the
-// fleet-agreed set, so every node counts the same signers). Signature
+// fleet-agreed set, so every node sizes the threshold the same), except peers
+// this node blocks, whose votes it never counts. Signature
 // verification and the peer_id↔bls_pub binding are the shared
 // countEligibleYes rules; only the membership set is wider.
 //
@@ -974,7 +978,8 @@ func verifySyncedCertificatePoolWide(responses []BLS_Signer.BLSresponse, blockHa
 	if floor := (len(pool)-1)/3 + 1; floor > res.Threshold {
 		res.Threshold = floor
 	}
-	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
+	// Sized over the whole pool above; a blocked peer's vote is not counted.
+	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, withoutBlockedBuddies(pool), true)
 	res.Reached = res.YesVotes >= res.Threshold
 	return res, nil
 }
@@ -1001,9 +1006,16 @@ func TallyAgainst(
 		return out, fmt.Errorf("committee: bad block hash %q: %w", blockHashHex, err)
 	}
 
+	// A blocked peer keeps its seat in `seated` (it sizes n and the threshold,
+	// H3), but its vote is not counted on this node: blocking can only make
+	// quorum harder (CON-12).
+	blocked := blockedBuddies()
 	votes := make([]committee.Vote, 0, len(responses))
 	orig := make(map[string]BLS_Signer.BLSresponse, len(responses))
 	for _, r := range responses {
+		if _, isBlocked := blocked[strings.TrimSpace(r.PeerID)]; isBlocked {
+			continue
+		}
 		sigBytes, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(r.Signature), "0x"))
 		if err != nil {
 			// An undecodable signature can never verify; drop it rather than
