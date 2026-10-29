@@ -53,6 +53,10 @@ type Policy struct {
 // It replaces the old scattered env vars and simple structs.
 type SecurityConfig struct {
 	// Global Settings
+	//
+	// Enabled=false makes the gatekeeper skip every service policy (auth, TLS,
+	// rate limiting). Production posture refuses to boot with it (SEC-03,
+	// ValidateSecurityPosture).
 	Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
 	CertDir     string `mapstructure:"cert_dir" yaml:"cert_dir"`
 	IPCacheSize int    `mapstructure:"ip_cache_size" yaml:"ip_cache_size"` // Size of the LRU cache for Rate Limiting
