@@ -65,11 +65,15 @@ services:
       # errors unless POSTGRES_PASSWORD is set (see .env.docker.example).
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.docker.example)}"
       POSTGRES_DB: jmdn
+    # max_slot_wal_keep_size caps the WAL any replication slot can hold, so a
+    # slot nothing reads (for example after thebe.cdc.enabled is turned off)
+    # cannot fill the volume. Postgres invalidates the slot at the cap instead.
     command: >
       postgres
         -c wal_level=logical
         -c max_replication_slots=4
         -c max_wal_senders=4
+        -c max_slot_wal_keep_size=2GB
     ports:
       # SEC-04: bind the published port to loopback only — jmdn reaches Postgres
       # over the internal compose network (postgres:5432), so the host port need

@@ -5,9 +5,15 @@
 # Handles:
 #   1. Create DB user + database
 #   2. Set password
-#   3. Patch postgresql.conf: wal_level=logical, max_replication_slots, max_wal_senders
-#   4. Create CDC publication (thebe_pub) + replication slot (thebe_eventlog)
+#   3. Cap the WAL a replication slot can hold (max_slot_wal_keep_size, always)
+#   4. CDC only (opt-in): patch postgresql.conf (wal_level=logical,
+#      max_replication_slots, max_wal_senders) and create the publication
+#      (thebe_pub) + replication slot (thebe_eventlog)
 #   5. Print DSN + jmdn.yaml snippet
+#
+# CDC is off by default (thebe.cdc.enabled: false in jmdn_default.yaml). A
+# replication slot that nothing reads makes Postgres keep every WAL segment
+# from then on, so the slot is only created when CDC is enabled here.
 #
 # Modes:
 #   --mode local   — connects via psql to a local Postgres instance
@@ -18,6 +24,11 @@
 #   sudo ./Scripts/setup_postgres.sh
 #   sudo ./Scripts/setup_postgres.sh --mode local
 #        ./Scripts/setup_postgres.sh --mode docker   # (no sudo needed for docker)
+#   Options:
+#     --with-cdc            set up CDC (publication + replication slot + WAL settings)
+#     --no-cdc              skip CDC without asking (default answer when prompted)
+#     --slot-wal-cap=SIZE   max_slot_wal_keep_size to set (default 2GB; -1 = unlimited)
+#     --no-wal-patch        do not edit postgresql.conf
 ################################################################################
 
 set -euo pipefail
@@ -38,6 +49,8 @@ CDC_PUB="thebe_pub"
 CDC_LOG_PATH=""   # resolved after platform.sh sets JMDN_DATA
 DOCKER_CONTAINER="jmdn-postgres"
 SKIP_WAL_PATCH="false"
+ENABLE_CDC=""        # "", "true" or "false"; empty = ask (default no)
+SLOT_WAL_CAP="2GB"   # max_slot_wal_keep_size
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -46,6 +59,10 @@ while [[ $# -gt 0 ]]; do
         --mode=docker) SETUP_MODE="docker"; shift ;;
         --mode)        SETUP_MODE="${2:-}"; shift 2 ;;
         --no-wal-patch) SKIP_WAL_PATCH="true"; shift ;;
+        --with-cdc)     ENABLE_CDC="true"; shift ;;
+        --no-cdc)       ENABLE_CDC="false"; shift ;;
+        --slot-wal-cap=*) SLOT_WAL_CAP="${1#*=}"; shift ;;
+        --slot-wal-cap) SLOT_WAL_CAP="${2:-}"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -190,20 +207,37 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Step 3: CDC (Change Data Capture)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-prompt CDC_PUB  "Publication name" "${CDC_PUB}"
-prompt CDC_SLOT "Replication slot name (leave empty to skip slot creation)" "${CDC_SLOT}"
-prompt CDC_LOG_PATH "DuckDB event log directory" "${JMDN_DATA}/eventlog"
-# Append filename if user gave a plain directory path (no .duckdb extension)
-if [[ "${CDC_LOG_PATH}" != *.duckdb ]]; then
-    CDC_LOG_PATH="${CDC_LOG_PATH%/}/eventlog.duckdb"
+echo "  CDC copies every Postgres row change (including each block's ZK proof) into a"
+echo "  DuckDB event log and needs a replication slot. Enable it only on a node that"
+echo "  consumes the event log; a slot nothing reads keeps WAL until the cap below."
+if [ -z "${ENABLE_CDC}" ]; then
+    read -r -p "Enable CDC? (y/N): " cdc_answer
+    if [[ "${cdc_answer}" == "y" || "${cdc_answer}" == "Y" ]]; then
+        ENABLE_CDC="true"
+    else
+        ENABLE_CDC="false"
+    fi
 fi
-CDC_LOG_DIR="$(dirname "${CDC_LOG_PATH}")"
-mkdir -p "${CDC_LOG_DIR}" && log_ok "Event log directory ready: ${CDC_LOG_DIR}"
+
+if [ "${ENABLE_CDC}" = "true" ]; then
+    prompt CDC_PUB  "Publication name" "${CDC_PUB}"
+    prompt CDC_SLOT "Replication slot name (leave empty to skip slot creation)" "${CDC_SLOT}"
+    prompt CDC_LOG_PATH "DuckDB event log directory" "${JMDN_DATA}/eventlog"
+    # Append filename if user gave a plain directory path (no .duckdb extension)
+    if [[ "${CDC_LOG_PATH}" != *.duckdb ]]; then
+        CDC_LOG_PATH="${CDC_LOG_PATH%/}/eventlog.duckdb"
+    fi
+    CDC_LOG_DIR="$(dirname "${CDC_LOG_PATH}")"
+    mkdir -p "${CDC_LOG_DIR}" && log_ok "Event log directory ready: ${CDC_LOG_DIR}"
+else
+    CDC_SLOT=""
+    log_info "CDC disabled — no publication or replication slot will be created."
+fi
 
 # ── WAL config (local only) ───────────────────────────────────────────────────
 
 PG_CONF_PATH=""
-if [ "${SETUP_MODE}" = "local" ] && [ "${SKIP_WAL_PATCH}" = "false" ]; then
+if [ "${SETUP_MODE}" = "local" ] && [ "${SKIP_WAL_PATCH}" = "false" ] && [ "${ENABLE_CDC}" = "true" ]; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo " Step 4: postgresql.conf (WAL / CDC settings)"
@@ -284,8 +318,22 @@ if [ "${SETUP_MODE}" = "local" ] && [ -n "${PG_CONF_PATH}" ] && [ -f "${PG_CONF_
         done
         log_ok "Postgres is accepting connections."
     fi
-elif [ "${SETUP_MODE}" = "docker" ]; then
+elif [ "${SETUP_MODE}" = "docker" ] && [ "${ENABLE_CDC}" = "true" ]; then
     log_info "Docker mode: wal_level=logical is set in docker-compose.yml — no manual patch needed."
+fi
+
+# 1b. Cap the WAL a replication slot can hold. Applies with or without CDC: a
+# slot left behind (or created by another tool) otherwise keeps WAL until the
+# disk fills. ALTER SYSTEM writes postgresql.auto.conf; a reload applies it.
+if [ -n "${SLOT_WAL_CAP}" ]; then
+    log_info "Setting max_slot_wal_keep_size = ${SLOT_WAL_CAP}..."
+    if run_sql "ALTER SYSTEM SET max_slot_wal_keep_size = '${SLOT_WAL_CAP}';" >/dev/null \
+        && run_sql "SELECT pg_reload_conf();" >/dev/null; then
+        log_ok "max_slot_wal_keep_size = ${SLOT_WAL_CAP} (applied by reload)"
+    else
+        log_warn "Could not set max_slot_wal_keep_size — set it manually as a superuser:"
+        log_warn "  ALTER SYSTEM SET max_slot_wal_keep_size = '${SLOT_WAL_CAP}'; SELECT pg_reload_conf();"
+    fi
 fi
 
 # 2. Create user
@@ -310,14 +358,17 @@ log_info "Granting privileges..."
 run_sql "GRANT ALL PRIVILEGES ON DATABASE \"${DB_NAME}\" TO \"${DB_USER}\";"
 log_ok "Grants applied."
 
-# 5. Create publication
-log_info "Creating publication '${CDC_PUB}'..."
-if [ "${SETUP_MODE}" = "docker" ]; then
+# 5. Create publication (CDC only)
+if [ "${ENABLE_CDC}" != "true" ]; then
+    log_info "Skipping publication (CDC disabled)."
+elif [ "${SETUP_MODE}" = "docker" ]; then
+    log_info "Creating publication '${CDC_PUB}'..."
     docker exec "${DOCKER_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" \
         -c "CREATE PUBLICATION \"${CDC_PUB}\" FOR ALL TABLES;" 2>/dev/null \
         && log_ok "Publication '${CDC_PUB}' created." \
         || log_warn "Publication '${CDC_PUB}' already exists — skipping."
 else
+    log_info "Creating publication '${CDC_PUB}'..."
     psql -U "${DB_USER}" -h "${DB_HOST}" -p "${DB_PORT}" -d "${DB_NAME}" \
         -c "CREATE PUBLICATION \"${CDC_PUB}\" FOR ALL TABLES;" 2>/dev/null \
         && log_ok "Publication '${CDC_PUB}' created." \
@@ -366,12 +417,14 @@ echo "thebe:"
 echo "  enabled: true"
 echo "  sql_dsn: \"${DSN}\""
 echo "  redis_url: \"redis://127.0.0.1:6379\""
-if [ -n "${CDC_SLOT}" ]; then
-    echo "  cdc:"
+echo "  cdc:"
+if [ "${ENABLE_CDC}" = "true" ]; then
     echo "    enabled: true"
-    echo "    slot_name: ${CDC_SLOT}"
+    echo "    slot_name: ${CDC_SLOT:-thebe_eventlog}   # created by jmdn at first start if absent"
     echo "    publication: ${CDC_PUB}"
     echo "    log_path: ${CDC_LOG_PATH}"
+else
+    echo "    enabled: false"
 fi
 echo ""
 

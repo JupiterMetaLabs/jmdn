@@ -127,7 +127,7 @@ When jmdn writes account state it enqueues to a Redis Stream (`XADD` on `account
 | Data dir | `/var/lib/postgresql/data` (volume: `postgres-data`) |
 | User / database | `jmdn` / `jmdn` |
 | Password | `POSTGRES_PASSWORD` from `.env` (required — compose fails closed if unset) |
-| Server flags | `wal_level=logical`, `max_replication_slots=4`, `max_wal_senders=4` (required for the ThebeDB CDC / WAL consumer) |
+| Server flags | `wal_level=logical`, `max_replication_slots=4`, `max_wal_senders=4` (needed only if ThebeDB CDC is enabled); `max_slot_wal_keep_size=2GB` (caps the WAL any replication slot can hold) |
 | Port | `5432` on the compose network; published to the host on `127.0.0.1:5430` only |
 | Health check | `pg_isready -U jmdn -d jmdn` — see [§11](#11-health-checks) |
 | Stop grace | `120s`, so Postgres is not SIGKILLed while flushing WAL |
@@ -762,9 +762,32 @@ redis-data  (/data in the redis container):
 └── Redis AOF log (account sync queue)
 ```
 
-With `thebe.cdc.enabled: true`, the CDC event log and dead-letter file are written to the paths set by `thebe.cdc.log_path` / `thebe.cdc.dlq_path` (relative paths resolve under `/opt/jmdn`, i.e. on `jmdn-state`).
+CDC is **off by default** (`thebe.cdc.enabled: false`); see [ThebeDB CDC and replication slots](#thebedb-cdc-and-replication-slots). With `thebe.cdc.enabled: true`, the CDC event log and dead-letter file are written to the paths set by `thebe.cdc.log_path` / `thebe.cdc.dlq_path` (relative paths resolve under `/opt/jmdn`, i.e. on `jmdn-state`).
 
 Address→transaction lookups and the explorer totals are served by the ThebeDB SQL projection (the `transactions` / `accounts` tables), which the node writes synchronously at block apply. There is no separate index file to back up or rebuild. (Older releases kept a `txindex.db` here; a leftover file is unused and can be deleted.)
+
+### ThebeDB CDC and replication slots
+
+CDC copies every Postgres row change into a DuckDB event log (`thebe.cdc.log_path`). That includes each block's ZK proof, stored hex-encoded at about twice its size, so CDC adds a large third copy of every proof. It is off by default. Turn it on only on a node that consumes the event log.
+
+When CDC starts, ThebeDB creates a **replication slot** (`thebe.cdc.slot_name`, default `thebe_eventlog`). Postgres keeps every WAL segment written after an inactive slot's position, so:
+
+- **Turning CDC off does not drop the slot.** A slot nothing reads keeps WAL until `max_slot_wal_keep_size` (2 GB in this compose file), after which Postgres invalidates it. Without that cap it grows until the disk is full.
+- **jmdn warns at boot** for every inactive slot it does not read, and when `max_slot_wal_keep_size` is unlimited (`-1`). The warning includes the command to fix it.
+
+Check and clean up (as the Postgres superuser; in this compose file the superuser is `jmdn`):
+
+```bash
+docker exec jmdn-postgres psql -U jmdn -d jmdn -c "select slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as wal_held from pg_replication_slots;" -c "show max_slot_wal_keep_size;"
+# drop a slot nothing reads (only if no other consumer uses it)
+docker exec jmdn-postgres psql -U jmdn -d jmdn -c "select pg_drop_replication_slot('thebe_eventlog');"
+```
+
+Volumes created before this cap was added keep their old setting until Postgres is restarted with the new compose `command`. To apply it without a restart:
+
+```bash
+docker exec jmdn-postgres psql -U jmdn -d jmdn -c "alter system set max_slot_wal_keep_size = '2GB';" -c "select pg_reload_conf();"
+```
 
 ### Backup and restore
 

@@ -198,11 +198,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the compose .env (see DOCKER.md)}
       POSTGRES_DB: jmdn
     # wal_level=logical is required for ThebeDB CDC (WAL consumer).
+    # max_slot_wal_keep_size caps the WAL a replication slot nothing reads can hold.
     command: >
       postgres
         -c wal_level=logical
         -c max_replication_slots=4
         -c max_wal_senders=4
+        -c max_slot_wal_keep_size=2GB
     ports:
       - "127.0.0.1:5430:5432"
     volumes:
@@ -401,7 +403,11 @@ install_local_systemd() {
     if [ -f "${PG_CONF}" ]; then
         sed -i "s/^#*wal_level\s*=.*/wal_level = logical/" "${PG_CONF}" \
             || echo "wal_level = logical" >> "${PG_CONF}"
-        log_ok "wal_level=logical set in ${PG_CONF} (restart postgres to apply)"
+        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        grep -q "^max_slot_wal_keep_size" "${PG_CONF}" \
+            && sed -i "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${PG_CONF}" \
+            || echo "max_slot_wal_keep_size = 2GB" >> "${PG_CONF}"
+        log_ok "wal_level=logical, max_slot_wal_keep_size=2GB set in ${PG_CONF} (restart postgres to apply)"
     fi
     systemctl enable postgresql
     systemctl start postgresql || true
@@ -475,8 +481,12 @@ install_local_launchd() {
         grep -q "^wal_level" "${pg_conf}" \
             && sed -i '' "s/^wal_level.*/wal_level = logical/" "${pg_conf}" \
             || echo "wal_level = logical" >> "${pg_conf}"
+        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
+            && sed -i '' "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
+            || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
         brew services restart postgresql@16
-        log_ok "wal_level=logical set — postgresql@16 restarted"
+        log_ok "wal_level=logical, max_slot_wal_keep_size=2GB set — postgresql@16 restarted"
     fi
 
     # Create publication for CDC
@@ -547,6 +557,10 @@ install_local_openrc() {
         grep -q "^max_wal_senders" "${pg_conf}" \
             && sed -i "s/^max_wal_senders.*/max_wal_senders = 4/" "${pg_conf}" \
             || echo "max_wal_senders = 4" >> "${pg_conf}"
+        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
+            && sed -i "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
+            || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
         rc-service postgresql restart || true
         log_ok "WAL settings patched in ${pg_conf}"
     else
@@ -598,6 +612,10 @@ install_local_rcd() {
             grep -q "^max_wal_senders" "${pg_conf}" \
                 && sed -i '' "s/^max_wal_senders.*/max_wal_senders = 4/" "${pg_conf}" \
                 || echo "max_wal_senders = 4" >> "${pg_conf}"
+            # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+            grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
+                && sed -i '' "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
+                || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
             service postgresql restart || true
             log_ok "WAL settings patched in ${pg_conf}"
         else
@@ -665,7 +683,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Next: Postgres DB setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  Creates the jmdn user/database, sets WAL config, and wires CDC."
+echo "  Creates the jmdn user/database and caps replication-slot WAL (max_slot_wal_keep_size)."
+echo "  CDC is off by default; it asks before setting it up (or pass --with-cdc)."
 read -r -p "Run setup_postgres.sh now? (Y/n): " run_pg
 if [[ "${run_pg}" != "n" && "${run_pg}" != "N" ]]; then
     bash "${SCRIPT_DIR}/setup_postgres.sh" --mode "${INSTALL_MODE}"

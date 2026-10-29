@@ -1201,6 +1201,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "thebedb: CDC pipeline running")
 		}
 
+		// Report replication slots nothing reads, and an unlimited slot WAL cap.
+		// Postgres keeps every WAL segment behind an inactive slot, so a slot left
+		// over after CDC is turned off grows until the disk fills. Warn only: the
+		// node runs fine either way, and the fix is an operator action.
+		reportReplicationSlots(writeDB, cfg.Thebe.CDC.Enabled, cfg.Thebe.CDC.SlotName)
+
 		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
 		cas = cassata.New(db, zap.NewNop())
 

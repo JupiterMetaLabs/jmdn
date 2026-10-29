@@ -78,7 +78,13 @@ thebe:
   # No password is shipped: put it in the DSN here or in THEBE_SQL_DSN.
   sql_dsn: "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
   cdc:
-    enabled: true
+    # Off by default. CDC copies every Postgres row change (including each
+    # block's ZK proof, hex-encoded at ~2x its size) into a DuckDB event log
+    # and holds a replication slot. Turn it on only on a node that consumes
+    # the event log. Turning it off later does NOT drop the slot; jmdn warns
+    # at boot if one is left behind. To enable: run
+    # Scripts/setup_postgres.sh --with-cdc, then set this to true.
+    enabled: false
     slot_name: thebe_eventlog
     publication: thebe_pub
 

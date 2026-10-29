@@ -66,7 +66,13 @@ thebe:
   max_len: 1000                # Env: THEBE_MAX_LEN
   group_name: "projector"      # Env: THEBE_GROUP_NAME
   cdc:
-    enabled: true                      # flip to true when Postgres is ready
+    # Off by default. CDC copies every Postgres row change (including each
+    # block's ZK proof, hex-encoded at ~2x its size) into a DuckDB event log
+    # and holds a replication slot. Turn it on only on a node that consumes
+    # the event log. Turning it off later does NOT drop the slot; jmdn warns
+    # at boot if one is left behind. To enable: run
+    # Scripts/setup_postgres.sh --with-cdc, then set this to true.
+    enabled: false
     slot_name: thebe_eventlog
     publication: thebe_pub
     log_path: ./data/eventlog.duckdb
