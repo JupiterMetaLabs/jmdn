@@ -26,6 +26,8 @@
 // process dies part-way, RecoverPendingTxApply rewrites those same documents
 // and the marker at boot — an idempotent roll-forward — instead of letting the
 // tx be re-staged from a partially updated base (which would apply it twice).
+// A present record is always rolled forward; block rollbacks drop it before
+// they revoke markers (see DiscardPendingTxApply).
 
 package DB_OPs
 
@@ -115,8 +117,10 @@ const txApplyRedoKey = "tx_apply_redo"
 
 // txApplyRedo is the persisted form of one in-flight apply. A single-tx apply
 // sets TxHash only, in the same format older binaries wrote. A group apply
-// (ApplyTxGroupAtomic with more than one tx) also sets TxHashes, the full list
-// in block order; TxHash then holds its first entry.
+// (ApplyTxGroupAtomic with more than one tx) sets TxHashes, the full list in
+// block order, and leaves TxHash EMPTY: a binary that predates groups rejects
+// such a record as malformed and refuses to start, instead of rolling the
+// group forward with only one marker.
 type txApplyRedo struct {
 	TxHash    string     `json:"tx_hash"`
 	TxHashes  []string   `json:"tx_hashes,omitempty"`
@@ -163,8 +167,15 @@ func readTxApplyRedo(h redoStore) (*txApplyRedo, error) {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("decode apply redo: %w", err)
 	}
-	if r.TxHash == "" || len(r.Docs) == 0 || (len(r.TxHashes) > 0 && r.TxHashes[0] != r.TxHash) {
-		return nil, fmt.Errorf("apply redo record is malformed (tx=%q docs=%d)", r.TxHash, len(r.Docs))
+	single := r.TxHash != "" && len(r.TxHashes) == 0
+	group := r.TxHash == "" && len(r.TxHashes) > 0
+	if len(r.Docs) == 0 || (!single && !group) {
+		return nil, fmt.Errorf("apply redo record is malformed (tx=%q txs=%d docs=%d)", r.TxHash, len(r.TxHashes), len(r.Docs))
+	}
+	for _, h := range r.TxHashes {
+		if h == "" {
+			return nil, fmt.Errorf("apply redo record is malformed (empty tx hash in group)")
+		}
 	}
 	return &r, nil
 }
@@ -264,8 +275,10 @@ func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []
 		return fmt.Errorf("ApplyTxAtomic %s: unresolved apply of tx %s is pending; run RecoverPendingTxApply first", label, applyLabel(pending.hashes()))
 	}
 
-	rec := &txApplyRedo{TxHash: txHashes[0], AppliedAt: appliedAt, Docs: docs}
-	if len(txHashes) > 1 {
+	rec := &txApplyRedo{AppliedAt: appliedAt, Docs: docs}
+	if len(txHashes) == 1 {
+		rec.TxHash = txHashes[0]
+	} else {
 		rec.TxHashes = txHashes
 	}
 	redo, err := json.Marshal(rec)
@@ -319,21 +332,12 @@ func recoverPendingTxApply(h redoStore) (string, error) {
 	}
 	hashes := pending.hashes()
 	label := applyLabel(hashes)
-	// A revoked marker means the block was rolled back after this record was
-	// written; rolling forward would undo that rollback. The rollback revokes
-	// every tx of a group, so one revoked marker is enough to discard it.
-	for _, hash := range hashes {
-		raw, err := h.GetSyncKV(TxProcessedKey(hash))
-		if err != nil {
-			return "", fmt.Errorf("recover apply %s: marker read %s: %w", label, hash, err)
-		}
-		if raw != nil && !markerValueApplied(raw) {
-			if err := clearTxApplyRedo(h); err != nil {
-				return "", fmt.Errorf("recover apply %s: %w", label, err)
-			}
-			return "", nil
-		}
-	}
+	// A present record is always rolled forward. The block rollback paths
+	// drop the record (DiscardPendingTxApply) BEFORE they revoke any marker,
+	// so a record never outlives the start of a rollback. A revoked marker
+	// seen here is therefore stale, from an earlier failed attempt at the
+	// same block, and says nothing about this record: discarding on it would
+	// leave the record's account writes applied without their markers.
 	if err := writeTxEffects(h, pending.Docs, hashes, pending.AppliedAt); err != nil {
 		return "", fmt.Errorf("recover apply %s: %w", label, err)
 	}
@@ -344,8 +348,10 @@ func recoverPendingTxApply(h redoStore) (string, error) {
 }
 
 // DiscardPendingTxApply drops an in-flight apply record without applying it.
-// Called by the block rollback path before balances are restored, so a record
-// that survived a failed ApplyTxAtomic cannot re-apply the failed tx later.
+// The block rollback paths call it FIRST, before revoking any marker or
+// restoring balances: boot recovery rolls every present record forward, so a
+// record must not survive into a rollback. If it fails, the caller must skip
+// the rollback and leave the apply for boot recovery to complete.
 // Caller must hold LockStateApply.
 func DiscardPendingTxApply() error {
 	h, err := getHandle(nil)

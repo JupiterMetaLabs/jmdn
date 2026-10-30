@@ -596,8 +596,13 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				DB_OPs.LockStateApply()
 				group = newApplyGroup(accountsClient)
 			}
+			staged := len(group.hashes)
 			Process_err = processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, block.BlockNumber, block.BlockHash, i, accountNonces, group)
-			if Process_err == nil {
+			// A tx found already applied (marker written by another path
+			// after the prefilter) stages nothing and is not tracked: its
+			// marker belongs to that earlier apply, and a rollback of this
+			// block must not revoke it.
+			if Process_err == nil && len(group.hashes) > staged {
 				groupTxs = append(groupTxs, tx.Hash.Hex())
 				if group.ops() >= groupedApplyOpBudget {
 					Process_err = flushGroup()
@@ -670,7 +675,29 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			// reconciliation applier reads markers to decide what to apply, so
 			// it must never observe revoked markers over not-yet-restored
 			// balances (it would re-apply effects that are still present).
+			//
+			// The pending apply record is dropped FIRST, before any marker is
+			// revoked. Boot recovery always rolls a present record forward, so
+			// a record must never survive into a state where its effects are
+			// being undone. A crash after the drop leaves applied balances with
+			// applied markers (consistent); if the drop fails, nothing is
+			// revoked or restored and boot recovery completes the apply.
 			DB_OPs.LockStateApply()
+			if discardErr := DB_OPs.DiscardPendingTxApply(); discardErr != nil {
+				DB_OPs.UnlockStateApply()
+				span.RecordError(discardErr)
+				span.SetAttributes(attribute.String("status", "apply_record_discard_failed"))
+				logger().Error(span_ctx, "Pending apply record could not be dropped — SKIPPING marker revocation and balance rollback (boot recovery completes the apply)",
+					discardErr,
+					ion.Int("prefix_txs", len(successfullyProcessedTxs)),
+					ion.String("failed_tx_hash", tx.Hash.Hex()),
+					ion.String("topic", TOPIC),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+				return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w (pending apply record could not be dropped: %v — rollback skipped)",
+					i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, discardErr)
+			}
 			if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
 				DB_OPs.UnlockStateApply()
 				span.RecordError(revokeErr)
@@ -743,6 +770,18 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// a consistent applied+marked prefix that replay retries.
 	rollbackApplied := func() {
 		DB_OPs.LockStateApply()
+		// Drop the pending apply record before revoking (see the in-loop path).
+		if discardErr := DB_OPs.DiscardPendingTxApply(); discardErr != nil {
+			DB_OPs.UnlockStateApply()
+			span.RecordError(discardErr)
+			logger().Error(span_ctx, "post-apply rollback: pending apply record could not be dropped — rollback skipped (boot recovery completes the apply)",
+				discardErr,
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			return
+		}
 		if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
 			DB_OPs.UnlockStateApply()
 			span.RecordError(revokeErr)

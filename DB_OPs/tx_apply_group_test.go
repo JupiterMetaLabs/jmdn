@@ -78,7 +78,7 @@ func TestRecover_RollsForwardInterruptedGroup(t *testing.T) {
 
 	docs := []*Account{{Address: redoAddr, Balance: "70"}, {Address: redoAddr2, Balance: "35"}}
 	hashes := []string{"0x01", "0x02", "0x03"}
-	rec, _ := json.Marshal(&txApplyRedo{TxHash: hashes[0], TxHashes: hashes, AppliedAt: 4, Docs: docs})
+	rec, _ := json.Marshal(&txApplyRedo{TxHashes: hashes, AppliedAt: 4, Docs: docs})
 	base.kv[txApplyRedoKey] = rec
 	_ = writeTxEffects(h, docs, hashes, 4)
 	if base.kv[TxProcessedKey("0x01")] == nil || base.kv[TxProcessedKey("0x02")] != nil {
@@ -106,23 +106,108 @@ func TestRecover_RollsForwardInterruptedGroup(t *testing.T) {
 	}
 }
 
-func TestRecover_SkipsGroupWithAnyRevokedTx(t *testing.T) {
-	h := newGroupHandle(t)
+// A block that failed once has its txs' markers revoked to -1. If the retry
+// crashes inside the group commit, after the account writes and before the
+// markers, recovery must still finish the group: every marker applied, the
+// post-state kept, the record cleared.
+func TestRecover_GroupWithStaleRevokedMarkerRollsForward(t *testing.T) {
+	base := newGroupHandle(t)
+	base.kv[TxProcessedKey("0x01")] = []byte("-1") // from the earlier failed attempt
+	h := &markerFailHandle{redoHandle: base, failFrom: 1}
+	SetGlobalHandle(h)
+
+	docs := []*Account{{Address: redoAddr, Balance: "70"}, {Address: redoAddr2, Balance: "35"}}
 	hashes := []string{"0x01", "0x02"}
-	rec, _ := json.Marshal(&txApplyRedo{TxHash: hashes[0], TxHashes: hashes, AppliedAt: 4,
-		Docs: []*Account{{Address: redoAddr, Balance: "1"}}})
-	h.kv[txApplyRedoKey] = rec
-	h.kv[TxProcessedKey("0x02")] = []byte("-1")
+	rec, _ := json.Marshal(&txApplyRedo{TxHashes: hashes, AppliedAt: 4, Docs: docs})
+	base.kv[txApplyRedoKey] = rec
+	_ = writeTxEffects(h, docs, hashes, 4) // crash: accounts written, no marker
+
+	h.failFrom = 0
 	got, err := RecoverPendingTxApply()
-	if err != nil || got != "" {
-		t.Fatalf("recover = %q, %v; want no roll-forward", got, err)
+	if err != nil || got != "0x01,0x02" {
+		t.Fatalf("recover = %q, %v", got, err)
 	}
-	if h.accounts[redoAddr.Hex()].Balance != "100" {
-		t.Fatal("rolled-back group was rolled forward")
+	for _, hash := range hashes {
+		if ok, err := IsMarkerApplied(nil, TxProcessedKey(hash)); err != nil || !ok {
+			t.Fatalf("marker %s applied=%v err=%v", hash, ok, err)
+		}
 	}
-	if h.kv[TxProcessedKey("0x01")] != nil {
-		t.Fatal("marker written for a discarded group")
+	if base.accounts[redoAddr.Hex()].Balance != "70" || base.accounts[redoAddr2.Hex()].Balance != "35" {
+		t.Fatal("post-state not kept")
 	}
+	if len(base.kv[txApplyRedoKey]) != 0 {
+		t.Fatal("redo not cleared")
+	}
+}
+
+// A group record leaves tx_hash empty so a binary that predates groups
+// rejects it instead of rolling it forward with only the first marker.
+func TestGroupRedoRecord_RejectedByPreGroupReader(t *testing.T) {
+	h := newGroupHandle(t)
+	rec, err := json.Marshal(&txApplyRedo{TxHashes: []string{"0x01", "0x02"}, AppliedAt: 1, Docs: []*Account{{Address: redoAddr, Balance: "70"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The reader as it was before groups existed.
+	type preGroupRedo struct {
+		TxHash    string     `json:"tx_hash"`
+		AppliedAt int64      `json:"applied_at"`
+		Docs      []*Account `json:"docs"`
+	}
+	var old preGroupRedo
+	if err := json.Unmarshal(rec, &old); err != nil {
+		t.Fatal(err)
+	}
+	if !(old.TxHash == "" || len(old.Docs) == 0) {
+		t.Fatalf("pre-group reader accepts the group record as tx %q", old.TxHash)
+	}
+
+	// The current reader accepts it.
+	h.kv[txApplyRedoKey] = rec
+	r, err := readTxApplyRedo(h)
+	if err != nil || len(r.hashes()) != 2 {
+		t.Fatalf("current reader: %+v, %v", r, err)
+	}
+}
+
+// ApplyTxGroupAtomic writes the group format; a single tx keeps the old one.
+func TestApplyTxGroupAtomic_RecordFormat(t *testing.T) {
+	h := newGroupHandle(t)
+	var seen [][]byte
+	spy := &spyHandle{redoHandle: h, onRedo: func(v []byte) {
+		if len(v) > 0 {
+			seen = append(seen, append([]byte(nil), v...))
+		}
+	}}
+	SetGlobalHandle(spy)
+	if err := ApplyTxGroupAtomic(nil, []*Account{{Address: redoAddr, Balance: "70"}}, []string{"0x01", "0x02"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "60"}}, "0x03", 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("saw %d redo writes, want 2", len(seen))
+	}
+	if !strings.Contains(string(seen[0]), `"tx_hash":""`) || !strings.Contains(string(seen[0]), `"tx_hashes":["0x01","0x02"]`) {
+		t.Fatalf("group record: %s", seen[0])
+	}
+	if !strings.Contains(string(seen[1]), `"tx_hash":"0x03"`) || strings.Contains(string(seen[1]), "tx_hashes") {
+		t.Fatalf("single record: %s", seen[1])
+	}
+}
+
+type spyHandle struct {
+	*redoHandle
+	onRedo func([]byte)
+}
+
+func (s *spyHandle) PutSyncKV(key string, value []byte) error {
+	if key == txApplyRedoKey {
+		s.onRedo(value)
+	}
+	return s.redoHandle.PutSyncKV(key, value)
 }
 
 func TestApplyTxGroupAtomic_ErrorClearsRedo(t *testing.T) {
