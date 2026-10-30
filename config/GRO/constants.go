@@ -69,6 +69,10 @@ const (
 	DIDThread         = "thread:did"
 	ShutdownThread    = "thread:shutdown"
 	BlockPollerThread = "thread:block:poller"
+
+	CheckpointFullVerifyThread = "thread:checkpoint:full:verify"
+	LightLogPrunerThread       = "thread:storage:light:prune"
+
 	StartupSyncThread = "thread:startup:sync"
 
 	// SequencerTriggerThread   = "thread:sequencer:trigger"
