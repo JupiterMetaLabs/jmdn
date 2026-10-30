@@ -75,7 +75,7 @@ func TestRecover_RollsForwardInterruptedApply(t *testing.T) {
 	// marker failing and do NOT run the error-path clear.
 	redo := `{"tx_hash":"0xbb","applied_at":7,"docs":[{"address":"` + redoAddr.Hex() + `","balance":"90"}]}`
 	h.kv[txApplyRedoKey] = []byte(redo)
-	_ = writeTxEffects(h, []*Account{{Address: redoAddr, Balance: "90"}}, "0xbb", 7)
+	_ = writeTxEffects(h, []*Account{{Address: redoAddr, Balance: "90"}}, []string{"0xbb"}, 7)
 	if h.accounts[redoAddr.Hex()].Balance != "90" || h.kv[TxProcessedKey("0xbb")] != nil {
 		t.Fatal("setup: expected debited account with no marker")
 	}
@@ -127,16 +127,22 @@ func TestApplyTxAtomic_RefusesWhileApplyPending(t *testing.T) {
 	}
 }
 
-func TestRecover_SkipsRevokedTx(t *testing.T) {
+// A revoked marker left by an earlier failed attempt at the same block does
+// not stop recovery: rollbacks drop the record before revoking, so a present
+// record is always rolled forward.
+func TestRecover_RollsForwardDespiteStaleRevokedMarker(t *testing.T) {
 	h := newRedoHandle(t, redoAddr, "100")
 	h.kv[txApplyRedoKey] = []byte(`{"tx_hash":"0xff","applied_at":1,"docs":[{"address":"` + redoAddr.Hex() + `","balance":"10"}]}`)
 	h.kv[TxProcessedKey("0xff")] = []byte("-1")
 	got, err := RecoverPendingTxApply()
-	if err != nil || got != "" {
-		t.Fatalf("recover = %q, %v; want no roll-forward", got, err)
+	if err != nil || got != "0xff" {
+		t.Fatalf("recover = %q, %v; want roll-forward of 0xff", got, err)
 	}
-	if h.accounts[redoAddr.Hex()].Balance != "100" {
-		t.Fatal("revoked tx must not be rolled forward")
+	if h.accounts[redoAddr.Hex()].Balance != "10" {
+		t.Fatal("record not rolled forward")
+	}
+	if ok, _ := IsMarkerApplied(nil, TxProcessedKey("0xff")); !ok {
+		t.Fatal("marker not applied after roll-forward")
 	}
 	if len(h.kv[txApplyRedoKey]) != 0 {
 		t.Fatal("redo not cleared")

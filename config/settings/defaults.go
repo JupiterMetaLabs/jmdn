@@ -113,8 +113,9 @@ func DefaultConfig() NodeConfig {
 			},
 		},
 		Features: FeatureSettings{
-			UseLegacyBFT: false,
-			GROTrack:     false,
+			UseLegacyBFT:       false,
+			GROTrack:           false,
+			GroupedApplyCommit: true,
 			// Off by default everywhere; opt in per-node via yaml, and only takes
 			// effect on a node whose Network.Environment is "testnet".
 			AvcValidation: AvcValidationSettings{
