@@ -8,8 +8,8 @@ github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.6 h1:u0gdyGdBEj3G1sMhIdIR
 github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.6/go.mod h1:2BC1MTmWdIi/tsHmMoSoMILdhJRHDQ+V0o5bkBq7WiY=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1:yPrYb6g6NnqGsiCVqMf0zndEYTuelL3B03Fee+utLWA=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
-github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4 h1:7f8wvILePUfO3kkGdbpGpqd5FB6MoWZliPZHn4GehbI=
-github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4/go.mod h1:4BpzrgYQC1fU+CKuZiPm2Typ8F2w+6t1HL35Xfem7t0=
+github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4.0.20261030154037-12327ed75064 h1:Tyk9UxFaDnFVwL7kkTbZIqvHemChS1ShF4HGz4Vt0HI=
+github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4.0.20261030154037-12327ed75064/go.mod h1:4BpzrgYQC1fU+CKuZiPm2Typ8F2w+6t1HL35Xfem7t0=
 github.com/JupiterMetaLabs/avc v0.1.0-v3base.8 h1:b3yPKApuWSOM60Mnvjhh6sMrJeIxLV4SDVd5TfnASb4=
 github.com/JupiterMetaLabs/avc v0.1.0-v3base.8/go.mod h1:VXIf/zMAS3DUQOkMDGj7LS7PJMHI3oNN+HOk0CY4CHk=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
