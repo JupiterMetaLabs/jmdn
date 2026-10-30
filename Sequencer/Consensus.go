@@ -194,7 +194,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		// off this returns the capped set exactly as before.
 		//
 		// F-7: pinned to THIS round's SelectionPeriod (the same clock
-		// committeeSnapshotFor draws the seated committee from), not the old
+		// fleetCommitteeSnapshotFor draws the seated committee from), not the old
 		// unconditionally-live WarmupPeerIDs() - see that function's doc
 		// comment for why the two must never diverge once
 		// consensus.require_pinned_committee is on.

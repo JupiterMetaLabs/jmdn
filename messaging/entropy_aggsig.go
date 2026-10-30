@@ -177,7 +177,7 @@ func VerifyAndRecordPrevCert(block *config.ZKBlock) {
 	prevHeight := block.BlockNumber - 1
 
 	// EpochForHeight(prevHeight), not EpochForSlot(prevSlot): this resolves
-	// WHO WAS ON THE BLOCK-VOTING COMMITTEE at prevHeight (committeeSnapshotFor
+	// WHO WAS ON THE BLOCK-VOTING COMMITTEE at prevHeight (fleetCommitteeSnapshotFor
 	// is SelectionPeriod-keyed, the block-height clock) — a different question
 	// from "what entropy epoch was prevSlot in." The two clocks have different
 	// divisors; passing the slot-based value here was resolving the wrong
@@ -212,7 +212,7 @@ func verifyCertAndAggregate(cert []config.CertSigner, prevHeight uint64, prevHas
 	}
 	// D-36: the pool is resolved WITHOUT this node's block_buddy blocklist.
 	//
-	// committeeSnapshotFor would apply it, and this function derives two
+	// The local (filtered) pool would apply it, and this function derives two
 	// fleet-agreed quantities from the result: the aggCertQuorum denominator
 	// below, and which signers may be counted. With the filtered pool, one
 	// operator's blocklist entry gave n=6/quorum=4 where every peer computed

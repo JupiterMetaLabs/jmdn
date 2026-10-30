@@ -108,15 +108,74 @@ func TestIsLoopbackBind(t *testing.T) {
 	}
 }
 
-// Security disabled → no posture check.
-func TestPosture_DisabledSecurityNoOp(t *testing.T) {
+// Security disabled → the gatekeeper enforces nothing, so every public-bind
+// service is flagged whatever its policy says (H6: block-ingest gRPC was left
+// open with no warning); loopback services still are not.
+func TestPosture_DisabledSecurityFlagsEveryPublicService(t *testing.T) {
 	cfg := baseConfig()
+	cfg.Binds.BlockGRPC = "0.0.0.0"
 	cfg.Security.Enabled = false
-	if len(cfg.InsecurePublicServices()) != 0 {
-		t.Fatal("disabled security must flag nothing")
+
+	got := flaggedSet(cfg)
+	for _, svc := range []string{ServiceBlockIngestGRPC, ServiceEthRPC, ServiceExplorerAPI, ServiceDID} {
+		if got[svc] != "security.enabled=false" {
+			t.Errorf("%s on a public bind must be flagged for disabled security, got %q", svc, got[svc])
+		}
 	}
+	for _, svc := range []string{ServiceCLI, ServiceEthGRPC, ServiceBlockIngestHTTP} {
+		if _, ok := got[svc]; ok {
+			t.Errorf("%s on loopback must not be flagged", svc)
+		}
+	}
+
+	// A public service with no policy entry is open too: the gatekeeper skips
+	// the lookup entirely when security is disabled.
+	delete(cfg.Security.Services, ServiceBlockIngestGRPC)
+	if flaggedSet(cfg)[ServiceBlockIngestGRPC] != "security.enabled=false" {
+		t.Error("a public service without a policy must still be flagged while security is disabled")
+	}
+}
+
+// Outside production posture, disabled security only warns.
+func TestValidateSecurityPosture_DisabledSecurityNonProduction(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Network.Environment = EnvTestnet
+	cfg.Security.Enabled = false
 	if err := cfg.ValidateSecurityPosture(); err != nil {
-		t.Fatalf("disabled security must not error: %v", err)
+		t.Fatalf("non-production must not refuse to boot: %v", err)
+	}
+}
+
+// H6: production posture (strict_posture or a mainnet environment) refuses to
+// boot with security disabled, even when every bind is loopback.
+func TestValidateSecurityPosture_DisabledSecurityRefusedInProduction(t *testing.T) {
+	loopback := BindSettings{
+		API: "127.0.0.1", Facade: "127.0.0.1", BlockGen: "127.0.0.1", DID: "127.0.0.1",
+		CLI: "127.0.0.1", Geth: "127.0.0.1", BlockGRPC: "127.0.0.1",
+	}
+	for name, prod := range map[string]func(*NodeConfig){
+		"strict_posture": func(c *NodeConfig) { c.Security.StrictPosture = true },
+		"mainnet":        func(c *NodeConfig) { c.Network.Environment = EnvMainnet },
+	} {
+		for bindName, binds := range map[string]BindSettings{"public": baseConfig().Binds, "loopback": loopback} {
+			cfg := baseConfig()
+			cfg.Binds = binds
+			prod(&cfg)
+			cfg.Security.Enabled = false
+			if err := cfg.ValidateSecurityPosture(); err == nil {
+				t.Errorf("%s, %s binds: disabled security must refuse to boot", name, bindName)
+			}
+
+			// The same config with security on and every service authed or
+			// loopback boots, so the refusal is about the disabled flag alone.
+			cfg.Security.Enabled = true
+			p := cfg.Security.Services[ServiceDID]
+			p.AuthType, p.TokenEnv = AuthTypeToken, "DID_TOKEN"
+			cfg.Security.Services[ServiceDID] = p
+			if err := cfg.ValidateSecurityPosture(); err != nil {
+				t.Errorf("%s, %s binds: enabled security must boot: %v", name, bindName, err)
+			}
+		}
 	}
 }
 

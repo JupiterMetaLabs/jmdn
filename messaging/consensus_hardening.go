@@ -159,6 +159,24 @@ func blockedBuddies() map[string]struct{} {
 	return blocked
 }
 
+// withoutBlockedBuddies returns members minus the block_buddy blocklist: the
+// peers whose votes this node counts. Use it only for the numerator of a tally;
+// n and the threshold come from the unfiltered set (CON-12, H3). Returns
+// members itself when nothing is blocked.
+func withoutBlockedBuddies(members map[string]string) map[string]string {
+	blocked := blockedBuddies()
+	if len(blocked) == 0 {
+		return members
+	}
+	out := make(map[string]string, len(members))
+	for pid, blsPub := range members {
+		if _, isBlocked := blocked[pid]; !isBlocked {
+			out[pid] = blsPub
+		}
+	}
+	return out
+}
+
 // committeeSizeLimit returns the operator hard cap on the number of validators
 // (buddy nodes) counted toward consensus, from consensus.max_validators. 0 = no
 // cap. Reads settings only if loaded (robust to init order), mirroring
@@ -353,6 +371,18 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 		set[pid] = struct{}{}
 	}
 	return set, nil
+}
+
+// FleetCommitteeSize returns n for the current committee: the size of the
+// fleet-agreed committee (capped, WITHOUT the local block_buddy blocklist)
+// that certificate thresholds are computed over, so every node gets the same
+// value whatever its own blocklist (CON-12, H3).
+func FleetCommitteeSize() (int, error) {
+	members, err := authenticatedCommittee()
+	if err != nil {
+		return 0, err
+	}
+	return len(members), nil
 }
 
 // keyAuthorized reports whether a vote from (peerID,pubHex) counts toward
@@ -581,17 +611,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consens
 	// Numerator: the denominator MINUS this node's local block_buddy blocklist, so a
 	// blocked peer is a non-voter while its seat still sizes n above (numerator ⊆
 	// denominator). Blocking can only make quorum HARDER, never lower the bar.
-	blocked := blockedBuddies()
-	votingMembers := quorumCommittee
-	if len(blocked) > 0 {
-		votingMembers = make(map[string]string, len(quorumCommittee))
-		for pid, blsPub := range quorumCommittee {
-			if _, isBlocked := blocked[pid]; isBlocked {
-				continue
-			}
-			votingMembers[pid] = blsPub
-		}
-	}
+	votingMembers := withoutBlockedBuddies(quorumCommittee)
 
 	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, votingMembers, EnforceCommitteeRegistry)
 	res.CommitteeSize = n
@@ -608,9 +628,12 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consens
 // nobody checked). Otherwise it re-counts the certificate against the
 // eligible pool for the block's selection period, with the local blocklist
 // applied, and accepts only if at least f+1 distinct block-bound +1 votes
-// verify, where f is derived from the committee size the verifier used. f+1
-// guarantees at least one honest signer under the BFT assumption, so a single
-// (or f colluding) validator keys cannot finalize a block on their own.
+// verify. Votes are counted from the whole pool, not just the seated
+// committee, so f is the larger of the committee's and the fleet pool's: f
+// taken from the committee alone let ceil(n/3) votes from unseated pool
+// members pass while the pool may hold more faulty keys than that. f+1 over
+// the pool guarantees at least one honest signer under the BFT assumption, so
+// f colluding validator keys cannot finalize a block on their own.
 func relaxForTrustedSequencer(path string, res CertificateResult, err error, responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
 	if !TrustSequencerCertificate {
 		return res, err
@@ -622,14 +645,24 @@ func relaxForTrustedSequencer(path string, res CertificateResult, err error, res
 	if perr != nil || len(pool) == 0 {
 		return res, err
 	}
+	// n is capped by the FLEET pool, not the blocklist-filtered one: capping
+	// by the filtered pool let a local blocklist lower f+1 and accept a block
+	// with fewer votes. The blocklist only decides whose votes count (CON-12).
+	fleet, ferr := FleetEligibleForEpoch(EpochForHeight(height), false)
+	if ferr != nil || len(fleet) == 0 {
+		return res, err
+	}
 	n := res.CommitteeSize
 	if n <= 0 {
 		n = committeeSizeLimit()
 	}
-	if n <= 0 || n > len(pool) {
-		n = len(pool)
+	if n <= 0 || n > len(fleet) {
+		n = len(fleet)
 	}
 	need := (n-1)/3 + 1 // f+1
+	if floor := (len(fleet)-1)/3 + 1; floor > need {
+		need = floor
+	}
 	yes := countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
 	if yes < need {
 		return res, err

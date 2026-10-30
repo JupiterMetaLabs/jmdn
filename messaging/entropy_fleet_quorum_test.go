@@ -40,6 +40,17 @@ func blockedTestPeer(t *testing.T) string {
 	return defaultCommitteePeerIDs[0]
 }
 
+// localCommitteeSnapshotFor is this node's blocklist-filtered view of the pool
+// (the set it warms up and counts votes from), as a snapshot. Production
+// sizes and seats from fleetCommitteeSnapshotFor; this is the contrast.
+func localCommitteeSnapshotFor(epoch uint64) (committee.Snapshot, error) {
+	eligible, err := pinnedEligibleForEpoch(epoch)
+	if err != nil {
+		return committee.Snapshot{}, err
+	}
+	return snapshotFromEligible(epoch, eligible), nil
+}
+
 func memberCount(t *testing.T, snap committee.Snapshot) int {
 	t.Helper()
 	return len(snap.Members)
@@ -55,9 +66,9 @@ func TestFleetSnapshotSizeIsIndependentOfLocalBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fleetCommitteeSnapshotFor (no blocklist): %v", err)
 	}
-	localBefore, err := committeeSnapshotFor(epoch)
+	localBefore, err := localCommitteeSnapshotFor(epoch)
 	if err != nil {
-		t.Fatalf("committeeSnapshotFor (no blocklist): %v", err)
+		t.Fatalf("localCommitteeSnapshotFor (no blocklist): %v", err)
 	}
 	if memberCount(t, fleetBefore) != memberCount(t, localBefore) {
 		t.Fatalf("with no blocklist the two views must agree: fleet=%d local=%d",
@@ -70,9 +81,9 @@ func TestFleetSnapshotSizeIsIndependentOfLocalBlocklist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fleetCommitteeSnapshotFor (with blocklist): %v", err)
 	}
-	localAfter, err := committeeSnapshotFor(epoch)
+	localAfter, err := localCommitteeSnapshotFor(epoch)
 	if err != nil {
-		t.Fatalf("committeeSnapshotFor (with blocklist): %v", err)
+		t.Fatalf("localCommitteeSnapshotFor (with blocklist): %v", err)
 	}
 
 	t.Logf("pool sizes — fleet: %d -> %d, local: %d -> %d",
@@ -131,9 +142,9 @@ func TestBlocklistStillRemovesTheVoterFromTheFoldPool(t *testing.T) {
 	withBlockBuddy(t, blocked)
 
 	// The numerator view (what verifyCertAndAggregate counts) must exclude it.
-	local, err := committeeSnapshotFor(epoch)
+	local, err := localCommitteeSnapshotFor(epoch)
 	if err != nil {
-		t.Fatalf("committeeSnapshotFor: %v", err)
+		t.Fatalf("localCommitteeSnapshotFor: %v", err)
 	}
 	for _, m := range local.Members {
 		if m.PeerID == blocked {
