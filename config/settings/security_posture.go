@@ -80,7 +80,8 @@ func (v PostureViolation) String() string {
 }
 
 // InsecurePublicServices returns the gatekeeper-mediated services that violate
-// the public-exposure policy while security is enabled:
+// the public-exposure policy:
+//   - any service on a non-loopback bind while security is disabled; or
 //   - a normal service that is auth_type=none on a non-loopback bind; or
 //   - a public-by-design RPC (publicRPCServices) on a non-loopback bind with NO
 //     effective rate limit (neither a per-service limit nor the global cap).
@@ -88,13 +89,21 @@ func (v PostureViolation) String() string {
 // Public RPC is intentionally unauthenticated, so it is NOT flagged for missing
 // auth — only for missing rate limiting. Empty slice = policy satisfied.
 // Deterministic order.
+//
+// security.enabled=false makes the gatekeeper skip every policy (auth, mTLS
+// and rate limiting) before it even looks one up, so each public service is
+// then open whatever its policy says. It used to return nil here, which let a
+// production node boot with block-ingest gRPC (ProcessBlock) open to anyone.
 func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
-	if !c.Security.Enabled {
-		return nil
-	}
 	binds := gatekeeperServiceBind(c.Binds)
 	var out []PostureViolation
 	for svc, bind := range binds {
+		if !c.Security.Enabled {
+			if !isLoopbackBind(bind) {
+				out = append(out, PostureViolation{Service: svc, Bind: bind, Reason: "security.enabled=false"})
+			}
+			continue
+		}
 		policy, ok := c.Security.Services[svc]
 		if !ok || isLoopbackBind(bind) {
 			continue
@@ -114,14 +123,25 @@ func (c *NodeConfig) InsecurePublicServices() []PostureViolation {
 	return out
 }
 
-// ValidateSecurityPosture returns a non-nil error ONLY when strict_posture is set
-// and at least one public service is unauthenticated (SEC-03 fail-closed refusal).
-// In the default (non-strict) mode it returns nil; the caller should still call
-// InsecurePublicServices to emit a boot warning. Keeping the warn/fatal split in
-// the caller lets the node log every violation before deciding whether to abort.
+// ValidateSecurityPosture returns a non-nil error ONLY under production posture
+// (SEC-03 fail-closed refusal), when security is disabled or at least one public
+// service violates the policy. Outside production posture it returns nil; the
+// caller should still call InsecurePublicServices to emit a boot warning.
+// Keeping the warn/fatal split in the caller lets the node log every violation
+// before deciding whether to abort.
+//
+// Disabled security is refused even when every bind is loopback: it also drops
+// TLS on the node's outbound gatekeeper clients, and nothing a production node
+// needs is lost by enabling it.
 func (c *NodeConfig) ValidateSecurityPosture() error {
+	if !c.ProductionPosture() {
+		return nil
+	}
+	if !c.Security.Enabled {
+		return fmt.Errorf("SEC-03 fail-closed (production posture: security.strict_posture or network.environment=mainnet): security.enabled=false turns off auth, TLS and rate limiting on every gatekeeper service — set security.enabled: true")
+	}
 	v := c.InsecurePublicServices()
-	if len(v) == 0 || !c.ProductionPosture() {
+	if len(v) == 0 {
 		return nil
 	}
 	names := make([]string, len(v))
