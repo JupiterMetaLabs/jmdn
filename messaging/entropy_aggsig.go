@@ -48,6 +48,7 @@ package messaging
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -77,7 +78,9 @@ var AggCertEnabled = os.Getenv("JMDN_AVC_AGG_CERT") == "1"
 // Set by RecordCommitCertificate (called from the sequencer's commit path),
 // read by CertificateForBlockAssembly (called from attachAVCConsensusFields).
 // One value, not a map: only the immediately-previous block's certificate is
-// ever attached, so there is nothing to key or evict.
+// ever attached, so there is nothing to key or evict. Lost on restart;
+// CertificateForBlockAssembly then rebuilds it from the parent's persisted
+// committee certificate.
 var (
 	certForNextBlockMu sync.Mutex
 	certForNextBlock   []config.CertSigner
@@ -95,16 +98,7 @@ func RecordCommitCertificate(height uint64, responses []BLS_Signer.BLSresponse) 
 	if !AggCertEnabled {
 		return
 	}
-	cert := make([]config.CertSigner, 0, len(responses))
-	for _, r := range responses {
-		if !r.Agree || r.PeerID == "" || r.PubKey == "" || r.Signature == "" {
-			continue
-		}
-		cert = append(cert, config.CertSigner{
-			PeerID: r.PeerID, PubKey: r.PubKey, Signature: r.Signature,
-		})
-	}
-	sort.Slice(cert, func(i, j int) bool { return cert[i].PeerID < cert[j].PeerID })
+	cert := certificateFromResponses(responses)
 
 	certForNextBlockMu.Lock()
 	certForNextBlock = cert
@@ -142,13 +136,69 @@ func CertificateForBlockAssembly(slot, prevHeight uint64) []config.CertSigner {
 	}
 
 	certForNextBlockMu.Lock()
-	defer certForNextBlockMu.Unlock()
-	if certForNextHeight != prevHeight || len(certForNextBlock) == 0 {
-		return nil // we do not hold the certificate for this block's parent
+	if certForNextHeight == prevHeight && len(certForNextBlock) > 0 {
+		out := make([]config.CertSigner, len(certForNextBlock))
+		copy(out, certForNextBlock)
+		certForNextBlockMu.Unlock()
+		return out
 	}
-	out := make([]config.CertSigner, len(certForNextBlock))
-	copy(out, certForNextBlock)
-	return out
+	certForNextBlockMu.Unlock()
+
+	// Memory does not hold the parent's certificate: this sequencer restarted,
+	// or took over from another one, after the parent committed. Rebuild it
+	// from the parent's persisted committee certificate. Without this every
+	// window block it proposed carried none, and five missing certificates in
+	// a window leave the epoch with no fallback seed, so the chain halted at
+	// the next epoch boundary. Every node still verifies what is attached
+	// (VerifyAndRecordPrevCert); a read or parse failure attaches nothing,
+	// as before.
+	raw, err := persistedCommitCertificateFn(prevHeight)
+	if err != nil || raw == "" {
+		return nil
+	}
+	var responses []BLS_Signer.BLSresponse
+	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
+		return nil
+	}
+	cert := certificateFromResponses(responses)
+	if len(cert) == 0 {
+		return nil
+	}
+	return cert
+}
+
+// certificateFromResponses filters to YES votes and sorts by peer ID, so two
+// nodes holding the same responses produce a byte-identical certificate —
+// required, since the list is hash-covered in array order.
+func certificateFromResponses(responses []BLS_Signer.BLSresponse) []config.CertSigner {
+	cert := make([]config.CertSigner, 0, len(responses))
+	for _, r := range responses {
+		if !r.Agree || r.PeerID == "" || r.PubKey == "" || r.Signature == "" {
+			continue
+		}
+		cert = append(cert, config.CertSigner{
+			PeerID: r.PeerID, PubKey: r.PubKey, Signature: r.Signature,
+		})
+	}
+	sort.Slice(cert, func(i, j int) bool { return cert[i].PeerID < cert[j].PeerID })
+	return cert
+}
+
+// persistedCommitCertificateFn returns the committee certificate (the
+// verified []BLSresponse as JSON) stored with the block at height, or "" when
+// that block is not stored or carries none. A variable so tests need no DB.
+var persistedCommitCertificateFn = func(height uint64) (string, error) {
+	blk, err := DB_OPs.GetZKBlockHeaderByNumber(height)
+	if err != nil {
+		if DB_OPs.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if blk == nil {
+		return "", nil
+	}
+	return blk.CommitteeCertificate, nil
 }
 
 // VerifyAndRecordPrevCert verifies the certificate a block carries for its
