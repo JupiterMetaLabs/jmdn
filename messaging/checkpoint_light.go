@@ -134,9 +134,9 @@ func PruneLightLogOnce(store kv.Store, floorPath string, keepBlocks uint64) (Pru
 	if pick.Seq+1 <= start {
 		return res, nil // already pruned this far
 	}
-	n, err := kv.PruneLogBefore(store, pick.Seq+1)
+	n, err := checkpoint.PruneToAnchor(store, pick.Seq)
 	if err != nil {
-		return res, fmt.Errorf("prune log below seq %d: %w", pick.Seq+1, err)
+		return res, fmt.Errorf("prune log to checkpoint seq %d: %w", pick.Seq, err)
 	}
 	res.Before, res.Deleted, res.CutBlock = pick.Seq+1, n, pick.BlockNumber
 	return res, nil
