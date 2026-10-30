@@ -94,3 +94,32 @@ func TestMaybeFreezeUpcomingSnapshot_FreezesFutureEpochNotCurrent(t *testing.T) 
 		t.Fatal("epoch 0 (the CURRENT epoch at this slot) should not be frozen by this call - only the upcoming epoch 1 is")
 	}
 }
+
+// The anchored hash must be the same on every node for the same fleet. A local
+// block_buddy entry is node-local operator config, so it must not change the
+// frozen snapshot: freezing epoch 1 with and without a blocklist (two nodes
+// that differ only in their blocklist) must give the same digest.
+func TestMaybeFreezeUpcomingSnapshot_IgnoresLocalBlocklist(t *testing.T) {
+	old := CommitteeSnapshotAnchorEnabled
+	CommitteeSnapshotAnchorEnabled = true
+	defer func() { CommitteeSnapshotAnchorEnabled = old }()
+	members := poolOf(t, 7, 7)
+
+	resetSnapshotAnchorState()
+	maybeFreezeUpcomingSnapshot(N - SnapshotFreezeLookahead)
+	unblocked, ok := frozenSnapshotHashFor(1)
+	if !ok {
+		t.Fatal("precondition: epoch 1 must freeze at its lookahead slot")
+	}
+
+	withBlockBuddy(t, members[6].peerID)
+	resetSnapshotAnchorState()
+	maybeFreezeUpcomingSnapshot(N - SnapshotFreezeLookahead)
+	blocked, ok := frozenSnapshotHashFor(1)
+	if !ok {
+		t.Fatal("epoch 1 must freeze with a blocklist set")
+	}
+	if blocked != unblocked {
+		t.Fatal("a local blocklist changed the anchored snapshot hash; nodes with different blocklists would stamp different values")
+	}
+}
