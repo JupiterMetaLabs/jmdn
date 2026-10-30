@@ -344,7 +344,7 @@ func TestV2RefusesLegacySource(t *testing.T) {
 // F-7 - the warmup/authorization pool must track the SAME pinned epoch the
 // committee draw uses, or a seat/candidate pool mismatch is reopened one
 // layer up (this branch has no seat-resolution step yet, but the underlying
-// mismatch between WarmupPeerIDs' live pool and committeeSnapshotFor's
+// mismatch between WarmupPeerIDs' live pool and fleetCommitteeSnapshotFor's
 // epoch-pinned pool is the same defect regardless).
 // ---------------------------------------------------------------------------
 
@@ -374,7 +374,7 @@ func wirePinnedEligibility(t *testing.T, n int, pinnedEpoch uint64, extraPeer st
 
 // TestF7_WarmupTracksThePinnedDrawPool is the regression test for F-7.
 //
-// Once consensus.require_pinned_committee is on, committeeSnapshotFor draws
+// Once consensus.require_pinned_committee is on, fleetCommitteeSnapshotFor draws
 // the seated committee from the epoch-FROZEN snapshot. WarmupPeerIDsForEpoch
 // must resolve the SAME snapshot for the SAME epoch - not the live pool - or
 // a peer seated from the frozen snapshot is never authorized to be warmed up

@@ -70,10 +70,10 @@ func FrozenCommitteeSnapshotHashFor(epoch uint64) (h [32]byte, ok bool) {
 //
 // Idempotent by construction: once an epoch's hash is cached, calling this
 // again at any later slot in the same (or an earlier) epoch is a no-op for
-// that epoch - the cache is checked before committeeSnapshotFor is ever
-// called again, so a membership change between the freeze slot and the
-// epoch's actual start can never retroactively alter the frozen value. That
-// is the entire point of freezing.
+// that epoch - the cache is checked before the pool is ever read again, so a
+// membership change between the freeze slot and the epoch's actual start can
+// never retroactively alter the frozen value. That is the entire point of
+// freezing.
 //
 // No-op entirely when CommitteeSnapshotAnchorEnabled is false.
 func maybeFreezeUpcomingSnapshot(currentSlot uint64) {
@@ -89,7 +89,7 @@ func maybeFreezeUpcomingSnapshot(currentSlot uint64) {
 		return
 	}
 
-	// Deliberately NOT committeeSnapshotFor(upcoming): that function is
+	// Deliberately NOT fleetCommitteeSnapshotFor(upcoming): that function is
 	// SelectionPeriod-keyed (the block-height clock), but `upcoming` here is
 	// an EntropyEpoch-style value (EpochForSlot-derived) — a different clock
 	// with a different divisor. There is no SelectionPeriod derivable from a

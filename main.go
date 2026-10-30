@@ -2093,7 +2093,7 @@ func main() {
 	// recovery, ~400 lines above, which reads naturally — both are "restore
 	// in-memory state from committed history" — and was a guaranteed no-op.
 	// The replay calls VerifyAndRecordPrevCert, which resolves the eligible
-	// pool via committeeSnapshotFor -> eligibleMembersUncappedForEpoch, and
+	// pool via fleetCommitteeSnapshotFor -> FleetEligibleForEpoch, and
 	// that returns "committee eligibility source not configured (fail closed)"
 	// until SetCommitteeEligibilitySource / WireCommitteeSources have run —
 	// both of which need n.Host and therefore cannot run before
