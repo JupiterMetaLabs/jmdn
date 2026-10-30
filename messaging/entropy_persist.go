@@ -73,7 +73,12 @@ func PersistEpochEntropy(epoch uint64) error {
 	if err != nil {
 		return fmt.Errorf("%w (epoch %d): %w", ErrNoEntropyToPersist, epoch, err)
 	}
-	if err := DB_OPs.RecordBeaconEntropy(nil, epoch, entropy); err != nil {
+	// Sealed from an unconfirmed last-resort mix: kept in memory until the
+	// boundary proof confirms that mix (see lastResortMixes).
+	if sealedFromLastResortMix(epoch) {
+		return nil
+	}
+	if err := recordBeaconEntropyFn(nil, epoch, entropy); err != nil {
 		log.Error().Err(err).Uint64("epoch", epoch).
 			Msg("entropy: failed to persist finalised epoch entropy — this epoch will NOT survive a " +
 				"restart, and it cannot be recomputed once its mix ages out. Investigate the KV write")
@@ -82,6 +87,10 @@ func PersistEpochEntropy(epoch uint64) error {
 	log.Debug().Uint64("epoch", epoch).Msg("entropy: finalised epoch entropy persisted")
 	return nil
 }
+
+// recordBeaconEntropyFn is DB_OPs.RecordBeaconEntropy; a variable so tests
+// need no DB.
+var recordBeaconEntropyFn = DB_OPs.RecordBeaconEntropy
 
 // RehydrateBeaconFromDisk republishes persisted epoch entropy into a
 // freshly-constructed BeaconSource. Call once at startup, after the sink is

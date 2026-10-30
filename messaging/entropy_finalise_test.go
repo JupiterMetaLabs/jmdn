@@ -252,11 +252,13 @@ func TestResolvePendingFallbacks_StaysPendingBeforeDeadline(t *testing.T) {
 	}
 }
 
-// Past the deadline with too few signers: the epoch must be dropped from
-// pending and never retried, with no seed produced.
+// Past the deadline with no signers and without the epoch's entropy, even the
+// last resort (LastResortSeedForEpoch) has nothing to derive from: the epoch
+// must be dropped from pending and never retried, with no seed produced.
 func TestResolvePendingFallbacks_DropsEpochAtDeadlineWithoutASeed(t *testing.T) {
 	resetFinaliseTracking(t)
 	resetAggSigStore(t)
+	withNoBeacon(t)
 
 	finaliseTrackMu.Lock()
 	pendingFallback[3] = struct{}{}

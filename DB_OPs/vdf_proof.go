@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
@@ -41,6 +42,9 @@ const vdfProofPrefix = "vdf_proof:"
 // audit can find records without a prefix scan. Same pattern, and same
 // reason, as beaconEntropyNewestKey.
 const vdfProofNewestKey = "vdf_proof_newest"
+
+// vdfProofWriteMu serialises RecordVDFProof (D-45).
+var vdfProofWriteMu sync.Mutex
 
 // MaxVDFProofBytes bounds a single stored/transmitted proof.
 //
@@ -100,6 +104,8 @@ func GetVDFProof(conn *config.PooledConnection, epoch uint64) ([]byte, bool, err
 //
 // Fails CLOSED on a read error, for the reason equivocation.go documents: a
 // read error that fell through would overwrite the durable record.
+//
+// Serialised by vdfProofWriteMu, for the reason RecordBeaconEntropy is (D-45).
 func RecordVDFProof(conn *config.PooledConnection, epoch uint64, encodedProof []byte) error {
 	if len(encodedProof) == 0 {
 		return fmt.Errorf("vdf proof write epoch %d: refusing to store an empty proof", epoch)
@@ -108,6 +114,8 @@ func RecordVDFProof(conn *config.PooledConnection, epoch uint64, encodedProof []
 		return fmt.Errorf("vdf proof write epoch %d: %d bytes exceeds the %d-byte maximum",
 			epoch, len(encodedProof), MaxVDFProofBytes)
 	}
+	vdfProofWriteMu.Lock()
+	defer vdfProofWriteMu.Unlock()
 	h, err := getHandle(conn)
 	if err != nil {
 		return fmt.Errorf("vdf proof write: %w", err)

@@ -32,7 +32,7 @@ func EntropyMixKey(epoch uint64) string { return fmt.Sprintf("%s%d", entropyMixP
 type EntropyMixRecord struct {
 	Epoch   uint64 `json:"epoch"`
 	SeedHex string `json:"seed"`    // 32-byte mix, lowercase hex
-	Outcome string `json:"outcome"` // "mixed" or "fallback"
+	Outcome string `json:"outcome"` // "mixed", "fallback" or "last-resort"
 }
 
 // GetEntropyMix returns epoch's persisted mix record, if any.

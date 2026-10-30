@@ -212,6 +212,11 @@ func VerifyAndAcceptVDFProof(block *config.ZKBlock) error {
 		return err
 	}
 
+	// The proof verified against this node's own mix(E-1). If that mix was a
+	// last resort, it is now confirmed: write it, and let the entropy and
+	// proof below be written too (see lastResortMixes).
+	confirmLastResortMix(declaredEpoch-1, mix)
+
 	// Durability. The adopted value is now in the in-memory beacon; persist it
 	// so a restart does not lose an epoch that cannot be recomputed (the mix
 	// ages out). Non-fatal: a KV failure degrades restart recovery, it must not
