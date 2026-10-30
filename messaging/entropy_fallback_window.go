@@ -48,11 +48,14 @@ package messaging
 // falling through to some other formula, which would ship a wrong seed into
 // the next epoch's committee draw.
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
 
+	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -202,7 +205,24 @@ func FallbackSeedForEpoch(epoch, currentSlot uint64) (randao.Seed, error) {
 		return randao.Seed{}, err
 	}
 
+	collected := collectedAggSigs(start, deadline)
+
+	if uint64(len(collected)) == FallbackFoldBufferB {
+		return randao.FallbackFromCommittedSigners(BLS_Signer.DomainChainID(), epoch, start, deadline, FallbackFoldBufferB, collected)
+	}
+	if currentSlot < deadline {
+		return randao.Seed{}, fmt.Errorf("%w: epoch %d has %d of %d signers, deadline slot %d (currentSlot=%d)",
+			ErrFallbackNotYetReady, epoch, len(collected), FallbackFoldBufferB, deadline, currentSlot)
+	}
+	return randao.Seed{}, fmt.Errorf("%w: epoch %d reached slot %d (deadline %d) with only %d of %d signers",
+		ErrFallbackDeadlineExceeded, epoch, currentSlot, deadline, len(collected), FallbackFoldBufferB)
+}
+
+// collectedAggSigs returns the recorded aggregates in [start, deadline), lowest
+// slot first, at most FallbackFoldBufferB of them.
+func collectedAggSigs(start, deadline uint64) []randao.AggSig {
 	defaultAggSigStore.mu.Lock()
+	defer defaultAggSigStore.mu.Unlock()
 	slots := make([]uint64, 0, len(defaultAggSigStore.sigs))
 	for s := range defaultAggSigStore.sigs {
 		if s >= start && s < deadline {
@@ -218,17 +238,83 @@ func FallbackSeedForEpoch(epoch, currentSlot uint64) (randao.Seed, error) {
 		}
 		collected = append(collected, randao.AggSig{Slot: s, Sig: defaultAggSigStore.sigs[s]})
 	}
-	defaultAggSigStore.mu.Unlock()
+	return collected
+}
 
-	if uint64(len(collected)) == FallbackFoldBufferB {
-		return randao.FallbackFromCommittedSigners(BLS_Signer.DomainChainID(), epoch, start, deadline, FallbackFoldBufferB, collected)
+// domainFallbackLastResort separates the no-signer last-resort seed from every
+// other hash in the entropy pipeline.
+const domainFallbackLastResort = "jmdt/randao-fallback-last-resort/v1"
+
+// ErrLastResortNoEntropy means an epoch reached its fallback deadline with no
+// signer collected and this node does not hold the epoch's entropy, so not
+// even the last-resort seed can be derived. The epoch stays without a seed.
+var ErrLastResortNoEntropy = errors.New("messaging: last-resort fallback needs the epoch's entropy, which this node does not hold")
+
+// LastResortSeedForEpoch derives the seed for an epoch whose fallback reached
+// its deadline with fewer than FallbackFoldBufferB signers
+// (ErrFallbackDeadlineExceeded).
+//
+// Before this, such an epoch produced no seed at all: no mix, so no VDF, so
+// the next epoch's boundary block could never carry a proof
+// (ErrVDFProofNotReady) and the chain halted for good. Members withholding
+// reveals, plus a window short of certificates, could therefore halt the chain,
+// not just bias it. Now:
+//
+//   - 1 to B-1 signers collected: fold exactly those, with the same fold and
+//     the same lowest-slot-first selection as the full fallback.
+//   - none collected: H(domain, chainID, epoch, ENTROPY(epoch)). ENTROPY(epoch)
+//     is the value that seated this epoch's committees, fixed by the VDF before
+//     the window opened, so no proposer can choose it.
+//   - none collected and this node does not hold ENTROPY(epoch) (Stage 1, or
+//     it never adopted the epoch): ErrLastResortNoEntropy, as before.
+//
+// Deterministic across the fleet: the signers are the certificates committed
+// blocks carried, recorded before the epoch is resolved
+// (applyEntropyEffectsLocked runs VerifyAndRecordPrevCert first), and the
+// replay after a restart runs the same code over the same blocks.
+//
+// The trade-off: with fewer signers a dishonest sequencer has fewer terms to
+// beat, so the seed is easier to bias than a full fold. It also controls the
+// count: by leaving PrevAggCert out of window blocks it picks between 0 and B
+// signers (and which ones), and with a short VDF it can evaluate every option
+// before publishing. Before this, leaving them out halted the chain, which
+// hurt the sequencer too. Acceptable with one trusted sequencer; revisit T
+// before running several. That is the price of not halting, and only paid
+// when the window was already short.
+func LastResortSeedForEpoch(epoch uint64) (randao.Seed, error) {
+	start, deadline, err := randao.FallbackCollectionBounds(epoch, N, RevealCutoffK, FallbackFoldMaxSlotOffset)
+	if err != nil {
+		return randao.Seed{}, err
 	}
-	if currentSlot < deadline {
-		return randao.Seed{}, fmt.Errorf("%w: epoch %d has %d of %d signers, deadline slot %d (currentSlot=%d)",
-			ErrFallbackNotYetReady, epoch, len(collected), FallbackFoldBufferB, deadline, currentSlot)
+	if collected := collectedAggSigs(start, deadline); len(collected) > 0 {
+		return randao.FallbackFromCommittedSigners(BLS_Signer.DomainChainID(), epoch, start, deadline, uint64(len(collected)), collected)
 	}
-	return randao.Seed{}, fmt.Errorf("%w: epoch %d reached slot %d (deadline %d) with only %d of %d signers",
-		ErrFallbackDeadlineExceeded, epoch, currentSlot, deadline, len(collected), FallbackFoldBufferB)
+
+	beacon := activeBeacon()
+	if beacon == nil {
+		return randao.Seed{}, fmt.Errorf("%w: epoch %d (no beacon installed)", ErrLastResortNoEntropy, epoch)
+	}
+	entropy, err := beacon.EpochEntropy(committee.EntropyEpoch(epoch))
+	if err != nil {
+		return randao.Seed{}, fmt.Errorf("%w: epoch %d: %v", ErrLastResortNoEntropy, epoch, err)
+	}
+	return lastResortHash(BLS_Signer.DomainChainID(), epoch, entropy), nil
+}
+
+func lastResortHash(chainID, epoch uint64, entropy []byte) randao.Seed {
+	var buf [8]byte
+	h := sha256.New()
+	h.Write([]byte(domainFallbackLastResort))
+	binary.BigEndian.PutUint64(buf[:], chainID)
+	h.Write(buf[:])
+	binary.BigEndian.PutUint64(buf[:], epoch)
+	h.Write(buf[:])
+	binary.BigEndian.PutUint64(buf[:], uint64(len(entropy)))
+	h.Write(buf[:])
+	h.Write(entropy)
+	var out randao.Seed
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 // pruneAggSigsBelow drops entries for slots before the given slot. Called after

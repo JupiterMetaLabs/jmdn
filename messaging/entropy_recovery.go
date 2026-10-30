@@ -59,6 +59,7 @@ package messaging
 // with a loud error rather than halting entropy forever.
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -68,10 +69,12 @@ import (
 
 	"github.com/JupiterMetaLabs/avc/committee"
 	"github.com/JupiterMetaLabs/avc/randao"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/metrics"
 )
 
 // ---------------------------------------------------------------------------
@@ -186,13 +189,172 @@ var (
 const (
 	mixOutcomeMixed    = "mixed"
 	mixOutcomeFallback = "fallback"
+	// mixOutcomeLastResort: the fallback reached its deadline short of
+	// signers and was finalised by LastResortSeedForEpoch.
+	mixOutcomeLastResort = "last-resort"
 )
 
 func persistFinalisedMix(epoch uint64, seed randao.Seed, outcome string) {
+	noteFinalisedOutcome(epoch, outcome)
+	if outcome == mixOutcomeLastResort {
+		markLastResortMix(epoch)
+		return
+	}
 	if err := entropyMixPersist(epoch, seed, outcome); err != nil {
 		log.Error().Err(err).Uint64("epoch", epoch).Str("outcome", outcome).
 			Msg("entropy: could not persist the finalised mix - a restart will have to re-derive it by replay")
 	}
+}
+
+// lastResortMixes holds the epochs this process finalised from the last-resort
+// seed (LastResortSeedForEpoch) and that are not yet confirmed. Until then
+// nothing derived from such a mix is made durable: not the mix, not the entropy
+// sealed from it for the next epoch, not that entropy's proof.
+//
+// The last resort is computed from this node's own certificate store. A node
+// that failed to record a certificate its peers recorded takes the last resort
+// while they fold all five, and holds a different mix. Before the last resort
+// it held no mix, stalled, and a restart replayed the blocks and recovered.
+// Had the different mix (or anything sealed from it) been written, it would
+// outrank the replay (durable records are first-writer-wins), and the node
+// would stay diverged until its DB was repaired. In memory only, a restart
+// recovers as before.
+//
+// Confirmation is the next boundary block's proof verifying against this
+// node's own mix (confirmLastResortMix): the sealer evaluated the VDF over the
+// same mix, so this node did not diverge. All three records are then written.
+// Without that, a restart more than two epochs later (past the replay) or a
+// node that syncs or asks peers for the proof would find them nowhere.
+var (
+	lastResortMu    sync.Mutex
+	lastResortMixes = make(map[uint64]struct{})
+
+	// heldLastResortProofs holds, by the epoch they prove, the proofs
+	// PersistVDFProof kept out of storage because they were sealed from an
+	// unconfirmed last-resort mix. LookupVDFProof serves them: the boundary
+	// block that confirms the mix must carry that proof, and once the sealer
+	// is gone SealerResultFor finds it only through LookupVDFProof; peers
+	// recovering the epoch ask the same way. Serving one is safe, as every
+	// reader verifies it against its own mix.
+	heldLastResortProofs = make(map[uint64][]byte)
+
+	// lastResortStreak counts consecutive last-resort epochs ending at
+	// lastResortStreakEnd; it backs metrics.EntropyLastResortConsecutive.
+	lastResortStreak    uint64
+	lastResortStreakEnd uint64
+)
+
+// noteFinalisedOutcome updates the last-resort metrics for one finalised
+// epoch. The counter skips sync and replay (quiet) decisions, which re-decide
+// epochs a live decision already counted.
+func noteFinalisedOutcome(epoch uint64, outcome string) {
+	lastResortMu.Lock()
+	switch {
+	case outcome != mixOutcomeLastResort:
+		if epoch > lastResortStreakEnd {
+			lastResortStreak = 0
+		}
+	case lastResortStreak > 0 && epoch == lastResortStreakEnd:
+		// Same epoch decided again (replay): no change.
+	case lastResortStreak > 0 && epoch == lastResortStreakEnd+1:
+		lastResortStreak++
+		lastResortStreakEnd = epoch
+	default:
+		lastResortStreak, lastResortStreakEnd = 1, epoch
+	}
+	streak := lastResortStreak
+	lastResortMu.Unlock()
+
+	metrics.EntropyLastResortConsecutive.Set(float64(streak))
+	if outcome == mixOutcomeLastResort && !entropyQuietFinalise.Load() {
+		metrics.EntropyLastResortTotal.Inc()
+	}
+}
+
+// confirmLastResortMix makes the last-resort mix of epoch durable once a VDF
+// proof sealed from it has verified against seed, this node's own copy. The
+// caller then persists the entropy and the proof, which are no longer held
+// back. A node whose mix diverged never gets here: the proof fails to verify.
+// No-op for an epoch that is not an unconfirmed last-resort mix.
+func confirmLastResortMix(epoch uint64, seed randao.Seed) {
+	lastResortMu.Lock()
+	_, pending := lastResortMixes[epoch]
+	delete(lastResortMixes, epoch)
+	lastResortMu.Unlock()
+	if !pending {
+		return
+	}
+	if err := entropyMixPersist(epoch, seed, mixOutcomeLastResort); err != nil {
+		entropyLogger().Error(context.Background(), "entropy: could not persist the confirmed last-resort mix - a restart will have to re-derive it by replay",
+			err, ion.Uint64("epoch", epoch))
+		return
+	}
+	entropyLogger().Info(context.Background(), "entropy: last-resort mix confirmed by the next boundary proof; mix, entropy and proof now durable",
+		ion.Uint64("epoch", epoch))
+}
+
+// lastResortRetainEpochs bounds lastResortMixes; only the newest few epochs
+// can still be sealed or adopted.
+const lastResortRetainEpochs = 8
+
+func markLastResortMix(epoch uint64) {
+	lastResortMu.Lock()
+	defer lastResortMu.Unlock()
+	lastResortMixes[epoch] = struct{}{}
+	for e := range lastResortMixes {
+		if e+lastResortRetainEpochs < epoch {
+			delete(lastResortMixes, e)
+		}
+	}
+	for e := range heldLastResortProofs {
+		if e+lastResortRetainEpochs <= epoch { // proves entropy sealed from mix(e-1)
+			delete(heldLastResortProofs, e)
+		}
+	}
+}
+
+// holdIfSealedFromLastResortMix keeps encoded, a proof for epoch, in memory
+// instead of storage when epoch's entropy is sealed from an unconfirmed
+// last-resort mix. Reports whether it did; the caller then must not persist.
+func holdIfSealedFromLastResortMix(epoch uint64, encoded []byte) bool {
+	if epoch == 0 {
+		return false
+	}
+	lastResortMu.Lock()
+	defer lastResortMu.Unlock()
+	if _, ok := lastResortMixes[epoch-1]; !ok {
+		return false
+	}
+	heldLastResortProofs[epoch] = append([]byte(nil), encoded...)
+	return true
+}
+
+// heldLastResortProof returns the proof for epoch held by
+// holdIfSealedFromLastResortMix, if any.
+func heldLastResortProof(epoch uint64) ([]byte, bool) {
+	lastResortMu.Lock()
+	defer lastResortMu.Unlock()
+	encoded, ok := heldLastResortProofs[epoch]
+	return encoded, ok
+}
+
+// releaseHeldLastResortProof drops the held proof for epoch once it is stored.
+func releaseHeldLastResortProof(epoch uint64) {
+	lastResortMu.Lock()
+	delete(heldLastResortProofs, epoch)
+	lastResortMu.Unlock()
+}
+
+// sealedFromLastResortMix reports whether epoch's entropy is sealed from a
+// last-resort mix: ENTROPY(E) is sealed from mix(E-1).
+func sealedFromLastResortMix(epoch uint64) bool {
+	if epoch == 0 {
+		return false
+	}
+	lastResortMu.Lock()
+	defer lastResortMu.Unlock()
+	_, ok := lastResortMixes[epoch-1]
+	return ok
 }
 
 // RestoreEntropyMixes loads this node's own persisted mixes for [from, to] into

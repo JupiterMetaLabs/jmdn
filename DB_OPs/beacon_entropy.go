@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
@@ -83,10 +84,18 @@ func GetBeaconEntropy(conn *config.PooledConnection, epoch uint64) ([]byte, bool
 // Fails CLOSED on a read error, for the reason equivocation.go documents: a
 // read error that fell through would overwrite the durable record this
 // function exists to protect.
+//
+// Serialised by beaconEntropyWriteMu (D-45): the conflict check and the
+// newest-pointer advance are each a read then a write. Unlocked, writers for
+// epochs 9 and 10 could both read the old pointer and 9 land last, leaving the
+// pointer at 9 with a record at 10 that restore, probing down from the
+// pointer, never finds.
 func RecordBeaconEntropy(conn *config.PooledConnection, epoch uint64, entropy []byte) error {
 	if len(entropy) == 0 {
 		return fmt.Errorf("beacon entropy write epoch %d: refusing to store empty entropy", epoch)
 	}
+	beaconEntropyWriteMu.Lock()
+	defer beaconEntropyWriteMu.Unlock()
 	h, err := getHandle(conn)
 	if err != nil {
 		return fmt.Errorf("beacon entropy write: %w", err)
@@ -140,6 +149,9 @@ func RecordBeaconEntropy(conn *config.PooledConnection, epoch uint64, entropy []
 // plus a bounded probe needs no scan and no manifest that can drift out of
 // sync with the records it describes.
 const beaconEntropyNewestKey = "beacon_entropy_newest"
+
+// beaconEntropyWriteMu serialises RecordBeaconEntropy (D-45).
+var beaconEntropyWriteMu sync.Mutex
 
 func readBeaconEntropyNewest(h store.ThebeHandle) (uint64, bool, error) {
 	raw, err := h.GetSyncKV(beaconEntropyNewestKey)
