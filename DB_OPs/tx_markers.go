@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/config"
@@ -112,11 +113,36 @@ func IsMarkerApplied(_ *config.PooledConnection, key string) (bool, error) {
 // An empty value means "nothing pending".
 const txApplyRedoKey = "tx_apply_redo"
 
-// txApplyRedo is the persisted form of one in-flight ApplyTxAtomic call.
+// txApplyRedo is the persisted form of one in-flight apply. A single-tx apply
+// sets TxHash only, in the same format older binaries wrote. A group apply
+// (ApplyTxGroupAtomic with more than one tx) also sets TxHashes, the full list
+// in block order; TxHash then holds its first entry.
 type txApplyRedo struct {
 	TxHash    string     `json:"tx_hash"`
+	TxHashes  []string   `json:"tx_hashes,omitempty"`
 	AppliedAt int64      `json:"applied_at"`
 	Docs      []*Account `json:"docs"`
+}
+
+// hashes returns every tx the record covers.
+func (r *txApplyRedo) hashes() []string {
+	if len(r.TxHashes) > 0 {
+		return r.TxHashes
+	}
+	return []string{r.TxHash}
+}
+
+// applyLabel names an apply in errors: the tx hash, or the first hash and a
+// count for a group.
+func applyLabel(txHashes []string) string {
+	switch len(txHashes) {
+	case 0:
+		return "(no txs)"
+	case 1:
+		return txHashes[0]
+	default:
+		return fmt.Sprintf("%s (+%d txs)", txHashes[0], len(txHashes)-1)
+	}
 }
 
 // redoStore is the subset of the handle the redo record needs.
@@ -137,7 +163,7 @@ func readTxApplyRedo(h redoStore) (*txApplyRedo, error) {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("decode apply redo: %w", err)
 	}
-	if r.TxHash == "" || len(r.Docs) == 0 {
+	if r.TxHash == "" || len(r.Docs) == 0 || (len(r.TxHashes) > 0 && r.TxHashes[0] != r.TxHash) {
 		return nil, fmt.Errorf("apply redo record is malformed (tx=%q docs=%d)", r.TxHash, len(r.Docs))
 	}
 	return &r, nil
@@ -150,10 +176,10 @@ func clearTxApplyRedo(h redoStore) error {
 	return nil
 }
 
-// writeTxEffects performs the two commits that make up one tx's effect:
-// the absolute account documents, then the tx_processed marker. Idempotent:
-// re-running it with the same inputs converges to the same state.
-func writeTxEffects(h redoStore, docs []*Account, txHash string, appliedAt int64) error {
+// writeTxEffects performs the commits that make up an apply's effect: the
+// absolute account documents, then one tx_processed marker per tx, in order.
+// Idempotent: re-running it with the same inputs converges to the same state.
+func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt int64) error {
 	// RAW authoritative write (merge-bypassing). The stage was built from the
 	// stored base under LockStateApply, so these absolute docs must win
 	// unconditionally; the LWW merge gate is for uncoordinated sync writers
@@ -175,9 +201,11 @@ func writeTxEffects(h redoStore, docs []*Account, txHash string, appliedAt int64
 	if err := BatchPutAccountsAuthoritative(entries); err != nil {
 		return fmt.Errorf("accounts: %w", err)
 	}
-	op := markerOp(TxProcessedKey(txHash), appliedAt)
-	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
-		return fmt.Errorf("marker: %w", err)
+	for i, txHash := range txHashes {
+		op := markerOp(TxProcessedKey(txHash), appliedAt)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("marker %s (%d/%d written): %w", txHash, i, len(txHashes), err)
+		}
 	}
 	return nil
 }
@@ -192,45 +220,74 @@ func writeTxEffects(h redoStore, docs []*Account, txHash string, appliedAt int64
 // On a returned error the redo record is cleared: the caller rolls the block
 // back (rollbackState), and a leftover record would otherwise re-apply the
 // failed tx after that rollback.
-func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
+func ApplyTxAtomic(c *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
+	return ApplyTxGroupAtomic(c, docs, []string{txHash}, appliedAt)
+}
+
+// ApplyTxGroupAtomic commits the combined effect of consecutive txs of one
+// block: the final document of every account they touched (each written
+// once), then one tx_processed marker per tx in block order. The docs must be
+// the post-state of applying the txs in that order on the stored base, under
+// one continuous hold of LockStateApply.
+//
+// The same redo record as ApplyTxAtomic brackets the writes, so a crash
+// part-way is rolled forward at boot. On a returned error the redo record is
+// cleared and some markers of the group may already be written: the caller
+// must revoke the markers of every tx in txHashes before restoring balances.
+//
+// Caller must hold LockStateApply.
+func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []string, appliedAt int64) error {
+	label := applyLabel(txHashes)
+	if len(txHashes) == 0 {
+		return fmt.Errorf("ApplyTxGroupAtomic: no txs")
+	}
+	for _, hash := range txHashes {
+		if hash == "" {
+			return fmt.Errorf("ApplyTxGroupAtomic %s: empty tx hash", label)
+		}
+	}
 	if len(docs) == 0 {
-		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
+		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", label)
 	}
 	h, err := getHandle(nil)
 	if err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
 	}
 
 	// A record left over here means boot recovery did not run or failed.
 	// Never stack a second apply on top of an unresolved one.
 	pending, err := readTxApplyRedo(h)
 	if err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
 	}
 	if pending != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: unresolved apply of tx %s is pending; run RecoverPendingTxApply first", txHash, pending.TxHash)
+		return fmt.Errorf("ApplyTxAtomic %s: unresolved apply of tx %s is pending; run RecoverPendingTxApply first", label, applyLabel(pending.hashes()))
 	}
 
-	redo, err := json.Marshal(&txApplyRedo{TxHash: txHash, AppliedAt: appliedAt, Docs: docs})
+	rec := &txApplyRedo{TxHash: txHashes[0], AppliedAt: appliedAt, Docs: docs}
+	if len(txHashes) > 1 {
+		rec.TxHashes = txHashes
+	}
+	redo, err := json.Marshal(rec)
 	if err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: encode redo: %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: encode redo: %w", label, err)
 	}
 	if err := h.PutSyncKV(txApplyRedoKey, redo); err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: write redo: %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: write redo: %w", label, err)
 	}
 
-	if err := writeTxEffects(h, docs, txHash, appliedAt); err != nil {
+	if err := writeTxEffects(h, docs, txHashes, appliedAt); err != nil {
 		if cerr := clearTxApplyRedo(h); cerr != nil {
-			return fmt.Errorf("ApplyTxAtomic %s: %w (and %v)", txHash, err, cerr)
+			return fmt.Errorf("ApplyTxAtomic %s: %w (and %v)", label, err, cerr)
 		}
-		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
 	}
 
 	if err := clearTxApplyRedo(h); err != nil {
-		// Effects and marker are committed. A stale record is harmless to
+		// Effects and markers are committed. A stale record is harmless to
 		// recovery (it rewrites identical docs) but blocks the next apply, so
 		// surface it.
-		return fmt.Errorf("ApplyTxAtomic %s: applied, but %w", txHash, err)
+		return fmt.Errorf("ApplyTxAtomic %s: applied, but %w", label, err)
 	}
 	return nil
 }
@@ -239,8 +296,9 @@ func ApplyTxAtomic(_ *config.PooledConnection, docs []*Account, txHash string, a
 // between its account writes and its marker. Call once at startup, after the
 // ThebeDB handle is wired and before any block processing.
 //
-// Returns the recovered tx hash ("" when nothing was pending). An error means
-// state could not be made consistent; the node must not process blocks.
+// Returns the recovered tx hash, or the comma-separated hashes of a group
+// ("" when nothing was pending). An error means state could not be made
+// consistent; the node must not process blocks.
 func RecoverPendingTxApply() (string, error) {
 	h, err := getHandle(nil)
 	if err != nil {
@@ -259,25 +317,30 @@ func recoverPendingTxApply(h redoStore) (string, error) {
 	if pending == nil {
 		return "", nil
 	}
+	hashes := pending.hashes()
+	label := applyLabel(hashes)
 	// A revoked marker means the block was rolled back after this record was
-	// written; rolling forward would undo that rollback.
-	raw, err := h.GetSyncKV(TxProcessedKey(pending.TxHash))
-	if err != nil {
-		return "", fmt.Errorf("recover apply %s: marker read: %w", pending.TxHash, err)
-	}
-	if raw != nil && !markerValueApplied(raw) {
-		if err := clearTxApplyRedo(h); err != nil {
-			return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+	// written; rolling forward would undo that rollback. The rollback revokes
+	// every tx of a group, so one revoked marker is enough to discard it.
+	for _, hash := range hashes {
+		raw, err := h.GetSyncKV(TxProcessedKey(hash))
+		if err != nil {
+			return "", fmt.Errorf("recover apply %s: marker read %s: %w", label, hash, err)
 		}
-		return "", nil
+		if raw != nil && !markerValueApplied(raw) {
+			if err := clearTxApplyRedo(h); err != nil {
+				return "", fmt.Errorf("recover apply %s: %w", label, err)
+			}
+			return "", nil
+		}
 	}
-	if err := writeTxEffects(h, pending.Docs, pending.TxHash, pending.AppliedAt); err != nil {
-		return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+	if err := writeTxEffects(h, pending.Docs, hashes, pending.AppliedAt); err != nil {
+		return "", fmt.Errorf("recover apply %s: %w", label, err)
 	}
 	if err := clearTxApplyRedo(h); err != nil {
-		return "", fmt.Errorf("recover apply %s: %w", pending.TxHash, err)
+		return "", fmt.Errorf("recover apply %s: %w", label, err)
 	}
-	return pending.TxHash, nil
+	return strings.Join(hashes, ","), nil
 }
 
 // DiscardPendingTxApply drops an in-flight apply record without applying it.

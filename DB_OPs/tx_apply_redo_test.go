@@ -75,7 +75,7 @@ func TestRecover_RollsForwardInterruptedApply(t *testing.T) {
 	// marker failing and do NOT run the error-path clear.
 	redo := `{"tx_hash":"0xbb","applied_at":7,"docs":[{"address":"` + redoAddr.Hex() + `","balance":"90"}]}`
 	h.kv[txApplyRedoKey] = []byte(redo)
-	_ = writeTxEffects(h, []*Account{{Address: redoAddr, Balance: "90"}}, "0xbb", 7)
+	_ = writeTxEffects(h, []*Account{{Address: redoAddr, Balance: "90"}}, []string{"0xbb"}, 7)
 	if h.accounts[redoAddr.Hex()].Balance != "90" || h.kv[TxProcessedKey("0xbb")] != nil {
 		t.Fatal("setup: expected debited account with no marker")
 	}

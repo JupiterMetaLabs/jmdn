@@ -12,6 +12,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/execbridge"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -134,6 +135,49 @@ func (s *txStage) staged() []*DB_OPs.Account {
 		out = append(out, s.docs[addr])
 	}
 	return out
+}
+
+// exists reports whether addr is staged or stored. A staged account counts as
+// existing: with a shared group stage, an account created or funded by an
+// earlier tx of the group is not in the store yet.
+func (s *txStage) exists(addr *common.Address) (bool, error) {
+	if addr != nil {
+		if _, ok := s.docs[*addr]; ok {
+			return true, nil
+		}
+	}
+	return accountExists(addr, s.conn)
+}
+
+// groupedApplyOpBudget bounds one group commit: distinct staged accounts plus
+// one marker per tx. Same bound as the reconciliation group commit. A
+// variable so tests can force a flush part-way through a block.
+var groupedApplyOpBudget = 1000
+
+// applyGroup is a run of consecutive value-transfer txs of one block applied
+// on one shared stage and committed together by DB_OPs.ApplyTxGroupAtomic.
+// The block loop holds DB_OPs.LockStateApply for the group's whole life, so
+// the stage stays an exact view of stored state plus the group's own effects.
+type applyGroup struct {
+	stage  *txStage
+	hashes []string // txs whose effects are staged, in block order
+}
+
+func newApplyGroup(conn *config.PooledConnection) *applyGroup {
+	return &applyGroup{stage: newTxStage(conn)}
+}
+
+// ops is the group's commit size: staged accounts plus markers.
+func (g *applyGroup) ops() int { return len(g.stage.order) + len(g.hashes) }
+
+// groupedApplyEnabled reports whether block txs use group commits
+// (features.grouped_apply_commit). Unloaded settings use the default, on.
+// A variable so tests can pin either mode.
+var groupedApplyEnabled = func() bool {
+	if !settings.IsLoaded() {
+		return true
+	}
+	return settings.Get().Features.GroupedApplyCommit
 }
 
 // adoptCarriedNonce converges addr's stored ART identity nonce to the value the
@@ -474,6 +518,45 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// markers must be revoked if a later tx hard-fails).
 	successfullyProcessedTxs := make([]string, 0, len(block.Transactions))
 
+	// Grouped apply: consecutive value-transfer txs share one stage and one
+	// commit, so an account touched by many txs of the block (fee recipients,
+	// the zkVM, a busy sender) is written once per group instead of once per
+	// tx. Txs still apply one by one, in block order, on the running staged
+	// state, so the result is the same as committing each tx separately.
+	// LockStateApply is held from the group's first tx until it is committed
+	// or discarded.
+	grouped := groupedApplyEnabled()
+	var group *applyGroup
+	var groupTxs []string // every tx handled by the open group, in block order
+	discardGroup := func() {
+		if group == nil {
+			return
+		}
+		group, groupTxs = nil, nil
+		DB_OPs.UnlockStateApply()
+	}
+	defer discardGroup()
+	// flushGroup commits the open group and releases the lock. Its txs join
+	// successfullyProcessedTxs even when the commit fails: a failed group
+	// commit may have written some of their markers, and the rollback must
+	// revoke those before balances are restored.
+	flushGroup := func() error {
+		if group == nil {
+			return nil
+		}
+		g, txs := group, groupTxs
+		group, groupTxs = nil, nil
+		defer DB_OPs.UnlockStateApply()
+		successfullyProcessedTxs = append(successfullyProcessedTxs, txs...)
+		if len(g.hashes) == 0 {
+			return nil
+		}
+		if err := DB_OPs.ApplyTxGroupAtomic(accountsClient, g.stage.staged(), g.hashes, time.Now().UTC().Unix()); err != nil {
+			return fmt.Errorf("group commit of %d txs failed: %w", len(g.hashes), err)
+		}
+		return nil
+	}
+
 	// Process all transactions exactly as ordered by the Sequencer
 	// If ANY fails, rollback ALL affected accounts
 	for i, tx := range block.Transactions {
@@ -504,9 +587,30 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			continue
 		}
 
-		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, block.BlockNumber, block.BlockHash, i, accountNonces)
+		// Process the transaction with span context. Contract txs keep their
+		// own commit (applyContractTx), so an open group is committed first.
+		var Process_err error
+		inGroup := grouped && !(execbridge.Enabled() && execbridge.Get().IsContractTx(&tx))
+		if inGroup {
+			if group == nil {
+				DB_OPs.LockStateApply()
+				group = newApplyGroup(accountsClient)
+			}
+			Process_err = processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, block.BlockNumber, block.BlockHash, i, accountNonces, group)
+			if Process_err == nil {
+				groupTxs = append(groupTxs, tx.Hash.Hex())
+				if group.ops() >= groupedApplyOpBudget {
+					Process_err = flushGroup()
+				}
+			}
+		} else if Process_err = flushGroup(); Process_err == nil {
+			Process_err = processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp, block.BlockNumber, block.BlockHash, i, accountNonces, nil)
+		}
 		if Process_err != nil {
+			// Nothing of an open group is written yet; drop it and release
+			// the lock before the rollback below takes it again.
+			discardGroup()
+
 			// DETERMINISM ON FINALIZED BLOCKS: a 2f+1 block is a canonical, agreed
 			// transaction sequence — every node MUST apply every tx or state
 			// diverges SILENTLY. The node's sync fingerprint is a Merkle root over
@@ -614,8 +718,11 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w", i+1, len(block.Transactions), tx.Hash.Hex(), Process_err)
 		}
 
-		// Track successfully processed transaction
-		successfullyProcessedTxs = append(successfullyProcessedTxs, tx.Hash.Hex())
+		// Track successfully processed transaction. Grouped txs are added
+		// when their group is committed.
+		if !inGroup {
+			successfullyProcessedTxs = append(successfullyProcessedTxs, tx.Hash.Hex())
+		}
 	}
 
 	// D-67: state-fingerprint verification runs BEFORE the block-processed marker
@@ -663,6 +770,14 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		for _, txHash := range successfullyProcessedTxs {
 			cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
 		}
+	}
+
+	// Commit the last open group before the state is fingerprinted.
+	if ferr := flushGroup(); ferr != nil {
+		span.RecordError(ferr)
+		span.SetAttributes(attribute.String("status", "group_commit_failed"))
+		rollbackApplied()
+		return fmt.Errorf("block %d: %w", block.BlockNumber, ferr)
 	}
 
 	if execbridge.Enabled() {
@@ -940,8 +1055,14 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 	return nil
 }
 
-// ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, blockNumber uint64, blockHash common.Hash, txIndex int, accountNonces map[common.Address]uint64) error {
+// processTransaction handles a single transaction's balance updates.
+//
+// With group == nil the tx takes its own locks and commits on its own
+// (ApplyTxAtomic). With a group, the caller already holds LockStateApply, the
+// tx's effects are staged on the group's stage, its hash is appended to
+// group.hashes, and the caller commits the group. A contract tx must not be
+// passed with a group.
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64, blockNumber uint64, blockHash common.Hash, txIndex int, accountNonces map[common.Address]uint64, group *applyGroup) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -984,13 +1105,19 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		ion.String("function", "BlockProcessing.processTransaction"),
 	)
 
-	// Check if transaction was already processed (from previous blocks)
-	txLock := getTransactionLock(tx.Hash.String())
-	txLock.Lock()
-	defer func() {
-		txLock.Unlock()
-		cleanupTransactionLock(tx.Hash.String()) // Always clean up the lock
-	}()
+	// Check if transaction was already processed (from previous blocks).
+	// In a group the caller's LockStateApply already serializes this tx with
+	// every other apply path, and taking the per-tx lock while holding it
+	// would invert the lock order used below (per-tx lock, then
+	// LockStateApply) and could deadlock with a concurrent apply of this tx.
+	if group == nil {
+		txLock := getTransactionLock(tx.Hash.String())
+		txLock.Lock()
+		defer func() {
+			txLock.Unlock()
+			cleanupTransactionLock(tx.Hash.String()) // Always clean up the lock
+		}()
+	}
 
 	// First check with a preliminary key that shows we've started processing
 	txProcessingKey := fmt.Sprintf("tx_processing:%s", tx.Hash)
@@ -1001,8 +1128,10 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// makes each cycle atomic with respect to the other, so an effect can
 	// never be applied by both paths and neither can build on a base the
 	// other is mid-way through changing.
-	DB_OPs.LockStateApply()
-	defer DB_OPs.UnlockStateApply()
+	if group == nil {
+		DB_OPs.LockStateApply()
+		defer DB_OPs.UnlockStateApply()
+	}
 
 	// Check if already completed. Dual-read value-aware guard (accountsdb
 	// authoritative incl. -1 revocations, defaultdb legacy). Defense-in-depth
@@ -1078,6 +1207,10 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// IsContractTx=false and control falls through to the value-transfer path
 	// below (non-breaking). Runs under the LockStateApply held above.
 	if execbridge.Enabled() && execbridge.Get().IsContractTx(&tx) {
+		if group != nil {
+			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+			return fmt.Errorf("contract tx %s cannot be applied in a group", tx.Hash.Hex())
+		}
 		return applyContractTx(txSpanCtx, tx, coinbaseAddr, zkvmAddr, feeRecipients, accountsClient, blockNumber, blockHash, txIndex, blockTimestamp, accountNonces)
 	}
 
@@ -1191,8 +1324,18 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		ion.String("function", "BlockProcessing.processTransaction"),
 	)
 
+	// The tx's stage: its own, or the group's shared one. Existence checks go
+	// through it so an account created or funded by an earlier tx of the
+	// group (staged, not stored yet) is seen as existing.
+	var stage *txStage
+	if group != nil {
+		stage = group.stage
+	} else {
+		stage = newTxStage(accountsClient)
+	}
+
 	// Check if sender exists before attempting deduction
-	senderExists, _ := accountExists(tx.From, accountsClient)
+	senderExists, _ := stage.exists(tx.From)
 	txSpan.SetAttributes(attribute.Bool("sender_exists", senderExists))
 	if !senderExists {
 		txSpan.RecordError(errors.New("sender DID does not exist"))
@@ -1220,7 +1363,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// error can no longer be discarded: a transient read failure here, after the
 	// snapshot loop's read succeeded, would stage a zero-balance document over a
 	// real account. Refuse the tx instead (fail-closed; catch-up re-applies).
-	recipientExists, existErr := accountExists(tx.To, accountsClient)
+	recipientExists, existErr := stage.exists(tx.To)
 	if existErr != nil {
 		txSpan.RecordError(existErr)
 		txSpan.SetAttributes(attribute.String("status", "recipient_existence_check_failed"))
@@ -1265,7 +1408,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// absent → not skipped), a bounded double-apply for ONE tx's accounts.
 	// The single-ExecAll atomicity of the ImmuDB era returns with the ThebeDB
 	// builder-2PC task (see docs/RECONCILE-thebe-sc.md follow-ups).
-	stage := newTxStage(accountsClient)
+	// (stage was set up above, before the existence checks.)
 
 	// Create the missing recipient IN-STAGE from the block-carried identity.
 	// Every field is derived from the block (nonce, timestamps) or the address
@@ -1346,9 +1489,9 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// transfer". Determinism: the identity comes from block.AccountNonces (stamped
 	// for FeeRecipients in EnrichBlockAccountNonces), so every node builds the
 	// byte-identical account document. Guards, in order:
-	//   - already in this tx's stage (e.g. the recipient is also this tx's receiver,
-	//     already created AND credited) → skip, never re-put a zero balance over a
-	//     running one (silent-corruption guard);
+	//   - already staged, by this tx or an earlier tx of its group (e.g. the
+	//     recipient is also a receiver, already created AND credited) → skip,
+	//     never re-put a zero balance over a running one (silent-corruption guard);
 	//   - accountExists separates not-found from a transient DB error → fail-closed
 	//     on error rather than staging a zero doc over a real account;
 	//   - no carried identity (0 sentinel or absent) → fail-closed, mirroring the
@@ -1357,10 +1500,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// already exists, so this stays byte-identical to the pre-reward-split path.
 	for _, c := range coinbaseCredits {
 		addr := c.Addr
-		if _, staged := stage.docs[addr]; staged {
-			continue
-		}
-		exists, existErr := accountExists(&addr, accountsClient)
+		exists, existErr := stage.exists(&addr)
 		if existErr != nil {
 			txSpan.RecordError(existErr)
 			txSpan.SetAttributes(attribute.String("status", "reward_recipient_existence_check_failed"))
@@ -1434,6 +1574,21 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	}
 
 	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
+
+	// In a group the caller commits the shared stage with every tx's marker.
+	if group != nil {
+		group.hashes = append(group.hashes, tx.Hash.String())
+		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+		duration := time.Since(txStartTime).Seconds()
+		txSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "staged"))
+		logger().Debug(txSpanCtx, "Transaction staged for group commit",
+			ion.String("tx_hash", tx.Hash.Hex()),
+			ion.Int("group_txs", len(group.hashes)),
+			ion.String("topic", TOPIC),
+			ion.String("function", "BlockProcessing.processTransaction"),
+		)
+		return nil
+	}
 
 	// Commit the tx's staged effect: accounts first (raw authoritative batch),
 	// then the tx_processed marker LAST.
