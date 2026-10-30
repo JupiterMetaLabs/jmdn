@@ -23,3 +23,13 @@ func broadcastLogger() *ion.Ion {
 	}
 	return logInstance.GetNamedLogger()
 }
+
+// entropyLogger returns the named ion logger for the entropy pipeline (RANDAO
+// reveals, fallback, VDF).
+func entropyLogger() *ion.Ion {
+	logInstance, err := logging.NewAsyncLogger().Get().NamedLogger(logging.Entropy, "")
+	if err != nil {
+		return nil
+	}
+	return logInstance.GetNamedLogger()
+}

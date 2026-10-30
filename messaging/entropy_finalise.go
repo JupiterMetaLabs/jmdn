@@ -74,11 +74,14 @@ package messaging
 // entropy exists anywhere in this codebase. Every call fails closed until that
 // is decided — logged, never fatal, never guessed around.
 import (
+	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/JupiterMetaLabs/avc/randao"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/config"
@@ -264,6 +267,20 @@ func resolvePendingFallbacks(block *config.ZKBlock) {
 			pendingFallback[e] = struct{}{}
 			finaliseTrackMu.Unlock()
 		case errors.Is(err, ErrFallbackDeadlineExceeded):
+			// No full fold: finalise from what the window did collect, or
+			// from the epoch's own entropy if it collected nothing, instead of
+			// leaving the next boundary block without a proof forever.
+			lrSeed, lrErr := LastResortSeedForEpoch(e)
+			if lrErr == nil {
+				entropyLogger().Warn(context.Background(),
+					"entropy: fallback deadline exceeded with too few signers; epoch finalised from the last-resort seed (weaker against bias than a full fold, but the chain keeps going)",
+					ion.Uint64("epoch", e), ion.Uint64("height", block.BlockNumber), ion.String("cause", err.Error()))
+				notifyEpochFinalisedWithOutcome(e, lrSeed, mixOutcomeLastResort)
+				pruneAggSigsBelow(cutoffSlotFor(e))
+				pruneRevealsBelow(e + 1)
+				continue
+			}
+			err = fmt.Errorf("%w; last resort: %w", err, lrErr)
 			log.Error().Err(err).Uint64("epoch", e).Uint64("height", block.BlockNumber).
 				Msg("entropy: fallback deadline exceeded — no seed produced for this epoch (fail closed by design; not retried again)")
 			pruneAggSigsBelow(cutoffSlotFor(e))
