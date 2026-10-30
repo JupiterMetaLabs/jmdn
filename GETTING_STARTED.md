@@ -178,17 +178,22 @@ sudo rm /opt/jmdn/.bootstrapped
 sudo SNAPSHOT_SHA256=<sha256> ./Scripts/bootstrap_sync.sh
 ```
 
-On the sequencer, a snapshot older than the node's last checkpoint will not
-boot: `checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`)
-remembers the highest checkpoint and the boot check treats an older store as a
-rollback. After a deliberate restore, delete that file (and lower
-`checkpoint.min_seq` if you set it) before starting the node.
+A snapshot older than the node's last checkpoint will not boot:
+`checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`) remembers
+the highest checkpoint and the boot check treats an older store as a rollback.
+`bootstrap_sync.sh` deletes the floor when it installs a snapshot (set
+`CHECKPOINT_FLOOR_FILE` if you moved it). After any other deliberate restore,
+delete that file (and lower `checkpoint.min_seq` if you set it) before starting
+the node.
 
-### Sequencer checkpoints
+### Chain-head checkpoints
 
-The sequencer signs a chain-head checkpoint once per committee epoch with its
-own BLS key, and every boot verifies the latest one against that key. Nothing
-needs to be configured. Two optional hardening steps:
+Every node signs a chain-head checkpoint of its own canonical log once per
+committee epoch with its own BLS key. Each boot checks the log written since
+the floor checkpoint against the latest one, so boot time does not grow with
+the log. Nodes that keep the whole log then re-check it from the start in the
+background (`checkpoint.background_full_verify`, default on) and log an error
+on any mismatch. Nothing needs to be configured. Two optional hardening steps:
 
 - `checkpoint.signer_bls_pub` pins the key in `/etc/jmdn/jmdn.yaml` (the boot
   log prints the value in use as `signer_bls_pub`). With it set, replacing the
@@ -201,6 +206,17 @@ needs to be configured. Two optional hardening steps:
 Every node checks only its own checkpoints. A node restored from another node's
 snapshot (with no floor file) logs a warning and skips the check until it signs
 a checkpoint of its own.
+
+### Light nodes
+
+`storage.profile: light` keeps about `storage.light_keep_blocks` blocks
+(default 10000, minimum 1000) of canonical log and deletes older entries every
+`storage.prune_interval`. It cuts only below a checkpoint the node signed and
+verified, so the kept log still verifies at boot; kept entries are never
+rewritten. It is refused on the sequencer and needs `checkpoint.enabled` and
+`checkpoint.floor_file`. It does not prune the SQL data (blocks,
+transactions, proofs, accounts). Full nodes and the sequencer keep the whole
+log.
 
 #### Rotating the signing key
 

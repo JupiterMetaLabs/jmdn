@@ -234,6 +234,15 @@ done
 [ "$moved" = 1 ] || die "Snapshot contains no storage/ or DB/ directory."
 rm -rf "${BASE_DIR}/data_tmp"
 
+# The checkpoint floor describes the store that was just replaced. Every node
+# keeps one, and the boot check would treat the restored store as a rollback.
+# The node starts a new floor once it signs a checkpoint of the restored log.
+FLOOR_FILE="${CHECKPOINT_FLOOR_FILE:-${BASE_DIR}/checkpoint-floor.json}"
+if [ -f "$FLOOR_FILE" ]; then
+    rm -f "$FLOOR_FILE"
+    log "Removed checkpoint floor $FLOOR_FILE (store replaced by the snapshot)."
+fi
+
 # ── Fix permissions ───────────────────────────────────────
 # Bootstrap runs as root → extracted files are root-owned. Snapshot tarballs
 # have also been observed READ-ONLY (0555): restore owner write as well —

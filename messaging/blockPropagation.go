@@ -512,6 +512,10 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// broadcast.go's ProcessBlockLocally, sharing one definition.
 			ApplyBlockEntropyEffects(msg.Block)
 
+			// Chain-head checkpoint of this node's own log (receiver-side
+			// twin of the hook in broadcast.go). Best-effort.
+			NoteCommittedForCheckpoint(msg.Block)
+
 			// M4 §4.4 RevealPush — added 2026-08-20. If this node is on the
 			// current epoch's entropy committee and its reveal has not landed
 			// in a committed block yet, push it to whoever proposed this one.

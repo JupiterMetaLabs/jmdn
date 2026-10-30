@@ -386,6 +386,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("checkpoint.floor_file", d.Checkpoint.FloorFile)
 	v.SetDefault("checkpoint.min_seq", d.Checkpoint.MinSeq)
 	v.SetDefault("checkpoint.signer_bls_pub", d.Checkpoint.SignerBLSPub)
+	v.SetDefault("checkpoint.background_full_verify", d.Checkpoint.BackgroundFullVerify)
+
+	// Storage
+	v.SetDefault("storage.profile", d.Storage.Profile)
+	v.SetDefault("storage.light_keep_blocks", d.Storage.LightKeepBlocks)
+	v.SetDefault("storage.prune_interval", d.Storage.PruneInterval)
 }
 
 // mergeStructs merges src into dest generically.
