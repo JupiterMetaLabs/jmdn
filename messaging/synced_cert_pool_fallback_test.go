@@ -256,6 +256,37 @@ func TestTrustSequencerCertificate_NoRegisteredVoteStillRejects(t *testing.T) {
 	}
 }
 
+// A local blocklist must not lower the f+1 bar. Committee of 7 needs 3; the
+// node blocks a peer that did not vote. Capping n by the blocklist-filtered
+// pool made it 6, f+1 = 2, and 2 votes finalised a block every other node
+// rejects.
+func TestTrustSequencerCertificate_BlocklistCannotLowerFPlusOne(t *testing.T) {
+	enableV2(t)
+	trustSequencer(t)
+	members := poolOf(t, 7, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002143")
+	const height = 2143
+	votes := []BLS_Signer.BLSresponse{
+		members[0].blockVoteAt(t, hash.Hex(), 1, height),
+		members[1].blockVoteAt(t, hash.Hex(), 1, height),
+	}
+	below := CertificateResult{CommitteeSize: 7, Threshold: ByzantineQuorum(7), YesVotes: 2}
+
+	got, err := relaxForTrustedSequencer("block_propagation", below, nil, votes, hash.Hex(), testBlockConsensusHash, height)
+	if err != nil || got.Reached {
+		t.Fatalf("precondition: 2 of 7 must not pass f+1=3: (%+v, %v)", got, err)
+	}
+
+	withBlockBuddy(t, members[6].peerID)
+	got, err = relaxForTrustedSequencer("block_propagation", below, nil, votes, hash.Hex(), testBlockConsensusHash, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reached {
+		t.Fatalf("blocking a non-voter lowered f+1: 2 of 7 accepted (%+v)", got)
+	}
+}
+
 // errVerifierUnavailable stands in for any receive-path verifier error (for
 // example an unavailable committee source); relaxForTrustedSequencer must
 // never relax it.

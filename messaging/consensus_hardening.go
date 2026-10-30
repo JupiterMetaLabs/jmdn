@@ -642,12 +642,19 @@ func relaxForTrustedSequencer(path string, res CertificateResult, err error, res
 	if perr != nil || len(pool) == 0 {
 		return res, err
 	}
+	// n is capped by the FLEET pool, not the blocklist-filtered one: capping
+	// by the filtered pool let a local blocklist lower f+1 and accept a block
+	// with fewer votes. The blocklist only decides whose votes count (CON-12).
+	fleet, ferr := FleetEligibleForEpoch(EpochForHeight(height), false)
+	if ferr != nil || len(fleet) == 0 {
+		return res, err
+	}
 	n := res.CommitteeSize
 	if n <= 0 {
 		n = committeeSizeLimit()
 	}
-	if n <= 0 || n > len(pool) {
-		n = len(pool)
+	if n <= 0 || n > len(fleet) {
+		n = len(fleet)
 	}
 	need := (n-1)/3 + 1 // f+1
 	yes := countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
