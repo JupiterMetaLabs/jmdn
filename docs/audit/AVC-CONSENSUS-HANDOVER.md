@@ -235,15 +235,16 @@ s.Cancel() before delete, not yet execution-verified — see that row).
 Recount whenever a row moves: Appendix C.2's
 "a register decays fastest in its summary layer".)
 
-  57 rows = 38 Fixed · 3 Partial · 1 Decided-no-change · 15 Open
+  57 rows = 39 Fixed · 3 Partial · 1 Decided-no-change · 14 Open
   (2026-10-05: +D-78/D-79/D-80 from the PR #183 review, all Fixed in its
   follow-up commit. Recounted from the table: 57 `| **D-` rows, no duplicates.
-  2026-10-12: D-38 moved Partial -> Fixed, both limbs closed by removal.)
+  2026-10-12: D-38 moved Partial -> Fixed, both limbs closed by removal.
+  2026-10-30: D-75 moved Open -> Fixed, moot, closed by removal in PR #196.)
 
-  Fixed (38)    D-24 D-25 D-26 D-27 D-29 D-30 D-31 D-32 D-33 D-34 D-35 D-36
+  Fixed (39)    D-24 D-25 D-26 D-27 D-29 D-30 D-31 D-32 D-33 D-34 D-35 D-36
                 D-37 D-38 D-39 D-41 D-51 D-54 D-57 D-58 D-60 D-61 D-62 D-63
-                D-64 D-65 D-66 D-67 D-68 D-69 D-70 D-71 D-73 D-74 D-77 D-78
-                D-79 D-80
+                D-64 D-65 D-66 D-67 D-68 D-69 D-70 D-71 D-73 D-74 D-75 D-77
+                D-78 D-79 D-80
   Partial (3)   D-28  cert replay CLOSED, equivocation DETECTION open
                 D-46  (b) s.cancelled honoured in Start CLOSED (#153);
                       (a) T unbounded / WithCancel not WithTimeout open
@@ -252,7 +253,7 @@ Recount whenever a row moves: Appendix C.2's
   Decided (1)   D-56  keep 20 / keep CadenceBlocks 0 — residual: epoch-0
                       sentinel collision, gates RequirePinnedCommittee
   Open (14)     D-40 D-42 D-43 D-44 D-45 D-47
-                D-49 D-50 D-52 D-53 D-55 D-59 D-72 D-76 (D-75 moot/removed PR #196)
+                D-49 D-50 D-52 D-53 D-55 D-59 D-72 D-76
 
 BY SEVERITY   5 + 14 + 28 + 9 + 1 = 57
   SEV-1   5   D-24✓ D-25✓ D-26✓ D-35✓ D-36✓ | ALL CLOSED — D-26 closed across

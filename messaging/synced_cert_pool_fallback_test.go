@@ -183,8 +183,9 @@ func pinTrustSequencer(t *testing.T, on bool) {
 }
 
 // With the flag on, a below-quorum certificate is accepted only with f+1
-// verifying block-bound +1 votes from eligible validators (k=7 → f=2 → 3). One
-// or two keys cannot finalize a block, and a verifier error is never relaxed.
+// verifying block-bound +1 votes from eligible validators. Votes count from the
+// pool of 10, so f comes from the pool (f=3 → 4), not k=7 (f=2 → 3). Up to
+// three keys cannot finalize a block, and a verifier error is never relaxed.
 func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	enableV2(t)
 	trustSequencer(t)
@@ -194,25 +195,25 @@ func TestTrustSequencerCertificate_RequiresFPlusOneVotes(t *testing.T) {
 	block := &config.ZKBlock{BlockNumber: height, BlockHash: hash, ConsensusHash: common.HexToHash(testBlockConsensusHash)}
 
 	var votes []BLS_Signer.BLSresponse
-	for i := 7; i < 10; i++ { // signers outside the legacy alphabetical cap
+	for i := 6; i < 10; i++ { // p7..p9 outside the legacy alphabetical cap
 		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
 	}
 
-	for n := 1; n <= 2; n++ {
+	for n := 1; n <= 3; n++ {
 		got, err := VerifySyncedBlockCertificate(block, votes[:n])
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got.Reached {
-			t.Fatalf("%d vote(s) must not be accepted (need f+1=3): %+v", n, got)
+			t.Fatalf("%d vote(s) must not be accepted (need f_pool+1=4): %+v", n, got)
 		}
 	}
 	got, err := VerifySyncedBlockCertificate(block, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Reached || got.YesVotes != 3 {
-		t.Fatalf("f+1=3 verifying votes must be accepted in trusted mode: %+v", got)
+	if !got.Reached || got.YesVotes != 4 {
+		t.Fatalf("f_pool+1=4 verifying votes must be accepted in trusted mode: %+v", got)
 	}
 	// A verifier error (e.g. round context unavailable) is preserved even
 	// with enough votes: nothing was verified, so nothing is trusted.
@@ -253,6 +254,71 @@ func TestTrustSequencerCertificate_NoRegisteredVoteStillRejects(t *testing.T) {
 	relaxed, rerr := relaxForTrustedSequencer("thebesync", CertificateResult{}, errVerifierUnavailable, votes, hash.Hex(), testBlockConsensusHash, height)
 	if rerr == nil || relaxed.Reached {
 		t.Fatalf("a verifier error with no real vote must be preserved: (%+v, %v)", relaxed, rerr)
+	}
+}
+
+// A local blocklist must not lower the f+1 bar. Committee of 7 needs 3; the
+// node blocks a peer that did not vote. Capping n by the blocklist-filtered
+// pool made it 6, f+1 = 2, and 2 votes finalised a block every other node
+// rejects.
+func TestTrustSequencerCertificate_BlocklistCannotLowerFPlusOne(t *testing.T) {
+	enableV2(t)
+	trustSequencer(t)
+	members := poolOf(t, 7, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002143")
+	const height = 2143
+	votes := []BLS_Signer.BLSresponse{
+		members[0].blockVoteAt(t, hash.Hex(), 1, height),
+		members[1].blockVoteAt(t, hash.Hex(), 1, height),
+	}
+	below := CertificateResult{CommitteeSize: 7, Threshold: ByzantineQuorum(7), YesVotes: 2}
+
+	got, err := relaxForTrustedSequencer("block_propagation", below, nil, votes, hash.Hex(), testBlockConsensusHash, height)
+	if err != nil || got.Reached {
+		t.Fatalf("precondition: 2 of 7 must not pass f+1=3: (%+v, %v)", got, err)
+	}
+
+	withBlockBuddy(t, members[6].peerID)
+	got, err = relaxForTrustedSequencer("block_propagation", below, nil, votes, hash.Hex(), testBlockConsensusHash, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reached {
+		t.Fatalf("blocking a non-voter lowered f+1: 2 of 7 accepted (%+v)", got)
+	}
+}
+
+// Votes are counted from the whole pool, so f must come from the pool too.
+// Pool of 20, committee of 7: f+1 over the committee is 3, but up to 6 of 20
+// pool members may be faulty, so 3 pool votes do not guarantee one honest
+// signer. The bar is f_pool+1 = 7, the same floor the pool-wide sync fallback
+// uses.
+func TestTrustSequencerCertificate_FPlusOneFromPoolNotCommittee(t *testing.T) {
+	enableV2(t)
+	trustSequencer(t)
+	members := poolOf(t, 20, 7)
+	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000002144")
+	const height = 2144
+	below := CertificateResult{CommitteeSize: 7, Threshold: ByzantineQuorum(7)}
+
+	var votes []BLS_Signer.BLSresponse
+	for i := 13; i < 20; i++ {
+		votes = append(votes, members[i].blockVoteAt(t, hash.Hex(), 1, height))
+	}
+	got, err := relaxForTrustedSequencer("block_propagation", below, nil, votes[:3], hash.Hex(), testBlockConsensusHash, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reached {
+		t.Fatalf("3 pool votes over a pool of 20 must not pass (need f_pool+1 = 7): %+v", got)
+	}
+	got, err = relaxForTrustedSequencer("block_propagation", below, nil, votes[:6], hash.Hex(), testBlockConsensusHash, height)
+	if err != nil || got.Reached {
+		t.Fatalf("6 pool votes must not pass f_pool+1 = 7: (%+v, %v)", got, err)
+	}
+	got, err = relaxForTrustedSequencer("block_propagation", below, nil, votes, hash.Hex(), testBlockConsensusHash, height)
+	if err != nil || !got.Reached || got.YesVotes != 7 {
+		t.Fatalf("7 pool votes must pass f_pool+1 = 7: (%+v, %v)", got, err)
 	}
 }
 

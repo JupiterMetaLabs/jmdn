@@ -97,7 +97,12 @@ func maybeFreezeUpcomingSnapshot(currentSlot uint64) {
 	// SelectEntropyCommittee — the pool anchored here is always the LIVE
 	// eligible set, never pinned. Inert difference today (pinning is
 	// globally off), correct once it is not.
-	eligible, err := eligibleMembersUncapped()
+	//
+	// FLEET pool, not the blocklist-filtered one: this hash is stamped into
+	// every block's ConsensusHash, so it must match on every node, and the
+	// block_buddy blocklist is node-local config (CON-12). Same arguments as
+	// eligibleMembersUncapped() otherwise.
+	eligible, err := FleetEligibleForEpoch(0, false)
 	if err != nil {
 		// No eligible source available yet, or it errored - stay unfrozen and
 		// retry on the next call (e.g. the next committed block). Matches the
