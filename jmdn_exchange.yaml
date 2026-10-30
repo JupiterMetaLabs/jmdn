@@ -89,8 +89,8 @@ thebe:
     publication: thebe_pub
 
 # ── Chain-head checkpoints ───────────────────────────────────────────────────
-# Exchange/RPC nodes never sign; they run the boot check, which is a no-op until
-# a floor_file exists. Keep floor_file outside thebe.kv_path.
+# Every node signs checkpoints of its own log with its own BLS key and checks
+# them at boot. Keep floor_file outside thebe.kv_path.
 checkpoint:
   enabled: true
   boot_fail_closed: true
@@ -98,6 +98,17 @@ checkpoint:
   floor_file: "/opt/jmdn/checkpoint-floor.json"
   min_seq: 0
   signer_bls_pub: ""                 # optional pin; empty = node key
+  background_full_verify: true       # re-walk the whole log in the background after boot
+
+# ── Storage ──────────────────────────────────────────────
+# full: keep the whole canonical log (sequencer and full nodes).
+# light: keep about light_keep_blocks blocks of canonical log, pruned below a
+# checkpoint this node signed. Not allowed on the sequencer; needs
+# checkpoint.enabled and checkpoint.floor_file. Does not prune SQL data.
+storage:
+  profile: full
+  light_keep_blocks: 10000             # minimum 1000
+  prune_interval: 10m
 
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:

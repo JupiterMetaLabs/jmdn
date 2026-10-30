@@ -121,6 +121,16 @@ features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
 
+# ── Storage ──────────────────────────────────────────────
+# full: keep the whole canonical log (sequencer and full nodes).
+# light: keep about light_keep_blocks blocks of canonical log, pruned below a
+# checkpoint this node signed. Not allowed on the sequencer; needs
+# checkpoint.enabled and checkpoint.floor_file. Does not prune SQL data.
+storage:
+  profile: full
+  light_keep_blocks: 10000             # minimum 1000
+  prune_interval: 10m
+
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
   enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships

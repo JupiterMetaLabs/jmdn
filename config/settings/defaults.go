@@ -336,6 +336,13 @@ func DefaultConfig() NodeConfig {
 			BootFailClosed: true,
 			CadenceBlocks:  0,
 			FloorFile:      "/opt/jmdn/checkpoint-floor.json",
+
+			BackgroundFullVerify: true,
+		},
+		Storage: StorageSettings{
+			Profile:         StorageProfileFull,
+			LightKeepBlocks: 10000,
+			PruneInterval:   10 * time.Minute,
 		},
 	}
 }

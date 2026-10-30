@@ -1178,9 +1178,9 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// for the order and why each step must come where it does.
 	ApplyBlockEntropyEffects(block)
 
-	// Committee-signed chain-head checkpoint (Option A anchor). No-op unless
-	// checkpoint.enabled AND this is the sequencer AND the cadence fires; a
-	// best-effort side observer that never affects the commit above.
+	// Chain-head checkpoint of this node's own log (Option A anchor). No-op
+	// unless checkpoint.enabled and the cadence fires; a best-effort side
+	// observer that never affects the commit above.
 	maybeSignChainHeadCheckpoint(block)
 
 	// Address→tx lookups are served by the ThebeDB SQL projection, which the

@@ -18,11 +18,17 @@ package messaging
 //     (the same key used for block votes).
 //
 //  3. maybeSignChainHeadCheckpoint — the per-committed-block cadence hook,
-//     invoked from broadcast.go's commit path. Only the sequencer signs, and
-//     only a checkpoint it can verify itself is stored.
+//     invoked from every commit path (broadcast.go, blockPropagation.go and
+//     ThebeSync via NoteCommittedForCheckpoint). Every node signs checkpoints
+//     of its OWN log with its own BLS key (logs differ per node), and only a
+//     checkpoint it can verify itself is stored.
 //
 //  4. CheckpointBootGate — the boot check, with a floor kept in a file outside
-//     the store (internal/ckptfloor) so a rollback is caught.
+//     the store (internal/ckptfloor) so a rollback is caught. It walks only the
+//     log after the floor checkpoint (checkpoint.BootVerifyFromAnchor), so
+//     boot cost tracks new records, and a pruned log (storage.profile light)
+//     still verifies. StartBackgroundFullVerify re-walks the whole log after
+//     boot on nodes that keep it.
 //
 // ── PHASE 1 v0 SCOPE: SINGLE-SIGNER ATTESTATION ──────────────────────────────
 // v0 stores a checkpoint signed by a SINGLE committee member (the sequencer):
@@ -55,6 +61,7 @@ import (
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/checkpoint"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/rs/zerolog/log"
 )
 
@@ -69,14 +76,13 @@ const chainHeadKey = "__sys:chain_head"
 // checkpointKV=nil, both the boot gate and the signing hook are complete no-ops,
 // so a node that does not enable the feature is byte-identical at runtime.
 var (
-	checkpointMu          sync.RWMutex
-	checkpointKV          kv.Store // nil => signing disabled
-	checkpointEnabled     bool
-	checkpointIsSequencer bool
-	checkpointCadence     uint64 // 0 => per-epoch
-	checkpointSelfPeerID  string
-	checkpointFloorPath   string // "" => no floor file kept
-	checkpointSignerPub   string // pinned sequencer BLS pub (hex); "" => do not sign
+	checkpointMu         sync.RWMutex
+	checkpointKV         kv.Store // nil => signing disabled
+	checkpointEnabled    bool
+	checkpointCadence    uint64 // 0 => per-epoch
+	checkpointSelfPeerID string
+	checkpointFloorPath  string // "" => no floor file kept
+	checkpointSignerPub  string // pinned BLS pub (hex); "" => do not sign
 )
 
 // ErrCheckpointCommitteeUnavailable marks a verification that could not run
@@ -103,9 +109,6 @@ var ErrCheckpointBadSignature = errors.New("checkpoint verify: signature does no
 //   - store:       the ThebeDB canonical KV store (main.go db.KV). The signer
 //     reads __sys:chain_head and writes the checkpoint via checkpoint.Store.
 //   - enabled:     config checkpoint.enabled.
-//   - isSequencer: true ONLY on the authoritative block producer
-//     (enable_catchup==false — the same discriminator the sync monitor and the
-//     committee-source wiring use). Non-sequencers never sign.
 //   - cadenceBlocks: config checkpoint.cadence_blocks (0 = per-epoch).
 //   - selfPeerID:  this node's libp2p peer id, recorded in SignerSet (metadata
 //     only; not part of the signed bytes).
@@ -118,12 +121,11 @@ var ErrCheckpointBadSignature = errors.New("checkpoint verify: signature does no
 //     the eligible set.
 //
 // Safe to call concurrently.
-func EnableCheckpointSigning(store kv.Store, enabled, isSequencer bool, cadenceBlocks uint64, selfPeerID, floorPath, signerPub string) {
+func EnableCheckpointSigning(store kv.Store, enabled bool, cadenceBlocks uint64, selfPeerID, floorPath, signerPub string) {
 	checkpointMu.Lock()
 	defer checkpointMu.Unlock()
 	checkpointKV = store
 	checkpointEnabled = enabled
-	checkpointIsSequencer = isSequencer
 	checkpointCadence = cadenceBlocks
 	checkpointSelfPeerID = strings.TrimSpace(selfPeerID)
 	checkpointFloorPath = strings.TrimSpace(floorPath)
@@ -277,14 +279,13 @@ func maybeSignChainHeadCheckpoint(block *config.ZKBlock) {
 	checkpointMu.RLock()
 	enabled := checkpointEnabled
 	store := checkpointKV
-	isSeq := checkpointIsSequencer
 	cadence := checkpointCadence
 	selfPeerID := checkpointSelfPeerID
 	floorPath := checkpointFloorPath
 	signerPub := checkpointSignerPub
 	checkpointMu.RUnlock()
 
-	if !enabled || store == nil || !isSeq {
+	if !enabled || store == nil {
 		return
 	}
 	if !checkpointCadenceFires(block.BlockNumber, cadence) {
@@ -335,7 +336,15 @@ func signAndStoreCheckpoint(store kv.Store, block *config.ZKBlock, selfPeerID, f
 	if err != nil {
 		return err
 	}
+	c.BlockNumber = block.BlockNumber // metadata for the light-node pruner; not signed
 	return storeVerifiedCheckpoint(store, c, CheckpointSigVerifierFor(signerPub), floorPath)
+}
+
+// NoteCommittedForCheckpoint is the checkpoint hook for the receive and sync
+// commit paths (blockPropagation.go, ThebeSync); broadcast.go calls the same
+// hook on the producer side. Best-effort: never affects the commit.
+func NoteCommittedForCheckpoint(block *config.ZKBlock) {
+	maybeSignChainHeadCheckpoint(block)
 }
 
 var signerNotPinnedOnce sync.Once
@@ -410,9 +419,36 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 		}
 	}
 
+	// Walk only the log after a trusted checkpoint when there is one: the
+	// floor checkpoint (checked above), or, on a pruned log with no floor
+	// file, the oldest checkpoint the kept log still covers. Otherwise walk
+	// from seq 0.
+	logStart, err := kv.LogStart(store)
+	if err != nil {
+		return false, fmt.Errorf("read log start: %w", err)
+	}
+	bootVerify := func() (bool, error) { return checkpoint.BootVerifyWithFloor(ctx, store, verify, floor) }
+	switch {
+	case hasFloor:
+		anchorSeq := rec.Seq
+		bootVerify = func() (bool, error) {
+			return checkpoint.BootVerifyFromAnchor(ctx, store, verify, floor, anchorSeq)
+		}
+	case logStart > 0:
+		anchor, aerr := oldestCheckpointCovering(store, logStart)
+		if aerr != nil {
+			return false, aerr
+		}
+		broadcastLogger().Warn(ctx, "[checkpoint] pruned log and no floor file — verifying from the oldest checkpoint the kept log covers; rollback check inactive for this boot",
+			ion.Uint64("log_start", logStart), ion.Uint64("anchor_seq", anchor.Seq), ion.String("floor_file", floorPath))
+		bootVerify = func() (bool, error) {
+			return checkpoint.BootVerifyFromAnchor(ctx, store, verify, floor, anchor.Seq)
+		}
+	}
+
 	var verified bool
 	for attempt := 0; ; attempt++ {
-		verified, err = checkpoint.BootVerifyWithFloor(ctx, store, verify, floor)
+		verified, err = bootVerify()
 		if err == nil || !errors.Is(err, ErrCheckpointCommitteeUnavailable) || attempt >= retries {
 			break
 		}
@@ -452,6 +488,27 @@ func CheckpointBootGate(ctx context.Context, store kv.Store, verify checkpoint.S
 		}
 	}
 	return verified, nil
+}
+
+// oldestCheckpointCovering returns the oldest stored checkpoint whose suffix
+// walk the kept log can serve: Seq+1 >= logStart.
+func oldestCheckpointCovering(store kv.Store, logStart uint64) (*checkpoint.Checkpoint, error) {
+	var found *checkpoint.Checkpoint
+	stop := errors.New("found")
+	err := checkpoint.Each(store, func(c *checkpoint.Checkpoint) error {
+		if c.Seq+1 >= logStart {
+			found = c
+			return stop
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, stop) {
+		return nil, fmt.Errorf("list checkpoints: %w", err)
+	}
+	if found == nil {
+		return nil, fmt.Errorf("canonical log is pruned below seq %d and no stored checkpoint covers it: %w", logStart, checkpoint.ErrNoCheckpoint)
+	}
+	return found, nil
 }
 
 // notSignedByThisNode reports whether a boot verification error is only that the

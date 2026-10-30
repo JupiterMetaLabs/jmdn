@@ -4,6 +4,8 @@
 package settings
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,7 @@ type NodeConfig struct {
 	Contracts    ContractsSettings  `mapstructure:"contracts"`
 	TxStatus     TxStatusSettings   `mapstructure:"tx_status"`
 	Checkpoint   CheckpointSettings `mapstructure:"checkpoint"`
+	Storage      StorageSettings    `mapstructure:"storage"`
 	Reputation   ReputationSettings `mapstructure:"reputation"`
 }
 
@@ -89,6 +92,73 @@ type CheckpointSettings struct {
 	// the node's key file being replaced on disk; the boot log prints the
 	// key in use (signer_bls_pub).
 	SignerBLSPub string `mapstructure:"signer_bls_pub" yaml:"signer_bls_pub"`
+
+	// BackgroundFullVerify: after boot, a node whose log is not pruned also
+	// walks the whole log from seq 0 against its latest checkpoint, in the
+	// background. The boot gate itself only checks the records written since
+	// the floor checkpoint, so this is what still catches a change to older
+	// records. A mismatch is logged as an error. Default true.
+	BackgroundFullVerify bool `mapstructure:"background_full_verify" yaml:"background_full_verify"`
+}
+
+// StorageSettings selects how much history this node keeps locally.
+//
+// Profile "full" (default) keeps the whole canonical log. Profile "light"
+// deletes canonical-log entries older than about LightKeepBlocks blocks,
+// cutting only below a checkpoint this node signed and verified, so the kept
+// log still verifies against it. Light is refused on the sequencer and needs
+// checkpoint.enabled and checkpoint.floor_file. The SQL projection (blocks,
+// transactions, proofs, accounts) is not pruned by this setting.
+type StorageSettings struct {
+	Profile string `mapstructure:"profile" yaml:"profile"`
+	// LightKeepBlocks: blocks of canonical log a light node keeps (minimum
+	// 1000). Pruning moves in checkpoint steps, so up to one checkpoint
+	// interval more is kept.
+	LightKeepBlocks uint64 `mapstructure:"light_keep_blocks" yaml:"light_keep_blocks"`
+	// PruneInterval: how often a light node checks for log to prune.
+	PruneInterval time.Duration `mapstructure:"prune_interval" yaml:"prune_interval"`
+}
+
+// Storage profiles.
+const (
+	StorageProfileFull  = "full"
+	StorageProfileLight = "light"
+	// MinLightKeepBlocks is the smallest storage.light_keep_blocks accepted.
+	MinLightKeepBlocks = 1000
+)
+
+// IsLight reports whether the light profile is selected.
+func (s StorageSettings) IsLight() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Profile), StorageProfileLight)
+}
+
+// ValidateStorage checks storage.* against the checkpoint settings it depends
+// on. isSequencer: this node is the block producer.
+func (c *NodeConfig) ValidateStorage(isSequencer bool) error {
+	p := strings.ToLower(strings.TrimSpace(c.Storage.Profile))
+	switch p {
+	case "", StorageProfileFull:
+		return nil
+	case StorageProfileLight:
+	default:
+		return fmt.Errorf("storage.profile %q: want %q or %q", c.Storage.Profile, StorageProfileFull, StorageProfileLight)
+	}
+	if isSequencer {
+		return fmt.Errorf("storage.profile light is not allowed on the sequencer: it must keep the full log")
+	}
+	if !c.Checkpoint.Enabled {
+		return fmt.Errorf("storage.profile light needs checkpoint.enabled: the log is pruned only below a signed checkpoint")
+	}
+	if strings.TrimSpace(c.Checkpoint.FloorFile) == "" {
+		return fmt.Errorf("storage.profile light needs checkpoint.floor_file: it anchors verification of the pruned log")
+	}
+	if c.Storage.LightKeepBlocks < MinLightKeepBlocks {
+		return fmt.Errorf("storage.light_keep_blocks %d is below the minimum %d", c.Storage.LightKeepBlocks, MinLightKeepBlocks)
+	}
+	if c.Storage.PruneInterval <= 0 {
+		return fmt.Errorf("storage.prune_interval must be positive")
+	}
+	return nil
 }
 
 // TxStatusSettings controls transaction-status resolution for transactions that
