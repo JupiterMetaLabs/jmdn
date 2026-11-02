@@ -1116,13 +1116,14 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// BlockHash/ConsensusHash/StateFingerprint. Set BEFORE apply+store below so the
 	// stored block carries it. Best-effort marshal — a marshal error must not block
 	// a validated block from being stored.
+	// Stored form: compact (aggregate + signer bitmap) when the block is
+	// eligible, otherwise the full vote list (see StoredCertificate).
 	if len(blsResults) > 0 {
-		if certJSON, mErr := json.Marshal(blsResults); mErr == nil {
-			block.CommitteeCertificate = string(certJSON)
+		if cert := StoredCertificate(block, blsResults); cert != "" {
+			block.CommitteeCertificate = cert
 		} else {
-			broadcastLogger().Warn(context.Background(), "committee certificate marshal failed (block stored without persisted cert)",
-				ion.String("block_hash", block.BlockHash.Hex()),
-				ion.String("error", mErr.Error()))
+			broadcastLogger().Warn(context.Background(), "committee certificate encode failed (block stored without persisted cert)",
+				ion.String("block_hash", block.BlockHash.Hex()))
 		}
 	}
 

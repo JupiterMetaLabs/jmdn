@@ -9,11 +9,9 @@ package thebesync
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/messaging"
@@ -102,11 +100,8 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//    is accepted only while still in the legacy prefix (requireCert=false); once
 	//    a cert has been seen, a cert-less block is rejected (no downgrade).
 	if cert := strings.TrimSpace(block.CommitteeCertificate); cert != "" {
-		var responses []BLS_Signer.BLSresponse
-		if uerr := json.Unmarshal([]byte(cert), &responses); uerr != nil {
-			return false, fmt.Errorf("thebesync apply: block %d malformed certificate: %w", block.BlockNumber, uerr)
-		}
-		res, verr := messaging.VerifySyncedBlockCertificate(block, responses)
+		// Full vote list or compact (aggregate + bitmap) form.
+		res, verr := messaging.VerifyStoredBlockCertificate(block)
 		if verr != nil {
 			return false, fmt.Errorf("thebesync apply: block %d certificate verify failed (fail closed): %w", block.BlockNumber, verr)
 		}

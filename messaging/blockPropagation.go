@@ -475,8 +475,17 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
 			// ThebeSync). Advisory field; does not affect BlockHash. Set BEFORE
 			// apply+store so the stored block carries it.
+			// Stored form: compact when the block is eligible (derived from
+			// the same vote list by the same rule as on the sequencer, so the
+			// bytes match), otherwise the vote list as received.
 			if cert := msg.Data["bls_results"]; cert != "" {
 				msg.Block.CommitteeCertificate = cert
+				var responses []BLS_Signer.BLSresponse
+				if json.Unmarshal([]byte(cert), &responses) == nil {
+					if stored := StoredCertificate(msg.Block, responses); stored != "" {
+						msg.Block.CommitteeCertificate = stored
+					}
+				}
 			}
 
 			// Apply + store atomically (D-858): store runs after the fingerprint
