@@ -81,6 +81,8 @@ func DefaultConfig() NodeConfig {
 			// Write keeps the pre-split ThebeDB default (PG_MAX_OPEN_CONNS=10).
 			// 10+10+4 = 24 per node, well inside Postgres' default 100.
 			Pools: ThebePoolsConfig{Write: 10, Read: 10, Sync: 4},
+			// The event log keeps the proof hash, not the proof body.
+			CDC: ThebeCDCConfig{OmitColumns: []string{"zk_proofs.stark_proof"}},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",

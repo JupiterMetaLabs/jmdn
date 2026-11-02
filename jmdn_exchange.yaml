@@ -87,6 +87,8 @@ thebe:
     enabled: true
     slot_name: thebe_eventlog
     publication: thebe_pub
+    omit_columns:                     # table.column values the event log stores as "<omitted>"
+      - zk_proofs.stark_proof         # proof body (hash stays in zk_proofs.proof_hash)
 
 # ── Chain-head checkpoints ───────────────────────────────────────────────────
 # Every node signs checkpoints of its own log with its own BLS key and checks
