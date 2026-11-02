@@ -29,7 +29,7 @@ func TestInspectReplicationSlots_PG(t *testing.T) {
 		t.Fatal("max_slot_wal_keep_size came back empty")
 	}
 	for _, s := range slots {
-		if s.Name == "" || s.HeldBytes < 0 {
+		if s.Name == "" || s.HeldBytes < 0 || s.WALStatus == "" {
 			t.Errorf("bad slot row: %+v", s)
 		}
 	}

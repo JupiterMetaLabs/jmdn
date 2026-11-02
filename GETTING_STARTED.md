@@ -311,13 +311,13 @@ set `sslmode=disable` in the DSN.
 
 ### Postgres disk keeps growing (replication slots)
 
-A Postgres replication slot that nothing reads makes Postgres keep WAL. ThebeDB CDC creates one (`thebe_eventlog`) when `thebe.cdc.enabled: true`; turning CDC off later leaves it behind. jmdn logs a warning at boot for such a slot and for an unlimited `max_slot_wal_keep_size`. Check as the Postgres superuser:
+ThebeDB CDC (on by default) reads Postgres through the replication slot `thebe_eventlog`, and Postgres keeps the WAL the slot has not consumed. `Scripts/setup_postgres.sh` caps that at 2 GB (`max_slot_wal_keep_size`); past the cap Postgres invalidates the slot and CDC stops until it is recovered. jmdn logs a warning at boot when the CDC slot is inactive, lagging or invalidated, for any other slot nothing reads, and for an unlimited cap. Check as the Postgres superuser:
 
 ```bash
-sudo -u postgres psql -d jmdn -c "select slot_name, active from pg_replication_slots;" -c "show max_slot_wal_keep_size;"
+sudo -u postgres psql -d jmdn -c "select slot_name, active, wal_status from pg_replication_slots;" -c "show max_slot_wal_keep_size;"
 ```
 
-Drop a slot nothing uses with `select pg_drop_replication_slot('thebe_eventlog');`. `Scripts/setup_postgres.sh` sets `max_slot_wal_keep_size = 2GB` and only creates the CDC slot with `--with-cdc`.
+Drop only a slot nothing uses (`select pg_drop_replication_slot('<name>');`), never `thebe_eventlog` on a node running CDC.
 
 ### Minimal logs on Raspberry Pi
 

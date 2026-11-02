@@ -198,7 +198,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the compose .env (see DOCKER.md)}
       POSTGRES_DB: jmdn
     # wal_level=logical is required for ThebeDB CDC (WAL consumer).
-    # max_slot_wal_keep_size caps the WAL a replication slot nothing reads can hold.
+    # max_slot_wal_keep_size caps the WAL a stalled or abandoned slot can hold.
     command: >
       postgres
         -c wal_level=logical
@@ -403,7 +403,7 @@ install_local_systemd() {
     if [ -f "${PG_CONF}" ]; then
         sed -i "s/^#*wal_level\s*=.*/wal_level = logical/" "${PG_CONF}" \
             || echo "wal_level = logical" >> "${PG_CONF}"
-        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        # Cap the WAL a stalled or abandoned replication slot can hold (see jmdn_default.yaml thebe.cdc).
         grep -q "^max_slot_wal_keep_size" "${PG_CONF}" \
             && sed -i "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${PG_CONF}" \
             || echo "max_slot_wal_keep_size = 2GB" >> "${PG_CONF}"
@@ -481,7 +481,7 @@ install_local_launchd() {
         grep -q "^wal_level" "${pg_conf}" \
             && sed -i '' "s/^wal_level.*/wal_level = logical/" "${pg_conf}" \
             || echo "wal_level = logical" >> "${pg_conf}"
-        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        # Cap the WAL a stalled or abandoned replication slot can hold (see jmdn_default.yaml thebe.cdc).
         grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
             && sed -i '' "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
             || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
@@ -557,7 +557,7 @@ install_local_openrc() {
         grep -q "^max_wal_senders" "${pg_conf}" \
             && sed -i "s/^max_wal_senders.*/max_wal_senders = 4/" "${pg_conf}" \
             || echo "max_wal_senders = 4" >> "${pg_conf}"
-        # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+        # Cap the WAL a stalled or abandoned replication slot can hold (see jmdn_default.yaml thebe.cdc).
         grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
             && sed -i "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
             || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
@@ -612,7 +612,7 @@ install_local_rcd() {
             grep -q "^max_wal_senders" "${pg_conf}" \
                 && sed -i '' "s/^max_wal_senders.*/max_wal_senders = 4/" "${pg_conf}" \
                 || echo "max_wal_senders = 4" >> "${pg_conf}"
-            # Cap the WAL a replication slot nothing reads can hold (see jmdn_default.yaml thebe.cdc).
+            # Cap the WAL a stalled or abandoned replication slot can hold (see jmdn_default.yaml thebe.cdc).
             grep -q "^max_slot_wal_keep_size" "${pg_conf}" \
                 && sed -i '' "s/^max_slot_wal_keep_size.*/max_slot_wal_keep_size = 2GB/" "${pg_conf}" \
                 || echo "max_slot_wal_keep_size = 2GB" >> "${pg_conf}"
@@ -683,8 +683,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Next: Postgres DB setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  Creates the jmdn user/database and caps replication-slot WAL (max_slot_wal_keep_size)."
-echo "  CDC is off by default; it asks before setting it up (or pass --with-cdc)."
+echo "  Creates the jmdn user/database, sets WAL config, wires CDC and caps replication-slot WAL."
 read -r -p "Run setup_postgres.sh now? (Y/n): " run_pg
 if [[ "${run_pg}" != "n" && "${run_pg}" != "N" ]]; then
     bash "${SCRIPT_DIR}/setup_postgres.sh" --mode "${INSTALL_MODE}"
