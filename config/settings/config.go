@@ -442,6 +442,16 @@ type ConsensusSettings struct {
 	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR off (the older, unwired hash-only anchor).
 	CommitteeAnchorActivationHeight uint64 `mapstructure:"committee_anchor_activation_height" yaml:"committee_anchor_activation_height"`
 
+	// CompactCertificateFromHeight: from this block height on, a block's stored
+	// committee certificate is one aggregate BLS signature plus a signer bitmap
+	// over the chain-anchored pool (~150 B) instead of the full vote list
+	// (messaging/cert_compact.go). Applies only to blocks in anchored selection
+	// periods (committee_anchor_activation_height) and never to the parents of
+	// an entropy fallback window. A FLEET-AGREED parameter: every node must
+	// carry the same value, set to a height the chain has not reached yet,
+	// because the reward split is read from the stored certificate. 0 = off.
+	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
+
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
 	// contract txs whose EXECUTION creates an account (internal CALL{value},
 	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no

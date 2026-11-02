@@ -156,6 +156,12 @@ func CertificateForBlockAssembly(slot, prevHeight uint64) []config.CertSigner {
 	if err != nil || raw == "" {
 		return nil
 	}
+	// A compact certificate has no individual signatures. Parents of a
+	// collection window are always stored in full (compactCertEligible), so
+	// this only happens outside the window, where nothing is attached anyway.
+	if IsCompactCertificate(raw) {
+		return nil
+	}
 	var responses []BLS_Signer.BLSresponse
 	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
 		return nil

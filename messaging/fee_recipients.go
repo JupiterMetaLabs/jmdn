@@ -21,14 +21,12 @@ package messaging
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
 	"strings"
 	"sync"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -279,22 +277,13 @@ func PrevBlockCertSigners(prevNumber uint64) ([]config.CertSigner, error) {
 	if cert == "" {
 		return nil, nil // legacy/cert-less parent => nobody to reward
 	}
-	var responses []BLS_Signer.BLSresponse
-	if uerr := json.Unmarshal([]byte(cert), &responses); uerr != nil {
-		return nil, fmt.Errorf("PrevBlockCertSigners(%d): malformed certificate: %w", prevNumber, uerr)
-	}
-	seen := make(map[string]bool, len(responses))
-	out := make([]config.CertSigner, 0, len(responses))
-	for _, r := range responses {
-		if !r.Agree { // reward only the YES certifiers
-			continue
-		}
-		pid := strings.TrimSpace(r.PeerID)
-		if pid == "" || seen[pid] {
-			continue // dedupe by peer_id: one stake weight per certifier
-		}
-		seen[pid] = true
-		out = append(out, config.CertSigner{PeerID: pid, PubKey: r.PubKey, Signature: r.Signature})
+	// Who is paid follows the reward rule on certSignersFromStored (strict
+	// from consensus.compact_certificate_from_height in anchored periods,
+	// whichever form the certificate is stored in). The certificate is stored
+	// byte-identically on every node, so build and validate agree.
+	out, err := certSignersFromStored(cert, blk)
+	if err != nil {
+		return nil, fmt.Errorf("PrevBlockCertSigners(%d): %w", prevNumber, err)
 	}
 	return out, nil
 }
