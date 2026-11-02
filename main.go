@@ -1189,6 +1189,7 @@ func main() {
 		if cfg.Thebe.CDC.Enabled {
 			omit, badOmit := cfg.Thebe.CDC.OmitColumnsByTable()
 			if len(badOmit) > 0 {
+				fmt.Fprintf(os.Stderr, "FATAL thebedb: thebe.cdc.omit_columns entries must be table.column: %v\n", badOmit) //nolint:forbidigo // CLI output: fatal boot error printed before exit, like the cdc-start failure below; the logger may not be up yet.
 				if logger := mainLogger(); logger != nil {
 					logger.Error(context.Background(), "thebedb: thebe.cdc.omit_columns entries must be table.column — refusing to start",
 						fmt.Errorf("invalid entries: %v", badOmit))
