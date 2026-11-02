@@ -7,7 +7,8 @@
 #   2. Set password
 #   3. Patch postgresql.conf: wal_level=logical, max_replication_slots, max_wal_senders
 #   4. Create CDC publication (thebe_pub) + replication slot (thebe_eventlog)
-#   5. Print DSN + jmdn.yaml snippet
+#   5. Cap the WAL a replication slot can hold (max_slot_wal_keep_size, default 2GB)
+#   6. Print DSN + jmdn.yaml snippet
 #
 # Modes:
 #   --mode local   — connects via psql to a local Postgres instance
@@ -18,6 +19,9 @@
 #   sudo ./Scripts/setup_postgres.sh
 #   sudo ./Scripts/setup_postgres.sh --mode local
 #        ./Scripts/setup_postgres.sh --mode docker   # (no sudo needed for docker)
+#   Options:
+#     --slot-wal-cap=SIZE   max_slot_wal_keep_size to set (default 2GB; -1 = unlimited)
+#     --no-wal-patch        do not edit postgresql.conf
 ################################################################################
 
 set -euo pipefail
@@ -38,6 +42,7 @@ CDC_PUB="thebe_pub"
 CDC_LOG_PATH=""   # resolved after platform.sh sets JMDN_DATA
 DOCKER_CONTAINER="jmdn-postgres"
 SKIP_WAL_PATCH="false"
+SLOT_WAL_CAP="2GB"   # max_slot_wal_keep_size
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -46,6 +51,8 @@ while [[ $# -gt 0 ]]; do
         --mode=docker) SETUP_MODE="docker"; shift ;;
         --mode)        SETUP_MODE="${2:-}"; shift 2 ;;
         --no-wal-patch) SKIP_WAL_PATCH="true"; shift ;;
+        --slot-wal-cap=*) SLOT_WAL_CAP="${1#*=}"; shift ;;
+        --slot-wal-cap) SLOT_WAL_CAP="${2:-}"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -286,6 +293,21 @@ if [ "${SETUP_MODE}" = "local" ] && [ -n "${PG_CONF_PATH}" ] && [ -f "${PG_CONF_
     fi
 elif [ "${SETUP_MODE}" = "docker" ]; then
     log_info "Docker mode: wal_level=logical is set in docker-compose.yml — no manual patch needed."
+fi
+
+# 1b. Cap the WAL a replication slot can hold. If the CDC consumer stalls, or a
+# slot is left behind, Postgres invalidates the slot at the cap and jmdn reports
+# it, instead of keeping WAL until the disk fills. ALTER SYSTEM writes
+# postgresql.auto.conf; a reload applies it.
+if [ -n "${SLOT_WAL_CAP}" ]; then
+    log_info "Setting max_slot_wal_keep_size = ${SLOT_WAL_CAP}..."
+    if run_sql "ALTER SYSTEM SET max_slot_wal_keep_size = '${SLOT_WAL_CAP}';" >/dev/null \
+        && run_sql "SELECT pg_reload_conf();" >/dev/null; then
+        log_ok "max_slot_wal_keep_size = ${SLOT_WAL_CAP} (applied by reload)"
+    else
+        log_warn "Could not set max_slot_wal_keep_size — set it manually as a superuser:"
+        log_warn "  ALTER SYSTEM SET max_slot_wal_keep_size = '${SLOT_WAL_CAP}'; SELECT pg_reload_conf();"
+    fi
 fi
 
 # 2. Create user

@@ -66,7 +66,13 @@ thebe:
   max_len: 1000                # Env: THEBE_MAX_LEN
   group_name: "projector"      # Env: THEBE_GROUP_NAME
   cdc:
-    enabled: true                      # flip to true when Postgres is ready
+    # CDC is the append-only trace of the SQL projection: Postgres is a projection
+    # that can be mutated or rebuilt, and this DuckDB event log is what makes it
+    # replayable (ThebeDB docs/documentation/eventlog.md). Keep it on. The
+    # replication slot's WAL is capped by Postgres max_slot_wal_keep_size (2GB in
+    # the install scripts); jmdn warns at boot if the slot is inactive, lagging
+    # or invalidated.
+    enabled: true
     slot_name: thebe_eventlog
     publication: thebe_pub
     log_path: ./data/eventlog.duckdb

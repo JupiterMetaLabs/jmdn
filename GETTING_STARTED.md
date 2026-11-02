@@ -309,6 +309,16 @@ psql "<your thebe.sql_dsn>" -c 'select 1'
 The default DSN uses `sslmode=require`. For a local database without TLS,
 set `sslmode=disable` in the DSN.
 
+### Postgres disk keeps growing (replication slots)
+
+ThebeDB CDC (on by default) reads Postgres through the replication slot `thebe_eventlog`, and Postgres keeps the WAL the slot has not consumed. `Scripts/setup_postgres.sh` caps that at 2 GB (`max_slot_wal_keep_size`); past the cap Postgres invalidates the slot and CDC stops until it is recovered. jmdn logs a warning at boot when the CDC slot is inactive, lagging or invalidated, for any other slot nothing reads, and for an unlimited cap. Check as the Postgres superuser:
+
+```bash
+sudo -u postgres psql -d jmdn -c "select slot_name, active, wal_status from pg_replication_slots;" -c "show max_slot_wal_keep_size;"
+```
+
+Drop only a slot nothing uses (`select pg_drop_replication_slot('<name>');`), never `thebe_eventlog` on a node running CDC.
+
 ### Minimal logs on Raspberry Pi
 
 If console logging is turned off (`logging.console.enabled: false` in `jmdn.yaml`), logs are still available via journald:
