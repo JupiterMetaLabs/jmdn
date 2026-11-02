@@ -178,34 +178,15 @@ func buildCompactCert(block *config.ZKBlock, responses []BLS_Signer.BLSresponse)
 		index[pid] = i
 	}
 
-	blockHashHex, chHex := block.BlockHash.Hex(), block.ConsensusHashHex()
-	chainID := BLS_Signer.DomainChainID()
 	bitmap := make([]byte, (len(ids)+7)/8)
 	var sigs [][]byte
 	signers := make(map[string]bool)
-	for _, r := range responses {
-		if !r.Agree {
-			continue
-		}
+	for _, r := range verifiedPoolSigners(block, responses, pool) {
 		pid := strings.TrimSpace(r.PeerID)
-		i, ok := index[pid]
-		if !ok || signers[pid] {
-			continue
-		}
-		bound := normalizeBLSPub(pool[pid])
-		if bound == "" || normalizeBLSPub(r.PubKey) != bound {
-			continue
-		}
-		if verifyBlockVote(r, chainID, block.BlockNumber, blockHashHex, chHex) != nil {
-			continue
-		}
-		sig := blsKeyBytes(r.Signature) // hex decode, same rules as keys
-		if len(sig) == 0 {
-			continue
-		}
+		i := index[pid]
 		signers[pid] = true
 		bitmap[i/8] |= 1 << (uint(i) % 8)
-		sigs = append(sigs, sig)
+		sigs = append(sigs, blsKeyBytes(r.Signature))
 	}
 	if len(sigs) == 0 {
 		return "", errCompactNoQuorum
@@ -232,6 +213,60 @@ func buildCompactCert(block *config.ZKBlock, responses []BLS_Signer.BLSresponse)
 		return "", err
 	}
 	return string(out), nil
+}
+
+// verifiedPoolSigners is THE signer rule, shared by the compact certificate
+// and, from consensus.compact_certificate_from_height in anchored periods, by
+// the reward split (certSignersFromStored): YES votes from members of the
+// anchored pool whose key equals the pool's bound key and whose block-bound
+// signature verifies, one per peer, in input order. It depends only on the
+// vote list, the block and the fleet-agreed pool, so every node gets the same
+// set.
+func verifiedPoolSigners(block *config.ZKBlock, responses []BLS_Signer.BLSresponse, pool map[string]string) []BLS_Signer.BLSresponse {
+	blockHashHex, chHex := block.BlockHash.Hex(), block.ConsensusHashHex()
+	chainID := BLS_Signer.DomainChainID()
+	seen := make(map[string]bool)
+	var out []BLS_Signer.BLSresponse
+	for _, r := range responses {
+		if !r.Agree {
+			continue
+		}
+		pid := strings.TrimSpace(r.PeerID)
+		bound, ok := pool[pid]
+		if !ok || seen[pid] {
+			continue
+		}
+		bound = normalizeBLSPub(bound)
+		if bound == "" || normalizeBLSPub(r.PubKey) != bound {
+			continue
+		}
+		if len(blsKeyBytes(r.Signature)) == 0 {
+			continue
+		}
+		if verifyBlockVote(r, chainID, block.BlockNumber, blockHashHex, chHex) != nil {
+			continue
+		}
+		seen[pid] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// strictRewardSigners reports whether the reward split for the certificate
+// of the block at height uses verifiedPoolSigners: from
+// consensus.compact_certificate_from_height, in an anchored period. Same
+// fleet-agreed inputs as compactCertEligible, without the entropy-window rule,
+// so a block pays the same set whichever form its certificate is stored in.
+func strictRewardSigners(height uint64) (map[string]string, bool) {
+	from := compactCertFromHeight()
+	if from == 0 || height < from {
+		return nil, false
+	}
+	pool, handled, err := compactCertPoolFn(height)
+	if !handled || err != nil {
+		return nil, false
+	}
+	return pool, true
 }
 
 // verifyBlockVote checks one block-bound vote; a seam over the BLS verifier.
@@ -368,10 +403,25 @@ func VerifyStoredBlockCertificate(block *config.ZKBlock) (CertificateResult, err
 	return VerifySyncedBlockCertificate(block, responses)
 }
 
-// certSignersFromStored returns the YES signers of a stored certificate, one
-// per peer: the bitmap's signers for a compact certificate, the Agree entries
-// of a full list. Signature is empty for compact certificates.
-func certSignersFromStored(raw string, height uint64) ([]config.CertSigner, error) {
+// certSignersFromStored returns the signers the reward split pays for a
+// stored certificate, one per peer.
+//
+// REWARD RULE (a policy change at consensus.compact_certificate_from_height):
+//   - Before the switch height, or in a period that is not chain-anchored:
+//     every Agree entry of the full vote list, deduped by peer (unchanged; no
+//     pool, key or signature check).
+//   - From the switch height in anchored periods: only verifiedPoolSigners -
+//     YES voters in the anchored pool with the bound key and a verifying
+//     block-bound signature. This applies to BOTH stored forms: a compact
+//     certificate holds exactly that set, and a full list stored instead (an
+//     entropy-window parent, or a block whose verified votes alone missed
+//     quorum) is filtered by the same rule. So which form a block happens to
+//     be stored in never changes who is paid.
+//
+// block supplies the height and the hashes the votes are bound to.
+// Signature is empty for signers read from a compact certificate.
+func certSignersFromStored(raw string, block *config.ZKBlock) ([]config.CertSigner, error) {
+	height := block.BlockNumber
 	if IsCompactCertificate(raw) {
 		d, err := decodeCompactCert(raw, height)
 		if err != nil {
@@ -386,6 +436,14 @@ func certSignersFromStored(raw string, height uint64) ([]config.CertSigner, erro
 	var responses []BLS_Signer.BLSresponse
 	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
 		return nil, fmt.Errorf("malformed certificate: %w", err)
+	}
+	if pool, strict := strictRewardSigners(height); strict {
+		verified := verifiedPoolSigners(block, responses, pool)
+		out := make([]config.CertSigner, 0, len(verified))
+		for _, r := range verified {
+			out = append(out, config.CertSigner{PeerID: strings.TrimSpace(r.PeerID), PubKey: r.PubKey, Signature: r.Signature})
+		}
+		return out, nil
 	}
 	seen := make(map[string]bool, len(responses))
 	out := make([]config.CertSigner, 0, len(responses))

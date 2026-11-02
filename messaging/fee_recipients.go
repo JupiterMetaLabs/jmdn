@@ -277,10 +277,11 @@ func PrevBlockCertSigners(prevNumber uint64) ([]config.CertSigner, error) {
 	if cert == "" {
 		return nil, nil // legacy/cert-less parent => nobody to reward
 	}
-	// Full vote list: every Agree entry, one per peer. Compact certificate:
-	// the bitmap's signers (verified when it was derived). Both are stored
+	// Who is paid follows the reward rule on certSignersFromStored (strict
+	// from consensus.compact_certificate_from_height in anchored periods,
+	// whichever form the certificate is stored in). The certificate is stored
 	// byte-identically on every node, so build and validate agree.
-	out, err := certSignersFromStored(cert, prevNumber)
+	out, err := certSignersFromStored(cert, blk)
 	if err != nil {
 		return nil, fmt.Errorf("PrevBlockCertSigners(%d): %w", prevNumber, err)
 	}

@@ -115,11 +115,11 @@ func TestCompactCert_SignersMatchFullList(t *testing.T) {
 	responses := f.votes(t, 6, 1)
 	full, _ := json.Marshal(responses)
 
-	fromFull, err := certSignersFromStored(string(full), 20)
+	fromFull, err := certSignersFromStored(string(full), f.block)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromCompact, err := certSignersFromStored(StoredCertificate(f.block, responses), 20)
+	fromCompact, err := certSignersFromStored(StoredCertificate(f.block, responses), f.block)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestCompactCert_BadVotesExcludedOrFullList(t *testing.T) {
 	if !IsCompactCertificate(stored) {
 		t.Fatal("5 valid votes reach quorum; want the compact form")
 	}
-	signers, err := certSignersFromStored(stored, 20)
+	signers, err := certSignersFromStored(stored, f.block)
 	if err != nil || len(signers) != 5 {
 		t.Fatalf("signers = %d, %v", len(signers), err)
 	}
@@ -271,5 +271,59 @@ func TestCertificateForBlockAssembly_SkipsCompactParent(t *testing.T) {
 	persistedCommitCertificateFn = func(uint64) (string, error) { return string(full), nil }
 	if got := CertificateForBlockAssembly(5, 4); len(got) != 3 {
 		t.Fatalf("full parent: got %d signers, want 3", len(got))
+	}
+}
+
+// The reward rule: from the switch height in anchored periods both stored
+// forms pay only verified pool members; before it, or unanchored, the full
+// list pays every Agree entry as before.
+func TestCertSignersFromStored_RewardRule(t *testing.T) {
+	f := newCertFixture(t, 7, 20)
+	responses := f.votes(t, 6, 1)
+	responses[0].Signature = responses[1].Signature // peer-00: YES that does not verify
+	responses = append(responses, BLS_Signer.BLSresponse{PeerID: "outsider", Agree: true, PubKey: "aa", Signature: "bb"})
+	full, _ := json.Marshal(responses)
+
+	peers := func(s []config.CertSigner) string {
+		var ids []string
+		for _, c := range s {
+			ids = append(ids, c.PeerID)
+		}
+		sort.Strings(ids)
+		return strings.Join(ids, ",")
+	}
+	strictWant := strings.Join(f.ids[1:6], ",") // verified YES voters only
+	lenient := append(append([]string{}, f.ids[:6]...), "outsider")
+	sort.Strings(lenient)
+	lenientWant := strings.Join(lenient, ",")
+
+	// Switch on, anchored: the full list is filtered.
+	got, err := certSignersFromStored(string(full), f.block)
+	if err != nil || peers(got) != strictWant {
+		t.Fatalf("strict full list = %s, %v; want %s", peers(got), err, strictWant)
+	}
+	// The compact form of the same votes pays the same set.
+	compact := StoredCertificate(f.block, responses)
+	if !IsCompactCertificate(compact) {
+		t.Fatal("want compact form (5 verified votes reach quorum)")
+	}
+	got, err = certSignersFromStored(compact, f.block)
+	if err != nil || peers(got) != strictWant {
+		t.Fatalf("compact = %s, %v; want %s", peers(got), err, strictWant)
+	}
+
+	// Before the switch height: unchanged lenient rule.
+	compactCertFromHeight = func() uint64 { return 21 }
+	got, err = certSignersFromStored(string(full), f.block)
+	if err != nil || peers(got) != lenientWant {
+		t.Fatalf("before switch = %s, %v; want %s", peers(got), err, lenientWant)
+	}
+	compactCertFromHeight = func() uint64 { return 1 }
+
+	// Unanchored period: unchanged lenient rule.
+	compactCertPoolFn = func(uint64) (map[string]string, bool, error) { return nil, false, nil }
+	got, err = certSignersFromStored(string(full), f.block)
+	if err != nil || peers(got) != lenientWant {
+		t.Fatalf("unanchored = %s, %v; want %s", peers(got), err, lenientWant)
 	}
 }
