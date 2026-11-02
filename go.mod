@@ -6,7 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.6
-	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4.0.20261030154037-12327ed75064
+	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.5
 	github.com/JupiterMetaLabs/avc v0.1.0-v3base.8
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.5.0
