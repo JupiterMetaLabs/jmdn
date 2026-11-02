@@ -226,6 +226,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("thebe.pools.write", d.Thebe.Pools.Write)
 	v.SetDefault("thebe.pools.read", d.Thebe.Pools.Read)
 	v.SetDefault("thebe.pools.sync", d.Thebe.Pools.Sync)
+	v.SetDefault("thebe.cdc.omit_columns", d.Thebe.CDC.OmitColumns)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)

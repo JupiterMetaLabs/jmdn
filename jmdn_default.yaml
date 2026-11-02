@@ -76,6 +76,8 @@ thebe:
     log_path: ./data/eventlog.duckdb
     dlq_path: ./data/dlq/DLQ.log
     max_lag_bytes: 104857600            # 100MB lag alert threshold
+    omit_columns:                       # table.column values the event log stores as "<omitted>"
+      - zk_proofs.stark_proof           # proof body (hash stays in zk_proofs.proof_hash)
 
 # ── Chain-head checkpoints ───────────────────────────────
 # Every node verifies the latest checkpoint at boot. The sequencer signs the

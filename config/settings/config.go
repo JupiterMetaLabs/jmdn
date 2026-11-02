@@ -674,6 +674,30 @@ type ThebeCDCConfig struct {
 	LogPath     string `mapstructure:"log_path" yaml:"log_path"`
 	DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
 	MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
+	// OmitColumns lists "table.column" (or "schema.table.column") entries
+	// whose values the event log records as "<omitted>" instead of their
+	// contents. Default: zk_proofs.stark_proof, the block's proof body, which
+	// is ~2x the proof size in hex and whose hash is in zk_proofs.proof_hash.
+	OmitColumns []string `mapstructure:"omit_columns" yaml:"omit_columns"`
+}
+
+// OmitColumnsByTable turns OmitColumns into the table -> columns map ThebeDB
+// takes. An entry splits at its LAST dot: "zk_proofs.stark_proof" is table
+// zk_proofs, "public.zk_proofs.stark_proof" is table public.zk_proofs.
+// Entries with no dot or an empty part are returned as invalid.
+func (c ThebeCDCConfig) OmitColumnsByTable() (map[string][]string, []string) {
+	out := make(map[string][]string)
+	var invalid []string
+	for _, e := range c.OmitColumns {
+		e = strings.TrimSpace(e)
+		i := strings.LastIndex(e, ".")
+		if i <= 0 || i == len(e)-1 {
+			invalid = append(invalid, e)
+			continue
+		}
+		out[e[:i]] = append(out[e[:i]], e[i+1:])
+	}
+	return out, invalid
 }
 
 // DatabaseSettings controls ImmuDB and Redis connection parameters.
