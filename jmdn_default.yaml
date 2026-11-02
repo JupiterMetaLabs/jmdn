@@ -140,6 +140,7 @@ features:
   grotrack: false            # Requires ports.metrics > 0
   enable_solc_compile: false # solc_compile JSON-RPC; requires security.admin_token when on
   enable_debug_trace: false  # debug_traceTransaction; requires security.admin_token when on
+  grouped_apply_commit: true # commit a block's value transfers together; false = one commit per tx
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:

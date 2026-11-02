@@ -266,6 +266,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
 	v.SetDefault("features.enable_solc_compile", d.Features.EnableSolcCompile)
 	v.SetDefault("features.enable_debug_trace", d.Features.EnableDebugTrace)
+	v.SetDefault("features.grouped_apply_commit", d.Features.GroupedApplyCommit)
 
 	// FastSync
 	v.SetDefault("contracts.enabled", d.Contracts.Enabled)

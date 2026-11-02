@@ -664,6 +664,11 @@ type FeatureSettings struct {
 	// EnableDebugTrace exposes debug_traceTransaction. Off by default; when
 	// on, callers must present the admin token.
 	EnableDebugTrace bool `mapstructure:"enable_debug_trace" yaml:"enable_debug_trace"`
+	// GroupedApplyCommit commits consecutive value-transfer txs of a block
+	// together, writing each touched account once per group instead of once
+	// per tx. Final state is identical either way. On by default; set false to
+	// go back to one commit per tx.
+	GroupedApplyCommit bool `mapstructure:"grouped_apply_commit" yaml:"grouped_apply_commit"`
 
 	// AvcValidation controls the staged rollout of the avc-based consensus
 	// validator (consensus/adapters) alongside jmdn's existing

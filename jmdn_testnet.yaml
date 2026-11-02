@@ -120,6 +120,7 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
+  grouped_apply_commit: true # commit a block's value transfers together; false = one commit per tx
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
