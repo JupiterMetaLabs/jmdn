@@ -2176,17 +2176,26 @@ func main() {
 	// needs the committee-eligibility source wired above.
 	//
 	// Boot gate: verify the recomputed canonical head against the latest
-	// committee-signed checkpoint (full walk from seq 0), with a floor from
+	// signed checkpoint, walking only the log after the floor checkpoint
+	// (from seq 0 when there is no floor), with a floor from
 	// checkpoint.floor_file / checkpoint.min_seq so a rolled-back store or
 	// deleted checkpoint keys are caught. fail-closed policy is config-gated.
 	//   - error         → log.Fatal when boot_fail_closed, else log.Error+continue
 	//   - (false, nil)  → no checkpoint and no floor: info
 	//   - (true, nil)   → verified (floor raised): info
+	//
+	// Sequencer discriminator: enable_catchup==false marks the authoritative
+	// producer (same discriminator the sync monitor + committee-source wiring
+	// use). Every node signs checkpoints of its own log; the sequencer may not
+	// run the light storage profile.
+	isSequencer := !cfg.FastSync.EnableCatchup
+	if err := cfg.ValidateStorage(isSequencer); err != nil {
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "[storage] invalid storage settings — refusing to start", err)
+		}
+		os.Exit(1)
+	}
 	if cfg.Checkpoint.Enabled && checkpointKV != nil {
-		// Sequencer discriminator: enable_catchup==false marks the authoritative
-		// producer (same discriminator the sync monitor + committee-source wiring
-		// use). Only the sequencer signs.
-		isSequencer := !cfg.FastSync.EnableCatchup
 
 		// Resolve the floor file once so every log line names the real path; a
 		// relative path depends on the working directory.
@@ -2215,16 +2224,49 @@ func main() {
 			log.Info().Str("floor_file", floorFile).Msg("[checkpoint] boot verification passed — canonical head matches its signed checkpoint")
 		}
 
-		// Wire the per-committed-block signing hook (sequencer-only; no-op on
-		// non-sequencers and when the cadence does not fire).
-		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, isSequencer, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, signerPub)
+		// Wire the per-committed-block signing hook (every node signs its own
+		// log; no-op when the cadence does not fire).
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, signerPub)
 		log.Info().
 			Bool("sequencer", isSequencer).
 			Str("signer_source", signerSource).
 			Str("signer_bls_pub", signerPub).
 			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
 			Str("floor_file", floorFile).
+			Str("storage_profile", cfg.Storage.Profile).
 			Msg("[checkpoint] chain-head checkpoint feature enabled")
+
+		// The boot gate checked only the log after the floor checkpoint; on a
+		// node that keeps the whole log, re-walk it from seq 0 off the boot path.
+		if cfg.Checkpoint.BackgroundFullVerify && !cfg.Storage.IsLight() {
+			verify := messaging.CheckpointSigVerifierFor(signerPub)
+			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CheckpointFullVerifyThread, func(ctx context.Context) error {
+				messaging.StartBackgroundFullVerify(ctx, checkpointKV, verify)
+				return nil
+			}); err != nil {
+				if logger := mainLogger(); logger != nil {
+					logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.CheckpointFullVerifyThread))
+				}
+			}
+		}
+
+		// Light profile: prune the canonical log below a checkpoint at or
+		// below the floor, keeping about light_keep_blocks blocks.
+		if cfg.Storage.IsLight() {
+			keep, every := cfg.Storage.LightKeepBlocks, cfg.Storage.PruneInterval
+			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.LightLogPrunerThread, func(ctx context.Context) error {
+				messaging.RunLightLogPruner(ctx, checkpointKV, floorFile, keep, every)
+				return nil
+			}); err != nil {
+				if logger := mainLogger(); logger != nil {
+					logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.LightLogPrunerThread))
+				}
+			}
+			if logger := mainLogger(); logger != nil {
+				logger.Info(context.Background(), "[storage] light profile: canonical log older than light_keep_blocks is pruned",
+					ion.Uint64("light_keep_blocks", keep), ion.Duration("prune_interval", every))
+			}
+		}
 	}
 
 	// Initialize Yggdrasil messaging if enabled

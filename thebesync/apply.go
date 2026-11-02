@@ -140,6 +140,8 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	}
 	// Committed: the per-round signing ledgers stop at this height.
 	messaging.NoteHeightCommitted(block.BlockNumber)
+	// Chain-head checkpoint of this node's own log. Best-effort.
+	messaging.NoteCommittedForCheckpoint(block)
 	// B (D-65): defensive check against a PARTIALLY-projected store.
 	//
 	// NOTE (corrected post-C6): StoreZKBlock does NOT return nil on a projection

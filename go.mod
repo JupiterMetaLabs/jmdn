@@ -6,11 +6,12 @@ toolchain go1.27.3
 
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.1.0-v3base.6
-	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4
+	github.com/JupiterMetaLabs/ThebeDB v0.2.0-v3base.4.0.20261030154037-12327ed75064
 	github.com/JupiterMetaLabs/avc v0.1.0-v3base.8
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.5.0
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
+	github.com/dgraph-io/badger/v4 v4.9.6
 	github.com/ethereum/go-ethereum v1.17.5
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -65,7 +66,6 @@ require (
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/dgraph-io/badger/v4 v4.9.6 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/duckdb/duckdb-go-bindings v0.1.21 // indirect
 	github.com/duckdb/duckdb-go-bindings/darwin-amd64 v0.1.21 // indirect
