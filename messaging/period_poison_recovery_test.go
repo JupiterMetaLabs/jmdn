@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"gossipnode/config"
 	"gossipnode/internal/roundlock"
 )
 
@@ -19,6 +20,8 @@ func TestPeriodPoison_NextProposerResumesAbove(t *testing.T) {
 		committee = 4
 		poison    = 1024
 	)
+	config.SetPeriodCapRaiseFrom(1)
+	t.Cleanup(func() { config.SetPeriodCapRaiseFrom(0) })
 	now := time.Unix(1_700_000_000, 0)
 	pace := roundlock.NewPace(func() time.Time { return now })
 	ledgers := make([]*roundlock.Ledger, committee)

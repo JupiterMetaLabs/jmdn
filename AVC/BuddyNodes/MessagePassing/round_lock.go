@@ -45,7 +45,7 @@ func blockIdentity(blockHash, consensusHash string) string {
 // returns a *roundRefusal - and the caller must not sign - when this node
 // already signed a different block for the round (R1), a block at a higher
 // period for the height (R2), or the height is already committed. It returns
-// a plain error when period exceeds config.MaxPeriod. Re-signing the same
+// a plain error when period exceeds config.MaxPeriodAt. Re-signing the same
 // block (a retried request) is allowed.
 //
 // It returns fresh=true only when THIS call created the reservation. A caller
@@ -53,11 +53,11 @@ func blockIdentity(blockHash, consensusHash string) string {
 // when fresh is true - on a re-entry an earlier attempt owns the reservation
 // and may already have shipped a signature (F-9). See roundlock.TryLockFresh.
 func lockBlockResultRound(height, period uint64, blockHash, consensusHash string) (fresh bool, err error) {
-	if period > config.MaxPeriod {
-		// Every verifier rejects such a block (config.MaxPeriod), so a
+	if limit := config.MaxPeriodAt(height); period > limit {
+		// Every verifier rejects such a block (config.MaxPeriodAt), so a
 		// signature on it could only help certify a block nobody accepts.
 		return false, fmt.Errorf("round (height %d, period %d) refused: period exceeds the cap %d",
-			height, period, config.MaxPeriod)
+			height, period, limit)
 	}
 	// A period that runs ahead of time cannot be an honest retry; recording
 	// it would make this ledger refuse every honest retry at the height

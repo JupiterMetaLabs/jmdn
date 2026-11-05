@@ -566,7 +566,7 @@ func (consensus *Consensus) advancePeriodAfterFailedRound(ctx context.Context, h
 	next, capped := messaging.DefaultProposerPeriods.AdvanceAfterFailure(height, config.MaxMainPeers)
 	if capped {
 		logger().Error(ctx, "Height reached the period cap; it cannot commit without operator attention",
-			fmt.Errorf("period cap %d reached at height %d", config.MaxPeriod, height),
+			fmt.Errorf("period cap %d reached at height %d", config.MaxPeriodAt(height), height),
 			ion.Uint64("block_number", height),
 			ion.Uint64("period", next),
 			ion.String("reason", reason),
@@ -575,7 +575,7 @@ func (consensus *Consensus) advancePeriodAfterFailedRound(ctx context.Context, h
 			AlertName("Consensus: Period Cap Reached").
 			Status(Alerts.AlertStatusError).
 			Severity(Alerts.SeverityError).
-			Description(fmt.Sprintf("Height %d failed %d rounds and reached the period cap; it cannot commit until the cause is fixed", height, config.MaxPeriod)).
+			Description(fmt.Sprintf("Height %d failed %d rounds and reached the period cap; it cannot commit until the cause is fixed", height, config.MaxPeriodAt(height))).
 			Label("block_number", fmt.Sprintf("%d", height)).
 			Label("reason", reason).
 			Send()

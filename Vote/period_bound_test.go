@@ -38,7 +38,7 @@ func periodBlock(height, period uint64, hash string) *config.ZKBlock {
 func TestReserveAcceptVote_PeriodAboveCapLeavesNoRecord(t *testing.T) {
 	freshVotes(t)
 	fakeClock(t, time.Unix(1_700_000_000, 0))
-	for _, p := range []uint64{config.MaxPeriod + 1, math.MaxUint64} {
+	for _, p := range []uint64{config.LegacyMaxPeriod + 1, math.MaxUint64} {
 		if err := reserveAcceptVote(periodBlock(40, p, "0xbad")); err == nil || !strings.Contains(err.Error(), "exceeds the cap") {
 			t.Fatalf("period %d: err = %v", p, err)
 		}
@@ -57,7 +57,7 @@ func TestReserveAcceptVote_PeriodMayNotRunAheadOfTime(t *testing.T) {
 	freshVotes(t)
 	now := fakeClock(t, time.Unix(1_700_000_000, 0))
 
-	if err := reserveAcceptVote(periodBlock(41, config.MaxPeriod, "0xbad")); err == nil || !strings.Contains(err.Error(), "ahead of time") {
+	if err := reserveAcceptVote(periodBlock(41, config.LegacyMaxPeriod, "0xbad")); err == nil || !strings.Contains(err.Error(), "ahead of time") {
 		t.Fatalf("period at the cap as the first proposal: err = %v", err)
 	}
 	if err := reserveAcceptVote(periodBlock(41, 0, "0xp0")); err != nil {

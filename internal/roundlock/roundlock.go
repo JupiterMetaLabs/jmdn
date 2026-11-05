@@ -364,7 +364,7 @@ func (l *Ledger) CommittedTip() (uint64, bool) {
 // period -> block identity.
 //
 // Operator recovery only: a height whose records refuse every retry (for
-// example, one that reached config.MaxPeriod) can never commit, because a
+// example, one that reached config.MaxPeriodAt) can never commit, because a
 // commit is the only thing that clears it. Clearing reopens rounds this node
 // already signed, so it must only be used on a height that has no
 // certificate anywhere in the network. A height at or below the committed

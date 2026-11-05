@@ -16,7 +16,7 @@ var votePace = roundlock.DefaultPace
 // checkVotePeriod reports why this node must not vote ACCEPT for a proposal at
 // (height, period), or nil, before anything is recorded in roundlock.Votes:
 //
-//   - the period may not exceed config.MaxPeriod, the cap every other path
+//   - the period may not exceed config.MaxPeriodAt, the cap every other path
 //     already enforces;
 //   - the period may not run ahead of time (roundlock.Pace,
 //     consensus.vote_period_min_round_seconds / vote_period_slack).
@@ -24,8 +24,8 @@ var votePace = roundlock.DefaultPace
 // Without these, one proposal at a high period would leave every honest
 // retry at the height refused, across restarts and a change of sequencer.
 func checkVotePeriod(height, period uint64) error {
-	if period > config.MaxPeriod {
-		return fmt.Errorf("vote period: height %d period %d exceeds the cap %d", height, period, config.MaxPeriod)
+	if limit := config.MaxPeriodAt(height); period > limit {
+		return fmt.Errorf("vote period: height %d period %d exceeds the cap %d", height, period, limit)
 	}
 	minRound, slack := settings.VotePeriodPace()
 	if err := votePace.Check(height, period, minRound, slack); err != nil {

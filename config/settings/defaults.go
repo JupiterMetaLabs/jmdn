@@ -255,6 +255,7 @@ func DefaultConfig() NodeConfig {
 			CommitteeAnchorActivationHeight: 0,
 			CompactCertificateFromHeight:    0,
 			VotePeriodMinRoundSeconds:       1,
+			PeriodCapRaiseFromHeight:        0,
 			VotePeriodSlack:                 16,
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.

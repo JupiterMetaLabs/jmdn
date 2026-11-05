@@ -323,6 +323,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.compact_certificate_from_height", d.Consensus.CompactCertificateFromHeight)
 	v.SetDefault("consensus.vote_period_min_round_seconds", d.Consensus.VotePeriodMinRoundSeconds)
 	v.SetDefault("consensus.vote_period_slack", d.Consensus.VotePeriodSlack)
+	v.SetDefault("consensus.period_cap_raise_from_height", d.Consensus.PeriodCapRaiseFromHeight)
 	v.SetDefault("consensus.evm_unstamped_account_revert_height", d.Consensus.EVMUnstampedAccountRevertHeight)
 	v.SetDefault("consensus.committee_strict_boundary", d.Consensus.CommitteeStrictBoundary)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)

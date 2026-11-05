@@ -67,11 +67,11 @@ func TestAdmitVoteTrigger(t *testing.T) {
 
 	t.Run("period above the cap is dropped", func(t *testing.T) {
 		m := block(101)
-		m.ZKBlock.Period = config.MaxPeriod + 1
+		m.ZKBlock.Period = config.LegacyMaxPeriod + 1
 		if admitVoteTrigger(m, 100, nil) || admitVoteTrigger(m, 0, errors.New("tip unavailable")) {
 			t.Fatal("a proposal above the period cap was admitted")
 		}
-		m.ZKBlock.Period = config.MaxPeriod
+		m.ZKBlock.Period = config.LegacyMaxPeriod
 		if !admitVoteTrigger(m, 100, nil) {
 			t.Fatal("a proposal at the cap was dropped")
 		}

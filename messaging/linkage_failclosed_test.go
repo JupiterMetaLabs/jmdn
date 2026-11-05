@@ -109,8 +109,8 @@ func TestSlotRule(t *testing.T) {
 		{"slot one ahead", child(32, 0), "bad_slot"},
 		{"slot behind", child(30, 0), "bad_slot"},
 		{"slot 0 on a live block", child(0, 0), "bad_slot"},
-		{"period at the cap", child(31, config.MaxPeriod), ""},
-		{"period above the cap is rejected first", child(31, config.MaxPeriod+1), "period_too_high"},
+		{"period at the cap", child(31, config.LegacyMaxPeriod), ""},
+		{"period above the cap is rejected first", child(31, config.LegacyMaxPeriod+1), "period_too_high"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -121,8 +121,8 @@ func TestLockBlockResultRound_RefusesCommittedHeight(t *testing.T) {
 // nothing.
 func TestLockBlockResultRound_RefusesAboveThePeriodCap(t *testing.T) {
 	l := withFreshRoundLedger(t)
-	if _, err := lockBlockResultRound(848, config.MaxPeriod+1, "0xaa", "0xc0"); err == nil {
-		t.Fatal("a buddy must not sign above config.MaxPeriod")
+	if _, err := lockBlockResultRound(848, config.LegacyMaxPeriod+1, "0xaa", "0xc0"); err == nil {
+		t.Fatal("a buddy must not sign above config.LegacyMaxPeriod")
 	}
 	if _, ok := l.Highest(848); ok {
 		t.Fatal("a refused over-cap request must not be recorded")
@@ -134,8 +134,8 @@ func TestLockBlockResultRound_RefusesAboveThePeriodCap(t *testing.T) {
 	roundPace = roundlock.NewPace(func() time.Time { return now })
 	t.Cleanup(func() { roundPace = prevP })
 	roundPace.Elapsed(848)
-	now = now.Add(time.Duration(config.MaxPeriod) * time.Second)
-	if _, err := lockBlockResultRound(848, config.MaxPeriod, "0xaa", "0xc0"); err != nil {
+	now = now.Add(time.Duration(config.LegacyMaxPeriod) * time.Second)
+	if _, err := lockBlockResultRound(848, config.LegacyMaxPeriod, "0xaa", "0xc0"); err != nil {
 		t.Fatalf("a block at the cap must be signable: %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestLockBlockResultRound_PeriodAheadOfTime(t *testing.T) {
 	roundLedger, roundPace = l, roundlock.NewPace(func() time.Time { return now })
 	t.Cleanup(func() { roundLedger, roundPace = prevL, prevP })
 
-	if _, err := lockBlockResultRound(900, config.MaxPeriod, "0xbad", "0xc1"); err == nil {
+	if _, err := lockBlockResultRound(900, config.LegacyMaxPeriod, "0xbad", "0xc1"); err == nil {
 		t.Fatal("first request at a height jumped to the period cap")
 	}
 	if _, ok := l.Highest(900); ok {

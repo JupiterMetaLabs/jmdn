@@ -206,6 +206,11 @@ consensus:
   # to the period cap. Local rule; 0 seconds turns it off.
   vote_period_min_round_seconds: 1
   vote_period_slack: 16
+  # From this height on a block's period may go up to 2^20 instead of 1024, so
+  # a high period recorded at a height is never a dead end for the next
+  # proposer. Fleet-agreed: same value on every node, a height not yet
+  # reached. 0 = off (cap stays 1024).
+  period_cap_raise_from_height: 0
   # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
   # has one valid output per input, always. It requires
   # committee_anchor_activation_height and refuses to install without it.

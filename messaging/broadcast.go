@@ -467,7 +467,7 @@ func admitVoteTrigger(cm *PubSubMessages.ConsensusMessage, tip uint64, tipErr er
 	}
 	// A period above the cap is refused by every verifier; drop it before the
 	// proposal is cached.
-	if zkBlock.Period > config.MaxPeriod {
+	if zkBlock.Period > config.MaxPeriodAt(zkBlock.BlockNumber) {
 		return false
 	}
 	if tipErr != nil {
