@@ -18,7 +18,7 @@ func TestClearHeight(t *testing.T) {
 		t.Fatalf("before clear: ok=%v r=%v", ok, r)
 	}
 	cleared, err := l.ClearHeight(h)
-	if err != nil || !cleared {
+	if err != nil || cleared[math.MaxUint64] != "a" || len(cleared) != 1 {
 		t.Fatalf("clear: cleared=%v err=%v", cleared, err)
 	}
 	if ok, r, _, _ := l.TryLockFresh(Round{Height: h, Period: 1}, "b"); !ok {

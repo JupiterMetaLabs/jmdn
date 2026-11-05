@@ -146,5 +146,6 @@ func NoteHeightCommitted(height uint64) {
 	DefaultSlotStore.AdvanceOnCommit(height)
 	roundlock.Default.ForgetThrough(height)
 	roundlock.Votes.ForgetThrough(height)
+	roundlock.DefaultPace.ForgetThrough(height)
 	DefaultProposerPeriods.ForgetThrough(height)
 }

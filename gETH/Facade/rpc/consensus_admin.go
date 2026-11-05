@@ -1,7 +1,10 @@
 package rpc
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
@@ -14,12 +17,16 @@ import (
 // RegisterConsensusAdminRoutes adds the admin-only consensus recovery
 // endpoints:
 //
-//	POST /consensus/round-ledger/clear {"height": N}
+//	POST /consensus/round-ledger/clear {"height": N, "include_signing_ledger": false}
 //
-// clears this node's vote and signing ledgers for one height above the
-// committed tip (roundlock.Ledger.ClearHeight). Use it only on a stuck height
-// that has no certificate anywhere in the network, on enough nodes to reach
-// quorum again. With no config loaded nothing is authorized.
+// clears this node's vote ledger (roundlock.Votes) for one height above the
+// committed tip, so a height whose retries the ledger refuses can commit
+// again. The result-signing ledger (roundlock.Default) is cleared only with
+// include_signing_ledger: true. That ledger is what stops this node signing
+// two blocks in one round; clear it only when the height is known to have no
+// certificate anywhere, including one a sequencer may be withholding. Every
+// cleared round is logged with its block identity. With no config loaded
+// nothing is authorized.
 func RegisterConsensusAdminRoutes(router gin.IRouter) {
 	var secCfg *settings.SecurityConfig
 	if settings.IsLoaded() {
@@ -29,7 +36,22 @@ func RegisterConsensusAdminRoutes(router gin.IRouter) {
 }
 
 type clearRoundLedgerRequest struct {
-	Height *uint64 `json:"height"`
+	Height               *uint64 `json:"height"`
+	IncludeSigningLedger bool    `json:"include_signing_ledger"`
+}
+
+// describeCleared renders period -> block identity in period order.
+func describeCleared(m map[uint64]string) string {
+	periods := make([]uint64, 0, len(m))
+	for p := range m {
+		periods = append(periods, p)
+	}
+	sort.Slice(periods, func(i, j int) bool { return periods[i] < periods[j] })
+	parts := make([]string, 0, len(periods))
+	for _, p := range periods {
+		parts = append(parts, fmt.Sprintf("%d=%s", p, m[p]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func handleClearRoundLedger(c *gin.Context) {
@@ -39,21 +61,29 @@ func handleClearRoundLedger(c *gin.Context) {
 		return
 	}
 	h := *req.Height
-	votes, verr := roundlock.Votes.ClearHeight(h)
-	signer, serr := roundlock.Default.ClearHeight(h)
-	if verr != nil || serr != nil {
-		msg := ""
-		if verr != nil {
-			msg = verr.Error()
-		} else {
-			msg = serr.Error()
-		}
-		c.JSON(http.StatusConflict, gin.H{"error": msg, "votes_cleared": votes, "signer_cleared": signer})
+	votes, err := roundlock.Votes.ClearHeight(h)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
+	}
+	var signer map[uint64]string
+	if req.IncludeSigningLedger {
+		if signer, err = roundlock.Default.ClearHeight(h); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "votes_cleared": describeCleared(votes)})
+			return
+		}
 	}
 	if l := logger(); l != nil {
 		l.Warn(c.Request.Context(), "Operator cleared round-ledger records for a height",
-			ion.Uint64("height", h), ion.Bool("votes_cleared", votes), ion.Bool("signer_cleared", signer))
+			ion.Uint64("height", h),
+			ion.String("votes_cleared", describeCleared(votes)),
+			ion.Bool("signing_ledger_included", req.IncludeSigningLedger),
+			ion.String("signer_cleared", describeCleared(signer)))
 	}
-	c.JSON(http.StatusOK, gin.H{"height": h, "votes_cleared": votes, "signer_cleared": signer})
+	c.JSON(http.StatusOK, gin.H{
+		"height":                  h,
+		"votes_cleared":           describeCleared(votes),
+		"signing_ledger_included": req.IncludeSigningLedger,
+		"signer_cleared":          describeCleared(signer),
+	})
 }

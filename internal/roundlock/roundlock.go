@@ -360,8 +360,8 @@ func (l *Ledger) CommittedTip() (uint64, bool) {
 }
 
 // ClearHeight drops every record this ledger holds for one height above the
-// committed tip, in memory and in the store, and reports whether there was
-// anything to drop.
+// committed tip, in memory and in the store, and returns what it dropped:
+// period -> block identity.
 //
 // Operator recovery only: a height whose records refuse every retry (for
 // example, one that reached config.MaxPeriod) can never commit, because a
@@ -369,24 +369,24 @@ func (l *Ledger) CommittedTip() (uint64, bool) {
 // already signed, so it must only be used on a height that has no
 // certificate anywhere in the network. A height at or below the committed
 // tip is refused.
-func (l *Ledger) ClearHeight(height uint64) (bool, error) {
+func (l *Ledger) ClearHeight(height uint64) (map[uint64]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.haveCommitted && height <= l.committed {
-		return false, fmt.Errorf("roundlock: height %d is at or below the committed tip %d", height, l.committed)
+		return nil, fmt.Errorf("roundlock: height %d is at or below the committed tip %d", height, l.committed)
 	}
 	if err := l.loadHeightLocked(height); err != nil {
-		return false, err
+		return nil, err
 	}
-	cleared := false
-	for r := range l.signed {
+	cleared := map[uint64]string{}
+	for r, block := range l.signed {
 		if r.Height == height {
+			cleared[r.Period] = block
 			delete(l.signed, r)
-			cleared = true
 		}
 	}
 	delete(l.highest, height)
-	if l.store != nil && (cleared || l.onDisk[height]) {
+	if l.store != nil && (len(cleared) > 0 || l.onDisk[height]) {
 		if err := l.store.Put(l.key(height), []byte{}); err != nil {
 			return cleared, fmt.Errorf("roundlock: clear height %d: %w", height, err)
 		}

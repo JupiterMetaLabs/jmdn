@@ -17,15 +17,21 @@ import (
 // the result-signing path share one Pace, so they agree on when a height
 // started.
 type Pace struct {
-	mu    sync.Mutex
-	first map[uint64]time.Time
-	top   uint64
-	now   func() time.Time
+	mu            sync.Mutex
+	first         map[uint64]time.Time
+	committed     uint64
+	haveCommitted bool
+	now           func() time.Time
 }
 
-// paceKeep bounds the first-seen map: heights more than this far below the
-// newest one seen are dropped.
-const paceKeep = 64
+const (
+	// paceAhead: once a committed tip is known, heights more than this far
+	// above it are not recorded (no proposal that far ahead can be voted or
+	// signed), so they cannot crowd out the live height.
+	paceAhead = 64
+	// paceMaxHeights bounds the map before any commit is known.
+	paceMaxHeights = 1024
+)
 
 // NewPace returns an empty Pace reading the given clock.
 func NewPace(now func() time.Time) *Pace {
@@ -36,30 +42,44 @@ func NewPace(now func() time.Time) *Pace {
 var DefaultPace = NewPace(time.Now)
 
 // Elapsed returns the time since the first proposal seen at height, recording
-// now as that time on the first call.
+// now as that time on the first call. A height far above the committed tip
+// is not recorded and reports 0.
 func (p *Pace) Elapsed(height uint64) time.Duration {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
 	first, ok := p.first[height]
 	if !ok {
+		if p.haveCommitted && (height <= p.committed || height-p.committed > paceAhead) {
+			return 0
+		}
+		if !p.haveCommitted && len(p.first) >= paceMaxHeights {
+			p.first = make(map[uint64]time.Time)
+		}
 		p.first[height] = now
 		first = now
-		if height > p.top {
-			p.top = height
-		}
-		if p.top > paceKeep {
-			for h := range p.first {
-				if h < p.top-paceKeep {
-					delete(p.first, h)
-				}
-			}
-		}
 	}
 	if now.Before(first) {
 		return 0
 	}
 	return now.Sub(first)
+}
+
+// ForgetThrough records that height is committed: its record and every lower
+// one are dropped, and later heights are recorded only up to paceAhead above
+// it. The tip only moves up.
+func (p *Pace) ForgetThrough(height uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.haveCommitted && height <= p.committed {
+		return
+	}
+	p.committed, p.haveCommitted = height, true
+	for h := range p.first {
+		if h <= height || h-height > paceAhead {
+			delete(p.first, h)
+		}
+	}
 }
 
 // Check reports an error when period at height runs ahead of time:

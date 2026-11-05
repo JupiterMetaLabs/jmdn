@@ -28,10 +28,35 @@ func TestPace(t *testing.T) {
 	if err := p.Check(12, 1024, 0, 16); err != nil {
 		t.Fatal("minRound 0 must turn the check off")
 	}
-	for h := uint64(100); h < 100+3*paceKeep; h++ {
-		p.Elapsed(h)
+}
+
+// A far-ahead height cannot stop the live height's clock from running, and
+// committed heights are dropped.
+func TestPace_FarAheadHeightAndCommits(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := NewPace(func() time.Time { return now })
+	p.ForgetThrough(99)
+	p.Elapsed(1 << 60)
+	if err := p.Check(100, 0, time.Second, 16); err != nil {
+		t.Fatal(err)
 	}
-	if n := len(p.first); n > paceKeep+1 {
-		t.Fatalf("first-seen map holds %d heights", n)
+	now = now.Add(60 * time.Second)
+	if err := p.Check(100, 20, time.Second, 16); err != nil {
+		t.Fatalf("live height's clock stopped by a far-ahead height: %v", err)
+	}
+	if _, ok := p.first[1<<60]; ok {
+		t.Fatal("far-ahead height recorded")
+	}
+	p.ForgetThrough(100)
+	if _, ok := p.first[100]; ok {
+		t.Fatal("committed height kept")
+	}
+	// Before any commit is known, the map stays bounded.
+	q := NewPace(func() time.Time { return now })
+	for h := uint64(1); h <= 3*paceMaxHeights; h++ {
+		q.Elapsed(h)
+	}
+	if len(q.first) > paceMaxHeights {
+		t.Fatalf("map holds %d heights", len(q.first))
 	}
 }
