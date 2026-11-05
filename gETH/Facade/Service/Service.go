@@ -936,8 +936,35 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 	return resp.Code, nil
 }
 
+// Limits on one eth_feeHistory request, the same values geth uses. The reply
+// holds one entry per block (times one per percentile), and blockCount comes
+// straight from a public caller: without a cap, one request for millions of
+// blocks makes the node allocate until it runs out of memory.
+const (
+	maxFeeHistoryBlocks      = 1024
+	maxFeeHistoryPercentiles = 100
+)
+
 // FeeHistory implements the Service interface - retrieves fee history for the last N blocks
 func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error) {
+	// A larger blockCount is served as the newest maxFeeHistoryBlocks blocks,
+	// as geth does, rather than refused: wallets ask for big ranges and expect
+	// a shorter answer, not an error.
+	if blockCount > maxFeeHistoryBlocks {
+		blockCount = maxFeeHistoryBlocks
+	}
+	if len(perc) > maxFeeHistoryPercentiles {
+		return nil, fmt.Errorf("too many reward percentiles: %d, at most %d", len(perc), maxFeeHistoryPercentiles)
+	}
+	for i, p := range perc {
+		if p < 0 || p > 100 {
+			return nil, fmt.Errorf("reward percentile %d (%v) is outside 0 to 100", i, p)
+		}
+		if i > 0 && p < perc[i-1] {
+			return nil, fmt.Errorf("reward percentiles must be in ascending order: %v after %v", p, perc[i-1])
+		}
+	}
+
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -956,6 +983,12 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 			return nil, err
 		}
 		newestNum = latest
+	}
+	// The reply size is newest - oldest + 1, and Uint64 of a negative newest
+	// is its magnitude: -2^30 asked for a billion entries whatever blockCount
+	// was. parseBlockTag refuses such a tag; this covers every other caller.
+	if newestNum.Sign() < 0 || !newestNum.IsUint64() {
+		return nil, fmt.Errorf("invalid newest block %s", newestNum)
 	}
 
 	// Calculate oldest block number

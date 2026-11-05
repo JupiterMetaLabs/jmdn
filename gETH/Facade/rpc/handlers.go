@@ -720,8 +720,14 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 		return be.BlockNumber(ctx)
 	default:
 		if strings.HasPrefix(tag, "0x") {
-			n := new(big.Int)
-			n.SetString(tag[2:], 16)
+			// big.Int accepts a sign, so "0x-40000000" parses as a negative
+			// height; callers turn that into a huge uint64 range (eth_feeHistory
+			// allocated one entry per block of it). A height is a uint64, and a
+			// tag that does not parse is an error, not block 0.
+			n, ok := new(big.Int).SetString(tag[2:], 16)
+			if !ok || n.Sign() < 0 || !n.IsUint64() {
+				return nil, errors.New("invalid block number")
+			}
 			return n, nil
 		}
 		return nil, errors.New("unsupported block tag")
