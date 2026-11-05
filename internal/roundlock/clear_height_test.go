@@ -35,3 +35,16 @@ func TestClearHeight(t *testing.T) {
 		t.Fatal("cleared a committed height")
 	}
 }
+
+// After a restart, Highest reports a record that is only on disk, so a
+// vote-result response carries it even if the height was not touched yet.
+func TestHighest_ReadsStoredRecordAfterRestart(t *testing.T) {
+	st := newMemStore()
+	if ok, _, _, _ := durable(st).TryLockFresh(Round{Height: 300, Period: 1024}, "a"); !ok {
+		t.Fatal("setup")
+	}
+	restarted := durable(st)
+	if hp, ok := restarted.Highest(300); !ok || hp != 1024 {
+		t.Fatalf("restarted Highest = %d %v, want 1024", hp, ok)
+	}
+}

@@ -263,10 +263,16 @@ func (l *Ledger) Signed(r Round) (string, bool) {
 	return b, ok
 }
 
-// Highest reports the highest period this node has signed for height.
+// Highest reports the highest period this node has signed for height,
+// reading the height's stored record first if this process has not touched
+// it yet (after a restart, a record on disk must still be reported). A store
+// read error reports what is in memory.
 func (l *Ledger) Highest(height uint64) (uint64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if !l.haveCommitted || height > l.committed {
+		_ = l.loadHeightLocked(height)
+	}
 	p, ok := l.highest[height]
 	return p, ok
 }
