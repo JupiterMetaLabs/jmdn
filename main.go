@@ -42,6 +42,7 @@ import (
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
 	"gossipnode/internal/syncmonitor"
+	"gossipnode/internal/thebesyncserve"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
@@ -1155,6 +1156,16 @@ func main() {
 			DB_OPs.PutAccountsConnection(didDBClient)
 		}
 	}()
+
+	// Migration to v3base: serve the read-only ThebeSync (/fastsync/v4)
+	// protocols so v3base nodes following this network can catch up on blocks
+	// they missed. Serve-only, never writes. Enable on the sequencer only.
+	if cfg.FastSync.ServeV4 {
+		v4 := &thebesyncserve.Server{Provider: thebesyncserve.Provider{}}
+		n.Host.SetStreamHandler(thebesyncserve.HeadProtocol, v4.HeadHandler)
+		n.Host.SetStreamHandler(thebesyncserve.GetBlocksProtocol, v4.GetBlocksHandler)
+		log.Info().Msg("[FastSync] serving /fastsync/v4 (read-only) for v3base nodes")
+	}
 
 	// fastsync V1 retired — FastsyncV2 only.
 	if cfg.FastSync.Enabled {

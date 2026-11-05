@@ -107,6 +107,8 @@ fastsync:
                           # must never pull state from peers to overwrite its own chain.
   sync_timeout: 10m       # Max wall-clock time for a single full sync operation.
   sync_check_interval: 10m # How often to report Merkle root to seednode. Min: 1m.
+  serve_v4: false         # Serve /fastsync/v4 (read-only) so v3base nodes following this
+                          # network during the migration can catch up. Sequencer only.
   catch_up_from_block: 0  # First block AFTER your bootstrap snapshot (bootstrapTip+1).
                           # 0 = full scan from genesis (safe default, no bootstrap loaded).
                           # Set to bootstrapTip+1 after bootstrap to avoid rescanning
