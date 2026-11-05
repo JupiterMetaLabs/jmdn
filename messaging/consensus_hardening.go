@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
@@ -1175,10 +1174,10 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 		requestCatchUp(localTip + 1)
 	}
 	if rej == nil && parent != nil {
-		// Header binding (consensus.header_binding_from_height): configured
-		// coinbase / zkvm addresses, a timestamp not before the parent's and
-		// not too far in the future.
-		if err := Security.CheckHeaderFields(b, parent.Timestamp, time.Now()); err != nil {
+		// Header binding (consensus.header_binding_from_height): a timestamp
+		// not before the parent's. Addresses and clock drift were checked by
+		// the committee before certifying (Security.CheckHeaderPolicy).
+		if err := Security.CheckHeaderOrder(b, parent.Timestamp); err != nil {
 			return reject("header_fields", "%v", err)
 		}
 	}

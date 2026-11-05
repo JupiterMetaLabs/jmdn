@@ -102,37 +102,72 @@ func TestCheckBlockHash_HeaderBound(t *testing.T) {
 	}
 }
 
-func TestCheckHeaderFields(t *testing.T) {
-	now := time.Unix(vecTimestamp, 0)
-	withHeaderBinding(t, HeaderBindingConfig{FromHeight: 10, Coinbase: vecCoinbase, ZKVM: vecZKVM, MaxFutureDrift: 15 * time.Second})
-	good := func() *config.ZKBlock {
-		return &config.ZKBlock{BlockNumber: 10, CoinbaseAddr: vecCoinbase, ZKVMAddr: vecZKVM, Timestamp: vecTimestamp}
+func TestCheckHeaderOrder(t *testing.T) {
+	withHeaderBinding(t, HeaderBindingConfig{FromHeight: 10})
+	b := &config.ZKBlock{BlockNumber: 10, Timestamp: vecTimestamp}
+	if err := CheckHeaderOrder(b, vecTimestamp); err != nil {
+		t.Fatalf("timestamp equal to the parent's refused: %v", err)
 	}
-	if err := CheckHeaderFields(good(), vecTimestamp-5, now); err != nil {
+	if err := CheckHeaderOrder(b, vecTimestamp+1); err == nil {
+		t.Fatal("timestamp before the parent's accepted")
+	}
+	b.BlockNumber = 9
+	if err := CheckHeaderOrder(b, vecTimestamp+1); err != nil {
+		t.Fatal("pre-activation block checked")
+	}
+}
+
+func TestCheckHeaderPolicy(t *testing.T) {
+	now := time.Unix(vecTimestamp, 0)
+	other := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	withHeaderBinding(t, HeaderBindingConfig{
+		FromHeight: 10,
+		Addresses: []AddressRange{
+			{FromHeight: 10, Coinbase: *vecCoinbase, ZKVM: *vecZKVM},
+			{FromHeight: 20, Coinbase: other, ZKVM: *vecZKVM},
+		},
+		MaxFutureDrift: 15 * time.Second,
+	})
+	blk := func(n uint64, cb common.Address) *config.ZKBlock {
+		zk := *vecZKVM
+		return &config.ZKBlock{BlockNumber: n, CoinbaseAddr: &cb, ZKVMAddr: &zk, Timestamp: vecTimestamp}
+	}
+	if err := CheckHeaderPolicy(blk(10, *vecCoinbase), now); err != nil {
 		t.Fatalf("honest block refused: %v", err)
 	}
-	if err := CheckHeaderFields(good(), vecTimestamp, now); err != nil {
-		t.Fatalf("timestamp equal to the parent's refused: %v", err)
+	// The second range applies from its own height on, and only there.
+	if err := CheckHeaderPolicy(blk(19, *vecCoinbase), now); err != nil {
+		t.Fatalf("block before the address change refused: %v", err)
+	}
+	if err := CheckHeaderPolicy(blk(20, *vecCoinbase), now); err == nil {
+		t.Fatal("old coinbase accepted after the scheduled change")
+	}
+	if err := CheckHeaderPolicy(blk(20, other), now); err != nil {
+		t.Fatalf("new coinbase refused after the change: %v", err)
 	}
 	cases := map[string]func(*config.ZKBlock){
 		"other coinbase": func(b *config.ZKBlock) { b.CoinbaseAddr = hbAddr("0xa77ac4e7") },
 		"no coinbase":    func(b *config.ZKBlock) { b.CoinbaseAddr = nil },
 		"other zkvm":     func(b *config.ZKBlock) { b.ZKVMAddr = hbAddr("0xa77ac4e7") },
-		"before parent":  func(b *config.ZKBlock) { b.Timestamp = vecTimestamp - 10 },
 		"far future":     func(b *config.ZKBlock) { b.Timestamp = 4_102_444_800 },
 	}
 	for name, edit := range cases {
-		b := good()
+		b := blk(10, *vecCoinbase)
 		edit(b)
-		if err := CheckHeaderFields(b, vecTimestamp-5, now); err == nil {
+		if err := CheckHeaderPolicy(b, now); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
 	}
-	// Below the activation height nothing is checked.
-	b := good()
-	b.BlockNumber, b.CoinbaseAddr, b.Timestamp = 9, hbAddr("0xa77ac4e7"), 4_102_444_800
-	if err := CheckHeaderFields(b, vecTimestamp, now); err != nil {
+	b := blk(9, *vecCoinbase)
+	b.CoinbaseAddr, b.Timestamp = hbAddr("0xa77ac4e7"), 4_102_444_800
+	if err := CheckHeaderPolicy(b, now); err != nil {
 		t.Fatalf("pre-activation block checked: %v", err)
+	}
+	// No range covering the height: refused (boot validation normally
+	// prevents this).
+	withHeaderBinding(t, HeaderBindingConfig{FromHeight: 10})
+	if err := CheckHeaderPolicy(blk(10, *vecCoinbase), now); err == nil {
+		t.Fatal("block accepted with no configured addresses")
 	}
 }
 

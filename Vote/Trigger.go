@@ -117,7 +117,10 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 	// coinbase / zkvm addresses, a timestamp not before the parent's and not
 	// too far in the future. Checked before voting so a bad value is never
 	// certified.
-	if err := Security.CheckHeaderFields(zkBlock, tipTimestamp, time.Now()); err != nil {
+	if err := Security.CheckHeaderOrder(zkBlock, tipTimestamp); err != nil {
+		return fmt.Errorf("vote: %w", err)
+	}
+	if err := Security.CheckHeaderPolicy(zkBlock, time.Now()); err != nil {
 		return fmt.Errorf("vote: %w", err)
 	}
 	return nil

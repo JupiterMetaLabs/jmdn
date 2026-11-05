@@ -12,30 +12,39 @@ import (
 )
 
 // headerBindingFromSettings builds the Security header-binding policy from
-// the consensus settings. An address that is set but not a hex address is an
-// error: with it, every block from the activation height on would be refused.
+// the consensus settings. It fails when the policy would be unsafe or
+// ambiguous: an address that is not a hex address, ranges not in strictly
+// increasing from_height order, or, with binding on, no address range
+// covering the activation height (the address rule would be off and the
+// sequencer could pick its own fee recipients).
 func headerBindingFromSettings(c settings.ConsensusSettings) (Security.HeaderBindingConfig, error) {
 	out := Security.HeaderBindingConfig{
 		FromHeight:     c.HeaderBindingFromHeight,
 		MaxFutureDrift: time.Duration(c.BlockTimestampMaxFutureSeconds) * time.Second,
 	}
-	parse := func(key, v string) (*common.Address, error) {
+	parse := func(i int, key, v string) (common.Address, error) {
 		v = strings.TrimSpace(v)
-		if v == "" {
-			return nil, nil
-		}
 		if !common.IsHexAddress(v) {
-			return nil, fmt.Errorf("consensus.%s %q is not a hex address", key, v)
+			return common.Address{}, fmt.Errorf("consensus.header_addresses[%d].%s %q is not a hex address", i, key, v)
 		}
-		a := common.HexToAddress(v)
-		return &a, nil
+		return common.HexToAddress(v), nil
 	}
-	var err error
-	if out.Coinbase, err = parse("coinbase_address", c.CoinbaseAddress); err != nil {
-		return out, err
+	for i, r := range c.HeaderAddresses {
+		cb, err := parse(i, "coinbase", r.Coinbase)
+		if err != nil {
+			return out, err
+		}
+		zk, err := parse(i, "zkvm", r.ZKVM)
+		if err != nil {
+			return out, err
+		}
+		if i > 0 && r.FromHeight <= c.HeaderAddresses[i-1].FromHeight {
+			return out, fmt.Errorf("consensus.header_addresses must be in strictly increasing from_height order (entry %d)", i)
+		}
+		out.Addresses = append(out.Addresses, Security.AddressRange{FromHeight: r.FromHeight, Coinbase: cb, ZKVM: zk})
 	}
-	if out.ZKVM, err = parse("zkvm_address", c.ZKVMAddress); err != nil {
-		return out, err
+	if out.FromHeight > 0 && (len(out.Addresses) == 0 || out.Addresses[0].FromHeight > out.FromHeight) {
+		return out, fmt.Errorf("consensus.header_binding_from_height %d is set but consensus.header_addresses has no entry starting at or below it", out.FromHeight)
 	}
 	return out, nil
 }

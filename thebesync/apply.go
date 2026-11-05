@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
@@ -97,14 +96,16 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, perr)
 	}
 
-	// 2e. Header binding: configured coinbase / zkvm addresses and a timestamp
-	//     not before the parent's (consensus.header_binding_from_height).
+	// 2e. Header binding: a timestamp not before the parent's
+	//     (consensus.header_binding_from_height). The configured addresses and
+	//     the clock drift were checked by the committee before it certified
+	//     the block (Security.CheckHeaderPolicy), and are not re-checked here.
 	if Security.HeaderBound(block.BlockNumber) {
 		parent, perr := syncedParentFn(prevNumber)
 		if perr != nil {
 			return false, fmt.Errorf("thebesync apply: block %d: read parent %d: %w", block.BlockNumber, prevNumber, perr)
 		}
-		if herr := Security.CheckHeaderFields(block, parent.Timestamp, time.Now()); herr != nil {
+		if herr := Security.CheckHeaderOrder(block, parent.Timestamp); herr != nil {
 			return false, fmt.Errorf("thebesync apply: %w", herr)
 		}
 	}

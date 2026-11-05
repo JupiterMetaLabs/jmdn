@@ -33,5 +33,8 @@ func checkProposalHeader(block *config.ZKBlock) error {
 		}
 		parentTimestamp = parent.Timestamp
 	}
-	return Security.CheckHeaderFields(block, parentTimestamp, time.Now())
+	if err := Security.CheckHeaderOrder(block, parentTimestamp); err != nil {
+		return err
+	}
+	return Security.CheckHeaderPolicy(block, time.Now())
 }

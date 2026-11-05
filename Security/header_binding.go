@@ -13,9 +13,10 @@ package Security
 //     as 20 zero bytes. The orchestrator builds it with the same formula.
 //   - ConsensusHash also covers CoinbaseAddr, ZKVMAddr, Timestamp and
 //     FeeRecipients (consensus_fields_hash.go).
-//   - CheckHeaderFields rejects a block whose addresses differ from the
-//     configured ones, whose timestamp is before its parent's, or whose
-//     timestamp is further in the future than the configured drift.
+//   - CheckHeaderOrder (every path) rejects a timestamp before the parent's;
+//     CheckHeaderPolicy (proposal intake and voting) rejects addresses other
+//     than the ones configured for the height and a timestamp further in the
+//     future than the configured drift.
 //
 // The activation height is fleet-agreed: every node and the orchestrator
 // must carry the same value, set to a height the chain has not reached.
@@ -34,16 +35,24 @@ import (
 
 const headerHashDomain = "jmdn/block-header-hash/v1"
 
+// AddressRange is the coinbase and zkvm address every bound block carries
+// from FromHeight up to the next range.
+type AddressRange struct {
+	FromHeight uint64
+	Coinbase   common.Address
+	ZKVM       common.Address
+}
+
 // HeaderBindingConfig is the node's header-binding policy.
 type HeaderBindingConfig struct {
 	// FromHeight is the first block height the rules apply to; 0 = off.
 	FromHeight uint64
-	// Coinbase and ZKVM are the addresses every bound block must carry; nil
-	// = not checked.
-	Coinbase *common.Address
-	ZKVM     *common.Address
-	// MaxFutureDrift is how far past this node's clock a bound block's
-	// timestamp may be; 0 = not checked.
+	// Addresses, sorted by FromHeight, give the addresses each bound block
+	// must carry. Height-ranged so an address change can be scheduled at a
+	// future height without disagreeing about earlier blocks.
+	Addresses []AddressRange
+	// MaxFutureDrift is how far past this node's clock a block's timestamp
+	// may be when it is proposed or voted on; 0 = not checked.
 	MaxFutureDrift time.Duration
 }
 
@@ -102,11 +111,46 @@ func ExpectedBlockHash(b *config.ZKBlock, txsHash common.Hash) common.Hash {
 	return HeaderBlockHash(txsHash, b.CoinbaseAddr, b.ZKVMAddr, b.Timestamp)
 }
 
-// CheckHeaderFields applies the header rules to a bound block: configured
-// coinbase and ZKVM addresses, a timestamp not before parentTimestamp, and
-// not more than the configured drift past now. Nil below the activation
-// height.
-func CheckHeaderFields(b *config.ZKBlock, parentTimestamp int64, now time.Time) error {
+// addressesFor returns the address range covering height, if any.
+func (c HeaderBindingConfig) addressesFor(height uint64) (AddressRange, bool) {
+	var out AddressRange
+	found := false
+	for _, r := range c.Addresses {
+		if r.FromHeight > height {
+			break
+		}
+		out, found = r, true
+	}
+	return out, found
+}
+
+// CheckHeaderOrder is the header rule every path applies, including the
+// receive and sync paths of certified blocks: a bound block's timestamp may
+// not be before its parent's. It is a pure function of the chain, so every
+// node agrees on it whatever its configuration or clock. Nil below the
+// activation height.
+func CheckHeaderOrder(b *config.ZKBlock, parentTimestamp int64) error {
+	if b == nil {
+		return fmt.Errorf("header: nil block")
+	}
+	if !HeaderBound(b.BlockNumber) {
+		return nil
+	}
+	if b.Timestamp < parentTimestamp {
+		return fmt.Errorf("header: block %d timestamp %d is before its parent's %d",
+			b.BlockNumber, b.Timestamp, parentTimestamp)
+	}
+	return nil
+}
+
+// CheckHeaderPolicy is the header rule applied before a block is certified,
+// on proposal intake and before voting: the coinbase and zkvm addresses must
+// be the configured ones for the block's height, and the timestamp may not
+// be more than the configured drift past now. Certified blocks on the
+// receive and sync paths are not re-checked against it: the committee
+// already did, and a later address change or a skewed local clock must not
+// make a node refuse its own chain. Nil below the activation height.
+func CheckHeaderPolicy(b *config.ZKBlock, now time.Time) error {
 	if b == nil {
 		return fmt.Errorf("header: nil block")
 	}
@@ -114,17 +158,17 @@ func CheckHeaderFields(b *config.ZKBlock, parentTimestamp int64, now time.Time) 
 	if c.FromHeight == 0 || b.BlockNumber < c.FromHeight {
 		return nil
 	}
-	if c.Coinbase != nil && (b.CoinbaseAddr == nil || *b.CoinbaseAddr != *c.Coinbase) {
+	want, ok := c.addressesFor(b.BlockNumber)
+	if !ok {
+		return fmt.Errorf("header: no coinbase / zkvm addresses configured for block %d", b.BlockNumber)
+	}
+	if b.CoinbaseAddr == nil || *b.CoinbaseAddr != want.Coinbase {
 		return fmt.Errorf("header: block %d coinbase %s is not the configured %s",
-			b.BlockNumber, addrString(b.CoinbaseAddr), c.Coinbase.Hex())
+			b.BlockNumber, addrString(b.CoinbaseAddr), want.Coinbase.Hex())
 	}
-	if c.ZKVM != nil && (b.ZKVMAddr == nil || *b.ZKVMAddr != *c.ZKVM) {
+	if b.ZKVMAddr == nil || *b.ZKVMAddr != want.ZKVM {
 		return fmt.Errorf("header: block %d zkvm address %s is not the configured %s",
-			b.BlockNumber, addrString(b.ZKVMAddr), c.ZKVM.Hex())
-	}
-	if b.Timestamp < parentTimestamp {
-		return fmt.Errorf("header: block %d timestamp %d is before its parent's %d",
-			b.BlockNumber, b.Timestamp, parentTimestamp)
+			b.BlockNumber, addrString(b.ZKVMAddr), want.ZKVM.Hex())
 	}
 	if c.MaxFutureDrift > 0 {
 		if limit := now.Add(c.MaxFutureDrift).Unix(); b.Timestamp > limit {

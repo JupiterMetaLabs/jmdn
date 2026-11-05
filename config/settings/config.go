@@ -336,6 +336,13 @@ type ReputationSettings struct {
 	StorePath           string `mapstructure:"store_path" yaml:"store_path"`                       // JMDN_REPUTATION_STORE_PATH, path, default "" (in-memory)
 }
 
+// HeaderAddressRange is one entry of consensus.header_addresses.
+type HeaderAddressRange struct {
+	FromHeight uint64 `mapstructure:"from_height" yaml:"from_height"`
+	Coinbase   string `mapstructure:"coinbase" yaml:"coinbase"`
+	ZKVM       string `mapstructure:"zkvm" yaml:"zkvm"`
+}
+
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 
@@ -458,13 +465,15 @@ type ConsensusSettings struct {
 	// A FLEET-AGREED parameter: every node and the orchestrator must carry the
 	// same value, set to a height the chain has not reached yet. 0 = off.
 	HeaderBindingFromHeight uint64 `mapstructure:"header_binding_from_height" yaml:"header_binding_from_height"`
-	// CoinbaseAddress / ZKVMAddress: the addresses every block from
-	// HeaderBindingFromHeight on must carry (the orchestrator's configured
-	// ones). Empty = not checked.
-	CoinbaseAddress string `mapstructure:"coinbase_address" yaml:"coinbase_address"`
-	ZKVMAddress     string `mapstructure:"zkvm_address" yaml:"zkvm_address"`
+	// HeaderAddresses: the coinbase and zkvm addresses (the orchestrator's)
+	// every block must carry from HeaderBindingFromHeight on, as ranges by
+	// height so a change can be scheduled at a future height. Checked when a
+	// block is proposed and before voting. Required when
+	// HeaderBindingFromHeight is set: the first range must start at or below it.
+	HeaderAddresses []HeaderAddressRange `mapstructure:"header_addresses" yaml:"header_addresses"`
 	// BlockTimestampMaxFutureSeconds: how far past this node's clock a block's
-	// timestamp may be, from HeaderBindingFromHeight on. 0 = not checked.
+	// timestamp may be when it is proposed or voted on, from
+	// HeaderBindingFromHeight on. 0 = not checked.
 	BlockTimestampMaxFutureSeconds uint64 `mapstructure:"block_timestamp_max_future_seconds" yaml:"block_timestamp_max_future_seconds"`
 
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
