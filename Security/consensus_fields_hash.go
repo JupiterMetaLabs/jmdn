@@ -54,6 +54,12 @@ import (
 // fleet-wide cutover — see this file's header.
 const blockHashDomain = "jmdn/block-hash/v3"
 
+// headerBoundDomain replaces blockHashDomain from
+// consensus.header_binding_from_height on, where the preimage also covers
+// CoinbaseAddr, ZKVMAddr, Timestamp and FeeRecipients (header_binding.go).
+// A different tag keeps the two formats from ever producing the same hash.
+const headerBoundDomain = "jmdn/block-hash/v4"
+
 // RecomputeBlockHashWithConsensusFields computes the M2b block hash: the six
 // AVC consensus fields plus the existing transaction-content binding.
 //
@@ -139,7 +145,12 @@ func consensusFieldsDigest(block *config.ZKBlock, txPart []byte) common.Hash {
 	// the orchestrator's block, and attachAVCConsensusFields (the only caller that
 	// SETS ConsensusHash) runs afterwards. A zero PrevHash on a genesis-shaped
 	// block hashes normally; it is a value, not a missing field.
-	committee.WriteField(&buf, []byte(blockHashDomain))
+	bound := HeaderBound(block.BlockNumber)
+	if bound {
+		committee.WriteField(&buf, []byte(headerBoundDomain))
+	} else {
+		committee.WriteField(&buf, []byte(blockHashDomain))
+	}
 	committee.WriteU64(&buf, block.BlockNumber)
 	committee.WriteField(&buf, block.PrevHash.Bytes())
 	committee.WriteU64(&buf, block.Slot)
@@ -172,9 +183,32 @@ func consensusFieldsDigest(block *config.ZKBlock, txPart []byte) common.Hash {
 	// CommitteeSnapshotHash above. Adding it is a coordinated fleet cutover (see
 	// this file's header); it rides the Stage-2 enablement restart.
 	committee.WriteField(&buf, []byte(block.VdfParamsDigest))
+	if bound {
+		// Header binding: the fee and EVM context fields. A nil address
+		// encodes as the zero address, as in HeaderBlockHash, so a stored
+		// block reads back to the same hash either way. FeeRecipients bind in
+		// the order carried, like the reveals: reordering changes the hash.
+		committee.WriteField(&buf, addressBytes(block.CoinbaseAddr))
+		committee.WriteField(&buf, addressBytes(block.ZKVMAddr))
+		committee.WriteU64(&buf, uint64(block.Timestamp))
+		committee.WriteField(&buf, EncodeFeeRecipients(block.FeeRecipients))
+	}
 	committee.WriteField(&buf, txPart)
 
 	return common.BytesToHash(crypto.Keccak256(buf.Bytes()))
+}
+
+// EncodeFeeRecipients encodes a fee-recipient list in the order carried:
+//
+//	u64:count || ( len:Addr || u64:Weight )*
+func EncodeFeeRecipients(rs []config.FeeRecipient) []byte {
+	var buf bytes.Buffer
+	committee.WriteU64(&buf, uint64(len(rs)))
+	for i := range rs {
+		committee.WriteField(&buf, rs[i].Addr.Bytes())
+		committee.WriteU64(&buf, rs[i].Weight)
+	}
+	return buf.Bytes()
 }
 
 // EncodeReveals produces the canonical byte encoding of a reveal list.

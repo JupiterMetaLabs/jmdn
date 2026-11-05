@@ -452,6 +452,21 @@ type ConsensusSettings struct {
 	// because the reward split is read from the stored certificate. 0 = off.
 	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
 
+	// HeaderBindingFromHeight: from this block height on, BlockHash covers the
+	// coinbase, zkvm address and timestamp as well as the transactions, and
+	// ConsensusHash also covers them and FeeRecipients (Security/header_binding.go).
+	// A FLEET-AGREED parameter: every node and the orchestrator must carry the
+	// same value, set to a height the chain has not reached yet. 0 = off.
+	HeaderBindingFromHeight uint64 `mapstructure:"header_binding_from_height" yaml:"header_binding_from_height"`
+	// CoinbaseAddress / ZKVMAddress: the addresses every block from
+	// HeaderBindingFromHeight on must carry (the orchestrator's configured
+	// ones). Empty = not checked.
+	CoinbaseAddress string `mapstructure:"coinbase_address" yaml:"coinbase_address"`
+	ZKVMAddress     string `mapstructure:"zkvm_address" yaml:"zkvm_address"`
+	// BlockTimestampMaxFutureSeconds: how far past this node's clock a block's
+	// timestamp may be, from HeaderBindingFromHeight on. 0 = not checked.
+	BlockTimestampMaxFutureSeconds uint64 `mapstructure:"block_timestamp_max_future_seconds" yaml:"block_timestamp_max_future_seconds"`
+
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
 	// contract txs whose EXECUTION creates an account (internal CALL{value},
 	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no

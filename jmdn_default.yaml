@@ -200,6 +200,18 @@ consensus:
   # Fleet-agreed: same value on every node, a height not yet reached. Applies
   # only once committee_anchor_activation_height is set. 0 = off.
   compact_certificate_from_height: 0
+  # From this height on, BlockHash covers the coinbase, zkvm address and
+  # timestamp, and ConsensusHash also covers them and fee recipients.
+  # Fleet-agreed: same value on every node and in the orchestrator
+  # (HEADER_BINDING_FROM_HEIGHT), a height not yet reached. 0 = off.
+  header_binding_from_height: 0
+  # Addresses every block must carry from that height on (the orchestrator's
+  # coinbase and zkvm addresses). Empty = not checked.
+  coinbase_address: ""
+  zkvm_address: ""
+  # How far past this node's clock a block timestamp may be, from that height
+  # on. 0 = not checked.
+  block_timestamp_max_future_seconds: 15
   # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
   # has one valid output per input, always. It requires
   # committee_anchor_activation_height and refuses to install without it.

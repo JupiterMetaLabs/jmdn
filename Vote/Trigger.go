@@ -93,13 +93,15 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 		return fmt.Errorf("vote position: cannot read local tip (fail closed): %w", terr)
 	}
 	var tipHash common.Hash
+	var tipTimestamp int64
 	if tip > 0 {
-		// Header-only: only the tip hash is compared; no proof/tx read.
+		// Header-only: the tip hash and timestamp; no proof/tx read.
 		parent, perr := DB_OPs.GetZKBlockHeaderByNumber(tip)
 		if perr != nil {
 			return fmt.Errorf("vote position: cannot read local tip block %d (fail closed): %w", tip, perr)
 		}
 		tipHash = parent.BlockHash
+		tipTimestamp = parent.Timestamp
 	}
 	if err := votecheck.ExtendsTip(zkBlock.BlockNumber, zkBlock.PrevHash, tip, tipHash); err != nil {
 		// A proposal AHEAD of our tip means we missed at least one finalized
@@ -110,6 +112,13 @@ func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
 			GapCatchUpHook(tip + 1)
 		}
 		return fmt.Errorf("vote position: %w", err)
+	}
+	// Header binding (consensus.header_binding_from_height): configured
+	// coinbase / zkvm addresses, a timestamp not before the parent's and not
+	// too far in the future. Checked before voting so a bad value is never
+	// certified.
+	if err := Security.CheckHeaderFields(zkBlock, tipTimestamp, time.Now()); err != nil {
+		return fmt.Errorf("vote: %w", err)
 	}
 	return nil
 }

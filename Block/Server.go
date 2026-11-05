@@ -668,6 +668,17 @@ func processZKBlock(c *gin.Context) {
 		}
 	}()
 
+	if err := checkProposalHeader(&block); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "header_binding_failed"))
+		logger().Warn(spanCtx, "Refusing proposal: header binding check failed",
+			ion.String("error", err.Error()),
+			ion.Int64("block_number", blockNumberAttr),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "reason": "header_binding"})
+		return
+	}
+
 	// Account-nonce enrichment (EnrichBlockAccountNonces) now runs AFTER
 	// attachAVCConsensusFields below, not here: attach populates block.FeeRecipients
 	// (buddy reward-split recipients), and enrichment must see them so a never-funded

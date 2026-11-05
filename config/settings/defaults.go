@@ -254,6 +254,8 @@ func DefaultConfig() NodeConfig {
 			// Chain-anchored committee pool (W1). 0 = off. See config.go.
 			CommitteeAnchorActivationHeight: 0,
 			CompactCertificateFromHeight:    0,
+			HeaderBindingFromHeight:         0,
+			BlockTimestampMaxFutureSeconds:  15,
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,

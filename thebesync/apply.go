@@ -11,8 +11,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
@@ -42,7 +44,7 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 
 	// 1. Body binding — the canonical BlockHash (and TxnsRoot, when present) must
 	//    match the carried transactions. Same recompute the live receive path uses.
-	if want := messaging.RecomputeBlockHashFromTxs(block.Transactions); block.BlockHash != want {
+	if want := Security.ExpectedBlockHash(block, messaging.RecomputeBlockHashFromTxs(block.Transactions)); block.BlockHash != want {
 		return false, fmt.Errorf("thebesync apply: block %d body mismatch: hash %s != recomputed %s",
 			block.BlockNumber, block.BlockHash.Hex(), want.Hex())
 	}
@@ -93,6 +95,18 @@ func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, p
 	//     bound by the block's ConsensusHash first.
 	if perr := messaging.CheckSyncedPeriodBinding(block); perr != nil {
 		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, perr)
+	}
+
+	// 2e. Header binding: configured coinbase / zkvm addresses and a timestamp
+	//     not before the parent's (consensus.header_binding_from_height).
+	if Security.HeaderBound(block.BlockNumber) {
+		parent, perr := syncedParentFn(prevNumber)
+		if perr != nil {
+			return false, fmt.Errorf("thebesync apply: block %d: read parent %d: %w", block.BlockNumber, prevNumber, perr)
+		}
+		if herr := Security.CheckHeaderFields(block, parent.Timestamp, time.Now()); herr != nil {
+			return false, fmt.Errorf("thebesync apply: %w", herr)
+		}
 	}
 
 	// 3. Certificate (hybrid trust). A persisted committee certificate is verified

@@ -138,6 +138,14 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		}
 	}()
 
+	if err := checkProposalHeader(block); err != nil {
+		if s.logger != nil {
+			s.logger.Warn(ctx, "gRPC: refusing proposal: header binding check failed",
+				ion.String("error", err.Error()), ion.Uint64("block_number", block.BlockNumber))
+		}
+		return nil, status.Errorf(codes.InvalidArgument, "header_binding: %v", err)
+	}
+
 	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
 	// attachment point — set Slot/Period from jmdn's own live tracking and
 	// compute the separate ConsensusHash that binds them. BlockHash is NOT
