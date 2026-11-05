@@ -101,6 +101,29 @@ type CheckpointSettings struct {
 	BackgroundFullVerify bool `mapstructure:"background_full_verify" yaml:"background_full_verify"`
 }
 
+// LegacyFollowSettings configures legacy follow mode: a v3base node seeded from
+// a mainnet export keeps applying the blocks of the mainnet sequencer that
+// still runs the main branch, until the cutover to a v3base sequencer.
+//
+// A block at or below UntilHeight (every block while UntilHeight is 0) is a
+// legacy block. It is accepted only when delivered by MainSequencer's peer ID
+// (direct stream, gossip publisher, or ThebeSync served by it), after the
+// body, signature, linkage and equivocation checks; the v3-only checks
+// (ConsensusHash, committee anchor, v3 certificate, fee-recipient
+// recomputation) do not apply to it. Blocks above UntilHeight follow the
+// normal v3base rules. Temporary: remove after every node runs v3base.
+type LegacyFollowSettings struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+	// MainSequencer is the mainnet sequencer's full multiaddr, including
+	// /p2p/<peer id>, e.g. /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...
+	MainSequencer string `mapstructure:"main_sequencer" yaml:"main_sequencer"`
+	// UntilHeight is the last legacy block (cutover height - 1). 0 = open-ended.
+	UntilHeight uint64 `mapstructure:"until_height" yaml:"until_height"`
+	// CatchUpInterval is how often the node checks the main sequencer's tip and
+	// fetches missed blocks over ThebeSync (main must set fastsync.serve_v4).
+	CatchUpInterval time.Duration `mapstructure:"catch_up_interval" yaml:"catch_up_interval"`
+}
+
 // StorageSettings selects how much history this node keeps locally.
 //
 // Profile "full" (default) keeps the whole canonical log. Profile "light"
@@ -451,6 +474,10 @@ type ConsensusSettings struct {
 	// carry the same value, set to a height the chain has not reached yet,
 	// because the reward split is read from the stored certificate. 0 = off.
 	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
+
+	// LegacyFollow makes this v3base node follow the mainnet sequencer that
+	// still runs the main branch during the migration (see LegacyFollowSettings).
+	LegacyFollow LegacyFollowSettings `mapstructure:"legacy_follow" yaml:"legacy_follow"`
 
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
 	// contract txs whose EXECUTION creates an account (internal CALL{value},

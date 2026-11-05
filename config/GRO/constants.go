@@ -72,6 +72,7 @@ const (
 
 	CheckpointFullVerifyThread = "thread:checkpoint:full:verify"
 	LightLogPrunerThread       = "thread:storage:light:prune"
+	LegacyFollowThread         = "thread:sync:legacy:follow"
 
 	StartupSyncThread = "thread:startup:sync"
 
