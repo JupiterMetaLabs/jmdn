@@ -83,10 +83,10 @@ func TestVotePeriodClock_StartsAtFirstProposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	*now = now.Add(time.Hour)
-	if err := checkVotePeriod(51, config.MaxPeriod); err == nil {
-		t.Fatal("first proposal at a new height jumped to the cap")
+	if err := checkVotePeriod(51, 1024); err == nil {
+		t.Fatal("first proposal at a new height jumped to period 1024")
 	}
-	if err := checkVotePeriod(50, config.MaxPeriod); err != nil {
+	if err := checkVotePeriod(50, 1024); err != nil {
 		t.Fatalf("height seen an hour ago: %v", err)
 	}
 }

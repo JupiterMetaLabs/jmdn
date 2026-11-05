@@ -160,3 +160,23 @@ func TestLockBlockResultRound_PeriodAheadOfTime(t *testing.T) {
 		t.Fatalf("honest period 0: %v", err)
 	}
 }
+
+// Every vote result reports the highest period recorded in either ledger.
+func TestHighestRecordedPeriod(t *testing.T) {
+	l := withFreshRoundLedger(t)
+	prevV := roundlock.Votes
+	roundlock.Votes = roundlock.NewLedger()
+	t.Cleanup(func() { roundlock.Votes = prevV })
+
+	if _, ok := highestRecordedPeriod(5); ok {
+		t.Fatal("reported a period with nothing recorded")
+	}
+	l.TryLockFresh(roundlock.Round{Height: 5, Period: 3}, "a")
+	if hp, ok := highestRecordedPeriod(5); !ok || hp != 3 {
+		t.Fatalf("signing ledger only: %d %v", hp, ok)
+	}
+	roundlock.Votes.TryLockFresh(roundlock.Round{Height: 5, Period: 9}, "b")
+	if hp, _ := highestRecordedPeriod(5); hp != 9 {
+		t.Fatalf("vote ledger higher: %d", hp)
+	}
+}

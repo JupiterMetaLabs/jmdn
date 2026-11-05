@@ -74,6 +74,25 @@ func lockBlockResultRound(height, period uint64, blockHash, consensusHash string
 	return fresh, nil
 }
 
+// highestRecordedPeriod is the highest period this node has recorded at height
+// in either ledger: its vote ledger (roundlock.Votes) or its result-signing
+// ledger. Every vote-result response reports it, so the proposer's period
+// counter can move above any period recorded here (ProposerPeriods), even one
+// a faulty proposer pushed into the vote ledger.
+func highestRecordedPeriod(height uint64) (uint64, bool) {
+	signed, okS := roundLedger.Highest(height)
+	voted, okV := roundlock.Votes.Highest(height)
+	switch {
+	case okS && okV:
+		return max(signed, voted), true
+	case okS:
+		return signed, true
+	case okV:
+		return voted, true
+	}
+	return 0, false
+}
+
 // unlockBlockResultRound reverses a lockBlockResultRound reservation that was
 // not followed by an actual signature - F-3 ("lock-then-fail stranding").
 //

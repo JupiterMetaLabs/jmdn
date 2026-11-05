@@ -29,14 +29,19 @@ const (
 )
 
 // MaxPeriod is the highest Period any block may carry. The proposer chooses a
-// height's Period (one more after each failed round) and every other node
-// takes it from the block, so this cap is what stops a buggy or compromised
-// proposer from stamping an absurd value. At roughly one
-// minute per failed round, 1024 is about 17 hours of continuous failure at a
-// single height. Enforced by the proposer (ProposerPeriods), the buddy signer,
-// the live receive path (linkageDecision) and ThebeSync
-// (CheckSyncedPeriodBinding); changing it is a fleet-wide consensus change.
-const MaxPeriod uint64 = 1024
+// height's Period (one more after each failed round, or above the highest
+// period buddies report) and every other node takes it from the block.
+// Enforced by the proposer (ProposerPeriods), the voter and buddy signer, the
+// live receive path (linkageDecision) and ThebeSync (CheckSyncedPeriodBinding);
+// changing it is a fleet-wide consensus change.
+//
+// It is set far above any period an honest height reaches so that it is never
+// a dead end: the ledgers refuse any period below the highest one recorded at
+// a height, and a proposer stuck at the cap could never get above a period
+// recorded there. What bounds how high a proposal's period can be in practice
+// is the time bound (roundlock.Pace, consensus.vote_period_*): at the default
+// one period per second, reaching this cap takes about 12 days at one height.
+const MaxPeriod uint64 = 1 << 20
 
 // MaxBlockMessageBytes is the single source of truth for the maximum size of a
 // propagated block message. BOTH transports MUST use it or they silently diverge:
