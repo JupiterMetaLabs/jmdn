@@ -146,6 +146,16 @@ func validateLegacyBody(ctx context.Context, b *config.ZKBlock) *blockRejection 
 	if len(b.Transactions) > 0 && (b.CoinbaseAddr == nil || b.ZKVMAddr == nil) {
 		return reject("missing_fee_addresses", "legacy block %d has transactions but no coinbase or zkVM address", b.BlockNumber)
 	}
+	// Main has no contract execution in block apply and cannot apply a
+	// transaction without a recipient; v3base would deploy it through the EVM.
+	// Refuse it so no contract state (and so no EVM-routed call) can appear
+	// inside the window.
+	for i := range b.Transactions {
+		if b.Transactions[i].To == nil {
+			return reject("legacy_contract_creation", "legacy block %d tx %s has no recipient (contract creation is not applied by main)",
+				b.BlockNumber, b.Transactions[i].Hash.Hex())
+		}
+	}
 	fillTypedTxChainID(b)
 	if rej := validateBlockBody(ctx, b); rej != nil {
 		return rej

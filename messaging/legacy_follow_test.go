@@ -150,6 +150,14 @@ func TestValidateLegacyBlock_Rejects(t *testing.T) {
 			t.Fatalf("got %v", rej)
 		}
 	})
+	t.Run("contract creation", func(t *testing.T) {
+		resetEquivocation()
+		tx := signedTx(t, key, 0)
+		tx.To = nil
+		if rej := validateLegacyBlock(ctx, mainBlock(t, 64, tx)); rej == nil || rej.reason != "legacy_contract_creation" {
+			t.Fatalf("got %v", rej)
+		}
+	})
 	t.Run("equivocation by block hash", func(t *testing.T) {
 		resetEquivocation()
 		if rej := validateLegacyBlock(ctx, mainBlock(t, 63, signedTx(t, key, 0))); rej != nil {
