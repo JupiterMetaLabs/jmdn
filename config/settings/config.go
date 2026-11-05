@@ -453,8 +453,8 @@ type ConsensusSettings struct {
 	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
 
 	// VotePeriodMinRoundSeconds and VotePeriodSlack bound how far a proposal's
-	// Period may run ahead of time at a height. This node votes ACCEPT for
-	// period p at height h only if
+	// Period may run ahead of time at a height. This node votes ACCEPT for, or
+	// signs the vote result of, period p at height h only if
 	//
 	//	p <= VotePeriodSlack + seconds since this node first saw a proposal at h
 	//	                       / VotePeriodMinRoundSeconds

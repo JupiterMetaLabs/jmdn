@@ -16,9 +16,9 @@ import (
 func fakeClock(t *testing.T, start time.Time) *time.Time {
 	t.Helper()
 	now := start
-	prev := votePeriods
-	votePeriods = newPeriodClock(func() time.Time { return now })
-	t.Cleanup(func() { votePeriods = prev })
+	prev := votePace
+	votePace = roundlock.NewPace(func() time.Time { return now })
+	t.Cleanup(func() { votePace = prev })
 	return &now
 }
 
@@ -63,14 +63,14 @@ func TestReserveAcceptVote_PeriodMayNotRunAheadOfTime(t *testing.T) {
 	if err := reserveAcceptVote(periodBlock(41, 0, "0xp0")); err != nil {
 		t.Fatalf("period 0: %v", err)
 	}
-	if err := reserveAcceptVote(periodBlock(41, defaultVotePeriodSlack, "0xp16")); err != nil {
+	if err := reserveAcceptVote(periodBlock(41, 16, "0xp16")); err != nil {
 		t.Fatalf("period at the slack: %v", err)
 	}
-	if err := reserveAcceptVote(periodBlock(41, defaultVotePeriodSlack+10, "0xp26")); err == nil {
+	if err := reserveAcceptVote(periodBlock(41, 16+10, "0xp26")); err == nil {
 		t.Fatal("period 10 past the slack accepted at once")
 	}
 	*now = now.Add(10 * time.Second)
-	if err := reserveAcceptVote(periodBlock(41, defaultVotePeriodSlack+10, "0xp26")); err != nil {
+	if err := reserveAcceptVote(periodBlock(41, 16+10, "0xp26")); err != nil {
 		t.Fatalf("period 10 past the slack after 10 s: %v", err)
 	}
 }
@@ -88,15 +88,5 @@ func TestVotePeriodClock_StartsAtFirstProposal(t *testing.T) {
 	}
 	if err := checkVotePeriod(50, config.MaxPeriod); err != nil {
 		t.Fatalf("height seen an hour ago: %v", err)
-	}
-}
-
-func TestVotePeriodClock_Prunes(t *testing.T) {
-	fakeClock(t, time.Unix(1_700_000_000, 0))
-	for h := uint64(1); h <= 3*periodClockKeep; h++ {
-		votePeriods.elapsed(h)
-	}
-	if n := len(votePeriods.first); n > periodClockKeep+1 {
-		t.Fatalf("first-seen map holds %d heights", n)
 	}
 }

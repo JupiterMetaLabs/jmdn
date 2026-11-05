@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/internal/roundlock"
 )
 
@@ -11,6 +12,10 @@ import (
 // package variable so tests can use a fresh ledger; production uses the
 // process-wide roundlock.Default.
 var roundLedger = roundlock.Default
+
+// roundPace is the period clock shared with the vote path; a variable so
+// tests can replace it.
+var roundPace = roundlock.DefaultPace
 
 // roundRefusal is returned by lockBlockResultRound when this node must not
 // sign. Highest is the highest period this node has signed for the height; it
@@ -53,6 +58,13 @@ func lockBlockResultRound(height, period uint64, blockHash, consensusHash string
 		// signature on it could only help certify a block nobody accepts.
 		return false, fmt.Errorf("round (height %d, period %d) refused: period exceeds the cap %d",
 			height, period, config.MaxPeriod)
+	}
+	// A period that runs ahead of time cannot be an honest retry; recording
+	// it would make this ledger refuse every honest retry at the height
+	// (roundlock.Pace, shared with the vote path).
+	minRound, slack := settings.VotePeriodPace()
+	if err := roundPace.Check(height, period, minRound, slack); err != nil {
+		return false, fmt.Errorf("round refused: %w", err)
 	}
 	ok, refusal, highest, fresh := roundLedger.TryLockFresh(
 		roundlock.Round{Height: height, Period: period}, blockIdentity(blockHash, consensusHash))

@@ -3,6 +3,7 @@ package MessagePassing
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"gossipnode/config"
 	"gossipnode/internal/roundlock"
@@ -126,7 +127,36 @@ func TestLockBlockResultRound_RefusesAboveThePeriodCap(t *testing.T) {
 	if _, ok := l.Highest(848); ok {
 		t.Fatal("a refused over-cap request must not be recorded")
 	}
+	// At the cap, once enough time has passed at the height for an honest
+	// proposer to have got there (roundlock.Pace).
+	now := time.Unix(1_700_000_000, 0)
+	prevP := roundPace
+	roundPace = roundlock.NewPace(func() time.Time { return now })
+	t.Cleanup(func() { roundPace = prevP })
+	roundPace.Elapsed(848)
+	now = now.Add(time.Duration(config.MaxPeriod) * time.Second)
 	if _, err := lockBlockResultRound(848, config.MaxPeriod, "0xaa", "0xc0"); err != nil {
 		t.Fatalf("a block at the cap must be signable: %v", err)
+	}
+}
+
+// A result-sign request at a period that runs ahead of time is refused before
+// the signing ledger records it, so the honest round at the height can still
+// be signed.
+func TestLockBlockResultRound_PeriodAheadOfTime(t *testing.T) {
+	l := roundlock.NewLedger()
+	prevL, prevP := roundLedger, roundPace
+	now := time.Unix(1_700_000_000, 0)
+	roundLedger, roundPace = l, roundlock.NewPace(func() time.Time { return now })
+	t.Cleanup(func() { roundLedger, roundPace = prevL, prevP })
+
+	if _, err := lockBlockResultRound(900, config.MaxPeriod, "0xbad", "0xc1"); err == nil {
+		t.Fatal("first request at a height jumped to the period cap")
+	}
+	if _, ok := l.Highest(900); ok {
+		t.Fatal("refused period was recorded")
+	}
+	if _, err := lockBlockResultRound(900, 0, "0xgood", "0xc0"); err != nil {
+		t.Fatalf("honest period 0: %v", err)
 	}
 }

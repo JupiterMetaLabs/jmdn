@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -429,4 +430,14 @@ func normalizeThebeConfig(cfg *NodeConfig) {
 	if cfg.Thebe.MaxLen <= 0 {
 		cfg.Thebe.MaxLen = 1000
 	}
+}
+
+// VotePeriodPace returns the consensus.vote_period_* bound as (minimum round
+// duration, slack), with the compiled defaults when no config is loaded.
+func VotePeriodPace() (time.Duration, uint64) {
+	c := DefaultConfig().Consensus
+	if IsLoaded() {
+		c = Get().Consensus
+	}
+	return time.Duration(c.VotePeriodMinRoundSeconds) * time.Second, c.VotePeriodSlack
 }
