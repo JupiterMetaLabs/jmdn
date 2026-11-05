@@ -254,6 +254,8 @@ func DefaultConfig() NodeConfig {
 			// Chain-anchored committee pool (W1). 0 = off. See config.go.
 			CommitteeAnchorActivationHeight: 0,
 			CompactCertificateFromHeight:    0,
+			VotePeriodMinRoundSeconds:       1,
+			VotePeriodSlack:                 16,
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,

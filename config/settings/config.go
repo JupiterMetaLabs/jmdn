@@ -452,6 +452,20 @@ type ConsensusSettings struct {
 	// because the reward split is read from the stored certificate. 0 = off.
 	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
 
+	// VotePeriodMinRoundSeconds and VotePeriodSlack bound how far a proposal's
+	// Period may run ahead of time at a height. This node votes ACCEPT for
+	// period p at height h only if
+	//
+	//	p <= VotePeriodSlack + seconds since this node first saw a proposal at h
+	//	                       / VotePeriodMinRoundSeconds
+	//
+	// A failed round takes at least this long, so honest retries stay inside
+	// the bound, while one proposal cannot jump straight to the period cap and
+	// leave every honest retry at the height refused. Local voting rule, not a
+	// fleet-agreed parameter. 0 for VotePeriodMinRoundSeconds turns the bound off.
+	VotePeriodMinRoundSeconds uint64 `mapstructure:"vote_period_min_round_seconds" yaml:"vote_period_min_round_seconds"`
+	VotePeriodSlack           uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
+
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
 	// contract txs whose EXECUTION creates an account (internal CALL{value},
 	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no

@@ -358,3 +358,39 @@ func (l *Ledger) CommittedTip() (uint64, bool) {
 	defer l.mu.Unlock()
 	return l.committed, l.haveCommitted
 }
+
+// ClearHeight drops every record this ledger holds for one height above the
+// committed tip, in memory and in the store, and reports whether there was
+// anything to drop.
+//
+// Operator recovery only: a height whose records refuse every retry (for
+// example, one that reached config.MaxPeriod) can never commit, because a
+// commit is the only thing that clears it. Clearing reopens rounds this node
+// already signed, so it must only be used on a height that has no
+// certificate anywhere in the network. A height at or below the committed
+// tip is refused.
+func (l *Ledger) ClearHeight(height uint64) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.haveCommitted && height <= l.committed {
+		return false, fmt.Errorf("roundlock: height %d is at or below the committed tip %d", height, l.committed)
+	}
+	if err := l.loadHeightLocked(height); err != nil {
+		return false, err
+	}
+	cleared := false
+	for r := range l.signed {
+		if r.Height == height {
+			delete(l.signed, r)
+			cleared = true
+		}
+	}
+	delete(l.highest, height)
+	if l.store != nil && (cleared || l.onDisk[height]) {
+		if err := l.store.Put(l.key(height), []byte{}); err != nil {
+			return cleared, fmt.Errorf("roundlock: clear height %d: %w", height, err)
+		}
+		delete(l.onDisk, height)
+	}
+	return cleared, nil
+}

@@ -200,6 +200,12 @@ consensus:
   # Fleet-agreed: same value on every node, a height not yet reached. Applies
   # only once committee_anchor_activation_height is set. 0 = off.
   compact_certificate_from_height: 0
+  # Vote ACCEPT for period p at a height only if
+  # p <= vote_period_slack + seconds since this node first saw a proposal at the
+  # height / vote_period_min_round_seconds. Stops one proposal jumping a height
+  # to the period cap. Local rule; 0 seconds turns it off.
+  vote_period_min_round_seconds: 1
+  vote_period_slack: 16
   # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
   # has one valid output per input, always. It requires
   # committee_anchor_activation_height and refuses to install without it.
