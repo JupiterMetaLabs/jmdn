@@ -9,10 +9,15 @@ package messaging
 //     a stuck relay peer must never stall the sequencer's own direct send.
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"gossipnode/config"
 
@@ -170,5 +175,56 @@ func TestForwardBlock_DoesNotShareWaitGroupWithSendBlockMessageDirect(t *testing
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("sendBlockMessageDirect never returned — likely still blocked behind forwardBlock's stuck peer")
+	}
+}
+
+// With block gossip off, a received block is forwarded on one goroutine
+// (forwardBlock serializes it) while another sets CommitteeCertificate on it
+// before apply (prepareReceivedBlock). blockMessageForForward gives the forward
+// its own copy, so the two never share what is written. Run with -race.
+func TestBlockMessageForForward_ApplyWritesDoNotReachTheForwardedCopy(t *testing.T) {
+	to := common.HexToAddress("0x00000000000000000000000000000000000000f0")
+	msg := config.BlockMessage{
+		Type: "zkblock",
+		Data: map[string]string{},
+		Block: &config.ZKBlock{
+			BlockNumber:  9,
+			BlockHash:    common.HexToHash("0xf0"),
+			Transactions: []config.Transaction{{Type: 2, To: &to}},
+		},
+	}
+	fwd := blockMessageForForward(msg)
+	if fwd.Block == msg.Block {
+		t.Fatal("the forwarded message shares the apply goroutine's block")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // forwardBlock
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if _, err := json.Marshal(fwd); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	go func() { // prepareReceivedBlock and apply
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			msg.Block.CommitteeCertificate = fmt.Sprint(i)
+			msg.Block.StateFingerprint = fmt.Sprint(i)
+		}
+	}()
+	wg.Wait()
+
+	if fwd.Block.CommitteeCertificate != "" || fwd.Block.StateFingerprint != "" {
+		t.Fatal("a write on the apply side reached the forwarded copy")
+	}
+	if fwd.Block.BlockHash != msg.Block.BlockHash || len(fwd.Block.Transactions) != 1 {
+		t.Fatal("the forwarded copy lost block content")
+	}
+	if got := blockMessageForForward(config.BlockMessage{}); got.Block != nil {
+		t.Fatal("a message with no block must stay without one")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -327,6 +328,52 @@ func HandleBlockStream(stream network.Stream) {
 	HandleReceivedBlockMessage(msg, remotePeer, true)
 }
 
+// blockMessageForForward returns a copy of msg whose block the forward
+// goroutine can serialize while the apply goroutine, which keeps msg, writes to
+// its own block (prepareReceivedBlock sets CommitteeCertificate; apply may set
+// other fields). The transactions slice is copied too; what the elements point
+// to is not written on either path.
+func blockMessageForForward(msg config.BlockMessage) config.BlockMessage {
+	if msg.Block == nil {
+		return msg
+	}
+	blk := *msg.Block
+	blk.Transactions = slices.Clone(msg.Block.Transactions)
+	msg.Block = &blk
+	return msg
+}
+
+// prepareReceivedBlock is everything that runs on a received, admitted block
+// between the gate and apply+store. It must not touch the network: it runs on
+// the goroutine that applies the block, so one peer that never answers would
+// stop this node applying blocks.
+//
+// It used to pull contract code from peers first (PrefetchMissingContracts),
+// with no read deadline. That pull never served execution: it read and wrote
+// contractDB's sharedKVStore, which is never set up, while IsContractTx reads
+// the code deploys commit to cas.KV() (main.go, evmexec.Register). So every
+// ordinary EIP-1559 transfer made the node ask every peer, and a peer that
+// accepted the stream and stayed silent froze block apply (F1).
+func prepareReceivedBlock(msg config.BlockMessage) {
+	// Persist the committee certificate that already passed
+	// verifyBlockCertificate (fail-closed 2f+1) so it survives past this
+	// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
+	// ThebeSync). Advisory field; does not affect BlockHash. Set BEFORE
+	// apply+store so the stored block carries it.
+	// Stored form: compact when the block is eligible (derived from
+	// the same vote list by the same rule as on the sequencer, so the
+	// bytes match), otherwise the vote list as received.
+	if cert := msg.Data["bls_results"]; cert != "" {
+		msg.Block.CommitteeCertificate = cert
+		var responses []BLS_Signer.BLSresponse
+		if json.Unmarshal([]byte(cert), &responses) == nil {
+			if stored := StoredCertificate(msg.Block, responses); stored != "" {
+				msg.Block.CommitteeCertificate = stored
+			}
+		}
+	}
+}
+
 // HandleReceivedBlockMessage is the single validate-and-apply path for a received
 // block message, shared by both transports: the direct block stream
 // (HandleBlockStream, forward=true) and the gossip mesh (forward=false, since the
@@ -456,8 +503,9 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 					ion.Uint64("block_number", msg.Block.BlockNumber),
 					ion.Int("hops", msg.Hops))
 
+				fwd := blockMessageForForward(msg)
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-					forwardBlock(globalHost, msg)
+					forwardBlock(globalHost, fwd)
 					return nil
 				})
 			} else {
@@ -470,32 +518,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// Rejected notices and certificate verification already ran in the
 			// fail-closed admitZKBlock gate BEFORE forward/process (v2 receive path).
 			// Storage resolves through the process-wide ThebeHandle (nil conn).
-
-			// Pull-on-demand: ensure contract bytecode/metadata is present BEFORE
-			// execution, so a missed ContractMessage gossip (e.g. sequencer went
-			// offline before propagation completed) cannot make a Type-2 call
-			// fall through to the regular transfer path.
-			if h := getHostInstance(); h != nil {
-				PrefetchMissingContracts(ctx, h, msg.Block.Transactions)
-			}
-
-			// Persist the committee certificate that already passed
-			// verifyBlockCertificate (fail-closed 2f+1) so it survives past this
-			// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
-			// ThebeSync). Advisory field; does not affect BlockHash. Set BEFORE
-			// apply+store so the stored block carries it.
-			// Stored form: compact when the block is eligible (derived from
-			// the same vote list by the same rule as on the sequencer, so the
-			// bytes match), otherwise the vote list as received.
-			if cert := msg.Data["bls_results"]; cert != "" {
-				msg.Block.CommitteeCertificate = cert
-				var responses []BLS_Signer.BLSresponse
-				if json.Unmarshal([]byte(cert), &responses) == nil {
-					if stored := StoredCertificate(msg.Block, responses); stored != "" {
-						msg.Block.CommitteeCertificate = stored
-					}
-				}
-			}
+			prepareReceivedBlock(msg)
 
 			// Apply + store atomically (D-858): store runs after the fingerprint
 			// check and before the block-processed marker; a store failure rolls back
