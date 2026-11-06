@@ -855,10 +855,10 @@ func RecomputeTxnsRoot(txs []config.Transaction) string {
 // travel as their own advisory fields, so this body binding stays a pure tx
 // check and cannot be broken by consensus-field changes.
 func checkBodyBinding(b *config.ZKBlock) *blockRejection {
-	// Transactions-only: BlockHash is the orchestrator identity and is never the
-	// consensus-fields hash (see Block/consensus_fields.go). Consensus fields are
-	// bound separately, not via BlockHash.
-	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
+	// BlockHash is the orchestrator identity and is never the consensus-fields
+	// hash (see Block/consensus_fields.go): the transactions, plus the coinbase,
+	// zkvm address and timestamp from consensus.header_binding_from_height on.
+	wantHash := Security.ExpectedBlockHash(b, RecomputeBlockHashFromTxs(b.Transactions))
 	if b.BlockHash != wantHash {
 		return reject("body_mismatch",
 			"block %s: recomputed hash %s does not match transactions (body substituted?)",
@@ -1172,6 +1172,14 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 		// We are missing everything from our next-needed height up to this block
 		// (fresh node: from block 1). Trigger authenticated catch-up.
 		requestCatchUp(localTip + 1)
+	}
+	if rej == nil && parent != nil {
+		// Header binding (consensus.header_binding_from_height): a timestamp
+		// not before the parent's. Addresses and clock drift were checked by
+		// the committee before certifying (Security.CheckHeaderPolicy).
+		if err := Security.CheckHeaderOrder(b, parent.Timestamp); err != nil {
+			return reject("header_fields", "%v", err)
+		}
 	}
 	return rej
 }

@@ -200,6 +200,23 @@ consensus:
   # Fleet-agreed: same value on every node, a height not yet reached. Applies
   # only once committee_anchor_activation_height is set. 0 = off.
   compact_certificate_from_height: 0
+  # From this height on, BlockHash covers the coinbase, zkvm address and
+  # timestamp, and ConsensusHash also covers them and fee recipients.
+  # Fleet-agreed: same value on every node and in the orchestrator
+  # (HEADER_BINDING_FROM_HEIGHT), a height not yet reached. 0 = off.
+  header_binding_from_height: 0
+  # The coinbase and zkvm addresses (the orchestrator's) every block must carry,
+  # by height. Required when header_binding_from_height is set: the first entry
+  # must start at or below it. Add an entry with a future from_height to change
+  # an address. Example:
+  #   header_addresses:
+  #     - from_height: 500000
+  #       coinbase: "0x..."
+  #       zkvm: "0x..."
+  header_addresses: []
+  # How far past this node's clock a block timestamp may be when it is proposed
+  # or voted on, from that height on. 0 = not checked.
+  block_timestamp_max_future_seconds: 15
   # Vote ACCEPT for, or sign the vote result of, period p at a height only if
   # p <= vote_period_slack + seconds since this node first saw a proposal at the
   # height / vote_period_min_round_seconds. Stops one proposal jumping a height

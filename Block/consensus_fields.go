@@ -207,7 +207,9 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 		block.VdfParamsDigest = messaging.VDFIdentityForEpoch(epoch)
 	}
 
-	// BlockHash is the orchestrator-submitted, transactions-only identity and is
+	// BlockHash is the orchestrator-submitted identity (transactions, plus the
+	// coinbase, zkvm address and timestamp from consensus.header_binding_from_height
+	// on, Security/header_binding.go) and is
 	// NEVER overwritten here. Consensus fields (Slot/Period/PrevAggCert/
 	// FeeRecipients/CommitteeSnapshotHash/VdfProof) travel as their own advisory
 	// fields on the block, like AccountNonces — they do not mutate BlockHash.

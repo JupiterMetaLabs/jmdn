@@ -668,13 +668,27 @@ func processZKBlock(c *gin.Context) {
 		}
 	}()
 
+	if err := checkProposalHeader(&block); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "header_binding_failed"))
+		logger().Warn(spanCtx, "Refusing proposal: header binding check failed",
+			ion.String("error", err.Error()),
+			ion.Int64("block_number", blockNumberAttr),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "reason": "header_binding"})
+		return
+	}
+
 	// Account-nonce enrichment (EnrichBlockAccountNonces) now runs AFTER
 	// attachAVCConsensusFields below, not here: attach populates block.FeeRecipients
 	// (buddy reward-split recipients), and enrichment must see them so a never-funded
 	// reward address gets a block-carried ART identity in the SAME deterministic
 	// ordinal pass as tx senders/receivers — otherwise the reward credit at apply
-	// fails ("account must exist before transfer"). Order is hash-safe: ConsensusHash
-	// folds neither AccountNonces nor FeeRecipients. See the enrichment call below.
+	// fails ("account must exist before transfer"). ConsensusHash never folds
+	// AccountNonces, but from consensus.header_binding_from_height on it folds
+	// FeeRecipients (Security/consensus_fields_hash.go): FeeRecipients must not
+	// change after attachAVCConsensusFields computes the hash. See the enrichment
+	// call below.
 
 	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
 	// attachment point — set Slot/Period from jmdn's own live tracking and

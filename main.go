@@ -970,6 +970,12 @@ func main() {
 	}
 	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
 	Security.SetAllowUnprotectedTxs(cfg.Security.AllowUnprotectedTxs)
+	headerBinding, hbErr := headerBindingFromSettings(cfg.Consensus)
+	if hbErr != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", hbErr) //nolint:forbidigo // CLI output: fatal boot error printed before exit; the logger is not up yet.
+		os.Exit(1)
+	}
+	Security.SetHeaderBinding(headerBinding)
 	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 

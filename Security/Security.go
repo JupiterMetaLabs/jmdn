@@ -211,17 +211,18 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	)
 	txValidationSpan.End()
 
-	// 2. Block-hash binding — transactions-only, matching the orchestrator's
-	// submitted BlockHash (Keccak256 over the concatenation of each tx hash).
-	// BlockHash is NEVER the consensus-fields hash: consensus fields travel as
-	// their own advisory block fields (see Block/consensus_fields.go), so this
-	// stays a pure tx binding and cannot be broken by M2b/consensus changes.
+	// 2. Block-hash binding, matching the orchestrator's submitted BlockHash:
+	// Keccak256 over the concatenation of each tx hash, and from
+	// consensus.header_binding_from_height on that hash plus the coinbase,
+	// zkvm address and timestamp (ExpectedBlockHash, header_binding.go).
+	// BlockHash is never the consensus-fields hash: consensus fields are bound
+	// by ConsensusHash (see Block/consensus_fields.go).
 	_, hashCheckSpan := tracer.Start(traceCtx, "Security.CheckZKBlockValidation.validateBlockHash")
 	transactionHashes := make([][]byte, len(zkBlock.Transactions))
 	for i, tx := range zkBlock.Transactions {
 		transactionHashes[i] = tx.Hash.Bytes()
 	}
-	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
+	transactionHashesHash := ExpectedBlockHash(zkBlock, crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{})))
 	hashCheckSpan.SetAttributes(
 		attribute.String("computed_hash", transactionHashesHash.Hex()),
 		attribute.String("provided_hash", zkBlock.BlockHash.Hex()),
@@ -962,9 +963,10 @@ func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 // cannot claim a BlockHash that does not correspond to what it actually
 // carries.
 //
-// ALWAYS transaction CONTENTS only (Keccak256 over each transaction's content
-// hash), independent of whether the per-transaction tx.Hash fields were
-// pre-verified.
+// Transactions are bound by CONTENTS (Keccak256 over each transaction's
+// content hash), independent of whether the per-transaction tx.Hash fields
+// were pre-verified. From consensus.header_binding_from_height on, the
+// coinbase, zkvm address and timestamp are bound too (ExpectedBlockHash).
 //
 // BlockHash is the orchestrator's transactions-only identity. The consensus
 // fields are bound by a SEPARATE field, ConsensusHash, which the v4 vote signs
@@ -975,12 +977,13 @@ func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")
 	}
-	// Transactions-only. BlockHash is the orchestrator identity and is never the
-	// consensus-fields hash — consensus fields are bound in their own advisory
+	// BlockHash is the orchestrator identity (transactions, plus coinbase, zkvm
+	// address and timestamp from consensus.header_binding_from_height on) and is
+	// never the consensus-fields hash — consensus fields are bound in their own advisory
 	// fields, not by mutating BlockHash (see Block/consensus_fields.go). M2b's
 	// six-field binding, if activated, must live in a SEPARATE ConsensusHash the
 	// vote domain signs, not here.
-	want := RecomputeBlockHashFromContents(block.Transactions)
+	want := ExpectedBlockHash(block, RecomputeBlockHashFromContents(block.Transactions))
 	if block.BlockHash != want {
 		return false, fmt.Errorf("block hash mismatch: recomputed %s, block claims %s",
 			want.Hex(), block.BlockHash.Hex())
