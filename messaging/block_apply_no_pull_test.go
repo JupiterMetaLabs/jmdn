@@ -4,8 +4,8 @@ package messaging
 // every peer for each Type-2 recipient (any EIP-1559 transaction, including a
 // plain transfer), and the read had no deadline. A connected peer that accepted
 // the pull stream and never answered froze block apply. The pull never served
-// execution (it wrote sharedKVStore; IsContractTx reads cas.KV()), so it is no
-// longer on the apply path.
+// execution (it wrote sharedKVStore; IsContractTx reads cas.KV()), so the pull
+// client is gone and neither the v3 nor the legacy-follow apply path pulls.
 
 import (
 	"context"
@@ -14,10 +14,13 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 
 	"gossipnode/config"
+	"gossipnode/config/GRO"
+	GROHelper "gossipnode/messaging/common"
 )
 
 // silentPullPeer connects a peer that accepts contract-pull streams, counts
@@ -76,34 +79,38 @@ func TestPrepareReceivedBlock_OpensNoContractPull(t *testing.T) {
 	}
 }
 
-// The pull client itself, if anything calls it again, gives a silent peer at
-// most pullStreamTimeout instead of forever.
-func TestPullContractIfMissing_SilentPeerIsBounded(t *testing.T) {
-	prev := pullStreamTimeout
-	pullStreamTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { pullStreamTimeout = prev })
-
+// The legacy-follow apply path (#276) pulled the same way before applying a
+// legacy block from the main sequencer. It must not touch the network either.
+func TestHandleLegacyBlockMessage_OpensNoContractPull(t *testing.T) {
+	resetEquivocation()
+	t.Cleanup(resetEquivocation)
+	if BlockPropagationLocalGRO == nil { // started at boot on a node
+		g, err := GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		BlockPropagationLocalGRO = g
+	}
+	main := testPeerID(t)
+	withLegacyFollow(t, true, main, 0)
 	victim := newLoopbackHost(t)
+	prevHost := getHostInstance()
+	SetHostInstance(victim)
+	t.Cleanup(func() { SetHostInstance(prevHost) })
 	opened, _ := silentPullPeer(t, victim)
 
-	done := make(chan bool, 1)
-	start := time.Now()
-	go func() {
-		done <- PullContractIfMissing(context.Background(), victim, common.HexToAddress("0x00000000000000000000000000000000000000b1"))
-	}()
-	select {
-	case found := <-done:
-		if found {
-			t.Fatal("a silent peer cannot have supplied the contract")
-		}
-		if took := time.Since(start); took > 2*time.Second {
-			t.Fatalf("pull took %v with a %v per-peer deadline", took, pullStreamTimeout)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("PullContractIfMissing is still waiting on a silent peer")
+	key, _ := crypto.GenerateKey()
+	b := mainBlock(t, 60, signedTx(t, key, 0)) // an ordinary EIP-1559 transfer
+	if !IsLegacyBlock(b) {
+		t.Fatal("test premise: the block is not handled by the legacy rules")
 	}
-	if atomic.LoadInt32(opened) == 0 {
-		t.Fatal("test premise: the silent peer was never asked")
+	HandleReceivedBlockMessage(config.BlockMessage{Type: "zkblock", Data: map[string]string{}, Block: b}, main.String(), true)
+	if !isMessageProcessed(legacyBlockDedupID(b)) {
+		t.Fatal("test premise: the legacy gate did not admit the block, so its apply goroutine never ran")
+	}
+	time.Sleep(500 * time.Millisecond) // let the apply goroutine reach the network if it would
+	if n := atomic.LoadInt32(opened); n != 0 {
+		t.Fatalf("the legacy apply path opened %d contract-pull stream(s); it must not touch the network", n)
 	}
 }
 

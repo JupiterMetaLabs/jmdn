@@ -236,10 +236,10 @@ func handleLegacyBlockMessage(msg config.BlockMessage, remotePeer string) {
 	}
 	markMessageProcessed(id)
 
+	// No contract pull before apply: no contract state can exist in the legacy
+	// window (validateLegacyBody), and a peer that never answers must not hold
+	// up a block (see prepareReceivedBlock).
 	BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
-		if h := getHostInstance(); h != nil {
-			PrefetchMissingContracts(ctx, h, b.Transactions)
-		}
 		if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), b, nil, func() error {
 			return DB_OPs.StoreZKBlock(nil, b)
 		}); err != nil {
