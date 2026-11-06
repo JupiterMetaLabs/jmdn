@@ -81,6 +81,13 @@ func (s *SlotStore) Current() uint64 {
 	return s.slot
 }
 
+// CommittedTip returns the highest committed height and whether any block has
+// been committed yet (before that, 0 is not a real height). Wired into
+// Structs.SetCommittedTipFn for the vote-ingest height window.
+func CommittedTip() (uint64, bool) {
+	return DefaultSlotStore.Current(), DefaultSlotStore.hasCommitted()
+}
+
 // AdvanceOnCommit records that the block at height is committed: the store
 // moves up to height's slot (== height). Returns (newSlot, true) when the
 // store moved, (currentSlot, false) when height is not above what is already

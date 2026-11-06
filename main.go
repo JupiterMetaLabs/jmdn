@@ -1567,6 +1567,9 @@ func main() {
 	// the committee wiring above, byte-identical to the previous behaviour.
 	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
 	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
+	// Vote-ingest height window: a received vote may be at most
+	// Structs.MaxVoteHeightAhead past this node's committed tip.
+	Structs.SetCommittedTipFn(messaging.CommittedTip)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
