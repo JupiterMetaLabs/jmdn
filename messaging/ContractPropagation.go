@@ -359,12 +359,16 @@ func respondPullError(stream network.Stream, addr common.Address, msg string) {
 	_, _ = stream.Write(b)
 }
 
+// pullStreamTimeout bounds one peer's write and answer on a contract pull.
+var pullStreamTimeout = 5 * time.Second // a variable so tests can shorten it
+
 // PullContractIfMissing fetches contract metadata from a peer and stores it
 // locally.  Returns true if the contract is already present (HasCode) or was
 // successfully fetched.  Returns false when no peer has the contract.
 //
 // The call is synchronous — callers should wrap it in a goroutine if they
-// don't want to block.
+// don't want to block. Each peer gets at most pullStreamTimeout to answer, so a
+// peer that accepts the stream and stays silent costs that, not forever.
 func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address) bool {
 	// Fast path — already have it.
 	if SmartContract.HasCode(addr) {
@@ -406,6 +410,9 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 		var resp ContractPullResponse
 		func() {
 			defer stream.Close()
+			// The open timeout above does not cover the write and read, and a
+			// libp2p stream read does not watch ctx.
+			_ = stream.SetDeadline(time.Now().Add(pullStreamTimeout))
 			if _, err := stream.Write(reqBytes); err != nil {
 				contractLogger().Debug(ctx, "ContractPull: write failed",
 					ion.Err(err), ion.String("peer", p.String()))
@@ -473,9 +480,11 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 
 // PrefetchMissingContracts scans block transactions and pulls metadata for
 // any contract-call addresses whose bytecode isn't in the local KV store.
-// Called by HandleBlockStream before ProcessBlockTransactions so that missed
-// gossip doesn't cause contract executions to fall through to the regular
-// transfer path.
+//
+// Not called on the block-apply path (see prepareReceivedBlock): it asks every
+// peer once per Type-2 recipient, Type 2 is any EIP-1559 transaction including
+// plain transfers, and what it stores (sharedKVStore) is not what execution
+// reads (cas.KV()). Do not call it where a slow peer could hold up a block.
 func PrefetchMissingContracts(ctx context.Context, h host.Host, txs []config.Transaction) {
 	for _, tx := range txs {
 		if tx.To == nil || tx.Type != 2 {
