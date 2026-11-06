@@ -254,6 +254,7 @@ func DefaultConfig() NodeConfig {
 			// Chain-anchored committee pool (W1). 0 = off. See config.go.
 			CommitteeAnchorActivationHeight: 0,
 			CompactCertificateFromHeight:    0,
+			LegacyFollow:                    LegacyFollowSettings{CatchUpInterval: 30 * time.Second},
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,
