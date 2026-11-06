@@ -184,6 +184,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fastsync.enable_catchup", d.FastSync.EnableCatchup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.catch_up_from_block", d.FastSync.CatchUpFromBlock)
+	v.SetDefault("fastsync.serve_v4", d.FastSync.ServeV4)
 	v.SetDefault("fastsync.sync_check_interval", d.FastSync.SyncCheckInterval)
 
 	// Security

@@ -264,6 +264,12 @@ type FastSyncSettings struct {
 	// localTip may be ahead of gaps that would be silently skipped.
 	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
 
+	// ServeV4 registers read-only ThebeSync (/fastsync/v4/head and
+	// /fastsync/v4/getblocks) handlers so v3base nodes following this network
+	// during the migration can fetch blocks they missed. Serve-only; turn it on
+	// on the sequencer. Default false. Remove after the migration to v3base.
+	ServeV4 bool `mapstructure:"serve_v4" yaml:"serve_v4"`
+
 	// SyncCheckInterval is how often the SyncMonitor reports this node's Merkle
 	// root to the seednode and checks whether reconciliation is needed.
 	// Default: 10 minutes. Minimum enforced by the monitor: 1 minute.
