@@ -257,6 +257,7 @@ func DefaultConfig() NodeConfig {
 			VotePeriodMinRoundSeconds:       1,
 			PeriodCapRaiseFromHeight:        0,
 			VotePeriodSlack:                 16,
+			LegacyFollow:                    LegacyFollowSettings{CatchUpInterval: 30 * time.Second},
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,

@@ -211,6 +211,15 @@ consensus:
   # proposer. Fleet-agreed: same value on every node, a height not yet
   # reached. 0 = off (cap stays 1024).
   period_cap_raise_from_height: 0
+  # Migration only: follow the mainnet sequencer that still runs the main
+  # branch. Legacy blocks (<= until_height; all while 0) are accepted only from
+  # main_sequencer (full multiaddr with /p2p/<id>); missed blocks are fetched
+  # over /fastsync/v4 (main needs fastsync.serve_v4). Remove after cutover.
+  legacy_follow:
+    enabled: false
+    main_sequencer: ""
+    until_height: 0
+    catch_up_interval: 30s
   # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
   # has one valid output per input, always. It requires
   # committee_anchor_activation_height and refuses to install without it.

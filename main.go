@@ -1685,6 +1685,29 @@ func main() {
 	// process-wide ThebeHandle (DB_OPs.SetGlobalHandle above); helpers
 	// take a nil conn and resolve getHandle(nil) internally.
 
+	// Legacy follow mode (migration from main): keep this node applying the
+	// mainnet sequencer's blocks until the cutover. See messaging/legacy_follow.go.
+	if cfg.Consensus.LegacyFollow.Enabled {
+		follower, lerr := thebesync.NewLegacyFollower(n.Host, cfg.Consensus.LegacyFollow)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: %v\n", lerr) //nolint:forbidigo // CLI output: fatal boot error printed before exit; the logger may not be up yet.
+			os.Exit(1)
+		}
+		messaging.SetLegacyCatchUpNudge(follower.Nudge)
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.LegacyFollowThread, func(ctx context.Context) error {
+			follower.Run(ctx)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: could not start: %v\n", err) //nolint:forbidigo // CLI output: fatal boot error printed before exit.
+			os.Exit(1)
+		}
+		if logger := mainLogger(); logger != nil {
+			logger.Info(context.Background(), "[legacy-follow] following the main-branch sequencer",
+				ion.String("main_sequencer", cfg.Consensus.LegacyFollow.MainSequencer),
+				ion.Uint64("until_height", cfg.Consensus.LegacyFollow.UntilHeight))
+		}
+	}
+
 	// Sync engine: ThebeSync (FastSync v4). FastsyncV2 is retired — serving is via
 	// the thebesync handlers registered in node.go, catch-up via thebesync.CatchUp.
 	if !cfg.FastSync.Enabled {
