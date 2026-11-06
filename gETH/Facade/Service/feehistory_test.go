@@ -23,13 +23,14 @@ func TestFeeHistory_CapsBlockCount(t *testing.T) {
 		fees := got["baseFeePerGas"].([]string)
 		ratios := got["gasUsedRatio"].([]float64)
 		rewards := got["reward"].([][]string)
-		// The newest block plus maxFeeHistoryBlocks before it.
-		if want := maxFeeHistoryBlocks + 1; len(fees) != want || len(ratios) != want || len(rewards) != want {
-			t.Fatalf("blockCount %d: got %d fees, %d ratios, %d rewards; want %d each",
-				n, len(fees), len(ratios), len(rewards), want)
+		// The newest maxFeeHistoryBlocks blocks; one more base fee, for the
+		// next block.
+		if len(ratios) != maxFeeHistoryBlocks || len(rewards) != maxFeeHistoryBlocks || len(fees) != maxFeeHistoryBlocks+1 {
+			t.Fatalf("blockCount %d: got %d fees, %d ratios, %d rewards; want %d, %d, %d",
+				n, len(fees), len(ratios), len(rewards), maxFeeHistoryBlocks+1, maxFeeHistoryBlocks, maxFeeHistoryBlocks)
 		}
-		if got["oldestBlock"] != "0x989280" { // 10,000,000 - 1024
-			t.Fatalf("blockCount %d: oldestBlock = %v, want 0x989280", n, got["oldestBlock"])
+		if got["oldestBlock"] != "0x989281" { // 10,000,000 - 1024 + 1
+			t.Fatalf("blockCount %d: oldestBlock = %v, want 0x989281", n, got["oldestBlock"])
 		}
 	}
 }
@@ -54,8 +55,9 @@ func TestFeeHistory_RejectsInvalidNewest(t *testing.T) {
 	}
 }
 
-// A request within the cap is answered exactly as before.
-func TestFeeHistory_SmallRequestUnchanged(t *testing.T) {
+// A request within the cap has geth's layout: blocks 97..100 for blockCount 4
+// at newest 100, one ratio and one reward row per block, one more base fee.
+func TestFeeHistory_GethLayout(t *testing.T) {
 	s := &ServiceImpl{}
 	got, err := s.FeeHistory(context.Background(), 4, big.NewInt(100), nil)
 	if err != nil {
@@ -64,11 +66,41 @@ func TestFeeHistory_SmallRequestUnchanged(t *testing.T) {
 	if fees := got["baseFeePerGas"].([]string); len(fees) != 5 {
 		t.Fatalf("got %d fees, want 5", len(fees))
 	}
-	if got["oldestBlock"] != "0x60" {
-		t.Fatalf("oldestBlock = %v, want 0x60", got["oldestBlock"])
+	if ratios := got["gasUsedRatio"].([]float64); len(ratios) != 4 {
+		t.Fatalf("got %d ratios, want 4", len(ratios))
+	}
+	if got["oldestBlock"] != "0x61" {
+		t.Fatalf("oldestBlock = %v, want 0x61", got["oldestBlock"])
 	}
 	if _, ok := got["reward"]; ok {
 		t.Fatal("reward present without percentiles")
+	}
+
+	got, err = s.FeeHistory(context.Background(), 4, big.NewInt(100), []float64{50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewards := got["reward"].([][]string); len(rewards) != 4 {
+		t.Fatalf("got %d reward rows, want 4", len(rewards))
+	}
+}
+
+// Near genesis the range starts at block 0; blockCount 0 is an empty result.
+func TestFeeHistory_NearGenesisAndZeroCount(t *testing.T) {
+	s := &ServiceImpl{}
+	got, err := s.FeeHistory(context.Background(), 10, big.NewInt(2), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["oldestBlock"] != "0x0" || len(got["gasUsedRatio"].([]float64)) != 3 || len(got["baseFeePerGas"].([]string)) != 4 {
+		t.Fatalf("near genesis: %v", got)
+	}
+	got, err = s.FeeHistory(context.Background(), 0, big.NewInt(100), []float64{50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["oldestBlock"] != "0x0" || len(got["gasUsedRatio"].([]float64)) != 0 || len(got["baseFeePerGas"].([]string)) != 0 {
+		t.Fatalf("blockCount 0: %v", got)
 	}
 }
 

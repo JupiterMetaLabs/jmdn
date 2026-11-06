@@ -991,22 +991,34 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		return nil, fmt.Errorf("invalid newest block %s", newestNum)
 	}
 
-	// Calculate oldest block number
-	// We need blockCount + 1 blocks (newest block + blockCount blocks before it)
-	oldestNum := new(big.Int).Sub(newestNum, big.NewInt(int64(blockCount)))
-	if oldestNum.Sign() < 0 {
-		oldestNum = big.NewInt(0)
+	// Same layout as geth: the range is the blockCount blocks ending at newest
+	// (fewer near genesis), oldestBlock is its first block, gasUsedRatio and
+	// reward have one entry per block, and baseFeePerGas has one more, for the
+	// block after newest. A blockCount of 0 is an empty result.
+	if blockCount == 0 {
+		return map[string]any{
+			"oldestBlock":   "0x0",
+			"baseFeePerGas": []string{},
+			"gasUsedRatio":  []float64{},
+		}, nil
 	}
+	newestU := newestNum.Uint64()
+	oldest := uint64(0)
+	if newestU >= blockCount {
+		oldest = newestU - blockCount + 1
+	}
+	count := newestU - oldest + 1
 
 	// JMDN does not implement variable base fees — return the same 35 gwei constant
 	// used by eth_getBlockByNumber. No DB reads needed.
 	baseFeeConstant := "0x" + big.NewInt(config.BaseFeeWei).Text(16)
 
-	count := newestNum.Uint64() - oldestNum.Uint64() + 1
-	baseFeePerGas := make([]string, count)
-	gasUsedRatio := make([]float64, count)
+	baseFeePerGas := make([]string, count+1)
 	for i := range baseFeePerGas {
 		baseFeePerGas[i] = baseFeeConstant
+	}
+	gasUsedRatio := make([]float64, count)
+	for i := range gasUsedRatio {
 		gasUsedRatio[i] = 0.5 // neutral placeholder
 	}
 
@@ -1024,7 +1036,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	// Build result map
 	result := map[string]any{
-		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		"oldestBlock":   fmt.Sprintf("0x%x", oldest),
 		"baseFeePerGas": baseFeePerGas,
 		"gasUsedRatio":  gasUsedRatio,
 	}
