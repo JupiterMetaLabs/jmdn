@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/internal/roundlock"
 )
 
@@ -11,6 +12,10 @@ import (
 // package variable so tests can use a fresh ledger; production uses the
 // process-wide roundlock.Default.
 var roundLedger = roundlock.Default
+
+// roundPace is the period clock shared with the vote path; a variable so
+// tests can replace it.
+var roundPace = roundlock.DefaultPace
 
 // roundRefusal is returned by lockBlockResultRound when this node must not
 // sign. Highest is the highest period this node has signed for the height; it
@@ -40,7 +45,7 @@ func blockIdentity(blockHash, consensusHash string) string {
 // returns a *roundRefusal - and the caller must not sign - when this node
 // already signed a different block for the round (R1), a block at a higher
 // period for the height (R2), or the height is already committed. It returns
-// a plain error when period exceeds config.MaxPeriod. Re-signing the same
+// a plain error when period exceeds config.MaxPeriodAt. Re-signing the same
 // block (a retried request) is allowed.
 //
 // It returns fresh=true only when THIS call created the reservation. A caller
@@ -48,11 +53,18 @@ func blockIdentity(blockHash, consensusHash string) string {
 // when fresh is true - on a re-entry an earlier attempt owns the reservation
 // and may already have shipped a signature (F-9). See roundlock.TryLockFresh.
 func lockBlockResultRound(height, period uint64, blockHash, consensusHash string) (fresh bool, err error) {
-	if period > config.MaxPeriod {
-		// Every verifier rejects such a block (config.MaxPeriod), so a
+	if limit := config.MaxPeriodAt(height); period > limit {
+		// Every verifier rejects such a block (config.MaxPeriodAt), so a
 		// signature on it could only help certify a block nobody accepts.
 		return false, fmt.Errorf("round (height %d, period %d) refused: period exceeds the cap %d",
-			height, period, config.MaxPeriod)
+			height, period, limit)
+	}
+	// A period that runs ahead of time cannot be an honest retry; recording
+	// it would make this ledger refuse every honest retry at the height
+	// (roundlock.Pace, shared with the vote path).
+	minRound, slack := settings.VotePeriodPace()
+	if err := roundPace.Check(height, period, minRound, slack); err != nil {
+		return false, fmt.Errorf("round refused: %w", err)
 	}
 	ok, refusal, highest, fresh := roundLedger.TryLockFresh(
 		roundlock.Round{Height: height, Period: period}, blockIdentity(blockHash, consensusHash))
@@ -60,6 +72,25 @@ func lockBlockResultRound(height, period uint64, blockHash, consensusHash string
 		return false, &roundRefusal{Height: height, Period: period, Reason: refusal, Highest: highest}
 	}
 	return fresh, nil
+}
+
+// highestRecordedPeriod is the highest period this node has recorded at height
+// in either ledger: its vote ledger (roundlock.Votes) or its result-signing
+// ledger. Every vote-result response reports it, so the proposer's period
+// counter can move above any period recorded here (ProposerPeriods), even one
+// a faulty proposer pushed into the vote ledger.
+func highestRecordedPeriod(height uint64) (uint64, bool) {
+	signed, okS := roundLedger.Highest(height)
+	voted, okV := roundlock.Votes.Highest(height)
+	switch {
+	case okS && okV:
+		return max(signed, voted), true
+	case okS:
+		return signed, true
+	case okV:
+		return voted, true
+	}
+	return 0, false
 }
 
 // unlockBlockResultRound reverses a lockBlockResultRound reservation that was

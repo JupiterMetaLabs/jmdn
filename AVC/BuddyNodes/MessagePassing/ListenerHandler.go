@@ -1904,6 +1904,12 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	if validatorCertificate != nil {
 		resultData["validator_certificate"] = validatorCertificate
 	}
+	// The highest period this node has recorded at the height, in either
+	// ledger, so the proposer can resume above it (ProposerPeriods). Refusals
+	// carry it already; this adds it to every result.
+	if hp, ok := highestRecordedPeriod(targetBlockNumber); ok {
+		resultData["highest_period"] = hp
+	}
 
 	resultJSON, err := json.Marshal(resultData)
 	if err != nil {

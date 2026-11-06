@@ -936,8 +936,35 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 	return resp.Code, nil
 }
 
+// Limits on one eth_feeHistory request, the same values geth uses. The reply
+// holds one entry per block (times one per percentile), and blockCount comes
+// straight from a public caller: without a cap, one request for millions of
+// blocks makes the node allocate until it runs out of memory.
+const (
+	maxFeeHistoryBlocks      = 1024
+	maxFeeHistoryPercentiles = 100
+)
+
 // FeeHistory implements the Service interface - retrieves fee history for the last N blocks
 func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error) {
+	// A larger blockCount is served as the newest maxFeeHistoryBlocks blocks,
+	// as geth does, rather than refused: wallets ask for big ranges and expect
+	// a shorter answer, not an error.
+	if blockCount > maxFeeHistoryBlocks {
+		blockCount = maxFeeHistoryBlocks
+	}
+	if len(perc) > maxFeeHistoryPercentiles {
+		return nil, fmt.Errorf("too many reward percentiles: %d, at most %d", len(perc), maxFeeHistoryPercentiles)
+	}
+	for i, p := range perc {
+		if p < 0 || p > 100 {
+			return nil, fmt.Errorf("reward percentile %d (%v) is outside 0 to 100", i, p)
+		}
+		if i > 0 && p < perc[i-1] {
+			return nil, fmt.Errorf("reward percentiles must be in ascending order: %v after %v", p, perc[i-1])
+		}
+	}
+
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -957,23 +984,41 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		}
 		newestNum = latest
 	}
-
-	// Calculate oldest block number
-	// We need blockCount + 1 blocks (newest block + blockCount blocks before it)
-	oldestNum := new(big.Int).Sub(newestNum, big.NewInt(int64(blockCount)))
-	if oldestNum.Sign() < 0 {
-		oldestNum = big.NewInt(0)
+	// The reply size is newest - oldest + 1, and Uint64 of a negative newest
+	// is its magnitude: -2^30 asked for a billion entries whatever blockCount
+	// was. parseBlockTag refuses such a tag; this covers every other caller.
+	if newestNum.Sign() < 0 || !newestNum.IsUint64() {
+		return nil, fmt.Errorf("invalid newest block %s", newestNum)
 	}
+
+	// Same layout as geth: the range is the blockCount blocks ending at newest
+	// (fewer near genesis), oldestBlock is its first block, gasUsedRatio and
+	// reward have one entry per block, and baseFeePerGas has one more, for the
+	// block after newest. A blockCount of 0 is an empty result.
+	if blockCount == 0 {
+		return map[string]any{
+			"oldestBlock":   "0x0",
+			"baseFeePerGas": []string{},
+			"gasUsedRatio":  []float64{},
+		}, nil
+	}
+	newestU := newestNum.Uint64()
+	oldest := uint64(0)
+	if newestU >= blockCount {
+		oldest = newestU - blockCount + 1
+	}
+	count := newestU - oldest + 1
 
 	// JMDN does not implement variable base fees — return the same 35 gwei constant
 	// used by eth_getBlockByNumber. No DB reads needed.
 	baseFeeConstant := "0x" + big.NewInt(config.BaseFeeWei).Text(16)
 
-	count := newestNum.Uint64() - oldestNum.Uint64() + 1
-	baseFeePerGas := make([]string, count)
-	gasUsedRatio := make([]float64, count)
+	baseFeePerGas := make([]string, count+1)
 	for i := range baseFeePerGas {
 		baseFeePerGas[i] = baseFeeConstant
+	}
+	gasUsedRatio := make([]float64, count)
+	for i := range gasUsedRatio {
 		gasUsedRatio[i] = 0.5 // neutral placeholder
 	}
 
@@ -991,7 +1036,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	// Build result map
 	result := map[string]any{
-		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		"oldestBlock":   fmt.Sprintf("0x%x", oldest),
 		"baseFeePerGas": baseFeePerGas,
 		"gasUsedRatio":  gasUsedRatio,
 	}

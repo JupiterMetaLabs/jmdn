@@ -193,6 +193,26 @@ consensus:
   # How far past this node's clock a block timestamp may be when it is proposed
   # or voted on, from that height on. 0 = not checked.
   block_timestamp_max_future_seconds: 15
+  # Vote ACCEPT for, or sign the vote result of, period p at a height only if
+  # p <= vote_period_slack + seconds since this node first saw a proposal at the
+  # height / vote_period_min_round_seconds. Stops one proposal jumping a height
+  # to the period cap. Local rule; 0 seconds turns it off.
+  vote_period_min_round_seconds: 1
+  vote_period_slack: 16
+  # From this height on a block's period may go up to 2^20 instead of 1024, so
+  # a high period recorded at a height is never a dead end for the next
+  # proposer. Fleet-agreed: same value on every node, a height not yet
+  # reached. 0 = off (cap stays 1024).
+  period_cap_raise_from_height: 0
+  # Migration only: follow the mainnet sequencer that still runs the main
+  # branch. Legacy blocks (<= until_height; all while 0) are accepted only from
+  # main_sequencer (full multiaddr with /p2p/<id>); missed blocks are fetched
+  # over /fastsync/v4 (main needs fastsync.serve_v4). Remove after cutover.
+  legacy_follow:
+    enabled: false
+    main_sequencer: ""
+    until_height: 0
+    catch_up_interval: 30s
   # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
   # has one valid output per input, always. It requires
   # committee_anchor_activation_height and refuses to install without it.

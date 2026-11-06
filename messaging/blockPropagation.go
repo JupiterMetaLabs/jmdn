@@ -313,7 +313,9 @@ func HandleBlockStream(stream network.Stream) {
 	// the only legitimate direct sender is the sequencer. Enforced when a
 	// sequencer is pinned. With gossip off, validators forward blocks here and
 	// the sender is a relay; the certificate gate below still applies.
-	if EnableBlockGossip {
+	// A legacy block (legacy follow mode) is authorized against the main
+	// sequencer in its own path instead.
+	if EnableBlockGossip && (msg.Block == nil || !IsLegacyBlock(msg.Block)) {
 		if ok, _ := AuthorizeBlockSender(remotePeer); !ok {
 			metrics.BlocksRejectedCounter.WithLabelValues("sender_not_sequencer", "direct").Inc()
 			broadcastLogger().Warn(context.Background(), "Dropping direct block message not sent by the pinned sequencer",
@@ -333,6 +335,13 @@ func HandleBlockStream(stream network.Stream) {
 // direct-stream re-flood; the fail-closed security gate is identical regardless
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
+	// Legacy follow mode (migration from main): legacy blocks from the main
+	// sequencer take their own gate. See legacy_follow.go.
+	if msg.Type == "zkblock" && msg.Block != nil && IsLegacyBlock(msg.Block) {
+		handleLegacyBlockMessage(msg, remotePeer)
+		return
+	}
+
 	// Certificate-only finalize (sender: BroadcastBlockToEveryNodeWithExtraData
 	// with FinalizeCertOnly): the envelope carries the header + committee
 	// certificate but no proof. Substitute the full proposal this node cached at
@@ -752,6 +761,15 @@ func validateBlockContents(ctx context.Context, b *config.ZKBlock) *blockRejecti
 		return reject("feerecipients_unsupported",
 			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded; refusing to admit", b.BlockHash.Hex())
 	}
+	return validateBlockBody(ctx, b)
+}
+
+// validateBlockBody is the part of validateBlockContents that binds a block's
+// body to its signed transactions: per-transaction signature, tx hash over
+// contents, non-negative values, in-block nonce order and (with
+// EnforceBodyBinding) BlockHash/TxnsRoot over the transactions. Shared with the
+// legacy-follow path, which applies its own FeeRecipients rule.
+func validateBlockBody(ctx context.Context, b *config.ZKBlock) *blockRejection {
 
 	// (Signature/chain-ID authenticity) Every transaction must carry a valid
 	// signature for the configured chain. CheckSignature recovers the sender via

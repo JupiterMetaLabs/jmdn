@@ -101,6 +101,29 @@ type CheckpointSettings struct {
 	BackgroundFullVerify bool `mapstructure:"background_full_verify" yaml:"background_full_verify"`
 }
 
+// LegacyFollowSettings configures legacy follow mode: a v3base node seeded from
+// a mainnet export keeps applying the blocks of the mainnet sequencer that
+// still runs the main branch, until the cutover to a v3base sequencer.
+//
+// A block at or below UntilHeight (every block while UntilHeight is 0) is a
+// legacy block. It is accepted only when delivered by MainSequencer's peer ID
+// (direct stream, gossip publisher, or ThebeSync served by it), after the
+// body, signature, linkage and equivocation checks; the v3-only checks
+// (ConsensusHash, committee anchor, v3 certificate, fee-recipient
+// recomputation) do not apply to it. Blocks above UntilHeight follow the
+// normal v3base rules. Temporary: remove after every node runs v3base.
+type LegacyFollowSettings struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+	// MainSequencer is the mainnet sequencer's full multiaddr, including
+	// /p2p/<peer id>, e.g. /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...
+	MainSequencer string `mapstructure:"main_sequencer" yaml:"main_sequencer"`
+	// UntilHeight is the last legacy block (cutover height - 1). 0 = open-ended.
+	UntilHeight uint64 `mapstructure:"until_height" yaml:"until_height"`
+	// CatchUpInterval is how often the node checks the main sequencer's tip and
+	// fetches missed blocks over ThebeSync (main must set fastsync.serve_v4).
+	CatchUpInterval time.Duration `mapstructure:"catch_up_interval" yaml:"catch_up_interval"`
+}
+
 // StorageSettings selects how much history this node keeps locally.
 //
 // Profile "full" (default) keeps the whole canonical log. Profile "light"
@@ -475,6 +498,28 @@ type ConsensusSettings struct {
 	// timestamp may be when it is proposed or voted on, from
 	// HeaderBindingFromHeight on. 0 = not checked.
 	BlockTimestampMaxFutureSeconds uint64 `mapstructure:"block_timestamp_max_future_seconds" yaml:"block_timestamp_max_future_seconds"`
+	// VotePeriodMinRoundSeconds and VotePeriodSlack bound how far a proposal's
+	// Period may run ahead of time at a height. This node votes ACCEPT for, or
+	// signs the vote result of, period p at height h only if
+	//
+	//	p <= VotePeriodSlack + seconds since this node first saw a proposal at h
+	//	                       / VotePeriodMinRoundSeconds
+	//
+	// A failed round takes at least this long, so honest retries stay inside
+	// the bound, while one proposal cannot jump straight to the period cap and
+	// leave every honest retry at the height refused. Local voting rule, not a
+	// fleet-agreed parameter. 0 for VotePeriodMinRoundSeconds turns the bound off.
+	VotePeriodMinRoundSeconds uint64 `mapstructure:"vote_period_min_round_seconds" yaml:"vote_period_min_round_seconds"`
+	// PeriodCapRaiseFromHeight: from this block height on, a block's Period
+	// may go up to config.MaxPeriod (2^20) instead of config.LegacyMaxPeriod
+	// (1024), so the cap is never a dead end after a high period is recorded
+	// at a height. A FLEET-AGREED parameter: every node must carry the same
+	// value, set to a height the chain has not reached yet. 0 = off.
+	PeriodCapRaiseFromHeight uint64 `mapstructure:"period_cap_raise_from_height" yaml:"period_cap_raise_from_height"`
+	VotePeriodSlack          uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
+	// LegacyFollow makes this v3base node follow the mainnet sequencer that
+	// still runs the main branch during the migration (see LegacyFollowSettings).
+	LegacyFollow LegacyFollowSettings `mapstructure:"legacy_follow" yaml:"legacy_follow"`
 
 	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
 	// contract txs whose EXECUTION creates an account (internal CALL{value},

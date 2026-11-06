@@ -86,33 +86,33 @@ func TestProposerPeriods_ForgetThroughDropsCommittedHeights(t *testing.T) {
 	}
 }
 
-// The proposer never goes past config.MaxPeriod, and says so when it is stuck
+// The proposer never goes past config.LegacyMaxPeriod, and says so when it is stuck
 // there.
 func TestProposerPeriods_StopsAtTheCap(t *testing.T) {
 	p := NewProposerPeriods()
 	var next uint64
 	var capped bool
-	for range config.MaxPeriod {
+	for range config.LegacyMaxPeriod {
 		next, capped = p.AdvanceAfterFailure(10, 7)
 	}
-	if next != config.MaxPeriod || capped {
-		t.Fatalf("after MaxPeriod failures: period %d capped=%v, want %d,false", next, capped, config.MaxPeriod)
+	if next != config.LegacyMaxPeriod || capped {
+		t.Fatalf("after MaxPeriod failures: period %d capped=%v, want %d,false", next, capped, config.LegacyMaxPeriod)
 	}
 	next, capped = p.AdvanceAfterFailure(10, 7)
-	if next != config.MaxPeriod || !capped {
-		t.Fatalf("one more failure: period %d capped=%v, want %d,true", next, capped, config.MaxPeriod)
+	if next != config.LegacyMaxPeriod || !capped {
+		t.Fatalf("one more failure: period %d capped=%v, want %d,true", next, capped, config.LegacyMaxPeriod)
 	}
 }
 
 // Buddy reports cannot push the proposer past the cap, even overflowing ones.
 func TestProposerPeriods_HintsAreCapped(t *testing.T) {
-	for _, report := range []uint64{config.MaxPeriod + 50, ^uint64(0)} {
+	for _, report := range []uint64{config.LegacyMaxPeriod + 50, ^uint64(0)} {
 		p := NewProposerPeriods()
 		for _, b := range []string{"a", "b", "c"} {
 			p.NoteRefusal(10, b, report)
 		}
-		if next, capped := p.AdvanceAfterFailure(10, 7); next != config.MaxPeriod || !capped {
-			t.Fatalf("report %d: period %d capped=%v, want %d,true", report, next, capped, config.MaxPeriod)
+		if next, capped := p.AdvanceAfterFailure(10, 7); next != config.LegacyMaxPeriod || !capped {
+			t.Fatalf("report %d: period %d capped=%v, want %d,true", report, next, capped, config.LegacyMaxPeriod)
 		}
 	}
 }

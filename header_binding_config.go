@@ -43,6 +43,12 @@ func headerBindingFromSettings(c settings.ConsensusSettings) (Security.HeaderBin
 		}
 		out.Addresses = append(out.Addresses, Security.AddressRange{FromHeight: r.FromHeight, Coinbase: cb, ZKVM: zk})
 	}
+	// Legacy-follow blocks (blocks from the main-branch sequencer) carry the
+	// transactions-only BlockHash, so the legacy window must end below the
+	// header-binding height or every such block would fail the hash check.
+	if lf := c.LegacyFollow; out.FromHeight > 0 && lf.Enabled && (lf.UntilHeight == 0 || lf.UntilHeight >= out.FromHeight) {
+		return out, fmt.Errorf("consensus.legacy_follow.until_height must be set below consensus.header_binding_from_height %d (got %d)", out.FromHeight, lf.UntilHeight)
+	}
 	if out.FromHeight > 0 && (len(out.Addresses) == 0 || out.Addresses[0].FromHeight > out.FromHeight) {
 		return out, fmt.Errorf("consensus.header_binding_from_height %d is set but consensus.header_addresses has no entry starting at or below it", out.FromHeight)
 	}

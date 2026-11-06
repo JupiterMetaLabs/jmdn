@@ -948,7 +948,7 @@ func CheckSyncedSlot(b *config.ZKBlock, parentSlot func() (uint64, error)) error
 // whose certificate still verifies - always the case when every committee is
 // the whole pool.
 //
-// A Period above config.MaxPeriod is rejected outright, as on the live path.
+// A Period above config.MaxPeriodAt is rejected outright, as on the live path.
 //
 // Period 0 blocks are left to the existing sync checks: history that predates
 // the persisted consensus fields cannot recompute its ConsensusHash, and no
@@ -957,8 +957,8 @@ func CheckSyncedPeriodBinding(b *config.ZKBlock) error {
 	if b == nil || b.Period == 0 {
 		return nil
 	}
-	if b.Period > config.MaxPeriod {
-		return fmt.Errorf("block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, config.MaxPeriod)
+	if limit := config.MaxPeriodAt(b.BlockNumber); b.Period > limit {
+		return fmt.Errorf("block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, limit)
 	}
 	if rej := checkConsensusBinding(b); rej != nil {
 		return rej.err
@@ -1243,10 +1243,10 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 	}
 
 	// (Period cap) Nothing else bounds the proposer's choice of Period; see
-	// config.MaxPeriod.
-	if b.Period > config.MaxPeriod {
+	// config.MaxPeriodAt.
+	if limit := config.MaxPeriodAt(b.BlockNumber); b.Period > limit {
 		return reject("period_too_high",
-			"block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, config.MaxPeriod)
+			"block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, limit)
 	}
 
 	// (Slot) A block's slot is its block number, whatever its Period

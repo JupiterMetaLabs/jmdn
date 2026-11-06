@@ -105,6 +105,12 @@ func ValidateProductionConsensusPosture(production bool) error {
 	// pinned. With neither, nothing can identify the sequencer. (At runtime an
 	// unresolved sequencer fails closed under production posture — see
 	// internal/sequencerid.)
+	// With the period cap still at 1024, a period recorded at 1024 is a dead
+	// end: the next proposer cannot get above it and the height needs the
+	// operator ledger clear on a quorum of nodes (PeriodCapWarning).
+	if settings.Get().Consensus.PeriodCapRaiseFromHeight == 0 {
+		off = append(off, "period cap raise (consensus.period_cap_raise_from_height is 0) - a period recorded at 1024 leaves the height unable to commit without an operator ledger clear")
+	}
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" &&
 		strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) or SeedAuthorityBLSPub (consensus.seed_authority_bls_pub)")
@@ -122,4 +128,14 @@ func ValidateProductionConsensusPosture(production bool) error {
 		"SEC-03 production consensus posture: refusing to start — fail-open or unpinned consensus setting(s) in production: %s — re-enable/pin each or leave production posture (clear security.strict_posture and do not run environment=mainnet)",
 		strings.Join(off, "; "),
 	)
+}
+
+// PeriodCapWarning returns a startup warning when the period cap raise
+// (consensus.period_cap_raise_from_height) is not set, or "" when it is.
+// Production posture refuses to boot in that state; other nodes warn.
+func PeriodCapWarning() string {
+	if !settings.IsLoaded() || settings.Get().Consensus.PeriodCapRaiseFromHeight != 0 {
+		return ""
+	}
+	return "consensus.period_cap_raise_from_height is 0: the period cap stays at 1024, and a height where a period of 1024 is recorded cannot commit until the round ledgers are cleared on a quorum of nodes (POST /consensus/round-ledger/clear). Set a fleet-agreed activation height."
 }

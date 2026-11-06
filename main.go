@@ -929,6 +929,9 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	if w := messaging.PeriodCapWarning(); w != "" {
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", w) //nolint:forbidigo // CLI output: boot warning printed before the logger is up, like the posture refusal above.
+	}
 	// W1: chain-anchored committee pool preconditions (committee_anchor.go).
 	if err := messaging.ValidateCommitteeAnchorConfig(); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)
@@ -973,6 +976,7 @@ func main() {
 		os.Exit(1)
 	}
 	Security.SetHeaderBinding(headerBinding)
+	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first
@@ -1323,6 +1327,9 @@ func main() {
 		// used to sign a different block at a round already signed.
 		roundlock.Default.SetStore(DB_OPs.ConsensusLockStore{}, "roundlock:")
 		roundlock.Votes.SetStore(DB_OPs.ConsensusLockStore{}, "votelock:")
+		// The time each height was first proposed, so the period bound does
+		// not restart at a restart (roundlock.Pace).
+		roundlock.DefaultPace.SetStore(DB_OPs.ConsensusLockStore{}, "pacelock:")
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
 		// Finish any tx apply that was interrupted by the previous shutdown
@@ -1683,6 +1690,29 @@ func main() {
 	// Legacy pool-client acquisition removed: storage goes through the
 	// process-wide ThebeHandle (DB_OPs.SetGlobalHandle above); helpers
 	// take a nil conn and resolve getHandle(nil) internally.
+
+	// Legacy follow mode (migration from main): keep this node applying the
+	// mainnet sequencer's blocks until the cutover. See messaging/legacy_follow.go.
+	if cfg.Consensus.LegacyFollow.Enabled {
+		follower, lerr := thebesync.NewLegacyFollower(n.Host, cfg.Consensus.LegacyFollow)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: %v\n", lerr) //nolint:forbidigo // CLI output: fatal boot error printed before exit; the logger may not be up yet.
+			os.Exit(1)
+		}
+		messaging.SetLegacyCatchUpNudge(follower.Nudge)
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.LegacyFollowThread, func(ctx context.Context) error {
+			follower.Run(ctx)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: could not start: %v\n", err) //nolint:forbidigo // CLI output: fatal boot error printed before exit.
+			os.Exit(1)
+		}
+		if logger := mainLogger(); logger != nil {
+			logger.Info(context.Background(), "[legacy-follow] following the main-branch sequencer",
+				ion.String("main_sequencer", cfg.Consensus.LegacyFollow.MainSequencer),
+				ion.Uint64("until_height", cfg.Consensus.LegacyFollow.UntilHeight))
+		}
+	}
 
 	// Sync engine: ThebeSync (FastSync v4). FastsyncV2 is retired — serving is via
 	// the thebesync handlers registered in node.go, catch-up via thebesync.CatchUp.

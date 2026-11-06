@@ -256,6 +256,10 @@ func DefaultConfig() NodeConfig {
 			CompactCertificateFromHeight:    0,
 			HeaderBindingFromHeight:         0,
 			BlockTimestampMaxFutureSeconds:  15,
+			VotePeriodMinRoundSeconds:       1,
+			PeriodCapRaiseFromHeight:        0,
+			VotePeriodSlack:                 16,
+			LegacyFollow:                    LegacyFollowSettings{CatchUpInterval: 30 * time.Second},
 			EVMUnstampedAccountRevertHeight: 0,
 			// Boundary bridging: permissive, as today. See config.go.
 			CommitteeStrictBoundary: false,

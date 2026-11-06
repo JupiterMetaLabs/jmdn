@@ -263,10 +263,16 @@ func (l *Ledger) Signed(r Round) (string, bool) {
 	return b, ok
 }
 
-// Highest reports the highest period this node has signed for height.
+// Highest reports the highest period this node has signed for height,
+// reading the height's stored record first if this process has not touched
+// it yet (after a restart, a record on disk must still be reported). A store
+// read error reports what is in memory.
 func (l *Ledger) Highest(height uint64) (uint64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if !l.haveCommitted || height > l.committed {
+		_ = l.loadHeightLocked(height)
+	}
 	p, ok := l.highest[height]
 	return p, ok
 }
@@ -357,4 +363,40 @@ func (l *Ledger) CommittedTip() (uint64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.committed, l.haveCommitted
+}
+
+// ClearHeight drops every record this ledger holds for one height above the
+// committed tip, in memory and in the store, and returns what it dropped:
+// period -> block identity.
+//
+// Operator recovery only: a height whose records refuse every retry (for
+// example, one that reached config.MaxPeriodAt) can never commit, because a
+// commit is the only thing that clears it. Clearing reopens rounds this node
+// already signed, so it must only be used on a height that has no
+// certificate anywhere in the network. A height at or below the committed
+// tip is refused.
+func (l *Ledger) ClearHeight(height uint64) (map[uint64]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.haveCommitted && height <= l.committed {
+		return nil, fmt.Errorf("roundlock: height %d is at or below the committed tip %d", height, l.committed)
+	}
+	if err := l.loadHeightLocked(height); err != nil {
+		return nil, err
+	}
+	cleared := map[uint64]string{}
+	for r, block := range l.signed {
+		if r.Height == height {
+			cleared[r.Period] = block
+			delete(l.signed, r)
+		}
+	}
+	delete(l.highest, height)
+	if l.store != nil && (len(cleared) > 0 || l.onDisk[height]) {
+		if err := l.store.Put(l.key(height), []byte{}); err != nil {
+			return cleared, fmt.Errorf("roundlock: clear height %d: %w", height, err)
+		}
+		delete(l.onDisk, height)
+	}
+	return cleared, nil
 }

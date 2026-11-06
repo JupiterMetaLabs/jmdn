@@ -90,6 +90,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	if s.syncMonitor != nil {
 		RegisterSyncRoutes(router, s.syncMonitor)
 	}
+	RegisterConsensusAdminRoutes(router)
 
 	errCh := make(chan error, 1)
 	go func() {

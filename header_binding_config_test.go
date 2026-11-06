@@ -48,3 +48,31 @@ func TestHeaderBindingFromSettings_Refuses(t *testing.T) {
 		t.Fatalf("binding off with no addresses: %v", err)
 	}
 }
+
+// The legacy-follow window must end below the header-binding height.
+func TestHeaderBindingFromSettings_LegacyFollowWindow(t *testing.T) {
+	base := settings.ConsensusSettings{
+		HeaderBindingFromHeight: 500,
+		HeaderAddresses:         []settings.HeaderAddressRange{{FromHeight: 500, Coinbase: cfgCB, ZKVM: cfgZK}},
+	}
+	for name, lf := range map[string]settings.LegacyFollowSettings{
+		"open-ended": {Enabled: true},
+		"overlaps":   {Enabled: true, UntilHeight: 500},
+	} {
+		c := base
+		c.LegacyFollow = lf
+		if _, err := headerBindingFromSettings(c); err == nil {
+			t.Fatalf("%s legacy window accepted", name)
+		}
+	}
+	for name, lf := range map[string]settings.LegacyFollowSettings{
+		"ends below": {Enabled: true, UntilHeight: 499},
+		"disabled":   {},
+	} {
+		c := base
+		c.LegacyFollow = lf
+		if _, err := headerBindingFromSettings(c); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

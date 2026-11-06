@@ -3,6 +3,7 @@ package config
 import (
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -28,15 +29,40 @@ const (
 	ConsensusTimeout = 90 * time.Second
 )
 
-// MaxPeriod is the highest Period any block may carry. The proposer chooses a
-// height's Period (one more after each failed round) and every other node
-// takes it from the block, so this cap is what stops a buggy or compromised
-// proposer from stamping an absurd value. At roughly one
-// minute per failed round, 1024 is about 17 hours of continuous failure at a
-// single height. Enforced by the proposer (ProposerPeriods), the buddy signer,
-// the live receive path (linkageDecision) and ThebeSync
-// (CheckSyncedPeriodBinding); changing it is a fleet-wide consensus change.
-const MaxPeriod uint64 = 1024
+// LegacyMaxPeriod and MaxPeriod are the highest Period a block may carry,
+// before and from consensus.period_cap_raise_from_height (MaxPeriodAt). The
+// proposer chooses a height's Period (one more after each failed round, or
+// above the highest period buddies report) and every other node takes it from
+// the block. Enforced by the proposer (ProposerPeriods), the voter and buddy
+// signer, the live receive path (linkageDecision) and ThebeSync
+// (CheckSyncedPeriodBinding).
+//
+// MaxPeriod is set far above any period an honest height reaches so that it is
+// never a dead end: the ledgers refuse any period below the highest one
+// recorded at a height, and a proposer stuck at the cap could never get above
+// a period recorded there. What bounds how high a proposal's period can be in
+// practice is the time bound (roundlock.Pace, consensus.vote_period_*): at
+// the default one period per second, reaching it takes about 12 days at one
+// height. The raise is a fleet-wide rule change, hence the activation height.
+const (
+	LegacyMaxPeriod uint64 = 1024
+	MaxPeriod       uint64 = 1 << 20
+)
+
+var periodCapRaiseFrom atomic.Uint64
+
+// SetPeriodCapRaiseFrom sets consensus.period_cap_raise_from_height; 0 keeps
+// LegacyMaxPeriod at every height. Called once by main after settings load.
+func SetPeriodCapRaiseFrom(height uint64) { periodCapRaiseFrom.Store(height) }
+
+// MaxPeriodAt is the period cap at height: MaxPeriod from
+// consensus.period_cap_raise_from_height on, LegacyMaxPeriod before it.
+func MaxPeriodAt(height uint64) uint64 {
+	if from := periodCapRaiseFrom.Load(); from > 0 && height >= from {
+		return MaxPeriod
+	}
+	return LegacyMaxPeriod
+}
 
 // MaxBlockMessageBytes is the single source of truth for the maximum size of a
 // propagated block message. BOTH transports MUST use it or they silently diverge:
