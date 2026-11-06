@@ -2189,6 +2189,14 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		return nil
 	}
 
+	// The buddy's highest recorded period at this height (vote or signing
+	// ledger), so a failed round can resume above it (ProposerPeriods).
+	if hp, ok := resultData["highest_period"].(float64); ok && hp >= 0 &&
+		consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+		messaging.DefaultProposerPeriods.NoteRefusal(
+			consensus.ZKBlockData.GetZKBlock().BlockNumber, peerID.String(), uint64(hp))
+	}
+
 	// Extract and store numeric vote
 	if result, ok := resultData["result"].(float64); ok {
 		Maps.StoreVoteResult(peerID.String(), int8(result))

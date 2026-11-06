@@ -102,12 +102,12 @@ func TestCheckSyncedPeriodBinding(t *testing.T) {
 // whose ConsensusHash correctly binds the oversized Period.
 func TestCheckSyncedPeriodBinding_RejectsAboveTheCap(t *testing.T) {
 	txs := []config.Transaction{txWithHash(common.HexToHash("0x01"))}
-	b := &config.ZKBlock{Transactions: txs, Slot: 5000, Period: config.MaxPeriod + 1}
+	b := &config.ZKBlock{Transactions: txs, Slot: 5000, Period: config.LegacyMaxPeriod + 1}
 	b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
 	if err := CheckSyncedPeriodBinding(b); err == nil {
-		t.Fatal("a Period above config.MaxPeriod must be rejected on the sync path")
+		t.Fatal("a Period above config.LegacyMaxPeriod must be rejected on the sync path")
 	}
-	b.Period = config.MaxPeriod
+	b.Period = config.LegacyMaxPeriod
 	b.ConsensusHash = Security.RecomputeBlockHashWithConsensusFields(b)
 	if err := CheckSyncedPeriodBinding(b); err != nil {
 		t.Fatalf("a Period at the cap must pass: %v", err)

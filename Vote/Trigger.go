@@ -121,6 +121,9 @@ var GapCatchUpHook func(fromBlock uint64)
 // reserveAcceptVote records this node's ACCEPT vote for zkBlock's round in
 // roundlock.Votes, or reports why it may not vote ACCEPT.
 func reserveAcceptVote(zkBlock *config.ZKBlock) error {
+	if err := checkVotePeriod(zkBlock.BlockNumber, zkBlock.Period); err != nil {
+		return err
+	}
 	r := roundlock.Round{Height: zkBlock.BlockNumber, Period: zkBlock.Period}
 	ok, refusal, highest, _ := roundlock.Votes.TryLockFresh(r,
 		roundlock.BlockIdentity(zkBlock.BlockHash.String(), zkBlock.ConsensusHashHex()))

@@ -27,12 +27,15 @@ func withPassingPosture(t *testing.T) {
 	cfg.Consensus.SequencerPinnedPeerID = "pinned-peer"
 	prevCertFrom := cfg.Consensus.SyncCertificateRequiredFrom
 	cfg.Consensus.SyncCertificateRequiredFrom = 1
+	prevCapRaise := cfg.Consensus.PeriodCapRaiseFromHeight
+	cfg.Consensus.PeriodCapRaiseFromHeight = 1
 
 	t.Cleanup(func() {
 		RejectLegacyVotes, EnforceCommitteeRegistry, EnforceBodyBinding = prevReject, prevRegistry, prevBody
 		TrustSequencerCertificate, CommitteeV2Enabled = prevTrust, prevV2
 		cfg.Consensus.SequencerPinnedPeerID = prevPin
 		cfg.Consensus.SyncCertificateRequiredFrom = prevCertFrom
+		cfg.Consensus.PeriodCapRaiseFromHeight = prevCapRaise
 	})
 }
 
@@ -133,5 +136,27 @@ func TestValidateProductionConsensusPosture_RefusesSequencerTrustStopgap(t *test
 	err := ValidateProductionConsensusPosture(true)
 	if err == nil || !strings.Contains(err.Error(), "TrustSequencerCertificate") {
 		t.Fatalf("production must refuse the sequencer-trust stopgap, got: %v", err)
+	}
+}
+
+// With the period cap raise unset, a production node refuses to boot and
+// every node gets a startup warning.
+func TestValidateProductionConsensusPosture_RequiresPeriodCapRaise(t *testing.T) {
+	withPassingPosture(t)
+	cfg := settings.Get()
+	cfg.Consensus.PeriodCapRaiseFromHeight = 0
+	err := ValidateProductionConsensusPosture(true)
+	if err == nil || !strings.Contains(err.Error(), "period_cap_raise_from_height") {
+		t.Fatalf("err = %v", err)
+	}
+	if ValidateProductionConsensusPosture(false) != nil {
+		t.Fatal("non-production refused")
+	}
+	if PeriodCapWarning() == "" {
+		t.Fatal("no warning with the raise unset")
+	}
+	cfg.Consensus.PeriodCapRaiseFromHeight = 1
+	if ValidateProductionConsensusPosture(true) != nil || PeriodCapWarning() != "" {
+		t.Fatal("raise set: still refused or warned")
 	}
 }

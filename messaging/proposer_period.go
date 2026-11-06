@@ -73,7 +73,7 @@ func (p *ProposerPeriods) NoteRefusal(height uint64, buddy string, highest uint6
 // Reports for the height are cleared, since they describe the round that has
 // now ended.
 //
-// The period never exceeds config.MaxPeriod, which every node enforces. capped
+// The period never exceeds config.MaxPeriodAt, which every node enforces. capped
 // is true when the height is at the cap: its next proposal reuses MaxPeriod,
 // buddies that signed that round refuse it, and the height cannot commit
 // without operator attention.
@@ -86,8 +86,8 @@ func (p *ProposerPeriods) AdvanceAfterFailure(height uint64, committeeSize int) 
 	if hint, ok := hintFloor(p.hints[height], committeeSize); ok && hint > floor {
 		floor = hint
 	}
-	if floor >= config.MaxPeriod {
-		next, capped = config.MaxPeriod, true
+	if limit := config.MaxPeriodAt(height); floor >= limit {
+		next, capped = limit, true
 	} else {
 		next = floor + 1
 	}
@@ -146,5 +146,6 @@ func NoteHeightCommitted(height uint64) {
 	DefaultSlotStore.AdvanceOnCommit(height)
 	roundlock.Default.ForgetThrough(height)
 	roundlock.Votes.ForgetThrough(height)
+	roundlock.DefaultPace.ForgetThrough(height)
 	DefaultProposerPeriods.ForgetThrough(height)
 }

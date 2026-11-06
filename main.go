@@ -929,6 +929,9 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
+	if w := messaging.PeriodCapWarning(); w != "" {
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", w) //nolint:forbidigo // CLI output: boot warning printed before the logger is up, like the posture refusal above.
+	}
 	// W1: chain-anchored committee pool preconditions (committee_anchor.go).
 	if err := messaging.ValidateCommitteeAnchorConfig(); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)
@@ -967,6 +970,7 @@ func main() {
 	}
 	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
 	Security.SetAllowUnprotectedTxs(cfg.Security.AllowUnprotectedTxs)
+	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first
@@ -1317,6 +1321,9 @@ func main() {
 		// used to sign a different block at a round already signed.
 		roundlock.Default.SetStore(DB_OPs.ConsensusLockStore{}, "roundlock:")
 		roundlock.Votes.SetStore(DB_OPs.ConsensusLockStore{}, "votelock:")
+		// The time each height was first proposed, so the period bound does
+		// not restart at a restart (roundlock.Pace).
+		roundlock.DefaultPace.SetStore(DB_OPs.ConsensusLockStore{}, "pacelock:")
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
 		// Finish any tx apply that was interrupted by the previous shutdown

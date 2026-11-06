@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -320,6 +321,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.require_pinned_committee", d.Consensus.RequirePinnedCommittee)
 	v.SetDefault("consensus.committee_anchor_activation_height", d.Consensus.CommitteeAnchorActivationHeight)
 	v.SetDefault("consensus.compact_certificate_from_height", d.Consensus.CompactCertificateFromHeight)
+	v.SetDefault("consensus.vote_period_min_round_seconds", d.Consensus.VotePeriodMinRoundSeconds)
+	v.SetDefault("consensus.vote_period_slack", d.Consensus.VotePeriodSlack)
+	v.SetDefault("consensus.period_cap_raise_from_height", d.Consensus.PeriodCapRaiseFromHeight)
 	v.SetDefault("consensus.legacy_follow.enabled", d.Consensus.LegacyFollow.Enabled)
 	v.SetDefault("consensus.legacy_follow.main_sequencer", d.Consensus.LegacyFollow.MainSequencer)
 	v.SetDefault("consensus.legacy_follow.until_height", d.Consensus.LegacyFollow.UntilHeight)
@@ -431,4 +435,14 @@ func normalizeThebeConfig(cfg *NodeConfig) {
 	if cfg.Thebe.MaxLen <= 0 {
 		cfg.Thebe.MaxLen = 1000
 	}
+}
+
+// VotePeriodPace returns the consensus.vote_period_* bound as (minimum round
+// duration, slack), with the compiled defaults when no config is loaded.
+func VotePeriodPace() (time.Duration, uint64) {
+	c := DefaultConfig().Consensus
+	if IsLoaded() {
+		c = Get().Consensus
+	}
+	return time.Duration(c.VotePeriodMinRoundSeconds) * time.Second, c.VotePeriodSlack
 }
