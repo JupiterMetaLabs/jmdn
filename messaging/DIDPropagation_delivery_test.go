@@ -12,15 +12,27 @@ package messaging
 //
 // These tests lock the reporting behaviour. They do not spin up libp2p hosts —
 // the delivery accounting is the part that was wrong, and it is pure logic.
+// The last test, on the receive side, does: a received DID message must not be
+// re-forwarded.
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/internal/saferun"
 )
 
 // withCommittee swaps the package-global eligibility source for one test.
@@ -190,5 +202,54 @@ func TestNoPackageDiscardsTheGlobalZerologLogger(t *testing.T) {
 			"redirects logging for the whole binary (this is how DID propagation "+
 			"failures became invisible). Give the package its own logger instead:\n  %s",
 			strings.Join(offenders, "\n  "))
+	}
+}
+
+// Any peer could send a DID message, unsigned and with a sender-chosen hop
+// count, and every node stored it and re-forwarded it to every peer, so one
+// message from one connection flooded the network. A received DID message is
+// no longer re-forwarded.
+func TestHandleDIDStream_ReceivedMessageIsNotReforwarded(t *testing.T) {
+	attacker, receiver, neighbour := newLoopbackHost(t), newLoopbackHost(t), newLoopbackHost(t)
+	receiver.SetStreamHandler(config.DIDPropagationProtocol, saferun.Stream(string(config.DIDPropagationProtocol), HandleDIDStream))
+	prevHost := getHostInstance()
+	SetHostInstance(receiver)
+	t.Cleanup(func() { SetHostInstance(prevHost) })
+
+	var forwarded int32
+	neighbour.SetStreamHandler(config.DIDPropagationProtocol, func(s network.Stream) {
+		atomic.AddInt32(&forwarded, 1)
+		_ = s.Close()
+	})
+	connect(t, receiver, neighbour)
+	connect(t, attacker, receiver)
+
+	addr := common.HexToAddress("0x00000000000000000000000000000000000d1d01")
+	frame, err := json.Marshal(DIDMessage{
+		Sender: attacker.ID().String(), Timestamp: time.Now().Unix(), Type: "did_created",
+		Hops: 0, Account: &DB_OPs.Account{Address: addr, DIDAddress: "did:jmdt:spam"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := attacker.NewStream(context.Background(), receiver.ID(), config.DIDPropagationProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.Write(append(frame, '\n'))
+	_ = s.Close()
+
+	// Wait until the receiver has handled the message, then give any forward
+	// time to reach the neighbour before asserting it did not.
+	deadline := time.Now().Add(5 * time.Second)
+	for !isAccountMessageProcessed(deriveMessageID(addr)) {
+		if time.Now().After(deadline) {
+			t.Fatal("the receiver never handled the DID message")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := atomic.LoadInt32(&forwarded); n != 0 {
+		t.Fatalf("a received DID message was re-forwarded to %d peer stream(s); want 0", n)
 	}
 }
