@@ -106,3 +106,34 @@ func TestPullContractIfMissing_SilentPeerIsBounded(t *testing.T) {
 		t.Fatal("test premise: the silent peer was never asked")
 	}
 }
+
+// The pull server (still registered for older nodes that pull) gives a peer
+// that opens a stream and never finishes its request at most pullStreamTimeout.
+func TestHandleContractPullStream_IdleRequestIsBounded(t *testing.T) {
+	prev := pullStreamTimeout
+	pullStreamTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { pullStreamTimeout = prev })
+
+	server, client := newLoopbackHost(t), newLoopbackHost(t)
+	returned := make(chan struct{})
+	server.SetStreamHandler(config.ContractPullProtocol, func(s network.Stream) {
+		HandleContractPullStream(s)
+		close(returned)
+	})
+	connect(t, client, server)
+
+	s, err := client.NewStream(context.Background(), server.ID(), config.ContractPullProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Reset() })
+	// Start a request and never finish it (no newline, stream left open).
+	if _, err := s.Write([]byte(`{"contract_address":`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pull server is still waiting on a request that never finishes")
+	}
+}

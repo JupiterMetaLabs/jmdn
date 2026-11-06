@@ -280,6 +280,9 @@ type ContractPullResponse struct {
 // missed the original gossip message.
 func HandleContractPullStream(stream network.Stream) {
 	defer stream.Close()
+	// A peer that opens a pull stream and sends nothing must not hold this
+	// handler's goroutine.
+	_ = stream.SetDeadline(time.Now().Add(pullStreamTimeout))
 
 	remotePeer := stream.Conn().RemotePeer().String()
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -327,6 +328,21 @@ func HandleBlockStream(stream network.Stream) {
 	HandleReceivedBlockMessage(msg, remotePeer, true)
 }
 
+// blockMessageForForward returns a copy of msg whose block the forward
+// goroutine can serialize while the apply goroutine, which keeps msg, writes to
+// its own block (prepareReceivedBlock sets CommitteeCertificate; apply may set
+// other fields). The transactions slice is copied too; what the elements point
+// to is not written on either path.
+func blockMessageForForward(msg config.BlockMessage) config.BlockMessage {
+	if msg.Block == nil {
+		return msg
+	}
+	blk := *msg.Block
+	blk.Transactions = slices.Clone(msg.Block.Transactions)
+	msg.Block = &blk
+	return msg
+}
+
 // prepareReceivedBlock is everything that runs on a received, admitted block
 // between the gate and apply+store. It must not touch the network: it runs on
 // the goroutine that applies the block, so one peer that never answers would
@@ -487,8 +503,9 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 					ion.Uint64("block_number", msg.Block.BlockNumber),
 					ion.Int("hops", msg.Hops))
 
+				fwd := blockMessageForForward(msg)
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-					forwardBlock(globalHost, msg)
+					forwardBlock(globalHost, fwd)
 					return nil
 				})
 			} else {
