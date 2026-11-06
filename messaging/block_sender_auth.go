@@ -52,6 +52,12 @@ func AuthorizeBlockSender(authenticated string) (ok, enforced bool) {
 // Gossip relays preserve the original publisher and its signature, so this
 // holds however many hops the message travelled.
 func HandleGossipedBlockMessageFrom(msg config.BlockMessage, publisher peer.ID) {
+	// A legacy block (legacy follow mode) is authorized against the main
+	// sequencer by its own path; the publisher is passed through for that.
+	if msg.Type == "zkblock" && msg.Block != nil && IsLegacyBlock(msg.Block) {
+		HandleGossipedBlockMessage(msg, "gossip:"+publisher.String())
+		return
+	}
 	ok, enforced := AuthorizeBlockSender(publisher.String())
 	if !ok {
 		metrics.BlocksRejectedCounter.WithLabelValues("publisher_not_sequencer", "gossip").Inc()
