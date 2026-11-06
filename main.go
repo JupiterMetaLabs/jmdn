@@ -2375,8 +2375,11 @@ func main() {
 		mainLogger().Error(context.Background(), "Failed to initialize DID propagation", err)
 	}
 
-	// Initialize Contract propagation handler (ADR-001)
-	n.Host.SetStreamHandler(config.ContractPropagationProtocol, saferun.Stream(string(config.ContractPropagationProtocol), messaging.HandleContractStream))
+	// The contract push protocol (config.ContractPropagationProtocol) is not
+	// registered. Nothing sends it since push propagation was retired (see
+	// messaging/ContractPropagation.go), and its handler accepted a message from
+	// any peer, stored the ABI and deployer first-writer-wins, and re-flooded it
+	// to every peer under a sender-chosen ID.
 	// Pull-on-demand: peers can request missed contract metadata from us
 	n.Host.SetStreamHandler(config.ContractPullProtocol, saferun.Stream(string(config.ContractPullProtocol), messaging.HandleContractPullStream))
 
