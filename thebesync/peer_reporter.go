@@ -20,10 +20,12 @@ package thebesync
 // PeerReporter closes that gap by sampling a bounded set of currently
 // connected peers for their head (thebesync.FetchHead — the same wire call
 // the seednode-backed reconcile path already trusts) and treating the highest
-// reported height as a leaderless stand-in for "SequencerHead". This is
-// conservative by construction: at worst it lags the true fleet tip (if the
-// sampled peers are themselves behind), never ahead of it, so it can only
-// ever under-report a divergence, never manufacture a false one.
+// height at least two peers report as a leaderless stand-in for
+// "SequencerHead" (see selectCatchUpTargets). It lags the true fleet tip when
+// the sampled peers are themselves behind. A single peer cannot move the head;
+// two colluding peers can inflate it, which costs extra catch-up attempts but
+// never removes honest peers from the targets, and the head is never trusted
+// for voting (HeadAuthenticated is false, below).
 //
 // Wiring this into a syncmonitor.Monitor (rather than writing a second,
 // bespoke periodic loop) reuses ALL of that Monitor's existing hardening for
@@ -69,9 +71,10 @@ type peerHeadSample struct {
 }
 
 // ReportBlockState asks a bounded sample of connected peers for their chain
-// head and reports the highest one back as SequencerHead. blockHead is this
-// node's own tip (supplied by the Monitor from ChainReporter.TipState) and is
-// used only for the IsSynced comparison — there is no seednode to send it to.
+// head and reports the highest height at least two of them agree on as
+// SequencerHead (selectCatchUpTargets). blockHead is this node's own tip
+// (supplied by the Monitor from ChainReporter.TipState); it decides IsSynced
+// and which peers are catch-up targets — there is no seednode to send it to.
 func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ []byte) (*syncmonitor.SyncStatus, error) {
 	if p.Host == nil {
 		return nil, fmt.Errorf("thebesync: PeerReporter has a nil host")
@@ -114,17 +117,10 @@ func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ 
 		return nil, fmt.Errorf("thebesync: PeerReporter got no usable head from %d sampled peer(s)", len(peers))
 	}
 
-	sort.Slice(results, func(i, j int) bool { return results[i].height > results[j].height })
-	best := results[0].height
+	best, targets := selectCatchUpTargets(results, blockHead)
 
-	// GoodPeers carries only peers AT the best height: the reconcile path
-	// dials whichever one answers first, so a peer reported behind the best
-	// sample is not a usable catch-up target.
-	goodPeers := make([]syncmonitor.PeerInfo, 0, len(results))
-	for _, r := range results {
-		if r.height < best {
-			continue
-		}
+	goodPeers := make([]syncmonitor.PeerInfo, 0, len(targets))
+	for _, r := range targets {
 		addrs := p.Host.Peerstore().Addrs(r.id)
 		multiaddrs := make([]string, 0, len(addrs))
 		for _, a := range addrs {
@@ -138,8 +134,9 @@ func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ 
 
 	// HeadAuthenticated is FALSE, and that is the load-bearing line here.
 	//
-	// `best` is the MAXIMUM height claimed by up to 8 sampled peers, over an
-	// unauthenticated wire, with no corroboration — one peer's answer sets it.
+	// `best` is the highest height claimed by at least two of up to 8 sampled
+	// peers (selectCatchUpTargets), over an unauthenticated wire — two peers'
+	// answers set it.
 	// That is fine for deciding "should I catch up?", which is all this reporter
 	// was built for, and NOT fine for deciding "should I vote?".
 	//
@@ -171,7 +168,44 @@ func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ 
 		HeadAuthenticated: false,
 		GoodPeers:         goodPeers,
 		Message: fmt.Sprintf("peer-sampled head (no seednode configured): best of %d/%d sampled peer(s) responded, "+
-			"highest=%d local=%d — UNAUTHENTICATED, not eligible to drive the consensus vote gate",
+			"head=%d (2 peers agree when 2+ answered) local=%d — UNAUTHENTICATED, not eligible to drive the consensus vote gate",
 			len(results), len(peers), best, blockHead),
 	}, nil
+}
+
+// selectCatchUpTargets picks the reported head and the ordered catch-up
+// targets from one round of samples.
+//
+// The head is the highest height at least two peers report (the second-highest
+// sample), or the only sample when just one peer answered. Taking the bare
+// maximum let one peer claiming a huge height become the head AND, since only
+// peers at the head were targets, the sole catch-up source, starving the node
+// of its honest peers.
+//
+// Targets are every peer above ourTip, lowest height first, not only peers at
+// the head: two peers (libp2p identities are free, so one attacker can be two)
+// agreeing on a huge height must not push the honest peers out of the list.
+// The reconcile loop (main.go) stops at the first CatchUp that returns without
+// error, so order matters, not just membership: honest peers claiming ordinary
+// heights are tried before any inflated claim. An empty list just means no
+// sampled peer is ahead of us.
+func selectCatchUpTargets(results []peerHeadSample, ourTip uint64) (uint64, []peerHeadSample) {
+	if len(results) == 0 {
+		return 0, nil
+	}
+	sorted := append([]peerHeadSample(nil), results...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].height < sorted[j].height })
+
+	best := sorted[len(sorted)-1].height
+	if len(sorted) >= 2 {
+		best = sorted[len(sorted)-2].height
+	}
+
+	targets := make([]peerHeadSample, 0, len(sorted))
+	for _, r := range sorted {
+		if r.height > ourTip {
+			targets = append(targets, r)
+		}
+	}
+	return best, targets
 }
