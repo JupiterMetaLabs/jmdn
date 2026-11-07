@@ -21,7 +21,6 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
@@ -567,8 +566,9 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// current epoch's entropy committee and its reveal has not landed
 			// in a committed block yet, push it to whoever proposed this one.
 			//
-			// msg.Sender is the peer that broadcast this block, i.e. the
-			// proposer — a real, already-present value, not a resolver seam.
+			// The target is the pinned sequencer, or msg.Sender only when it
+			// is the transport-authenticated peer (revealPushTarget):
+			// msg.Sender is unsigned, so a relay could otherwise redirect it.
 			// §4.4 requires pushing once per SLOT across the whole reveal
 			// window rather than once per epoch, and a committed block is
 			// exactly a slot boundary, so this hook is the natural trigger.
@@ -578,7 +578,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// no identity, already landed, window closed, we ARE the proposer)
 			// is checked inside PushOwnRevealForSlot, so this stays cheap for
 			// the P-m nodes that are not on the committee.
-			if proposer, decErr := peer.Decode(msg.Sender); decErr == nil {
+			if proposer, ok := revealPushTarget(msg, remotePeer); ok {
 				pushSlot := DefaultSlotStore.Current()
 				go func() {
 					if err := PushOwnRevealForSlot(pushSlot, proposer); err != nil {

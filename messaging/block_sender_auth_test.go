@@ -3,6 +3,7 @@ package messaging
 import (
 	"testing"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"gossipnode/config"
@@ -52,4 +53,42 @@ func TestHandleGossipedBlockMessageFrom_RejectsNonSequencerPublisher(t *testing.
 	if testutil.ToFloat64(metrics.BlocksRejectedCounter.WithLabelValues("publisher_not_sequencer", "gossip"))-before != 1 {
 		t.Fatal("block from a non-sequencer publisher was not rejected")
 	}
+}
+
+// msg.Sender is unsigned: a relay that rewrites it on a genuine block must not
+// become the RevealPush target. With a pin the target is always the pin;
+// without one, msg.Sender is used only when it is the authenticated peer.
+func TestRevealPushTarget(t *testing.T) {
+	seq, relay := testPeerID(t), testPeerID(t)
+	block := func(sender string) config.BlockMessage {
+		return config.BlockMessage{Type: "zkblock", Sender: sender, Block: &config.ZKBlock{BlockNumber: 1}}
+	}
+
+	t.Run("no pin", func(t *testing.T) {
+		withPinnedSequencerID(t, "")
+		cases := []struct {
+			name, sender, remote string
+			want                 peer.ID
+		}{
+			{"direct from its sender", seq.String(), seq.String(), seq},
+			{"gossip from its publisher", seq.String(), "gossip:" + seq.String(), seq},
+			{"relay rewrote sender to itself", relay.String(), seq.String(), ""},
+			{"relayed with genuine sender", seq.String(), relay.String(), ""},
+			{"empty sender", "", seq.String(), ""},
+		}
+		for _, c := range cases {
+			got, ok := revealPushTarget(block(c.sender), c.remote)
+			if got != c.want || ok != (c.want != "") {
+				t.Errorf("%s: got (%q, %v), want %q", c.name, got, ok, c.want)
+			}
+		}
+	})
+
+	t.Run("pinned", func(t *testing.T) {
+		withPinnedSequencerID(t, seq.String())
+		// A relay rewrote Sender to itself and delivered it itself: still the pin.
+		if got, ok := revealPushTarget(block(relay.String()), relay.String()); !ok || got != seq {
+			t.Fatalf("got (%q, %v), want the pinned sequencer %q", got, ok, seq)
+		}
+	})
 }
