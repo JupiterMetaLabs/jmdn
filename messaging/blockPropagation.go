@@ -176,7 +176,7 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	defer peerTimeoutMutex.Unlock()
 
 	peerTimeouts[peerID] = time.Now().UTC().Add(duration)
-	broadcastLogger().Info(context.Background(), "Peer timed out for sending duplicate block", ion.String("peer", peerID), ion.String("duration", duration.String()))
+	broadcastLogger().Info(context.Background(), "Peer timed out for sending an invalid block", ion.String("peer", peerID), ion.String("duration", duration.String()))
 }
 
 // isMessageProcessed checks if this message has already been processed.
@@ -426,9 +426,15 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
 		// a bare peer id for a direct-stream copy. This is the dropped (second)
 		// copy of a block delivered over both transports.
+		//
+		// No timeoutPeer here: every block arrives twice by design (gossip +
+		// direct), so a duplicate is not misbehaviour. Timing out the sender
+		// shut the sequencer's own direct channel for 20 s whenever the gossip
+		// copy won the race, and timed out honest relays the same way. A
+		// duplicate costs only this cache lookup; a bad block is still timed
+		// out by the admitZKBlock rejection below.
 		broadcastLogger().Debug(context.Background(), "Duplicate message received",
 			ion.String("message_id", messageID), ion.String("from", remotePeer))
-		timeoutPeer(remotePeer, 20*time.Second)
 		return
 	}
 
