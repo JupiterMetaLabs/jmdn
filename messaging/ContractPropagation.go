@@ -327,6 +327,10 @@ func HandleContractPullStream(stream network.Stream) {
 // buildPullResponse constructs a ContractPullResponse from local state.
 // Bytecode is always included when available so the requester can write it to
 // its own KVStore and satisfy HasCode checks before block processing begins.
+//
+// On this build "when available" is never: GetCodeBytes reads a singleton that
+// is never assigned, so this returns Found=false for every address. See
+// pullStreamTimeout.
 func buildPullResponse(addr common.Address) ContractPullResponse {
 	resp := ContractPullResponse{ContractAddress: addr}
 
@@ -368,5 +372,19 @@ func respondPullError(stream network.Stream, addr common.Address, msg string) {
 // PrefetchMissingContracts) ran on the block-apply goroutine, asked every peer
 // once per EIP-1559 recipient, and stored into sharedKVStore, which is never
 // set up, while execution reads code from cas.KV(); a silent peer froze block
-// apply. The server stays for older nodes that still pull.
+// apply.
+//
+// The server stays registered (main.go, ContractPullProtocol) so an older node
+// that still pulls gets an answer rather than a stream error — but on this
+// build that answer is always Found=false, so it is not a working fallback:
+// buildPullResponse reads SmartContract.GetCodeBytes -> contractDB.GetCodeBytes,
+// which returns (nil, false) while sharedKVStore is nil, and sharedKVStore is
+// declared in DB_OPs/contractDB/contractdb.go and never assigned anywhere in
+// the tree (main.go notes the same for the HasCode it replaced).
+//
+// Two ways out, whichever this fleet needs: point the responder at cas.KV() —
+// the store deploys commit to and execution reads, see main.go's contractRepo —
+// to make the server real, or retire the handler and its registration together
+// with contractDB.HasCode and contractDB.StoreCodeBytes, which the client
+// removal left with no callers.
 var pullStreamTimeout = 5 * time.Second // a variable so tests can shorten it
