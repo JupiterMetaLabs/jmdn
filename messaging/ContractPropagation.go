@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -97,9 +96,9 @@ func markContractMessageProcessed(id string) {
 
 // NOTE(F4 merge): PropagateContractDeployments (push propagation) was retired
 // with main's per-tx-atomic Processing.go rewrite — processTransaction no
-// longer returns ContractDeploymentInfo. Receivers rely on the pull-on-demand
-// path (PrefetchMissingContracts) below; re-introduce push propagation from
-// the sequencer if deployment latency becomes an issue.
+// longer returns ContractDeploymentInfo. Nodes get contract code by executing
+// the deploy transaction in a certified block (cas.KV()); the pull-on-demand
+// client is gone too (see pullStreamTimeout).
 
 // HandleContractStream is the libp2p stream handler registered on all nodes for
 // the ContractPropagationProtocol.  It deduplicates via Bloom filter, writes the
@@ -280,6 +279,9 @@ type ContractPullResponse struct {
 // missed the original gossip message.
 func HandleContractPullStream(stream network.Stream) {
 	defer stream.Close()
+	// A peer that opens a pull stream and sends nothing must not hold this
+	// handler's goroutine.
+	_ = stream.SetDeadline(time.Now().Add(pullStreamTimeout))
 
 	remotePeer := stream.Conn().RemotePeer().String()
 
@@ -325,6 +327,10 @@ func HandleContractPullStream(stream network.Stream) {
 // buildPullResponse constructs a ContractPullResponse from local state.
 // Bytecode is always included when available so the requester can write it to
 // its own KVStore and satisfy HasCode checks before block processing begins.
+//
+// On this build "when available" is never: GetCodeBytes reads a singleton that
+// is never assigned, so this returns Found=false for every address. See
+// pullStreamTimeout.
 func buildPullResponse(addr common.Address) ContractPullResponse {
 	resp := ContractPullResponse{ContractAddress: addr}
 
@@ -359,133 +365,26 @@ func respondPullError(stream network.Stream, addr common.Address, msg string) {
 	_, _ = stream.Write(b)
 }
 
-// PullContractIfMissing fetches contract metadata from a peer and stores it
-// locally.  Returns true if the contract is already present (HasCode) or was
-// successfully fetched.  Returns false when no peer has the contract.
+// pullStreamTimeout bounds a contract-pull request and its answer on the
+// serving side (HandleContractPullStream).
 //
-// The call is synchronous — callers should wrap it in a goroutine if they
-// don't want to block.
-func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address) bool {
-	// Fast path — already have it.
-	if SmartContract.HasCode(addr) {
-		return true
-	}
-
-	peers := h.Network().Peers()
-	if len(peers) == 0 {
-		contractLogger().Warn(ctx, "ContractPull: no peers available for pull",
-			ion.String("contract", addr.Hex()))
-		return false
-	}
-
-	// Copy and shuffle so we don't always hammer the same peer.
-	order := make([]int, len(peers))
-	for i := range order {
-		order[i] = i
-	}
-	rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
-
-	reqBytes, err := json.Marshal(ContractPullRequest{ContractAddress: addr})
-	if err != nil {
-		return false
-	}
-	reqBytes = append(reqBytes, '\n')
-
-	for _, idx := range order {
-		p := peers[idx]
-
-		pullCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		stream, err := h.NewStream(pullCtx, p, config.ContractPullProtocol)
-		cancel()
-		if err != nil {
-			contractLogger().Debug(ctx, "ContractPull: stream open failed",
-				ion.Err(err), ion.String("peer", p.String()))
-			continue
-		}
-
-		var resp ContractPullResponse
-		func() {
-			defer stream.Close()
-			if _, err := stream.Write(reqBytes); err != nil {
-				contractLogger().Debug(ctx, "ContractPull: write failed",
-					ion.Err(err), ion.String("peer", p.String()))
-				return
-			}
-			// ContractPullResponse includes bytecode — cap at 25 MB (EVM max contract size is 24.576 KB, but be generous).
-			const maxPullRespBytes = 25 * 1024 * 1024
-			reader := bufio.NewReader(io.LimitReader(stream, maxPullRespBytes))
-			respBytes, err := reader.ReadBytes('\n')
-			if err != nil && err != io.EOF {
-				contractLogger().Debug(ctx, "ContractPull: read failed",
-					ion.Err(err), ion.String("peer", p.String()))
-				return
-			}
-			if err := json.Unmarshal(respBytes, &resp); err != nil {
-				contractLogger().Debug(ctx, "ContractPull: unmarshal response failed",
-					ion.Err(err))
-			}
-		}()
-
-		if !resp.Found {
-			continue
-		}
-
-		// Write bytecode into the local KVStore first so that HasCode returns
-		// true and contract execution can proceed during block processing.
-		if len(resp.Bytecode) > 0 {
-			if codeErr := SmartContract.StoreCodeBytes(resp.ContractAddress, resp.Bytecode); codeErr != nil {
-				contractLogger().Error(ctx, "ContractPull: failed to store pulled bytecode", codeErr,
-					ion.String("contract", addr.Hex()))
-				// Continue to next peer — bytecode write failure means we can't use this response.
-				continue
-			}
-		} else {
-			contractLogger().Warn(ctx, "ContractPull: peer returned found=true but sent no bytecode, skipping",
-				ion.String("contract", addr.Hex()), ion.String("peer", p.String()))
-			continue
-		}
-
-		// Store registry metadata (deployer, ABI, etc.) — best-effort.
-		if regErr := SmartContract.RegisterContractFromGossip(
-			ctx,
-			resp.ContractAddress,
-			resp.Deployer,
-			resp.TxHash,
-			resp.BlockNumber,
-			resp.ABI,
-		); regErr != nil {
-			contractLogger().Warn(ctx, "ContractPull: failed to register contract metadata (bytecode stored successfully)",
-				ion.Err(regErr), ion.String("contract", addr.Hex()))
-		}
-
-		contractLogger().Info(ctx, "ContractPull: contract bytecode and metadata fetched from peer",
-			ion.String("contract", addr.Hex()),
-			ion.String("peer", p.String()),
-			ion.Uint64("block", resp.BlockNumber),
-			ion.Int("bytecode_bytes", len(resp.Bytecode)))
-		return true
-	}
-
-	contractLogger().Warn(ctx, "ContractPull: no peer had the contract",
-		ion.String("contract", addr.Hex()))
-	return false
-}
-
-// PrefetchMissingContracts scans block transactions and pulls metadata for
-// any contract-call addresses whose bytecode isn't in the local KV store.
-// Called by HandleBlockStream before ProcessBlockTransactions so that missed
-// gossip doesn't cause contract executions to fall through to the regular
-// transfer path.
-func PrefetchMissingContracts(ctx context.Context, h host.Host, txs []config.Transaction) {
-	for _, tx := range txs {
-		if tx.To == nil || tx.Type != 2 {
-			continue // not a contract call
-		}
-		if SmartContract.HasCode(*tx.To) {
-			continue // already present
-		}
-		contractLogger().Info(ctx, "ContractPull: pre-fetching missing contract before block processing",
-			ion.String("contract", tx.To.Hex()))
-		PullContractIfMissing(ctx, h, *tx.To)
-	}
-}
+// This node no longer pulls: the client (PullContractIfMissing and
+// PrefetchMissingContracts) ran on the block-apply goroutine, asked every peer
+// once per EIP-1559 recipient, and stored into sharedKVStore, which is never
+// set up, while execution reads code from cas.KV(); a silent peer froze block
+// apply.
+//
+// The server stays registered (main.go, ContractPullProtocol) so an older node
+// that still pulls gets an answer rather than a stream error — but on this
+// build that answer is always Found=false, so it is not a working fallback:
+// buildPullResponse reads SmartContract.GetCodeBytes -> contractDB.GetCodeBytes,
+// which returns (nil, false) while sharedKVStore is nil, and sharedKVStore is
+// declared in DB_OPs/contractDB/contractdb.go and never assigned anywhere in
+// the tree (main.go notes the same for the HasCode it replaced).
+//
+// Two ways out, whichever this fleet needs: point the responder at cas.KV() —
+// the store deploys commit to and execution reads, see main.go's contractRepo —
+// to make the server real, or retire the handler and its registration together
+// with contractDB.HasCode and contractDB.StoreCodeBytes, which the client
+// removal left with no callers.
+var pullStreamTimeout = 5 * time.Second // a variable so tests can shorten it

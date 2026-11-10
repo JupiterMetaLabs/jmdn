@@ -115,14 +115,20 @@ func HandleBroadcastStream(stream network.Stream) {
 		return
 	}
 
-	// Check if we've already seen this message
-	if isMessageSeen(msg.ID) {
+	// Sender check, then dedup. In that order: see admitBroadcast.
+	switch reason := admitBroadcast(&msg, stream.Conn().RemotePeer()); reason {
+	case "":
+	case "duplicate":
 		// We've already processed this message, ignore
 		return
+	default:
+		metrics.BlocksRejectedCounter.WithLabelValues(reason, "remote").Inc()
+		broadcastLogger().Warn(context.Background(), "Dropping broadcast message",
+			ion.String("reason", reason),
+			ion.String("peer", stream.Conn().RemotePeer().String()),
+			ion.String("type", msg.Type))
+		return
 	}
-
-	// Mark as seen to avoid reprocessing
-	markMessageSeen(msg.ID)
 
 	broadcastLogger().Info(context.Background(), "Broadcast received",
 		ion.String("sender", msg.Sender),
@@ -208,6 +214,44 @@ func expectedBroadcastID(msg *BroadcastMessageStruct) string {
 		return generateMessageID(msg.Sender, msg.Content, msg.Timestamp)
 	}
 	return generateMessageID(msg.Sender, msg.Content+msg.Data, msg.Timestamp)
+}
+
+// broadcastSeenKey is the dedup key for a broadcast. A vote trigger's wire ID is
+// predictable (sender, fixed text, unix second; see expectedBroadcastID), so its
+// key also covers the proposal (Data): a forged trigger carrying the next real
+// trigger's ID, but not its proposal, cannot make this node drop the real one
+// as a duplicate. Every other type already binds Data into its ID. The wire ID
+// is unchanged, so senders on an older binary still verify.
+func broadcastSeenKey(msg *BroadcastMessageStruct) string {
+	if msg.Type != voteTriggerBroadcastType {
+		return msg.ID
+	}
+	sum := sha256.Sum256([]byte(msg.ID + "\x00" + msg.Data))
+	return "vote_trigger:" + base64.URLEncoding.EncodeToString(sum[:])
+}
+
+// admitBroadcast decides, after checkBroadcastEnvelope, whether a received
+// broadcast is processed, and marks it seen if so. Returns "" to process,
+// "duplicate" for a message already seen, or a rejection reason.
+//
+// A vote trigger's sender is checked BEFORE the message is marked seen.
+// Marking first let any peer send a trigger naming the sequencer, with Hops > 0
+// (so the envelope's origin check does not apply) and the ID of a coming
+// second; it was marked seen, then dropped as unauthorized, and the real
+// trigger for that second was then dropped as a duplicate, so no validator
+// voted.
+func admitBroadcast(msg *BroadcastMessageStruct, from peer.ID) string {
+	if msg.Type == voteTriggerBroadcastType {
+		if ok, _ := voteTriggerSenderAuthorized(from); !ok {
+			return "vote_trigger_unauthorized_sender"
+		}
+	}
+	key := broadcastSeenKey(msg)
+	if isMessageSeen(key) {
+		return "duplicate"
+	}
+	markMessageSeen(key)
+	return ""
 }
 
 // checkBroadcastEnvelope validates the sender-controlled envelope fields.
@@ -846,7 +890,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		ion.String("sender", msg.Sender))
 
 	// Remember this message so we don't process it if we receive it back
-	markMessageSeen(msg.ID)
+	markMessageSeen(broadcastSeenKey(&msg))
 
 	// Convert to JSON
 	msgBytes, err := json.Marshal(msg)
