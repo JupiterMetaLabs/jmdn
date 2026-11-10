@@ -75,7 +75,9 @@ func TestBlockHashRepeat(t *testing.T) {
 	const state = "0x2222222222222222222222222222222222222222222222222222222222222222"
 	ts := time.Unix(1_760_000_000, 0).UTC()
 	// The repeat (11) is written first, so a lookup without a defined order
-	// would tend to return it.
+	// would tend to return it. Both carry the same transaction, which is how a
+	// legacy block repeats a hash.
+	const txHash = "0x3333333333333333333333333333333333333333333333333333333333333333"
 	for seq, n := range []uint64{11, 10} {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -93,6 +95,14 @@ func TestBlockHashRepeat(t *testing.T) {
 		if err := p.Apply(ctx, uint64(2*seq+2), record(t, "snapshot", snap), tx); err != nil {
 			_ = tx.Rollback()
 			t.Fatalf("snapshot %d: %v", n, err)
+		}
+		txr := thebegateway.TransactionRecord{
+			TxHash: txHash, BlockNumber: n, FromAddr: "0x00000000000000000000000000000000000000a1",
+			ValueWei: "1", Nonce: "0", GasLimit: "21000", GasPriceWei: "0", MaxFeeWei: "0", MaxPriorityFeeWei: "0",
+		}
+		if err := p.Apply(ctx, uint64(100+seq), record(t, "tx", txr), tx); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("transaction in block %d: %v", n, err)
 		}
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
@@ -113,5 +123,16 @@ func TestBlockHashRepeat(t *testing.T) {
 	}
 	if got.BlockNumber != 10 {
 		t.Fatalf("GetBlockByHash returned block %d, want the earlier block 10", got.BlockNumber)
+	}
+
+	// The transaction is stored once, under the block projected first (11
+	// here), not under the lower block number (sqlInsertTransaction).
+	var rows int
+	var owner uint64
+	if err := db.QueryRowContext(ctx, `SELECT count(*), max(block_number) FROM transactions WHERE tx_hash = $1`, txHash).Scan(&rows, &owner); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || owner != 11 {
+		t.Fatalf("transaction stored %d time(s) under block %d, want once under the first-projected block 11", rows, owner)
 	}
 }

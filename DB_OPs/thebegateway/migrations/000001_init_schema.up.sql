@@ -72,7 +72,7 @@ CREATE TRIGGER trg_accounts_updated_at
 -- 2) blocks (SQL — Append Only — Create Read)
 -- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
 -- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
--- block_hash, txs_root and state_root are indexed, not unique (see thebeprofile/schema.go).
+-- block_hash, txs_root and state_root are not unique; only block_hash is indexed (see thebeprofile/schema.go).
 -- ================================================================
 CREATE TABLE IF NOT EXISTS blocks (
     block_number  BIGINT        PRIMARY KEY,

@@ -31,6 +31,14 @@ import (
 	"gossipnode/DB_OPs/thebegateway"
 )
 
+// sqlInsertTransaction stores a transaction once per hash. When two blocks
+// carry the same transaction (a legacy block that repeats an earlier block's
+// transactions), the row belongs to whichever block's projection writes it
+// first and the other block lists none of it. Blocks are projected in height
+// order, so that is normally the earlier block; a projection retried from the
+// outbox (drained by retry time, not height) can land after a later block's.
+// Readers that list transactions by block or by block range see the row under
+// that block only.
 const sqlInsertTransaction = `
 INSERT INTO transactions (tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce, type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei, gas_fee_wei, data, access_list, sig_v, sig_r, sig_s, chain_id)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)

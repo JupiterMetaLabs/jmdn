@@ -114,12 +114,17 @@ CREATE TRIGGER trg_accounts_updated_at
 -- 2) blocks (SQL — Append Only — Create Read)
 -- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
 -- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
--- block_hash, txs_root and state_root are indexed, not unique. A legacy
--- block hash covers only the transactions, so a block that repeats an earlier
--- block's transaction set carries the same block_hash and txs_root, and a block
--- whose transactions change nothing leaves state_root as it was. The main
--- chain has such blocks; a unique key would refuse to store them and leave a
--- gap in the block heights.
+-- block_hash, txs_root and state_root are not unique. A legacy block hash
+-- covers only the transactions, so a block that repeats an earlier block's
+-- transaction set carries the same block_hash and txs_root, and a block whose
+-- transactions change nothing leaves state_root as it was. The main chain has
+-- such blocks; a unique key would refuse to store them and leave a gap in the
+-- block heights. block_hash is indexed (lookup by hash); txs_root and
+-- state_root are not, since nothing looks them up.
+--
+-- A repeated transaction is stored once (transactions.tx_hash is the primary
+-- key, apply_transaction.go), under whichever block's projection writes it
+-- first, so a block can list fewer transactions than its txs_root covers.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS blocks (
     block_number  BIGINT        PRIMARY KEY,
