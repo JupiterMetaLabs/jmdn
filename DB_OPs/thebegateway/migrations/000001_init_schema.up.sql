@@ -72,15 +72,15 @@ CREATE TRIGGER trg_accounts_updated_at
 -- 2) blocks (SQL — Append Only — Create Read)
 -- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
 -- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
--- state_root and txs_root uniqueness enforced: two blocks cannot share roots.
+-- block_hash, txs_root and state_root are indexed, not unique (see thebeprofile/schema.go).
 -- ================================================================
 CREATE TABLE IF NOT EXISTS blocks (
     block_number  BIGINT        PRIMARY KEY,
-    block_hash    CHAR(66)      NOT NULL UNIQUE,
+    block_hash    CHAR(66)      NOT NULL,
     parent_hash   CHAR(66)      NOT NULL,
     timestamp     TIMESTAMPTZ   NOT NULL,
-    txs_root      CHAR(66)      NOT NULL UNIQUE,
-    state_root    CHAR(66)      NOT NULL UNIQUE,
+    txs_root      CHAR(66)      NOT NULL,
+    state_root    CHAR(66)      NOT NULL,
     logs_bloom    BYTEA,
     coinbase_addr CHAR(42),
     zkvm_addr     CHAR(42),
@@ -111,7 +111,7 @@ CREATE OR REPLACE RULE rule_blocks_no_delete AS
 -- ================================================================
 CREATE TABLE IF NOT EXISTS snapshots (
     block_number BIGINT       PRIMARY KEY,
-    block_hash   CHAR(66)     NOT NULL UNIQUE,
+    block_hash   CHAR(66)     NOT NULL,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_snapshot_block
         FOREIGN KEY (block_number) REFERENCES blocks(block_number)

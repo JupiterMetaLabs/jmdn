@@ -172,7 +172,8 @@ const (
 	sqlGetBlockByHash = `
         SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
                logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
-        FROM blocks WHERE block_hash = $1`
+        FROM blocks WHERE block_hash = $1
+        ORDER BY block_number LIMIT 1`
 
 	sqlBulkGetBlocks = `
         SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
@@ -673,7 +674,9 @@ func (r *thebeReader) GetSnapshot(ctx context.Context, blockNumber uint64) (*Sna
 	return &rec, nil
 }
 
-// GetBlockByHash returns the block with the given block hash.
+// GetBlockByHash returns the block with the given block hash. A legacy block
+// that repeats an earlier block's transactions has the same hash; the lowest
+// block number is returned, so every node answers the same way.
 // Time: O(1) — hash-indexed lookup (requires index on block_hash column)
 func (r *thebeReader) GetBlockByHash(ctx context.Context, hash string) (*BlockRecord, error) {
 	var rec BlockRecord
