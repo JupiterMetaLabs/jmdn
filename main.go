@@ -1567,6 +1567,10 @@ func main() {
 	// the committee wiring above, byte-identical to the previous behaviour.
 	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
 	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
+	// Vote-ingest voter set: whose votes a node may STORE (and so republish by
+	// CRDT sync). The fleet-agreed pool, without the local block_buddy filter
+	// the tally source above applies; see messaging/authorized_voters_tally.go.
+	Structs.SetIngestVotersForHeightFn(messaging.FleetVotersForIngestAtHeight)
 	// Vote-ingest height window: a received vote may be at most
 	// Structs.MaxVoteHeightAhead past this node's committed tip.
 	Structs.SetCommittedTipFn(messaging.CommittedTip)

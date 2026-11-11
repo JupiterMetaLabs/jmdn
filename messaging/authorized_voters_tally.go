@@ -42,3 +42,17 @@ func AuthorizedVotersForTallyAtHeight(height uint64) (map[string]string, error) 
 	}
 	return eligibleMembersUncapped()
 }
+
+// FleetVotersForIngestAtHeight is the set whose votes a node may STORE: the
+// same pool as AuthorizedVotersForTallyAtHeight, without the node-local
+// block_buddy filter. A stored vote is republished to peers by CRDT sync, so
+// this set must not vary between nodes — see FleetEligibleForEpoch's contract.
+// Who a node COUNTS is still AuthorizedVotersForTallyAtHeight. Wired via
+// Structs.SetIngestVotersForHeightFn; independent of JMDN_VALIDATOR_VOTER_SET,
+// which governs counting, not storing and relaying.
+func FleetVotersForIngestAtHeight(height uint64) (map[string]string, error) {
+	if pool, handled, err := AnchoredPoolForHeight(height, false); handled {
+		return pool, err
+	}
+	return FleetEligibleForEpoch(0, false)
+}

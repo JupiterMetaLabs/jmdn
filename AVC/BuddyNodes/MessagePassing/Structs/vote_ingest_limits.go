@@ -14,10 +14,13 @@ package Structs
 //
 //  1. height window: at most MaxVoteHeightAhead above this node's committed
 //     tip (below the watermark AddVote already refuses it);
-//  2. voter set: the sender is in authorizedVotersFor(height), the same set
-//     the tally counts from, so a refused vote is one the tally would never
-//     have counted. When the source cannot answer, ingest stays lossless
-//     (LLD D5) and only the per-peer bounds below apply;
+//  2. voter set: the sender is in the fleet-agreed voter pool
+//     (ingestVotersForHeightFn: the tally's pool without the node-local
+//     block_buddy filter). A stored vote is republished by CRDT sync, so a
+//     node must store what any peer would count, not only what it counts
+//     itself; the tally still applies the filtered set. When the source is
+//     unset or cannot answer, ingest stays lossless (LLD D5) and only the
+//     per-peer bounds below apply;
 //  3. per-peer cap on the SIG key (the cap AddVote meant to apply);
 //  4. at most MaxBlocksPerVoterPerHeight distinct block hashes per
 //     (sender, height), so one voter cannot open unbounded keys at a height.
@@ -63,6 +66,18 @@ func SetCommittedTipFn(fn func() (uint64, bool)) {
 	committedTipFn = fn
 }
 
+// ingestVotersForHeightFn returns the voters whose votes a node may store at a
+// height: the fleet-agreed pool (messaging.FleetVotersForIngestAtHeight), not
+// the blocklist-filtered set the tally counts from (authorizedVotersFor).
+// Injected for the same import-cycle reason as committedTipFn.
+var ingestVotersForHeightFn func(height uint64) (map[string]string, error)
+
+// SetIngestVotersForHeightFn wires the ingest voter-set source. Call once at
+// startup.
+func SetIngestVotersForHeightFn(fn func(height uint64) (map[string]string, error)) {
+	ingestVotersForHeightFn = fn
+}
+
 // voterBlocks records, per "sender|height", the block hashes that sender has
 // had a vote stored for. Size-bounded and expiring, so it cannot itself grow
 // without limit; an entry outlives its height's place in the window.
@@ -86,9 +101,11 @@ func checkVoteIngestLimits(layer *avctypes.Controller, sender peer.ID, height ui
 			return "height_ahead"
 		}
 	}
-	if voters, err := authorizedVotersFor(height); err == nil {
-		if _, ok := voters[sender.String()]; !ok {
-			return "not_voter"
+	if fn := ingestVotersForHeightFn; fn != nil {
+		if voters, err := fn(height); err == nil {
+			if _, ok := voters[sender.String()]; !ok {
+				return "not_voter"
+			}
 		}
 	}
 	if avcvotes.CountElementsForPeer(layer, avcvotes.BlockSigKey(height, blockHash), sender.String()) >= avcvotes.MaxElementsPerPeerPerBlock {

@@ -319,29 +319,32 @@ func TestIngestValidatorVote_FlagOff_WritesNothing(t *testing.T) {
 // far-future keys (PoC #2): avcvotes' per-peer cap counts the vote key, which
 // holds at most "peer:1" and "peer:-1", so it never fired.
 
-// withIngestLimits installs a voter set (nil = source not installed) and a
-// committed tip (ok=false = unknown), with fresh limit state, for one test.
+// withIngestLimits installs an ingest voter set (nil = source not installed)
+// and a committed tip (ok=false = unknown), with fresh limit state, for one
+// test. The tally's voter source is left unset; tests that need it set it.
 func withIngestLimits(t *testing.T, voters []peer.ID, tip uint64, tipKnown bool) {
 	t.Helper()
 	withFreshWatermark(t)
 	prevVoters, prevCommittee, prevCommitteeH := authorizedVotersForHeightFn, authorizedCommitteeFn, authorizedCommitteeForHeightFn
+	prevIngest := ingestVotersForHeightFn
 	prevTip, prevFlag, prevSet := committedTipFn, VoteIngestLimitsEnabled, ValidatorVoterSetEnabled
 	prevBlocks := voterBlocks
 	t.Cleanup(func() {
 		authorizedVotersForHeightFn, authorizedCommitteeFn, authorizedCommitteeForHeightFn = prevVoters, prevCommittee, prevCommitteeH
+		ingestVotersForHeightFn = prevIngest
 		committedTipFn, VoteIngestLimitsEnabled, ValidatorVoterSetEnabled = prevTip, prevFlag, prevSet
 		voterBlocks = prevBlocks
 	})
 	voterBlocks = expirable.NewLRU[string, []string](16384, nil, time.Hour)
 	VoteIngestLimitsEnabled, ValidatorVoterSetEnabled = true, true
 	authorizedCommitteeFn, authorizedCommitteeForHeightFn = nil, nil
-	authorizedVotersForHeightFn = nil
+	authorizedVotersForHeightFn, ingestVotersForHeightFn = nil, nil
 	if voters != nil {
 		set := make(map[string]string, len(voters))
 		for _, v := range voters {
 			set[v.String()] = ""
 		}
-		authorizedVotersForHeightFn = func(uint64) (map[string]string, error) { return set, nil }
+		ingestVotersForHeightFn = func(uint64) (map[string]string, error) { return set, nil }
 	}
 	committedTipFn = func() (uint64, bool) { return tip, tipKnown }
 }
@@ -390,6 +393,51 @@ func TestVoteIngestLimits_VoterSetUnavailableStaysLossless(t *testing.T) {
 	withIngestLimits(t, nil, 100, true) // no voter source installed -> error
 	if err := IngestValidatorVote(newIngestLayer(), p, junkWireVote(t, 101, "0xb", 0), "direct"); err != nil {
 		t.Fatalf("with no voter source the vote must still be stored: %v", err)
+	}
+}
+
+// A peer this node blocklists is still in the fleet-agreed pool: its vote is
+// STORED (so CRDT sync republishes it to peers that count it) while this
+// node's tally, which applies the blocklist, does not count it.
+func TestVoteIngestLimits_BlocklistedPeerStoredButNotCounted(t *testing.T) {
+	member, blocked := ingestTestPeer(t), ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{member, blocked}, 100, true)
+	layer := newIngestLayer()
+
+	raw, pubKeyHex := ingestWireVote(t, 1, ingestHeight, ingestBlockHash, true)
+	committedTipFn = func() (uint64, bool) { return ingestHeight - 1, true }
+	// This node's tally set, as main.go wires it: the pool minus its blocklist.
+	tallySet := map[string]string{member.String(): pubKeyHex}
+	authorizedVotersForHeightFn = func(uint64) (map[string]string, error) { return tallySet, nil }
+	if err := IngestValidatorVote(layer, blocked, raw, "pubsub"); err != nil {
+		t.Fatalf("a blocklisted pool member's vote must be stored for relay: %v", err)
+	}
+	if n := sigElems(layer, ingestHeight, ingestBlockHash, blocked); n == 0 {
+		t.Fatal("the blocklisted peer's vote was not stored")
+	}
+
+	tally, err := avcvotes.TallyBlock(layer, ingestHeight, ingestBlockHash, tallySet)
+	if err != nil {
+		t.Fatalf("TallyBlock: %v", err)
+	}
+	if _, counted := tally.SingleVotePeers()[blocked.String()]; counted {
+		t.Fatal("the tally counted a peer outside its own (blocklist-filtered) set")
+	}
+}
+
+// The ingest voter set does not follow JMDN_VALIDATOR_VOTER_SET: that flag
+// governs who a node counts, not what it stores and relays.
+func TestVoteIngestLimits_IngestIgnoresValidatorVoterSetFlag(t *testing.T) {
+	member, outsider := ingestTestPeer(t), ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{member}, 100, true)
+	ValidatorVoterSetEnabled = false
+	layer := newIngestLayer()
+
+	if err := IngestValidatorVote(layer, member, junkWireVote(t, 101, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("a pool member's vote must be stored with the flag off: %v", err)
+	}
+	if err := IngestValidatorVote(layer, outsider, junkWireVote(t, 101, "0xb", 0), "direct"); !errors.Is(err, ErrVoteIngestRefused) {
+		t.Fatalf("a peer outside the pool must still be refused with the flag off, got %v", err)
 	}
 }
 
