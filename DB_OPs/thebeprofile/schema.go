@@ -114,15 +114,25 @@ CREATE TRIGGER trg_accounts_updated_at
 -- 2) blocks (SQL — Append Only — Create Read)
 -- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
 -- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
--- state_root and txs_root uniqueness enforced: two blocks cannot share roots.
+-- block_hash, txs_root and state_root are not unique. A legacy block hash
+-- covers only the transactions, so a block that repeats an earlier block's
+-- transaction set carries the same block_hash and txs_root, and a block whose
+-- transactions change nothing leaves state_root as it was. The main chain has
+-- such blocks; a unique key would refuse to store them and leave a gap in the
+-- block heights. block_hash is indexed (lookup by hash); txs_root and
+-- state_root are not, since nothing looks them up.
+--
+-- A repeated transaction is stored once (transactions.tx_hash is the primary
+-- key, apply_transaction.go), under whichever block's projection writes it
+-- first, so a block can list fewer transactions than its txs_root covers.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS blocks (
     block_number  BIGINT        PRIMARY KEY,
-    block_hash    CHAR(66)      NOT NULL UNIQUE,
+    block_hash    CHAR(66)      NOT NULL,
     parent_hash   CHAR(66)      NOT NULL,
     timestamp     TIMESTAMPTZ   NOT NULL,
-    txs_root      CHAR(66)      NOT NULL UNIQUE,
-    state_root    CHAR(66)      NOT NULL UNIQUE,
+    txs_root      CHAR(66)      NOT NULL,
+    state_root    CHAR(66)      NOT NULL,
     logs_bloom    BYTEA,
     coinbase_addr CHAR(42),
     zkvm_addr     CHAR(42),
@@ -139,6 +149,11 @@ CREATE INDEX IF NOT EXISTS idx_blocks_timestamp
 CREATE INDEX IF NOT EXISTS idx_blocks_block_hash
     ON blocks(block_hash);
 
+-- Databases created by earlier builds carry the unique keys; drop them.
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_block_hash_key;
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_txs_root_key;
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_state_root_key;
+
 -- Historical balance reconstruction (eth_getBalance at block N):
 -- WHERE LOWER(coinbase_addr)=LOWER($1) OR LOWER(zkvm_addr)=LOWER($1)
 CREATE INDEX IF NOT EXISTS idx_blocks_coinbase_lower
@@ -154,7 +169,7 @@ CREATE INDEX IF NOT EXISTS idx_blocks_zkvm_lower
 -- ================================================================
 CREATE TABLE IF NOT EXISTS snapshots (
     block_number BIGINT       PRIMARY KEY,
-    block_hash   CHAR(66)     NOT NULL UNIQUE,
+    block_hash   CHAR(66)     NOT NULL,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_snapshot_block
         FOREIGN KEY (block_number) REFERENCES blocks(block_number)
@@ -162,6 +177,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at
     ON snapshots(created_at DESC);
+
+-- block_hash repeats with its block (see blocks above).
+CREATE INDEX IF NOT EXISTS idx_snapshots_block_hash
+    ON snapshots(block_hash);
+ALTER TABLE snapshots DROP CONSTRAINT IF EXISTS snapshots_block_hash_key;
 
 -- ================================================================
 -- 4) transactions (SQL — Append Only — Create Read)

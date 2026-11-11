@@ -506,7 +506,8 @@ func (c *Cassata) GetBlockByHash(ctx context.Context, hash string) (*BlockResult
 		       txs_root, state_root, logs_bloom,
 		       coinbase_addr, zkvm_addr,
 		       gas_limit, gas_used, status, extra_data, created_at
-		FROM blocks WHERE block_hash = $1`, hash)
+		FROM blocks WHERE block_hash = $1
+		ORDER BY block_number LIMIT 1`, hash)
 	var b BlockResult
 	if err := row.Scan(
 		&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
