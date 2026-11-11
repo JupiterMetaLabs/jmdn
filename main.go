@@ -1829,20 +1829,27 @@ func main() {
 							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer failed, trying next")
 							continue
 						}
-						if !catchUpAdvanced(reached, tipBefore, tipErr) {
-							log.Warn().Uint64("reached", reached).Uint64("tip", tipBefore).Str("peer", p.PeerID).
-								Msg("[ReconcileFunc-peer] peer served no new blocks, trying next")
-							continue
-						}
-						log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] catchup succeeded")
 						// Slot-restart recovery, fast-sync half — same reasoning
 						// as the seednode-backed branch below: bulk catch-up
 						// writes bypass the live commit hooks, so re-running
 						// recovery against the now-populated local tip is what
 						// actually seeds it.
+						//
+						// Runs on ANY error-free catch-up, including one that
+						// applied nothing, and BEFORE the progress check below:
+						// these two loops are its only call sites outside
+						// startup, and it is documented as safe to call any
+						// number of times, so a no-op round must not take its
+						// retry away.
 						if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
 							log.Error().Err(err).Msg("[ReconcileFunc-peer] slot recovery after catchup failed — this node remains blocked from voting/proposing")
 						}
+						if !catchUpAdvanced(reached, tipBefore, tipErr) {
+							mainLogger().Warn(rctx, "[ReconcileFunc-peer] peer served no new blocks, trying next",
+								ion.Uint64("reached", reached), ion.Uint64("tip", tipBefore), ion.String("peer", p.PeerID))
+							continue
+						}
+						mainLogger().Info(rctx, "[ReconcileFunc-peer] catchup succeeded", ion.String("peer", p.PeerID))
 						return nil
 					}
 					return fmt.Errorf("[ReconcileFunc-peer] all %d sampled peer(s) failed catchup", len(peers))
@@ -1912,12 +1919,6 @@ func main() {
 								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
 								continue
 							}
-							if !catchUpAdvanced(reached, tipBefore, tipErr) {
-								log.Warn().Uint64("reached", reached).Uint64("tip", tipBefore).Str("peer", p.PeerID).
-									Msg("[ReconcileFunc] peer served no new blocks, trying next")
-								continue
-							}
-							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
 							// Slot-restart recovery, fast-sync half
 							// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8,
 							// point 5): bulk catch-up writes bypass the live
@@ -1929,9 +1930,20 @@ func main() {
 							// actually seeds it. No-ops if this node is
 							// already live (e.g. it was never behind and this
 							// reconcile was a no-op tick).
+							// Runs on ANY error-free catch-up, including one that
+							// applied nothing, and BEFORE the progress check
+							// below: these two loops are its only call sites
+							// outside startup, so a no-op round must not take
+							// its retry away.
 							if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
 								log.Error().Err(err).Msg("[ReconcileFunc] slot recovery after catchup failed — this node remains blocked from voting/proposing")
 							}
+							if !catchUpAdvanced(reached, tipBefore, tipErr) {
+								mainLogger().Warn(rctx, "[ReconcileFunc] peer served no new blocks, trying next",
+									ion.Uint64("reached", reached), ion.Uint64("tip", tipBefore), ion.String("peer", p.PeerID))
+								continue
+							}
+							mainLogger().Info(rctx, "[ReconcileFunc] catchup succeeded", ion.String("peer", p.PeerID))
 							return nil
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
