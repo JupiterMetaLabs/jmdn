@@ -977,6 +977,26 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	return nil
 }
 
+// dissentWithoutSignatures returns the Agree=false entries of in with their
+// Signature cleared — what a round that missed quorum is allowed to put on the
+// wire: why it failed, and no signature material. See the call site in
+// BroadcastBlockToEveryNodeWithExtraData for why the +1 entries are withheld.
+//
+// in is NOT modified. The caller keeps using the same slice after the broadcast
+// for its own alerting and reputation classification (Sequencer/Consensus.go),
+// which do need the signatures, so this must not strip them in place.
+func dissentWithoutSignatures(in []BLS_Signer.BLSresponse) []BLS_Signer.BLSresponse {
+	out := make([]BLS_Signer.BLSresponse, 0, len(in))
+	for _, r := range in {
+		if r.Agree {
+			continue
+		}
+		r.Signature = "" // r is a copy of the element; the caller's slice is untouched
+		out = append(out, r)
+	}
+	return out
+}
+
 // BroadcastBlockToEveryNodeWithExtraData sends a block to all connected peers and attaches extra metadata.
 // The extra map will be merged into msg.Data. Keys in extra override existing keys.
 func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, result bool, extra map[string]string, bls []BLS_Signer.BLSresponse) error {
@@ -1020,9 +1040,35 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		data[k] = v
 	}
 
-	// Attach BLS results (typed) as JSON string under data["bls_results"]
-	if len(bls) > 0 {
-		if enc, err := json.Marshal(bls); err == nil {
+	// Attach BLS results (typed) as JSON string under data["bls_results"].
+	//
+	// A round that MISSED quorum must not put its collected +1 signatures on the
+	// wire. They are a below-quorum partial certificate, and the gap to a full
+	// one is exactly the responses a committee member can supply for itself: a
+	// member that withheld its own response adds it to the set, reaches quorum
+	// for a block the fleet never committed, and can then serve that block with
+	// a verifying certificate over ThebeSync (VerifySyncedBlockCertificate
+	// seats the committee from the block's own Period, so a certificate built
+	// at a rejected period still verifies). The receiving node's durable
+	// equivocation record then pins the wrong block at that height for good.
+	//
+	// Sequencer/Consensus.go already applies this reasoning to the local
+	// aggregate-certificate stash — "a failed round produces no certificate,
+	// and recording a partial one would let a rejected block's signatures feed
+	// the fallback fold" — and the same holds for the copy sent to every peer.
+	//
+	// Nothing reads a rejection's bls_results: HandleReceivedBlockMessage
+	// returns at the status == "rejected" branch (blockPropagation.go) before
+	// prepareReceivedBlock, which is its only reader. The Agree=false entries
+	// are kept so rejection reasons still travel; their signatures go too,
+	// since no consumer verifies a dissent signature and a -1 signature is
+	// still signed material from that round.
+	onWire := bls
+	if !result {
+		onWire = dissentWithoutSignatures(bls)
+	}
+	if len(onWire) > 0 {
+		if enc, err := json.Marshal(onWire); err == nil {
 			data["bls_results"] = string(enc)
 		}
 	}
