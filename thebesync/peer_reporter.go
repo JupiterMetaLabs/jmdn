@@ -176,19 +176,24 @@ func (p PeerReporter) ReportBlockState(ctx context.Context, blockHead uint64, _ 
 // selectCatchUpTargets picks the reported head and the ordered catch-up
 // targets from one round of samples.
 //
-// The head is the highest height at least two peers report (the second-highest
-// sample), or the only sample when just one peer answered. Taking the bare
-// maximum let one peer claiming a huge height become the head AND, since only
-// peers at the head were targets, the sole catch-up source, starving the node
-// of its honest peers.
+// The head is the second-highest sample (the only sample when just one peer
+// answered), so at least two peers report a height at or above it and one peer
+// cannot set it. Taking the bare maximum let one peer claiming a huge height
+// become the head AND, since only peers at the head were targets, the sole
+// catch-up source, starving the node of its honest peers.
 //
-// Targets are every peer above ourTip, lowest height first, not only peers at
-// the head: two peers (libp2p identities are free, so one attacker can be two)
-// agreeing on a huge height must not push the honest peers out of the list.
-// The reconcile loop (main.go) stops at the first CatchUp that returns without
-// error, so order matters, not just membership: honest peers claiming ordinary
-// heights are tried before any inflated claim. An empty list just means no
-// sampled peer is ahead of us.
+// Targets are every peer above ourTip, not only peers at the head: two peers
+// (libp2p identities are free, so one attacker can be two) agreeing on a huge
+// height must not push the honest peers out of the list. The reconcile loop
+// (main.go) stops at the first CatchUp that returns without error, and CatchUp
+// syncs only to that peer's tip, so order matters, not just membership:
+//   - peers at or below the head come first, most advanced first, so one round
+//     goes as far as the corroborated head (lowest first let a peer claiming
+//     tip+1 hold every round to one block);
+//   - peers above the head come last, lowest first, so a lone inflated claim
+//     is tried after every corroborated peer.
+//
+// An empty list just means no sampled peer is ahead of us.
 func selectCatchUpTargets(results []peerHeadSample, ourTip uint64) (uint64, []peerHeadSample) {
 	if len(results) == 0 {
 		return 0, nil
@@ -201,11 +206,19 @@ func selectCatchUpTargets(results []peerHeadSample, ourTip uint64) (uint64, []pe
 		best = sorted[len(sorted)-2].height
 	}
 
-	targets := make([]peerHeadSample, 0, len(sorted))
+	var corroborated, inflated []peerHeadSample
 	for _, r := range sorted {
-		if r.height > ourTip {
-			targets = append(targets, r)
+		switch {
+		case r.height <= ourTip:
+		case r.height <= best:
+			corroborated = append(corroborated, r)
+		default:
+			inflated = append(inflated, r)
 		}
 	}
-	return best, targets
+	sort.SliceStable(corroborated, func(i, j int) bool { return corroborated[i].height > corroborated[j].height })
+
+	targets := make([]peerHeadSample, 0, len(corroborated)+len(inflated))
+	targets = append(targets, corroborated...)
+	return best, append(targets, inflated...)
 }
