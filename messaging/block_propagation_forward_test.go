@@ -228,3 +228,30 @@ func TestBlockMessageForForward_ApplyWritesDoNotReachTheForwardedCopy(t *testing
 		t.Fatal("a message with no block must stay without one")
 	}
 }
+
+// TestHandleReceivedBlockMessage_DuplicateDoesNotTimeOutSender: every block
+// arrives twice by design (gossip + direct), so the second copy must not time
+// its sender out. It used to (20 s), which shut the sequencer's own direct
+// channel whenever the gossip copy won the race.
+func TestHandleReceivedBlockMessage_DuplicateDoesNotTimeOutSender(t *testing.T) {
+	const sender = "dup-sender-peer"
+	t.Cleanup(func() {
+		peerTimeoutMutex.Lock()
+		delete(peerTimeouts, sender)
+		peerTimeoutMutex.Unlock()
+	})
+
+	msg := config.BlockMessage{
+		ID:     "dup-1",
+		Type:   "zkblock",
+		Sender: sender,
+		Block:  &config.ZKBlock{BlockNumber: 424242, Timestamp: time.Now().UnixNano()},
+	}
+	markMessageProcessed(getBlockDedupID(msg)) // the first copy was already applied
+
+	HandleReceivedBlockMessage(msg, sender, false)
+
+	if isPeerTimedOut(sender) {
+		t.Fatal("sender was timed out for delivering a duplicate block; its next block on the direct channel would be dropped")
+	}
+}

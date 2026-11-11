@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"strings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -70,4 +71,25 @@ func HandleGossipedBlockMessageFrom(msg config.BlockMessage, publisher peer.ID) 
 			ion.String("publisher", publisher.String()))
 	}
 	HandleGossipedBlockMessage(msg, "gossip:"+publisher.String())
+}
+
+// revealPushTarget returns the peer a received block's RevealPush goes to, or
+// false to skip this slot's push (it retries on the next block).
+//
+// msg.Sender is a payload field no signature covers, so it is not trusted on
+// its own: with gossip off, any relay could rewrite it on a genuine block and
+// collect the entropy committee's reveals instead of the proposer. The target
+// is the pinned sequencer when one is set; otherwise msg.Sender only when it is
+// the transport-authenticated peer (the direct-stream peer, or the gossipsub
+// publisher behind "gossip:"), i.e. the block came from its own sender.
+func revealPushTarget(msg config.BlockMessage, remotePeer string) (peer.ID, bool) {
+	if pin := strings.TrimSpace(blockSenderPin()); l1auth.Enforced(pin) {
+		id, err := peer.Decode(pin)
+		return id, err == nil
+	}
+	if msg.Sender == "" || msg.Sender != strings.TrimPrefix(remotePeer, "gossip:") {
+		return "", false
+	}
+	id, err := peer.Decode(msg.Sender)
+	return id, err == nil
 }
