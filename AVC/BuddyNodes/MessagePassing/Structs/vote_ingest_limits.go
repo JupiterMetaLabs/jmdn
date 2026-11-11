@@ -91,45 +91,30 @@ func voterBlocksKey(sender peer.ID, height uint64) string {
 }
 
 // checkVoteIngestLimits returns "" when the vote may be written, or the
-// refusal reason (also the metrics label).
-func checkVoteIngestLimits(layer *avctypes.Controller, sender peer.ID, height uint64, blockHash string) string {
+// refusal reason (also the metrics label). When it admits a block hash that is
+// new for (sender, height) it also records it, under the same lock as the
+// MaxBlocksPerVoterPerHeight check, and returns reserved=true: checking and
+// recording separately let concurrent ingests with different hashes all pass
+// the cap. The caller releases a reservation whose write did not store
+// (releaseVoteBlock).
+func checkVoteIngestLimits(layer *avctypes.Controller, sender peer.ID, height uint64, blockHash string) (reason string, reserved bool) {
 	if !VoteIngestLimitsEnabled {
-		return ""
+		return "", false
 	}
 	if fn := committedTipFn; fn != nil {
 		if tip, ok := fn(); ok && height > tip+MaxVoteHeightAhead {
-			return "height_ahead"
+			return "height_ahead", false
 		}
 	}
 	if fn := ingestVotersForHeightFn; fn != nil {
 		if voters, err := fn(height); err == nil {
 			if _, ok := voters[sender.String()]; !ok {
-				return "not_voter"
+				return "not_voter", false
 			}
 		}
 	}
 	if avcvotes.CountElementsForPeer(layer, avcvotes.BlockSigKey(height, blockHash), sender.String()) >= avcvotes.MaxElementsPerPeerPerBlock {
-		return "peer_cap"
-	}
-	voterBlocksMu.Lock()
-	defer voterBlocksMu.Unlock()
-	if hashes, ok := voterBlocks.Get(voterBlocksKey(sender, height)); ok {
-		for _, h := range hashes {
-			if h == blockHash {
-				return ""
-			}
-		}
-		if len(hashes) >= MaxBlocksPerVoterPerHeight {
-			return "block_cap"
-		}
-	}
-	return ""
-}
-
-// noteVoteIngested records a stored vote's block hash for its sender and height.
-func noteVoteIngested(sender peer.ID, height uint64, blockHash string) {
-	if !VoteIngestLimitsEnabled {
-		return
+		return "peer_cap", false
 	}
 	key := voterBlocksKey(sender, height)
 	voterBlocksMu.Lock()
@@ -137,8 +122,36 @@ func noteVoteIngested(sender peer.ID, height uint64, blockHash string) {
 	hashes, _ := voterBlocks.Get(key)
 	for _, h := range hashes {
 		if h == blockHash {
-			return
+			return "", false
 		}
 	}
-	voterBlocks.Add(key, append(hashes, blockHash))
+	if len(hashes) >= MaxBlocksPerVoterPerHeight {
+		return "block_cap", false
+	}
+	voterBlocks.Add(key, append(hashes[:len(hashes):len(hashes)], blockHash))
+	return "", true
+}
+
+// releaseVoteBlock undoes a reservation made by checkVoteIngestLimits when the
+// vote it admitted was not stored, so a failed write does not use up a slot of
+// the per-height block cap.
+func releaseVoteBlock(sender peer.ID, height uint64, blockHash string) {
+	key := voterBlocksKey(sender, height)
+	voterBlocksMu.Lock()
+	defer voterBlocksMu.Unlock()
+	hashes, ok := voterBlocks.Get(key)
+	if !ok {
+		return
+	}
+	kept := make([]string, 0, len(hashes))
+	for _, h := range hashes {
+		if h != blockHash {
+			kept = append(kept, h)
+		}
+	}
+	if len(kept) == 0 {
+		voterBlocks.Remove(key)
+		return
+	}
+	voterBlocks.Add(key, kept)
 }

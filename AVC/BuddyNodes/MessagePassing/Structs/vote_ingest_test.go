@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -523,6 +524,87 @@ func TestVoteIngestLimits_DistinctBlocksPerHeightCapped(t *testing.T) {
 	// Other heights have their own budget.
 	if err := IngestValidatorVote(layer, p, junkWireVote(t, 102, "0xother", 0), "direct"); err != nil {
 		t.Fatalf("another height must be unaffected: %v", err)
+	}
+}
+
+// The block cap is checked and the hash recorded under one lock. They used to
+// be separate steps with AddVote in between, so admissions that had not yet
+// been recorded were invisible to the next check: here, eight admitted and
+// unrecorded hashes let a ninth through.
+func TestVoteIngestLimits_CheckReservesTheBlockSlot(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+
+	for i := 0; i < MaxBlocksPerVoterPerHeight; i++ {
+		if reason, reserved := checkVoteIngestLimits(layer, p, 101, fmt.Sprintf("0xr%d", i)); reason != "" || !reserved {
+			t.Fatalf("hash %d: reason=%q reserved=%v, want admitted and reserved", i, reason, reserved)
+		}
+	}
+	if reason, _ := checkVoteIngestLimits(layer, p, 101, "0xr-extra"); reason != "block_cap" {
+		t.Fatalf("a ninth hash admitted before any write completed: reason=%q, want block_cap", reason)
+	}
+	if reason, reserved := checkVoteIngestLimits(layer, p, 101, "0xr0"); reason != "" || reserved {
+		t.Fatalf("a reserved hash again: reason=%q reserved=%v, want admitted, not re-reserved", reason, reserved)
+	}
+}
+
+// Concurrent ingests for one (sender, height) with distinct hashes store at
+// most MaxBlocksPerVoterPerHeight of them. Run with -race.
+func TestVoteIngestLimits_ConcurrentDistinctBlocksStayCapped(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+
+	const n = 32
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		stored []string
+	)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		block := fmt.Sprintf("0xc%d", i)
+		raw := junkWireVote(t, 101, block, i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := IngestValidatorVote(layer, p, raw, "direct"); err == nil {
+				mu.Lock()
+				stored = append(stored, block)
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(stored) != MaxBlocksPerVoterPerHeight {
+		t.Fatalf("stored %d distinct blocks for one (sender, height), want exactly %d", len(stored), MaxBlocksPerVoterPerHeight)
+	}
+	for _, b := range stored {
+		if sigElems(layer, 101, b, p) == 0 {
+			t.Fatalf("block %s reported stored but has no signature element", b)
+		}
+	}
+}
+
+// A write that does not store (here: a compacted height) gives its block slot
+// back, so failed writes cannot use up the cap.
+func TestVoteIngestLimits_FailedWriteReleasesTheSlot(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	if err := avcvotes.DefaultWatermark.Set(200, 1); err != nil {
+		t.Fatalf("Set watermark: %v", err)
+	}
+	layer := newIngestLayer()
+
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 101, "0xcompacted", 0), "direct"); err != nil {
+		t.Fatalf("a compacted-height vote returns nil: %v", err)
+	}
+	if hashes, ok := voterBlocks.Get(voterBlocksKey(p, 101)); ok {
+		t.Fatalf("a vote that was not stored still holds a block slot: %v", hashes)
 	}
 }
 

@@ -96,15 +96,18 @@ func IngestValidatorVote(layer *avctypes.Controller, sender peer.ID, raw string,
 		RejectionReason: v.RejectionReason,
 	}
 
-	if reason := checkVoteIngestLimits(layer, sender, v.Height, v.BlockHash); reason != "" {
+	reason, reserved := checkVoteIngestLimits(layer, sender, v.Height, v.BlockHash)
+	if reason != "" {
 		metrics.ValidatorVoteIngestCounter.WithLabelValues(reason, path).Inc()
 		return fmt.Errorf("%w: %s (peer %s, height %d)", ErrVoteIngestRefused, reason, sender, v.Height)
 	}
 
 	err := avcvotes.AddVote(layer, sender, rec)
+	if err != nil && reserved {
+		releaseVoteBlock(sender, v.Height, v.BlockHash)
+	}
 	switch {
 	case err == nil:
-		noteVoteIngested(sender, v.Height, v.BlockHash)
 		// "stored", not "counted": a vote only ever becomes a COUNTED one at
 		// tally time (processVotesFromCRDT_v2 -> avcvotes.TallyBlock), and
 		// only if sender is in that tally's authorized voter set. This label
