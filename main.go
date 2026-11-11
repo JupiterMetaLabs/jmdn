@@ -1811,6 +1811,9 @@ func main() {
 					if len(peers) == 0 {
 						return fmt.Errorf("[ReconcileFunc-peer] peer sample returned no good peers")
 					}
+					// Tip before any attempt, so a CatchUp that returns without
+					// applying anything can be told from one that advanced us.
+					tipBefore, _, tipErr := thebesync.ChainReporter{}.TipState(rctx)
 					for _, p := range peers {
 						if len(p.Multiaddrs) == 0 {
 							log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer has no multiaddrs, skipping")
@@ -1821,8 +1824,14 @@ func main() {
 							Str("peer", p.PeerID).
 							Str("addr", targetMultiaddr).
 							Msg("[ReconcileFunc-peer] attempting catchup (no seednode)")
-						if _, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr); err != nil {
+						reached, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr)
+						if err != nil {
 							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer failed, trying next")
+							continue
+						}
+						if !catchUpAdvanced(reached, tipBefore, tipErr) {
+							log.Warn().Uint64("reached", reached).Uint64("tip", tipBefore).Str("peer", p.PeerID).
+								Msg("[ReconcileFunc-peer] peer served no new blocks, trying next")
 							continue
 						}
 						log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] catchup succeeded")
@@ -1882,6 +1891,8 @@ func main() {
 						if len(peers) == 0 {
 							return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
 						}
+						// Tip before any attempt — see the peer-sampled branch above.
+						tipBefore, _, tipErr := thebesync.ChainReporter{}.TipState(rctx)
 						for _, p := range peers {
 							if len(p.Multiaddrs) == 0 {
 								log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
@@ -1896,8 +1907,14 @@ func main() {
 							// ThebeSync (FastSync v4) log-shipping catch-up replaces the
 							// FastsyncV2 Merkle-bisection path. It auto-detects the range
 							// from the local tip, so fromBlock is no longer passed.
-							if _, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr); err != nil {
+							reached, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr)
+							if err != nil {
 								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
+								continue
+							}
+							if !catchUpAdvanced(reached, tipBefore, tipErr) {
+								log.Warn().Uint64("reached", reached).Uint64("tip", tipBefore).Str("peer", p.PeerID).
+									Msg("[ReconcileFunc] peer served no new blocks, trying next")
 								continue
 							}
 							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
