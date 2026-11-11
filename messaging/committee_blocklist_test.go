@@ -172,3 +172,28 @@ func TestFleetCommitteeSize_IgnoresLocalBlocklist(t *testing.T) {
 		t.Fatalf("precondition: the local eligible set must still drop the blocked peer, got %d", len(local))
 	}
 }
+
+// A node stores (and so relays by CRDT sync) the votes of the fleet pool, and
+// counts only the votes of its blocklist-filtered view. Gating storage on the
+// filtered view stopped a node relaying a blocked peer's vote to peers that
+// count it.
+func TestFleetVotersForIngest_IgnoresLocalBlocklist(t *testing.T) {
+	members := poolOf(t, 7, 7)
+	blocked := members[0].peerID
+	withBlockBuddy(t, blocked)
+
+	ingest, err := FleetVotersForIngestAtHeight(3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ingest[blocked]; !ok || len(ingest) != 7 {
+		t.Fatalf("ingest set must keep the locally blocked peer: has=%v size=%d, want true 7", ok, len(ingest))
+	}
+	tally, err := AuthorizedVotersForTallyAtHeight(3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tally[blocked]; ok || len(tally) != 6 {
+		t.Fatalf("tally set must still drop the blocked peer: has=%v size=%d, want false 6", ok, len(tally))
+	}
+}

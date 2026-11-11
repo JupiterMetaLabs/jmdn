@@ -1567,6 +1567,13 @@ func main() {
 	// the committee wiring above, byte-identical to the previous behaviour.
 	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
 	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
+	// Vote-ingest voter set: whose votes a node may STORE (and so republish by
+	// CRDT sync). The fleet-agreed pool, without the local block_buddy filter
+	// the tally source above applies; see messaging/authorized_voters_tally.go.
+	Structs.SetIngestVotersForHeightFn(messaging.FleetVotersForIngestAtHeight)
+	// Vote-ingest height window: a received vote may be at most
+	// Structs.MaxVoteHeightAhead past this node's committed tip.
+	Structs.SetCommittedTipFn(messaging.CommittedTip)
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
@@ -2375,8 +2382,11 @@ func main() {
 		mainLogger().Error(context.Background(), "Failed to initialize DID propagation", err)
 	}
 
-	// Initialize Contract propagation handler (ADR-001)
-	n.Host.SetStreamHandler(config.ContractPropagationProtocol, saferun.Stream(string(config.ContractPropagationProtocol), messaging.HandleContractStream))
+	// The contract push protocol (config.ContractPropagationProtocol) is not
+	// registered. Nothing sends it since push propagation was retired (see
+	// messaging/ContractPropagation.go), and its handler accepted a message from
+	// any peer, stored the ABI and deployer first-writer-wins, and re-flooded it
+	// to every peer under a sender-chosen ID.
 	// Pull-on-demand: peers can request missed contract metadata from us
 	n.Host.SetStreamHandler(config.ContractPullProtocol, saferun.Stream(string(config.ContractPullProtocol), messaging.HandleContractPullStream))
 

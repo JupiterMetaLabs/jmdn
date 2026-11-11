@@ -196,7 +196,9 @@ func HandleDIDStream(stream network.Stream) {
 	// Record metrics
 	metrics.MessagesReceivedCounter.WithLabelValues("did", metrics.PeerLabel(remotePeer)).Inc()
 
-	// Read the incoming message with a bounded frame size.
+	// Read the incoming message with a bounded frame size and a deadline, so a
+	// slow or idle peer cannot hold the stream open.
+	_ = stream.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
 	reader := bufio.NewReader(io.LimitReader(stream, maxDIDFrameBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil {
@@ -259,115 +261,13 @@ func HandleDIDStream(stream network.Stream) {
 	// 	fmt.Printf("\n[DID from %s] DID message received (no account data)\n>>> ", msg.Sender)
 	// }
 
-	// Only rebroadcast if we haven't reached max hops and have account data
-	if msg.Hops < config.MaxAccountHops && msg.Account != nil {
-		// Forward to our peers
-		msg.Hops++
-		localPeer := stream.Conn().LocalPeer().String()
-		broadcastLogger().Info(context.Background(), "Propagating Account message",
-			ion.String("msg_id", msg.ID),
-			ion.String("type", msg.Type),
-			ion.String("origin", msg.Sender),
-			ion.String("via", localPeer),
-			ion.String("account", msg.Account.Address.Hex()),
-			ion.Int("hops", msg.Hops))
-
-		// Forward the message to other peers
-		if hostInstance := getHostInstance(); hostInstance != nil {
-			DIDLocalGRO.Go(GRO.DIDPropagationStreamThread, func(ctx context.Context) error {
-				forwardDID(hostInstance, msg)
-				return nil
-			})
-		} else {
-			broadcastLogger().Error(context.Background(), "Cannot access host instance for forwarding DID message", errors.New("host instance not available"))
-		}
-	} else if msg.Account != nil {
-		broadcastLogger().Info(context.Background(), "Max hops reached, not propagating Account message",
-			ion.String("msg_id", msg.ID),
-			ion.String("type", msg.Type),
-			ion.String("account", msg.Account.Address.Hex()),
-			ion.Int("hops", msg.Hops))
-	} else {
-		if msg.Account == nil {
-			broadcastLogger().Info(context.Background(), "Account data is nil, not propagating Account message",
-				ion.String("msg_id", msg.ID),
-				ion.String("type", msg.Type),
-				ion.Int("hops", msg.Hops))
-		}
-	}
-}
-
-// forwardDID sends the DID message to all connected peers
-func forwardDID(h host.Host, msg DIDMessage) {
-	// Get all connected peers
-	peers := h.Network().Peers()
-
-	// Convert message to JSON
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to marshal DID message", err)
-		return
-	}
-	msgBytes = append(msgBytes, '\n')
-
-	// Track how many peers we successfully broadcasted to
-	var successCount int
-	var successMutex sync.Mutex
-
-	// Create waitgroup for tracking goroutines
-	wg, err := DIDLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.DIDForwardThread)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for DID forwarding", err)
-		return
-	}
-
-	// Send to each peer (except original sender) concurrently
-	for _, peerID := range peers {
-		// Don't send back to the original sender
-		if peerID.String() == msg.Sender {
-			continue
-		}
-
-		// Capture peerID in closure to avoid race condition
-		peerIDForGoroutine := peerID
-		if err := DIDLocalGRO.Go(GRO.DIDForwardThread, func(ctx context.Context) error {
-			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.DIDPropagationProtocol)
-			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to open DID stream", err, ion.String("peer", peerIDForGoroutine.String()))
-				return err
-			}
-			defer stream.Close()
-
-			// Write the message
-			_, err = stream.Write(msgBytes)
-			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to write DID message", err, ion.String("peer", peerIDForGoroutine.String()))
-				return err
-			}
-
-			// Increment success count and record metrics
-			successMutex.Lock()
-			successCount++
-			successMutex.Unlock()
-
-			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("did", metrics.PeerLabel(peerIDForGoroutine.String())).Inc()
-
-			return nil
-		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to start goroutine for DID forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
-		}
-	}
-
-	// Wait for all sends to complete
-	wg.Wait()
-
-	broadcastLogger().Info(context.Background(), "Account message propagated to peers",
-		ion.String("msg_id", msg.ID),
-		ion.String("type", msg.Type),
-		ion.String("address", msg.Account.Address.Hex()),
-		ion.Int("hops", msg.Hops),
-		ion.Int("peers", successCount))
+	// A received DID message is not re-forwarded. Any peer can send one, with
+	// no signature and a sender-chosen hop count, and each node used to store
+	// it and forward it to every peer: one message from one connection reached
+	// the whole network, with no cost to the sender. Receiving nodes store
+	// nothing today (storeAccountInDB needs an accounts client, and
+	// InitDIDPropagation is given none), so forwarding only spread spam. The
+	// originating node still sends to its own peers (PropagateDID).
 }
 
 // PropagateDID creates and propagates a DID message to the network
@@ -420,8 +320,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 	// Get all connected peers.
 	//
 	// NOTE ON TRANSPORT: this is a fan-out of per-peer UNICAST libp2p streams,
-	// not pubsub. Only peers connected at this instant are reached directly;
-	// everyone else depends on receive-side hop-forwarding (MaxHops).
+	// not pubsub. Only peers connected at this instant are reached; receivers
+	// do not re-forward (see HandleDIDStream).
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
 		broadcastLogger().Error(context.Background(), "No connected peers to propagate DID to",

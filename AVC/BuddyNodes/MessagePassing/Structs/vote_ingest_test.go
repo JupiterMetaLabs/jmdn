@@ -11,7 +11,11 @@ package Structs
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -19,6 +23,7 @@ import (
 
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	avctypes "github.com/JupiterMetaLabs/avc/types"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -307,5 +312,313 @@ func TestIngestValidatorVote_FlagOff_WritesNothing(t *testing.T) {
 	}
 	if len(tally.AuthorizedVotesByPeer[sender.String()]) != 0 {
 		t.Fatalf("flag off must write nothing, found %+v", tally.AuthorizedVotesByPeer)
+	}
+}
+
+// The bounds in vote_ingest_limits.go. Before them, one peer in no committee
+// stored 500 signature elements (~0.5 MB) under one key and opened 300
+// far-future keys (PoC #2): avcvotes' per-peer cap counts the vote key, which
+// holds at most "peer:1" and "peer:-1", so it never fired.
+
+// withIngestLimits installs an ingest voter set (nil = source not installed)
+// and a committed tip (ok=false = unknown), with fresh limit state, for one
+// test. The tally's voter source is left unset; tests that need it set it.
+func withIngestLimits(t *testing.T, voters []peer.ID, tip uint64, tipKnown bool) {
+	t.Helper()
+	withFreshWatermark(t)
+	prevVoters, prevCommittee, prevCommitteeH := authorizedVotersForHeightFn, authorizedCommitteeFn, authorizedCommitteeForHeightFn
+	prevIngest := ingestVotersForHeightFn
+	prevTip, prevFlag, prevSet := committedTipFn, VoteIngestLimitsEnabled, ValidatorVoterSetEnabled
+	prevBlocks := voterBlocks
+	t.Cleanup(func() {
+		authorizedVotersForHeightFn, authorizedCommitteeFn, authorizedCommitteeForHeightFn = prevVoters, prevCommittee, prevCommitteeH
+		ingestVotersForHeightFn = prevIngest
+		committedTipFn, VoteIngestLimitsEnabled, ValidatorVoterSetEnabled = prevTip, prevFlag, prevSet
+		voterBlocks = prevBlocks
+	})
+	voterBlocks = expirable.NewLRU[string, []string](16384, nil, time.Hour)
+	VoteIngestLimitsEnabled, ValidatorVoterSetEnabled = true, true
+	authorizedCommitteeFn, authorizedCommitteeForHeightFn = nil, nil
+	authorizedVotersForHeightFn, ingestVotersForHeightFn = nil, nil
+	if voters != nil {
+		set := make(map[string]string, len(voters))
+		for _, v := range voters {
+			set[v.String()] = ""
+		}
+		ingestVotersForHeightFn = func(uint64) (map[string]string, error) { return set, nil }
+	}
+	committedTipFn = func() (uint64, bool) { return tip, tipKnown }
+}
+
+// junkWireVote is a well-formed, "signed"-looking vote whose signature is
+// junk: ingest does not verify signatures (the tally does), so it is stored.
+func junkWireVote(t *testing.T, height uint64, block string, i int) string {
+	t.Helper()
+	b, err := json.Marshal(PubSubMessages.Vote{
+		Vote: -1, BlockHash: block, Height: height,
+		BLSSignature:    fmt.Sprintf("%0600x", i),
+		BLSPubKeyHex:    "00",
+		RejectionReason: strings.Repeat("x", 150),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func sigElems(layer *avctypes.Controller, height uint64, block string, p peer.ID) int {
+	return avcvotes.CountElementsForPeer(layer, avcvotes.BlockSigKey(height, block), p.String())
+}
+
+func TestVoteIngestLimits_NonVoterRefused(t *testing.T) {
+	member, outsider := ingestTestPeer(t), ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{member}, 100, true)
+	layer := newIngestLayer()
+
+	err := IngestValidatorVote(layer, outsider, junkWireVote(t, 101, "0xb", 0), "direct")
+	if !errors.Is(err, ErrVoteIngestRefused) || !strings.Contains(err.Error(), "not_voter") {
+		t.Fatalf("a peer outside the voter set must be refused, got %v", err)
+	}
+	if n := sigElems(layer, 101, "0xb", outsider); n != 0 {
+		t.Fatalf("refused vote still wrote %d element(s)", n)
+	}
+	if err := IngestValidatorVote(layer, member, junkWireVote(t, 101, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("a voter's vote must be stored: %v", err)
+	}
+}
+
+// When the voter set cannot be resolved, ingest stays lossless (LLD D5); the
+// per-peer bounds still apply.
+func TestVoteIngestLimits_VoterSetUnavailableStaysLossless(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, nil, 100, true) // no voter source installed -> error
+	if err := IngestValidatorVote(newIngestLayer(), p, junkWireVote(t, 101, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("with no voter source the vote must still be stored: %v", err)
+	}
+}
+
+// A peer this node blocklists is still in the fleet-agreed pool: its vote is
+// STORED (so CRDT sync republishes it to peers that count it) while this
+// node's tally, which applies the blocklist, does not count it.
+func TestVoteIngestLimits_BlocklistedPeerStoredButNotCounted(t *testing.T) {
+	member, blocked := ingestTestPeer(t), ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{member, blocked}, 100, true)
+	layer := newIngestLayer()
+
+	raw, pubKeyHex := ingestWireVote(t, 1, ingestHeight, ingestBlockHash, true)
+	committedTipFn = func() (uint64, bool) { return ingestHeight - 1, true }
+	// This node's tally set, as main.go wires it: the pool minus its blocklist.
+	tallySet := map[string]string{member.String(): pubKeyHex}
+	authorizedVotersForHeightFn = func(uint64) (map[string]string, error) { return tallySet, nil }
+	if err := IngestValidatorVote(layer, blocked, raw, "pubsub"); err != nil {
+		t.Fatalf("a blocklisted pool member's vote must be stored for relay: %v", err)
+	}
+	if n := sigElems(layer, ingestHeight, ingestBlockHash, blocked); n == 0 {
+		t.Fatal("the blocklisted peer's vote was not stored")
+	}
+
+	tally, err := avcvotes.TallyBlock(layer, ingestHeight, ingestBlockHash, tallySet)
+	if err != nil {
+		t.Fatalf("TallyBlock: %v", err)
+	}
+	if _, counted := tally.SingleVotePeers()[blocked.String()]; counted {
+		t.Fatal("the tally counted a peer outside its own (blocklist-filtered) set")
+	}
+}
+
+// The ingest voter set does not follow JMDN_VALIDATOR_VOTER_SET: that flag
+// governs who a node counts, not what it stores and relays.
+func TestVoteIngestLimits_IngestIgnoresValidatorVoterSetFlag(t *testing.T) {
+	member, outsider := ingestTestPeer(t), ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{member}, 100, true)
+	ValidatorVoterSetEnabled = false
+	layer := newIngestLayer()
+
+	if err := IngestValidatorVote(layer, member, junkWireVote(t, 101, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("a pool member's vote must be stored with the flag off: %v", err)
+	}
+	if err := IngestValidatorVote(layer, outsider, junkWireVote(t, 101, "0xb", 0), "direct"); !errors.Is(err, ErrVoteIngestRefused) {
+		t.Fatalf("a peer outside the pool must still be refused with the flag off, got %v", err)
+	}
+}
+
+func TestVoteIngestLimits_HeightWindow(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 1000, true)
+	layer := newIngestLayer()
+
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 1000+MaxVoteHeightAhead, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("a vote at the edge of the window must be stored: %v", err)
+	}
+	err := IngestValidatorVote(layer, p, junkWireVote(t, 1000+MaxVoteHeightAhead+1, "0xb", 0), "direct")
+	if !errors.Is(err, ErrVoteIngestRefused) || !strings.Contains(err.Error(), "height_ahead") {
+		t.Fatalf("a vote past the window must be refused, got %v", err)
+	}
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 9_000_000, "0xb", 0), "direct"); !errors.Is(err, ErrVoteIngestRefused) {
+		t.Fatalf("a far-future vote must be refused, got %v", err)
+	}
+}
+
+// Before the first commit the tip is unknown; the window is not applied.
+func TestVoteIngestLimits_UnknownTipSkipsWindow(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 0, false)
+	if err := IngestValidatorVote(newIngestLayer(), p, junkWireVote(t, 5_000, "0xb", 0), "direct"); err != nil {
+		t.Fatalf("unknown tip: vote must be stored: %v", err)
+	}
+}
+
+// The PoC itself, from a voter: 500 junk payloads for one block now store 3.
+func TestVoteIngestLimits_SigKeyCappedPerPeer(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+	refused := 0
+	for i := 0; i < 500; i++ {
+		if err := IngestValidatorVote(layer, p, junkWireVote(t, 101, "0xb", i), "direct"); errors.Is(err, ErrVoteIngestRefused) {
+			refused++
+		}
+	}
+	if n := sigElems(layer, 101, "0xb", p); n != avcvotes.MaxElementsPerPeerPerBlock {
+		t.Fatalf("sig elements stored = %d, want %d", n, avcvotes.MaxElementsPerPeerPerBlock)
+	}
+	if refused != 500-avcvotes.MaxElementsPerPeerPerBlock {
+		t.Fatalf("refused %d, want %d", refused, 500-avcvotes.MaxElementsPerPeerPerBlock)
+	}
+}
+
+// An honest voter that votes +1 then -1 on one block (equivocation, which the
+// tally must see) still has both stored.
+func TestVoteIngestLimits_EquivocationStillRecorded(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+	for _, v := range []int8{1, -1} {
+		b, _ := json.Marshal(PubSubMessages.Vote{Vote: v, BlockHash: "0xb", Height: 101, BLSSignature: "aa", BLSPubKeyHex: "bb"})
+		if err := IngestValidatorVote(layer, p, string(b), "direct"); err != nil {
+			t.Fatalf("vote %d: %v", v, err)
+		}
+	}
+	if n := sigElems(layer, 101, "0xb", p); n != 2 {
+		t.Fatalf("both equivocating votes must be stored, got %d", n)
+	}
+}
+
+func TestVoteIngestLimits_DistinctBlocksPerHeightCapped(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+	for i := 0; i < 20; i++ {
+		err := IngestValidatorVote(layer, p, junkWireVote(t, 101, fmt.Sprintf("0xb%d", i), 0), "direct")
+		if i < MaxBlocksPerVoterPerHeight && err != nil {
+			t.Fatalf("block %d of %d must be stored: %v", i+1, MaxBlocksPerVoterPerHeight, err)
+		}
+		if i >= MaxBlocksPerVoterPerHeight && (!errors.Is(err, ErrVoteIngestRefused) || !strings.Contains(err.Error(), "block_cap")) {
+			t.Fatalf("block %d must be refused (block_cap), got %v", i+1, err)
+		}
+	}
+	// A repeat for an already-stored block is not a new block.
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 101, "0xb0", 1), "direct"); err != nil {
+		t.Fatalf("a second vote on an already-seen block must not hit block_cap: %v", err)
+	}
+	// Other heights have their own budget.
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 102, "0xother", 0), "direct"); err != nil {
+		t.Fatalf("another height must be unaffected: %v", err)
+	}
+}
+
+// The block cap is checked and the hash recorded under one lock. They used to
+// be separate steps with AddVote in between, so admissions that had not yet
+// been recorded were invisible to the next check: here, eight admitted and
+// unrecorded hashes let a ninth through.
+func TestVoteIngestLimits_CheckReservesTheBlockSlot(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+
+	for i := 0; i < MaxBlocksPerVoterPerHeight; i++ {
+		if reason, reserved := checkVoteIngestLimits(layer, p, 101, fmt.Sprintf("0xr%d", i)); reason != "" || !reserved {
+			t.Fatalf("hash %d: reason=%q reserved=%v, want admitted and reserved", i, reason, reserved)
+		}
+	}
+	if reason, _ := checkVoteIngestLimits(layer, p, 101, "0xr-extra"); reason != "block_cap" {
+		t.Fatalf("a ninth hash admitted before any write completed: reason=%q, want block_cap", reason)
+	}
+	if reason, reserved := checkVoteIngestLimits(layer, p, 101, "0xr0"); reason != "" || reserved {
+		t.Fatalf("a reserved hash again: reason=%q reserved=%v, want admitted, not re-reserved", reason, reserved)
+	}
+}
+
+// Concurrent ingests for one (sender, height) with distinct hashes store at
+// most MaxBlocksPerVoterPerHeight of them. Run with -race.
+func TestVoteIngestLimits_ConcurrentDistinctBlocksStayCapped(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	layer := newIngestLayer()
+
+	const n = 32
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		stored []string
+	)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		block := fmt.Sprintf("0xc%d", i)
+		raw := junkWireVote(t, 101, block, i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := IngestValidatorVote(layer, p, raw, "direct"); err == nil {
+				mu.Lock()
+				stored = append(stored, block)
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(stored) != MaxBlocksPerVoterPerHeight {
+		t.Fatalf("stored %d distinct blocks for one (sender, height), want exactly %d", len(stored), MaxBlocksPerVoterPerHeight)
+	}
+	for _, b := range stored {
+		if sigElems(layer, 101, b, p) == 0 {
+			t.Fatalf("block %s reported stored but has no signature element", b)
+		}
+	}
+}
+
+// A write that does not store (here: a compacted height) gives its block slot
+// back, so failed writes cannot use up the cap.
+func TestVoteIngestLimits_FailedWriteReleasesTheSlot(t *testing.T) {
+	p := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{p}, 100, true)
+	if err := avcvotes.DefaultWatermark.Set(200, 1); err != nil {
+		t.Fatalf("Set watermark: %v", err)
+	}
+	layer := newIngestLayer()
+
+	if err := IngestValidatorVote(layer, p, junkWireVote(t, 101, "0xcompacted", 0), "direct"); err != nil {
+		t.Fatalf("a compacted-height vote returns nil: %v", err)
+	}
+	if hashes, ok := voterBlocks.Get(voterBlocksKey(p, 101)); ok {
+		t.Fatalf("a vote that was not stored still holds a block slot: %v", hashes)
+	}
+}
+
+func TestVoteIngestLimits_FlagOffRestoresOldBehaviour(t *testing.T) {
+	outsider := ingestTestPeer(t)
+	withIngestLimits(t, []peer.ID{ingestTestPeer(t)}, 100, true)
+	VoteIngestLimitsEnabled = false
+	layer := newIngestLayer()
+	for i := 0; i < 10; i++ {
+		if err := IngestValidatorVote(layer, outsider, junkWireVote(t, 9_000_000, "0xb", i), "direct"); err != nil {
+			t.Fatalf("flag off: %v", err)
+		}
+	}
+	if n := sigElems(layer, 9_000_000, "0xb", outsider); n != 10 {
+		t.Fatalf("flag off must store everything as before, got %d", n)
 	}
 }

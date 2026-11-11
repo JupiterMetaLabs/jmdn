@@ -9,11 +9,10 @@ package Structs
 // ever entered VoteCRDTLayer. See "Count every validator's vote in the buddy
 // tally again" LLD, change C3.
 //
-// Ingest is deliberately lossless and does not check the authorized voter
-// set (that happens at tally time, in processVotesFromCRDT_v2 via
-// authorizedVotersFor) — see the LLD's D5. Cost is bounded independently of
-// authorization by AddVote's own per-peer cap (avcvotes.MaxElementsPerPeerPerBlock)
-// and by the identity check below.
+// The tally (processVotesFromCRDT_v2 via authorizedVotersFor) still decides
+// which stored votes COUNT. What may be STORED is bounded by
+// checkVoteIngestLimits (vote_ingest_limits.go): the LLD's D5 relied on
+// AddVote's per-peer cap, which counts the wrong key and never fires.
 
 import (
 	"encoding/json"
@@ -97,7 +96,16 @@ func IngestValidatorVote(layer *avctypes.Controller, sender peer.ID, raw string,
 		RejectionReason: v.RejectionReason,
 	}
 
+	reason, reserved := checkVoteIngestLimits(layer, sender, v.Height, v.BlockHash)
+	if reason != "" {
+		metrics.ValidatorVoteIngestCounter.WithLabelValues(reason, path).Inc()
+		return fmt.Errorf("%w: %s (peer %s, height %d)", ErrVoteIngestRefused, reason, sender, v.Height)
+	}
+
 	err := avcvotes.AddVote(layer, sender, rec)
+	if err != nil && reserved {
+		releaseVoteBlock(sender, v.Height, v.BlockHash)
+	}
 	switch {
 	case err == nil:
 		// "stored", not "counted": a vote only ever becomes a COUNTED one at
