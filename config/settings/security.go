@@ -142,9 +142,26 @@ func DefaultSecurityConfig() SecurityConfig {
 				TokenEnv: "SEQUENCER_TOKEN",
 			},
 			// 3. JSON-RPC (HTTP public)
+			//
+			// This is the most exposed surface the node has — binds.facade
+			// defaults to 0.0.0.0 and there is no auth — and it was the only
+			// public service with no per-service limit of its own: with
+			// RateLimit unset, gatekeeper's ratelimit.go skips the per-service
+			// limiter entirely and the endpoint falls back to
+			// security.global_rate_limit. ServiceExplorerAPI, which is strictly
+			// less exposed, already carries 20/40.
+			//
+			// 50/100 keeps it at the global default it was effectively getting
+			// while making the limit explicit and tunable per node: an archive
+			// node fronted by a CDN wants a different number from a validator
+			// that serves RPC incidentally. Batch requests are charged per
+			// element (http_server.go AllowAdditional), so this bounds work,
+			// not just HTTP calls.
 			ServiceEthRPC: {
-				TLS:      false,
-				AuthType: AuthTypeNone,
+				TLS:       false,
+				AuthType:  AuthTypeNone,
+				RateLimit: 50,
+				Burst:     100,
 			},
 			// 4. CLI Admin (gRPC local)
 			ServiceCLI: {

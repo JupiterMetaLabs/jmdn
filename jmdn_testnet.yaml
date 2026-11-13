@@ -416,3 +416,42 @@ tx_status:
   # for a hash that is not known anywhere. Off even when `enabled` is true,
   # because it changes what existing clients see.
   pending_tx_by_hash: false            # JMDN_TX_STATUS_PENDING_TX_BY_HASH
+
+# ── Public JSON-RPC cost bounds ──────────────────────────────────────────────
+#
+# What one request may cost this node. Every value here was a compile-time Go
+# constant; they are config now because this is the only surface exposed to the
+# open internet (binds.facade is 0.0.0.0, eth_rpc has no auth), and the right
+# number differs between an archive node serving indexers and a validator that
+# serves RPC incidentally.
+#
+# A zero or negative value means "use the compiled default", never "unlimited".
+# Before changing any of these, look at rpc_query_refused_total{reason=...} —
+# it says which bound is actually binding, and for whom.
+rpc:
+  logs:
+    # Blocks an address-less eth_getLogs may span. 2000 matches what public
+    # providers commonly allow; 10000 was the generous end of that range and was
+    # never derived from this node's cost. Note it is a COUNT of blocks, so what
+    # it means in wall-clock depends on this chain's block cadence.
+    max_block_span: 2000               # JMDN_RPC_LOGS_MAX_BLOCK_SPAN
+    # Logs any eth_getLogs may return. Bounds response memory only, and is
+    # reached only once a log MATCHES the filter.
+    max_results: 10000                 # JMDN_RPC_LOGS_MAX_RESULTS
+    # Blocks a single query may actually TOUCH, on both paths. This is the only
+    # bound on the address path, which walks a contract's whole history from
+    # block 0 regardless of the requested range. Set below max_block_span to
+    # advertise a wide range while capping the work behind it.
+    max_scan_blocks: 2000              # JMDN_RPC_LOGS_MAX_SCAN_BLOCKS
+    # Contract addresses one query may filter on. Each is a separate index
+    # scan; the list was neither capped nor deduplicated, so listing one
+    # address N times cost N scans. Duplicates are now collapsed before this
+    # cap is applied.
+    max_addresses: 100                 # JMDN_RPC_LOGS_MAX_ADDRESSES
+  batch:
+    # Calls in one JSON-RPC batch. Upstream geth's own default is 1000.
+    max_size: 100                      # JMDN_RPC_BATCH_MAX_SIZE
+    # How many of them run at once. Before this, the batch size was also the
+    # concurrency, so one HTTP request could put max_size CPU-heavy calls on
+    # the scheduler together. Bounds fan-out, not throughput.
+    max_concurrency: 8                 # JMDN_RPC_BATCH_MAX_CONCURRENCY

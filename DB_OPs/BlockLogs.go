@@ -2,14 +2,17 @@ package DB_OPs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/metrics"
 )
 
 // GetLogs retrieves event logs matching the given filter query via ThebeDB SQL.
@@ -26,6 +29,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 	filter := filterQueryToStoreFilter(filterQuery)
 	ethLogs, err := h.GetLogs(ctx, filter)
 	if err != nil {
+		countLogQueryRefusal(err)
 		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
@@ -52,6 +56,28 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		})
 	}
 	return result, nil
+}
+
+// countLogQueryRefusal records which eth_getLogs cost bound refused a query, so
+// the bounds can be tuned from evidence instead of guesswork. Only the three
+// bounds are counted; a genuine backend failure is not a refusal and is left to
+// the error path and the logs.
+//
+// The reason is one of a fixed set, never anything the caller supplied, so the
+// metric's cardinality cannot be driven from the public RPC port.
+func countLogQueryRefusal(err error) {
+	var reason string
+	switch {
+	case errors.Is(err, logstore.ErrQueryUnbounded):
+		reason = "logs_span"
+	case errors.Is(err, logstore.ErrTooManyResults):
+		reason = "logs_results"
+	case errors.Is(err, logstore.ErrScanBudgetExceeded):
+		reason = "logs_scan"
+	default:
+		return
+	}
+	metrics.RPCQueryRefusedCounter.WithLabelValues("eth_getLogs", reason).Inc()
 }
 
 // filterQueryToStoreFilter converts a gETH FilterQuery to a store.LogFilter.

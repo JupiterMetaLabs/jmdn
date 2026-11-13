@@ -31,6 +31,64 @@ type NodeConfig struct {
 	Checkpoint   CheckpointSettings `mapstructure:"checkpoint"`
 	Storage      StorageSettings    `mapstructure:"storage"`
 	Reputation   ReputationSettings `mapstructure:"reputation"`
+	RPC          RPCSettings        `mapstructure:"rpc"`
+}
+
+// RPCSettings bounds what one public JSON-RPC request may cost this node.
+//
+// WHY THESE LIVE HERE. Every limit below was a package-private Go const, so the
+// only way to change one was to recompile. That is the wrong posture for the
+// single surface this node exposes to the open internet (binds.facade defaults
+// to 0.0.0.0 and eth_rpc is AuthTypeNone): an operator who sees a query pattern
+// hurting the node cannot respond without a release, and an archive node and a
+// validator are forced to run the same numbers.
+//
+// FAIL CLOSED. A zero or negative value means "use the compiled default", never
+// "unlimited". The defaults are the values that shipped as consts, so a node
+// with no rpc: section behaves exactly as before.
+//
+// These are COST bounds, not correctness rules — no consensus behaviour depends
+// on them, so they may differ between nodes in a fleet.
+type RPCSettings struct {
+	Logs  RPCLogsSettings  `mapstructure:"logs" yaml:"logs"`
+	Batch RPCBatchSettings `mapstructure:"batch" yaml:"batch"`
+}
+
+// RPCLogsSettings bounds eth_getLogs.
+//
+// MaxBlockSpan and MaxResults are the two bounds that shipped as consts
+// (10_000 each, chosen to match common public-RPC provider limits). MaxScanBlocks
+// is new and is the one that actually bounds WORK: the span is a block count, so
+// it says nothing about how much scanning a query causes, and MaxResults is only
+// reached once a log MATCHES — a filter that matches nothing never trips it. See
+// the refusal metric (metrics.RPCQueryRefusedCounter) before changing any of
+// them: "logs_span", "logs_results" and "logs_scan" say which bound is binding
+// and for whom.
+type RPCLogsSettings struct {
+	// MaxBlockSpan caps how many blocks an address-less query may cover.
+	MaxBlockSpan uint64 `mapstructure:"max_block_span" yaml:"max_block_span"`
+	// MaxResults caps how many logs any query may return.
+	MaxResults int `mapstructure:"max_results" yaml:"max_results"`
+	// MaxScanBlocks caps how many blocks a single query may actually touch,
+	// on BOTH paths. The address path walks a contract's whole history from
+	// block 0 and had no work limit of any kind before this.
+	MaxScanBlocks uint64 `mapstructure:"max_scan_blocks" yaml:"max_scan_blocks"`
+	// MaxAddresses caps how many contract addresses one query may filter on.
+	// Each address is a separate index scan, and the list was neither capped
+	// nor deduplicated — listing the same address N times cost N scans.
+	MaxAddresses int `mapstructure:"max_addresses" yaml:"max_addresses"`
+}
+
+// RPCBatchSettings bounds JSON-RPC batching.
+//
+// MaxSize shipped as a const (100; upstream geth's own default is 1000, so this
+// is already the conservative end). MaxConcurrency is new: the batch handler ran
+// every element in its own goroutine, so one HTTP request could put MaxSize
+// CPU-heavy calls on the scheduler at once. Bounding the fan-out is what stops a
+// single-request cost from being multiplied by the batch size.
+type RPCBatchSettings struct {
+	MaxSize        int `mapstructure:"max_size" yaml:"max_size"`
+	MaxConcurrency int `mapstructure:"max_concurrency" yaml:"max_concurrency"`
 }
 
 // CheckpointSettings controls committee-signed chain-head checkpoints — the
