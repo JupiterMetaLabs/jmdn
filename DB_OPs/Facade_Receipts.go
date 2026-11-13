@@ -190,23 +190,52 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	return receipt
 }
 
+// ReceiptsOfStoredBlock builds every receipt in a block from a block the caller
+// ALREADY HOLDS, reading nothing.
+//
+// blk must be a full block (GetZKBlockByNumber / GetZKBlockByHash /
+// ReadZKBlockByNumber), not a header-only read: receipts come from
+// blk.Transactions, so a header-only block yields none.
+//
+// The index is each transaction's position in the block, which is exactly what
+// the old per-hash path searched the block to recover, and every receipt shares
+// the block's one proof slice instead of owning a copy.
+//
+// The per-transaction GetContractReceipt lookup inside
+// generateReceiptFromTransaction is unchanged: it is a small keyed read, and
+// batching it needs a new handle method.
+func ReceiptsOfStoredBlock(mainDBClient *config.PooledConnection, blk *config.ZKBlock) []*config.Receipt {
+	if blk == nil {
+		return nil
+	}
+	receipts := make([]*config.Receipt, len(blk.Transactions))
+	for i := range blk.Transactions {
+		receipts[i] = generateReceiptFromTransaction(mainDBClient, &blk.Transactions[i], blk, uint64(i))
+	}
+	return receipts
+}
+
+// GetReceiptsofBlock returns every receipt in a block, reading the block ONCE.
+//
+// It used to call GetTransactionsOfBlock (itself a full GetZKBlockByNumber) and
+// then GetReceiptByHash per transaction — and GetReceiptByHash resolves its own
+// block through GetTransactionBlock, which is another full GetZKBlockByNumber.
+// A block with N transactions therefore performed N+1 whole-block reads.
+//
+// The cost that matters is not the N+1 count: a stored block carries its STARK
+// proof (config.ZKBlock.StarkProof, the zk_proofs row), so every one of those
+// reads pulled a multi-megabyte proof out of storage and into a fresh
+// allocation. eth_getBlockByNumber / eth_getBlockByHash reach here through
+// utils.ConvertZKBlockToBlock to rebuild the receipts root and logs bloom, so a
+// single RPC call on a large block moved N copies of the same proof. There is
+// no cap on transactions per block, so N is unbounded.
+//
+// A caller that already holds the block should use ReceiptsOfStoredBlock and
+// read nothing at all.
 func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Receipt, error) {
-	// Get Transactions of block and then get receipts for each transaction
-	transactions, err := GetTransactionsOfBlock(mainDBClient, blockNumber)
+	block, err := GetZKBlockByNumber(mainDBClient, blockNumber)
 	if err != nil {
-
-		return nil, fmt.Errorf("failed to get transactions of block: %w", err)
+		return nil, fmt.Errorf("failed to get block %d for receipts: %w", blockNumber, err)
 	}
-
-	receipts := make([]*config.Receipt, len(transactions))
-	for i, tx := range transactions {
-		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
-		if err != nil {
-
-			return nil, fmt.Errorf("failed to get receipt by hash: %w", err)
-		}
-		receipts[i] = receipt
-	}
-
-	return receipts, nil
+	return ReceiptsOfStoredBlock(mainDBClient, block), nil
 }
