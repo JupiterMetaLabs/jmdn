@@ -443,6 +443,11 @@ rpc:
     # block 0 regardless of the requested range. Set below max_block_span to
     # advertise a wide range while capping the work behind it.
     max_scan_blocks: 2000              # JMDN_RPC_LOGS_MAX_SCAN_BLOCKS
+    # Contract addresses one query may filter on. Each is a separate index
+    # scan; the list was neither capped nor deduplicated, so listing one
+    # address N times cost N scans. Duplicates are now collapsed before this
+    # cap is applied.
+    max_addresses: 100                 # JMDN_RPC_LOGS_MAX_ADDRESSES
   batch:
     # Calls in one JSON-RPC batch. Upstream geth's own default is 1000.
     max_size: 100                      # JMDN_RPC_BATCH_MAX_SIZE

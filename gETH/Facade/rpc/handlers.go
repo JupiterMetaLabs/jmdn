@@ -869,6 +869,23 @@ func resolveFilterRange(ctx context.Context, be Service.Service, raw any, q *Typ
 	return nil
 }
 
+// defaultMaxFilterAddresses is the compiled default for rpc.logs.max_addresses.
+// Public providers commonly allow 10-100 addresses per eth_getLogs filter.
+const defaultMaxFilterAddresses = 100
+
+// maxFilterAddresses returns the address-list cap in force. Config wins; a zero
+// or negative value falls back to the compiled default, so a malformed config
+// cannot remove the cap.
+func maxFilterAddresses() int {
+	if !settings.IsLoaded() {
+		return defaultMaxFilterAddresses
+	}
+	if n := settings.Get().RPC.Logs.MaxAddresses; n > 0 {
+		return n
+	}
+	return defaultMaxFilterAddresses
+}
+
 func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	// Parse filter object from JSON-RPC params
 	if filterObj, ok := p.(map[string]any); ok {
@@ -890,17 +907,35 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 		}
 		// "address" is a single string in most client libraries (ethers, viem,
 		// go-ethereum FilterQuery with one address) and an array otherwise.
+		//
+		// The list is deduplicated and capped. Each address is a separate index
+		// scan in logstore.GetLogs, and the result map deduplicates RESULTS but
+		// not SCANS — so listing one address N times cost N full scans of the
+		// same contract, from one unauthenticated request, multiplied again by
+		// the batch endpoint. Duplicates are collapsed on the normalised
+		// (lower-cased) form, because that is what the scan key uses.
 		switch a := filterObj["address"].(type) {
 		case string:
 			if a != "" {
 				query.Addresses = []string{a}
 			}
 		case []any:
+			seen := make(map[string]struct{}, len(a))
 			for _, addr := range a {
-				if addrStr, ok := addr.(string); ok && addrStr != "" {
-					query.Addresses = append(query.Addresses, addrStr)
+				addrStr, ok := addr.(string)
+				if !ok || addrStr == "" {
+					continue
 				}
+				key := strings.ToLower(addrStr)
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				query.Addresses = append(query.Addresses, addrStr)
 			}
+		}
+		if limit := maxFilterAddresses(); len(query.Addresses) > limit {
+			return nil, fmt.Errorf("too many addresses in filter: %d, max %d", len(query.Addresses), limit)
 		}
 		// "topics" rows: string, array of strings, or null (wildcard → empty row).
 		if topics, ok := filterObj["topics"].([]any); ok {

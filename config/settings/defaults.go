@@ -323,6 +323,10 @@ func DefaultConfig() NodeConfig {
 				// with a clear error rather than silently costing the node a
 				// full-history scan.
 				MaxScanBlocks: 2_000,
+				// Public providers commonly allow 10-100 addresses per query. 100
+				// is the permissive end: enough for an indexer watching a protocol's
+				// whole contract set, while bounding the per-request scan count.
+				MaxAddresses: 100,
 			},
 			Batch: RPCBatchSettings{
 				// Was the maxBatchSize const.

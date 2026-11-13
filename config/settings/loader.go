@@ -97,6 +97,7 @@ func Load() (*NodeConfig, error) {
 		"rpc.logs.max_block_span":   "JMDN_RPC_LOGS_MAX_BLOCK_SPAN",
 		"rpc.logs.max_results":      "JMDN_RPC_LOGS_MAX_RESULTS",
 		"rpc.logs.max_scan_blocks":  "JMDN_RPC_LOGS_MAX_SCAN_BLOCKS",
+		"rpc.logs.max_addresses":    "JMDN_RPC_LOGS_MAX_ADDRESSES",
 		"rpc.batch.max_size":        "JMDN_RPC_BATCH_MAX_SIZE",
 		"rpc.batch.max_concurrency": "JMDN_RPC_BATCH_MAX_CONCURRENCY",
 		// Chain-head checkpoint feature. Bound explicitly for the
@@ -404,6 +405,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rpc.logs.max_block_span", d.RPC.Logs.MaxBlockSpan)
 	v.SetDefault("rpc.logs.max_results", d.RPC.Logs.MaxResults)
 	v.SetDefault("rpc.logs.max_scan_blocks", d.RPC.Logs.MaxScanBlocks)
+	v.SetDefault("rpc.logs.max_addresses", d.RPC.Logs.MaxAddresses)
 	v.SetDefault("rpc.batch.max_size", d.RPC.Batch.MaxSize)
 	v.SetDefault("rpc.batch.max_concurrency", d.RPC.Batch.MaxConcurrency)
 

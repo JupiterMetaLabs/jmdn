@@ -73,6 +73,10 @@ type RPCLogsSettings struct {
 	// on BOTH paths. The address path walks a contract's whole history from
 	// block 0 and had no work limit of any kind before this.
 	MaxScanBlocks uint64 `mapstructure:"max_scan_blocks" yaml:"max_scan_blocks"`
+	// MaxAddresses caps how many contract addresses one query may filter on.
+	// Each address is a separate index scan, and the list was neither capped
+	// nor deduplicated — listing the same address N times cost N scans.
+	MaxAddresses int `mapstructure:"max_addresses" yaml:"max_addresses"`
 }
 
 // RPCBatchSettings bounds JSON-RPC batching.
