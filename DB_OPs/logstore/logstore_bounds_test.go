@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -92,6 +93,72 @@ func TestGetLogs_AddresslessSpanTooLarge(t *testing.T) {
 	if len(kv.scannedPrefix) != 0 {
 		t.Fatalf("oversized query must not scan; scanned %v", kv.scannedPrefix)
 	}
+}
+
+// The span bound used to be written as ToBlock-FromBlock+1 > maxLogBlockSpan.
+// In uint64 arithmetic that expression wraps to 0 for ToBlock = MaxUint64, so
+// the widest request expressible — {fromBlock:"0x0", toBlock:"0xffffffffffffffff"},
+// which any unauthenticated caller can send to the public RPC port — passed the
+// bound and started a ~1.8e19-iteration scan that no deadline could stop.
+func TestGetLogs_AddresslessSpanOverflowRejected(t *testing.T) {
+	kv := newRecordKV()
+	s := New(kv)
+
+	_, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 0, ToBlock: math.MaxUint64})
+	if !errors.Is(err, ErrQueryUnbounded) {
+		t.Fatalf("toBlock=MaxUint64 must be rejected, got %v", err)
+	}
+	if len(kv.scannedPrefix) != 0 {
+		t.Fatalf("overflow query must not scan; scanned %v", kv.scannedPrefix)
+	}
+}
+
+// The bound itself is unchanged: maxLogBlockSpan blocks inclusive is the widest
+// accepted range, one more is refused. Pins that dropping the +1 did not move
+// the limit by one.
+func TestGetLogs_AddresslessSpanBoundary(t *testing.T) {
+	kv := newRecordKV()
+	s := New(kv)
+
+	// maxLogBlockSpan blocks inclusive: [1, maxLogBlockSpan] — allowed.
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 1, ToBlock: maxLogBlockSpan}); err != nil {
+		t.Fatalf("a %d-block span must be accepted, got %v", maxLogBlockSpan, err)
+	}
+	// One block more — refused.
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 1, ToBlock: maxLogBlockSpan + 1}); !errors.Is(err, ErrQueryUnbounded) {
+		t.Fatalf("a %d-block span must be rejected, got %v", maxLogBlockSpan+1, err)
+	}
+}
+
+// GetLogs took a context and discarded it (the parameter was named `_`), so the
+// 10s deadline DB_OPs.GetLogs creates for this call could never be observed.
+// Both scan paths must now stop on a cancelled context.
+func TestGetLogs_HonoursContextCancellation(t *testing.T) {
+	addr := common.HexToAddress("0x03")
+
+	t.Run("address-less path", func(t *testing.T) {
+		kv := newRecordKV()
+		s := New(kv)
+		seedLog(t, s, 1, 0, 0, addr)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := s.GetLogs(ctx, store.LogFilter{FromBlock: 1, ToBlock: 10}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+	})
+
+	t.Run("address path", func(t *testing.T) {
+		kv := newRecordKV()
+		s := New(kv)
+		seedLog(t, s, 1, 0, 0, addr)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := s.GetLogs(ctx, store.LogFilter{Addresses: []common.Address{addr}}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+	})
 }
 
 func TestGetLogs_AddresslessBoundedSeeksPerBlock(t *testing.T) {
