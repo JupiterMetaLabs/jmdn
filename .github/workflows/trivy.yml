@@ -31,9 +31,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The digest pin is the integrity check. `gh release verify-asset` is not
+      # used: the aquasecurity org's IP allow list rejects API calls made with
+      # this repo's token.
       - name: Install Trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           asset="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
@@ -42,7 +43,6 @@ jobs:
           curl -fsSL --retry 3 -o "$dir/$asset" \
             "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${asset}"
           echo "${TRIVY_SHA256}  $dir/$asset" | sha256sum -c -
-          gh release verify-asset "v${TRIVY_VERSION}" "$dir/$asset" -R aquasecurity/trivy
           tar -xzf "$dir/$asset" -C "$dir" trivy
           echo "$dir" >> "$GITHUB_PATH"
           "$dir/trivy" --version
