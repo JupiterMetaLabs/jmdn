@@ -327,6 +327,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.vote_period_min_round_seconds", d.Consensus.VotePeriodMinRoundSeconds)
 	v.SetDefault("consensus.vote_period_slack", d.Consensus.VotePeriodSlack)
 	v.SetDefault("consensus.period_cap_raise_from_height", d.Consensus.PeriodCapRaiseFromHeight)
+	v.SetDefault("consensus.unfunded_recipient_gas_from_height", d.Consensus.UnfundedRecipientGasFromHeight)
 	v.SetDefault("consensus.legacy_follow.enabled", d.Consensus.LegacyFollow.Enabled)
 	v.SetDefault("consensus.legacy_follow.main_sequencer", d.Consensus.LegacyFollow.MainSequencer)
 	v.SetDefault("consensus.legacy_follow.until_height", d.Consensus.LegacyFollow.UntilHeight)
