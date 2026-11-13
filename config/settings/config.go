@@ -517,6 +517,13 @@ type ConsensusSettings struct {
 	// value, set to a height the chain has not reached yet. 0 = off.
 	PeriodCapRaiseFromHeight uint64 `mapstructure:"period_cap_raise_from_height" yaml:"period_cap_raise_from_height"`
 	VotePeriodSlack          uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
+	// UnfundedRecipientGasFromHeight: from this block height on, this node's
+	// RPC rejects a plain transfer to a recipient holding no JMDT (balance 0,
+	// or no account) whose gas limit is below config.TransferGas +
+	// config.UnfundedRecipientGas (46,000), and eth_estimateGas returns that
+	// limit. Submission and estimation only: block validation does not check
+	// it. 0 = off.
+	UnfundedRecipientGasFromHeight uint64 `mapstructure:"unfunded_recipient_gas_from_height" yaml:"unfunded_recipient_gas_from_height"`
 	// LegacyFollow makes this v3base node follow the mainnet sequencer that
 	// still runs the main branch during the migration (see LegacyFollowSettings).
 	LegacyFollow LegacyFollowSettings `mapstructure:"legacy_follow" yaml:"legacy_follow"`

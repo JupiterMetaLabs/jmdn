@@ -825,6 +825,21 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	// Plain value transfer (no code at To) — no EVM execution; intrinsic only.
 	// This is the old behaviour and is exact (~21000 for a bare transfer).
 	if !isCreate && !isContractCall {
+		// Unfunded-recipient gas (config/unfunded_recipient_gas.go): from the
+		// activation height on, a transfer to an address holding no JMDT needs
+		// UnfundedRecipientGas more, or submission rejects it.
+		if from := config.UnfundedRecipientGasFrom(); from > 0 {
+			tip, terr := DB_OPs.GetLatestBlockNumber(opCtx, nil)
+			if terr != nil || config.UnfundedRecipientGasActiveAt(tip+1) {
+				bal, berr := s.Balance(opCtx, msg.To, nil, "")
+				if berr != nil {
+					return 0, fmt.Errorf("gas estimation failed: recipient balance: %w", berr)
+				}
+				if bal.Sign() <= 0 {
+					intrinsic += config.UnfundedRecipientGas
+				}
+			}
+		}
 		est := intrinsic + intrinsic*5/100
 		if est > blockGasLimit {
 			est = blockGasLimit
