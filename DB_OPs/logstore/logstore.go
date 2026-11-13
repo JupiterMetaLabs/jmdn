@@ -142,7 +142,13 @@ func (s *Store) StoreLogs(_ context.Context, logs []*ethtypes.Log) error {
 // GetLogs returns logs matching filter, ordered by (block, txIndex, logIndex).
 // ToBlock == 0 means "no upper bound" (the RPC layer maps "latest" to 0 when
 // it cannot resolve the head).
-func (s *Store) GetLogs(_ context.Context, filter store.LogFilter) ([]*ethtypes.Log, error) {
+//
+// ctx is honoured inside both scan paths. It used to be discarded (the
+// parameter was named `_`), so the 10s deadline DB_OPs.GetLogs creates for
+// this call reached a function that could not observe it: a scan that got past
+// the span bound ran to completion no matter how long it took, and neither the
+// deadline nor a client disconnect could stop it.
+func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtypes.Log, error) {
 	inRange := func(b uint64) (ok bool, past bool) {
 		if b < filter.FromBlock {
 			return false, false
@@ -180,8 +186,18 @@ func (s *Store) GetLogs(_ context.Context, filter store.LogFilter) ([]*ethtypes.
 		// bounded to the logs of one contract, so a from-zero walk is acceptable;
 		// the result cap still guards against a hot contract with millions of logs.
 		for _, addr := range filter.Addresses {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			prefix := []byte(addressPrefix + strings.ToLower(addr.Hex()) + ":")
 			err := s.kv.ScanPrefix(prefix, func(k, pk []byte) error {
+				// This walk is bounded by the contract's own log count, not by
+				// the filter's range, and the result cap below only fires on a
+				// MATCH — so a topic filter that matches nothing scans every
+				// log of a hot contract. Stop when the caller's deadline does.
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				b, ok := blockOfKey(k)
 				if !ok {
 					return nil
@@ -215,10 +231,19 @@ func (s *Store) GetLogs(_ context.Context, filter store.LogFilter) ([]*ethtypes.
 		if filter.ToBlock == 0 || filter.ToBlock < filter.FromBlock {
 			return nil, ErrQueryUnbounded
 		}
-		if filter.ToBlock-filter.FromBlock+1 > maxLogBlockSpan {
+		// Span check without the +1. The guard above already proves
+		// ToBlock >= FromBlock, so this subtraction cannot wrap; the previous
+		// form, ToBlock-FromBlock+1 > maxLogBlockSpan, wrapped to 0 for
+		// ToBlock = MaxUint64 and let the widest possible request straight
+		// through. Same bound as before: a span of maxLogBlockSpan-1 is
+		// maxLogBlockSpan blocks inclusive and is still allowed.
+		if filter.ToBlock-filter.FromBlock >= maxLogBlockSpan {
 			return nil, ErrQueryUnbounded
 		}
 		for b := filter.FromBlock; b <= filter.ToBlock; b++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			blockPrefix := []byte(fmt.Sprintf("%s%020d:", primaryPrefix, b))
 			err := s.kv.ScanPrefix(blockPrefix, func(k, raw []byte) error {
 				return collect(k, raw)
