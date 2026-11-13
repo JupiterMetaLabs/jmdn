@@ -79,7 +79,10 @@ RUN GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "u
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # Install runtime dependencies + Yggdrasil (required: network.yggdrasil: true in jmdn.yaml)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# The base digest is pinned, so the upgrade pulls Debian security fixes
+# published after it (apt, pcre2, perl-base).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
