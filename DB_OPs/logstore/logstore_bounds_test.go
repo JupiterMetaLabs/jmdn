@@ -161,6 +161,89 @@ func TestGetLogs_HonoursContextCancellation(t *testing.T) {
 	})
 }
 
+// SetLimits is the startup injection point for rpc.logs.*. A zero or negative
+// value must keep the compiled default rather than meaning "unlimited" — a
+// malformed config must not open the endpoint.
+func TestSetLimits_FailsClosedOnZero(t *testing.T) {
+	t.Cleanup(func() { SetLimits(maxLogBlockSpan, maxLogResults, maxLogScanBlocks) })
+
+	SetLimits(0, 0, 0)
+	span, results, scan := Limits()
+	if span != maxLogBlockSpan || results != maxLogResults || scan != maxLogScanBlocks {
+		t.Fatalf("zero config must keep the defaults, got span=%d results=%d scan=%d", span, results, scan)
+	}
+
+	SetLimits(500, 250, 400)
+	span, results, scan = Limits()
+	if span != 500 || results != 250 || scan != 400 {
+		t.Fatalf("configured values not applied: span=%d results=%d scan=%d", span, results, scan)
+	}
+
+	// A partial config overrides only what it sets.
+	SetLimits(0, 99, 0)
+	span, results, scan = Limits()
+	if span != 500 || results != 99 || scan != 400 {
+		t.Fatalf("partial config must leave the others alone: span=%d results=%d scan=%d", span, results, scan)
+	}
+}
+
+// The address path walks a contract's whole history from block 0, and the
+// result cap is only reached once a log MATCHES — so a filter matching nothing
+// scanned everything. The scan budget is the only bound on that work.
+func TestGetLogs_AddressPathHonoursScanBudget(t *testing.T) {
+	t.Cleanup(func() { SetLimits(maxLogBlockSpan, maxLogResults, maxLogScanBlocks) })
+
+	kv := newRecordKV()
+	s := New(kv)
+	addr := common.HexToAddress("0x04")
+	for b := uint64(1); b <= 20; b++ {
+		seedLog(t, s, b, 0, 0, addr)
+	}
+
+	// Budget of 5 blocks, a filter that matches nothing (so the result cap can
+	// never fire) and no block range at all — the shape the address path could
+	// not refuse before.
+	SetLimits(0, 0, 5)
+	noSuchTopic := [][]common.Hash{{common.HexToHash("0xdead")}}
+	_, err := s.GetLogs(context.Background(), store.LogFilter{
+		Addresses: []common.Address{addr},
+		Topics:    noSuchTopic,
+	})
+	if !errors.Is(err, ErrScanBudgetExceeded) {
+		t.Fatalf("want ErrScanBudgetExceeded once the budget is spent, got %v", err)
+	}
+
+	// Within budget the same query succeeds and returns nothing.
+	SetLimits(0, 0, 100)
+	got, err := s.GetLogs(context.Background(), store.LogFilter{
+		Addresses: []common.Address{addr},
+		Topics:    noSuchTopic,
+	})
+	if err != nil {
+		t.Fatalf("a query inside the budget must succeed, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("filter matches nothing, want 0 logs, got %d", len(got))
+	}
+}
+
+// The configured span is what the address-less bound uses, not the compiled
+// constant.
+func TestGetLogs_AddresslessUsesConfiguredSpan(t *testing.T) {
+	t.Cleanup(func() { SetLimits(maxLogBlockSpan, maxLogResults, maxLogScanBlocks) })
+
+	kv := newRecordKV()
+	s := New(kv)
+	SetLimits(10, 0, 0) // 10 blocks inclusive is the widest accepted range
+
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 1, ToBlock: 10}); err != nil {
+		t.Fatalf("a 10-block span must be accepted under span=10, got %v", err)
+	}
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{FromBlock: 1, ToBlock: 11}); !errors.Is(err, ErrQueryUnbounded) {
+		t.Fatalf("an 11-block span must be rejected under span=10, got %v", err)
+	}
+}
+
 func TestGetLogs_AddresslessBoundedSeeksPerBlock(t *testing.T) {
 	kv := newRecordKV()
 	s := New(kv)

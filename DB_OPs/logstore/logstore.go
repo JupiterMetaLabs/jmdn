@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -50,10 +51,69 @@ type KV interface {
 // return, so an unauthenticated {fromBlock:earliest,toBlock:latest} request can
 // neither walk unbounded history nor accumulate an unbounded response. Chosen to
 // match common public-RPC provider limits (10k blocks / 10k logs per query).
+//
+// maxLogScanBlocks is the bound the other two do not provide: a block SPAN is a
+// count, not a cost, and maxLogResults is only reached once a log MATCHES, so a
+// filter that matches nothing never trips it. maxLogScanBlocks counts blocks
+// actually touched, on both paths. It is what bounds the address path, which
+// walks a contract's whole history from block 0 and had no work limit at all.
 const (
-	maxLogBlockSpan = 10_000
-	maxLogResults   = 10_000
+	// 2_000 blocks, not the 10_000 this shipped with. 10_000 was the generous
+	// end of what public providers allow (Alchemy's own default range is 2_000)
+	// and was never derived from this node's cost: an address-less query at
+	// 10_000 is 10_000 KV seeks whether or not a single log matches. The
+	// consumers of this endpoint are wallets and explorers, which page; an
+	// indexer that genuinely needs more is the case for raising it per node,
+	// with rpc_query_refused_total{reason="logs_span"} as the evidence.
+	maxLogBlockSpan = 2_000
+	// Unchanged. This bounds RESPONSE MEMORY, not scan work, and 2_000 blocks
+	// of a busy contract can legitimately carry more than 2_000 logs — cutting
+	// it with the span would refuse valid queries for no saving.
+	maxLogResults = 10_000
+	// Matches the span, so the address-less path is bounded identically and the
+	// address path — which has no range to bound it — gets the same ceiling.
+	maxLogScanBlocks = 2_000
 )
+
+// Effective limits. These default to the constants above and are overridden
+// once at startup from config (rpc.logs.*) via SetLimits — the package cannot
+// import config/settings without an import cycle, so main injects them, the
+// same seam Structs.SetCommittedTipFn uses.
+//
+// FAIL CLOSED: a zero or negative configured value keeps the compiled default.
+// Atomics because the write happens on the startup goroutine while reads happen
+// on every RPC goroutine.
+var (
+	limBlockSpan  atomic.Uint64
+	limResults    atomic.Int64
+	limScanBlocks atomic.Uint64
+)
+
+func init() {
+	limBlockSpan.Store(maxLogBlockSpan)
+	limResults.Store(maxLogResults)
+	limScanBlocks.Store(maxLogScanBlocks)
+}
+
+// SetLimits overrides the eth_getLogs cost bounds. Call once at startup, before
+// the RPC listeners accept traffic. Any argument that is zero or negative leaves
+// that bound at its compiled default.
+func SetLimits(maxBlockSpan uint64, maxResults int, maxScanBlocks uint64) {
+	if maxBlockSpan > 0 {
+		limBlockSpan.Store(maxBlockSpan)
+	}
+	if maxResults > 0 {
+		limResults.Store(int64(maxResults))
+	}
+	if maxScanBlocks > 0 {
+		limScanBlocks.Store(maxScanBlocks)
+	}
+}
+
+// Limits reports the bounds in force, for logging and tests.
+func Limits() (maxBlockSpan uint64, maxResults int, maxScanBlocks uint64) {
+	return limBlockSpan.Load(), int(limResults.Load()), limScanBlocks.Load()
+}
 
 const (
 	primaryPrefix = "evmlog:b:"
@@ -69,13 +129,28 @@ var errStop = errors.New("logstore: stop scan")
 // buffering an unbounded slice.
 var errTooMany = errors.New("logstore: result cap exceeded")
 
+// errScanBudget is returned from a scan callback when the query has touched
+// more blocks than the work budget allows. Converted by GetLogs into
+// ErrScanBudgetExceeded, the same way errTooMany becomes ErrTooManyResults.
+var errScanBudget = errors.New("logstore: scan budget exceeded")
+
 // ErrQueryUnbounded is returned when an address-less eth_getLogs query does not
-// carry a bounded [fromBlock, toBlock] range within maxLogBlockSpan. Such a query
-// would force a full-history scan, so it is rejected up front.
-var ErrQueryUnbounded = fmt.Errorf("logstore: address-less eth_getLogs requires a bounded block range of at most %d blocks", maxLogBlockSpan)
+// carry a bounded [fromBlock, toBlock] range within the configured span. Such a
+// query would force a full-history scan, so it is rejected up front.
+//
+// A sentinel, wrapped at each call site with the limit actually in force —
+// the limits are configurable now, so a message baked in at init would quote a
+// number the node is no longer using. errors.Is is unaffected.
+var ErrQueryUnbounded = errors.New("logstore: address-less eth_getLogs requires a bounded block range")
 
 // ErrTooManyResults is the caller-facing form of errTooMany.
-var ErrTooManyResults = fmt.Errorf("logstore: eth_getLogs matched more than %d logs; narrow the range or add filters", maxLogResults)
+var ErrTooManyResults = errors.New("logstore: eth_getLogs matched too many logs; narrow the range or add filters")
+
+// ErrScanBudgetExceeded is returned when a query would touch more blocks than
+// the configured work budget allows. Distinct from ErrQueryUnbounded: the range
+// asked for may be legitimate, it is the SCAN it implies that is refused — on
+// the address path there is no range to blame at all.
+var ErrScanBudgetExceeded = errors.New("logstore: eth_getLogs would scan too many blocks; narrow the range or add filters")
 
 // Store implements backend.LogWriter over a KV.
 type Store struct {
@@ -175,32 +250,56 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 		}
 		seen[string(pk)] = struct{}{}
 		out = append(out, &l)
-		if len(out) > maxLogResults {
+		if len(out) > int(limResults.Load()) {
 			return errTooMany
 		}
 		return nil
 	}
 
+	// Work budget, shared by both paths and by every address in one query: how
+	// many distinct blocks this query may touch. Keys come back in ascending
+	// block order, so a change of block is a new block touched. Blocks counted
+	// once per address, so a query over several addresses that cover the same
+	// blocks spends the budget faster — conservative, and the alternative is
+	// remembering every block number seen.
+	scanBudget := limScanBlocks.Load()
+	var blocksScanned uint64
+	lastBlock, haveLast := uint64(0), false
+	countBlock := func(b uint64) error {
+		if haveLast && b == lastBlock {
+			return nil
+		}
+		lastBlock, haveLast = b, true
+		blocksScanned++
+		if blocksScanned > scanBudget {
+			return errScanBudget
+		}
+		return nil
+	}
+
 	if len(filter.Addresses) > 0 {
-		// Address path: one prefix scan per address. The address index is already
-		// bounded to the logs of one contract, so a from-zero walk is acceptable;
-		// the result cap still guards against a hot contract with millions of logs.
+		// Address path: one prefix scan per address. The address index is bounded
+		// to the logs of one contract, but that is NOT a bound on work — it walks
+		// the contract's whole history from block 0, and the result cap only fires
+		// once a log MATCHES, so a filter that matches nothing scans everything.
+		// scanBudget is what bounds it.
 		for _, addr := range filter.Addresses {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			lastBlock, haveLast = 0, false // block runs are per address
 			prefix := []byte(addressPrefix + strings.ToLower(addr.Hex()) + ":")
 			err := s.kv.ScanPrefix(prefix, func(k, pk []byte) error {
-				// This walk is bounded by the contract's own log count, not by
-				// the filter's range, and the result cap below only fires on a
-				// MATCH — so a topic filter that matches nothing scans every
-				// log of a hot contract. Stop when the caller's deadline does.
+				// Stop when the caller's deadline does.
 				if err := ctx.Err(); err != nil {
 					return err
 				}
 				b, ok := blockOfKey(k)
 				if !ok {
 					return nil
+				}
+				if err := countBlock(b); err != nil {
+					return err
 				}
 				in, past := inRange(b)
 				if past {
@@ -216,7 +315,10 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 				return collect(pk, raw)
 			})
 			if errors.Is(err, errTooMany) {
-				return nil, ErrTooManyResults
+				return nil, fmt.Errorf("%w (cap %d)", ErrTooManyResults, limResults.Load())
+			}
+			if errors.Is(err, errScanBudget) {
+				return nil, fmt.Errorf("%w (budget %d blocks)", ErrScanBudgetExceeded, scanBudget)
 			}
 			if err != nil && !errors.Is(err, errStop) {
 				return nil, err
@@ -229,7 +331,7 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 		// per block using the zero-padded key schema, so the scan touches only the
 		// requested [FromBlock, ToBlock] window and never earlier history.
 		if filter.ToBlock == 0 || filter.ToBlock < filter.FromBlock {
-			return nil, ErrQueryUnbounded
+			return nil, fmt.Errorf("%w of at most %d blocks", ErrQueryUnbounded, limBlockSpan.Load())
 		}
 		// Span check without the +1. The guard above already proves
 		// ToBlock >= FromBlock, so this subtraction cannot wrap; the previous
@@ -237,19 +339,28 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 		// ToBlock = MaxUint64 and let the widest possible request straight
 		// through. Same bound as before: a span of maxLogBlockSpan-1 is
 		// maxLogBlockSpan blocks inclusive and is still allowed.
-		if filter.ToBlock-filter.FromBlock >= maxLogBlockSpan {
-			return nil, ErrQueryUnbounded
+		span := limBlockSpan.Load()
+		if filter.ToBlock-filter.FromBlock >= span {
+			return nil, fmt.Errorf("%w of at most %d blocks", ErrQueryUnbounded, span)
 		}
 		for b := filter.FromBlock; b <= filter.ToBlock; b++ {
 			if err := ctx.Err(); err != nil {
 				return nil, err
+			}
+			// Normally a no-op here: the span bound above already caps this
+			// loop at limBlockSpan blocks, and the budget defaults to the same
+			// value. It bites only when an operator sets max_scan_blocks lower
+			// than max_block_span, which is how a node asks for a tighter work
+			// bound than its advertised range.
+			if err := countBlock(b); err != nil {
+				return nil, fmt.Errorf("%w (budget %d blocks)", ErrScanBudgetExceeded, scanBudget)
 			}
 			blockPrefix := []byte(fmt.Sprintf("%s%020d:", primaryPrefix, b))
 			err := s.kv.ScanPrefix(blockPrefix, func(k, raw []byte) error {
 				return collect(k, raw)
 			})
 			if errors.Is(err, errTooMany) {
-				return nil, ErrTooManyResults
+				return nil, fmt.Errorf("%w (cap %d)", ErrTooManyResults, limResults.Load())
 			}
 			if err != nil {
 				return nil, err

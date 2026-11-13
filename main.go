@@ -1311,6 +1311,21 @@ func main() {
 		// "LogWriter not configured" while this was nil) and so the apply path
 		// can index logs at commit time (BlockProcessing.applyContractTx).
 		logStore := logstore.New(db.KV)
+		// eth_getLogs cost bounds from config (rpc.logs.*). The package cannot
+		// import config/settings without an import cycle, so they are injected
+		// here, before any listener accepts traffic. A zero or negative value
+		// keeps the compiled default, so a node with no rpc: section is
+		// unchanged.
+		logstore.SetLimits(
+			cfg.RPC.Logs.MaxBlockSpan,
+			cfg.RPC.Logs.MaxResults,
+			cfg.RPC.Logs.MaxScanBlocks,
+		)
+		logSpan, logResults, logScan := logstore.Limits()
+		mainLogger().Info(context.Background(), "eth_getLogs cost bounds",
+			ion.Uint64("max_block_span", logSpan),
+			ion.Int("max_results", logResults),
+			ion.Uint64("max_scan_blocks", logScan))
 		thebeHandleBackend := backend.New(gw, reader, logStore)
 		// SYNC task handle: identical backend over the sync pool. Peer-sync serving
 		// paths select it with DB_OPs.TaskConn(DB_OPs.TaskSync); writes made through

@@ -151,6 +151,20 @@ var (
 		[]string{"reason", "peer_id"},
 	)
 
+	// RPCQueryRefusedCounter counts public JSON-RPC queries refused by a cost
+	// bound rather than by a client error. This is the signal for tuning those
+	// bounds: without it an operator cannot tell whether a limit is doing
+	// security work or quietly breaking an integrator. The reason label is the
+	// bound that fired ("logs_span", "logs_results", "logs_scan"), never a
+	// client-supplied value, so cardinality stays fixed.
+	RPCQueryRefusedCounter = factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rpc_query_refused_total",
+			Help: "Public JSON-RPC queries refused by a configured cost bound, by method and bound",
+		},
+		[]string{"method", "reason"},
+	)
+
 	// (File transfer metrics are not registered.)
 
 	// Database metrics

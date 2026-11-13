@@ -341,9 +341,20 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// JSON numbers arrive as float64 — int(v) on an out-of-range float is
 		// implementation-specific (could land anywhere), so clamp explicitly
 		// rather than trusting the post-conversion value alone.
-		const maxPage = 1_000_000
+		//
+		// maxPage was 1_000_000, which clamped the VALUE without bounding the
+		// COST: pagination is offset-based, so page 1,000,000 at the default 20
+		// per page asks the SQL projection to skip 20 million rows before
+		// returning any — the classic deep-pagination DoS, and an
+		// unauthenticated caller could ask for it. 10_000 pages is already far
+		// past any UI's reach while keeping the worst-case offset bounded.
+		// A caller that genuinely needs to walk that far should page by block
+		// range instead; a keyset/cursor API is the real fix and is not this
+		// change.
+		const maxPage = 10_000
 		if page > maxPage {
-			page = maxPage
+			resp, _ := invalidParams(req, fmt.Sprintf("page must be at most %d; narrow the query by block range instead of paging deeper", maxPage))
+			return resp, nil
 		}
 
 		limit := 20

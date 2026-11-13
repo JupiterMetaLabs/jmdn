@@ -301,6 +301,40 @@ func DefaultConfig() NodeConfig {
 			PushSuspend:         true,
 			StorePath:           "",
 		},
+		// Public JSON-RPC cost bounds. Every value here is the one that
+		// previously shipped as a Go const, so a node that sets no rpc: section
+		// behaves exactly as it did before — EXCEPT for the two that had no
+		// const to inherit, noted below.
+		RPC: RPCSettings{
+			Logs: RPCLogsSettings{
+				// Both were logstore's maxLogBlockSpan / maxLogResults. The
+				// 2_000 matches Alchemy's default range and replaces the 10_000
+				// this shipped with (#169), which was the generous end of what
+				// providers allow and was never derived from this node's cost.
+				// Raise it per node for one that serves an indexer, with
+				// rpc_query_refused_total as the evidence.
+				MaxBlockSpan: 2_000,
+				MaxResults:   10_000,
+				// NEW BOUND. Set equal to MaxBlockSpan so the address-less
+				// path is unchanged: it can already touch at most MaxBlockSpan
+				// blocks, so this never fires there. What it does bound is the
+				// ADDRESS path, which walks a contract's entire history and
+				// had no work limit at all. A query that exceeds it is refused
+				// with a clear error rather than silently costing the node a
+				// full-history scan.
+				MaxScanBlocks: 2_000,
+			},
+			Batch: RPCBatchSettings{
+				// Was the maxBatchSize const.
+				MaxSize: 100,
+				// NEW BOUND. Previously every element of a batch ran at once,
+				// so MaxSize was also the concurrency. 8 keeps batching useful
+				// for cheap calls while stopping one request from putting 100
+				// scans on the scheduler. Raise it on a machine with cores to
+				// spare; it bounds fan-out, not throughput.
+				MaxConcurrency: 8,
+			},
+		},
 		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
 		// exactly as it does today until an operator opts in. The numbers below
 		// only take effect once Enabled=true.
