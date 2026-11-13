@@ -257,11 +257,20 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 	}
 
 	// Work budget, shared by both paths and by every address in one query: how
-	// many distinct blocks this query may touch. Keys come back in ascending
-	// block order, so a change of block is a new block touched. Blocks counted
-	// once per address, so a query over several addresses that cover the same
-	// blocks spends the budget faster — conservative, and the alternative is
-	// remembering every block number seen.
+	// many distinct IN-RANGE blocks this query may touch. Keys come back in
+	// ascending block order, so a change of block is a new block touched.
+	// Blocks counted once per address, so a query over several addresses that
+	// cover the same blocks spends the budget faster — conservative, and the
+	// alternative is remembering every block number seen.
+	//
+	// IN-RANGE is the load-bearing word. The address index starts at block 0,
+	// so a scan reaches [FromBlock, ToBlock] only by passing everything before
+	// it. Charging those blocks to the budget would bound the contract's
+	// history instead of the caller's request, and refuse every query on a
+	// contract that had outgrown the budget. What bounds that walk is the
+	// caller's deadline (#288), not this counter. Starting the scan AT
+	// FromBlock would bound it properly, but the KV surface here only offers
+	// ScanPrefix, not a seek — that needs a new KV capability.
 	scanBudget := limScanBlocks.Load()
 	var blocksScanned uint64
 	lastBlock, haveLast := uint64(0), false
@@ -298,15 +307,24 @@ func (s *Store) GetLogs(ctx context.Context, filter store.LogFilter) ([]*ethtype
 				if !ok {
 					return nil
 				}
-				if err := countBlock(b); err != nil {
-					return err
-				}
 				in, past := inRange(b)
 				if past {
 					return errStop
 				}
 				if !in {
+					// Below FromBlock. The address index starts at block 0, so
+					// the scan passes every block this contract has ever had a
+					// log in before it reaches the requested range. Counting
+					// those would make the budget a function of the contract's
+					// HISTORY rather than of the work asked for: a contract
+					// with logs in more than the budget's worth of blocks would
+					// refuse EVERY query on itself, including one for the last
+					// ten blocks. Skipped, not counted.
 					return nil
+				}
+				// In range: this block is work the caller asked for.
+				if err := countBlock(b); err != nil {
+					return err
 				}
 				raw, err := s.kv.Get(pk)
 				if err != nil || len(raw) == 0 {

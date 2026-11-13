@@ -229,6 +229,55 @@ func TestGetLogs_AddressPathHonoursScanBudget(t *testing.T) {
 
 // The configured span is what the address-less bound uses, not the compiled
 // constant.
+// REGRESSION (review of #291): the address index starts at block 0, so the scan
+// passes every block the contract has ever had a log in before it reaches the
+// requested range. Counting those against the budget made the budget a function
+// of the contract's HISTORY rather than of the work asked for: once a contract
+// had logs in more than max_scan_blocks blocks, EVERY query on it was refused,
+// including one for the last ten blocks.
+//
+// That is not a theoretical shape — it is how the JMDT-DEX relayer reads vault
+// deposits (eth_getLogs(address=vault)), so on a busy mainnet vault bridging
+// would have stopped outright.
+//
+// Only blocks inside [FromBlock, ToBlock] count. The walk up to FromBlock is
+// still bounded, by the caller's deadline (#288).
+func TestGetLogs_AddressPathBudgetCountsOnlyTheRequestedRange(t *testing.T) {
+	t.Cleanup(func() { SetLimits(maxLogBlockSpan, maxLogResults, maxLogScanBlocks) })
+
+	kv := newRecordKV()
+	s := New(kv)
+	addr := common.HexToAddress("0x05")
+	const history = 30
+	for b := uint64(1); b <= history; b++ {
+		seedLog(t, s, b, 0, 0, addr)
+	}
+
+	// Budget far smaller than the contract's history, as on a busy mainnet
+	// contract. The requested window is well inside it.
+	SetLimits(0, 0, 5)
+	got, err := s.GetLogs(context.Background(), store.LogFilter{
+		Addresses: []common.Address{addr},
+		FromBlock: history - 4, // 26
+		ToBlock:   history,     // 30 -> 5 blocks, exactly the budget
+	})
+	if err != nil {
+		t.Fatalf("a 5-block window on a %d-block history must be served, got %v", history, err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("want the 5 in-range logs, got %d", len(got))
+	}
+
+	// The budget still bites on the work actually requested.
+	if _, err := s.GetLogs(context.Background(), store.LogFilter{
+		Addresses: []common.Address{addr},
+		FromBlock: 1,
+		ToBlock:   history,
+	}); !errors.Is(err, ErrScanBudgetExceeded) {
+		t.Fatalf("a %d-block window under a 5-block budget must be refused, got %v", history, err)
+	}
+}
+
 func TestGetLogs_AddresslessUsesConfiguredSpan(t *testing.T) {
 	t.Cleanup(func() { SetLimits(maxLogBlockSpan, maxLogResults, maxLogScanBlocks) })
 
