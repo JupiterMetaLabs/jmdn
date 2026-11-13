@@ -1,0 +1,101 @@
+name: Trivy
+
+on:
+  push:
+    branches: ["main", "v3base", "release/**"]
+  pull_request:
+    branches: ["main", "v3base", "release/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Trivy is installed from its GitHub release, not through
+  # aquasecurity/trivy-action or setup-trivy: tags of both were rewritten in
+  # GHSA-69fq-xp46-6x23. The release below is immutable. To upgrade, change
+  # both values; the digest is the asset's "digest" field in
+  # https://api.github.com/repos/aquasecurity/trivy/releases/tags/<version>.
+  TRIVY_VERSION: 0.76.1
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+
+jobs:
+  trivy:
+    name: Trivy scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Trivy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          dir="$RUNNER_TEMP/trivy"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/$asset" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${asset}"
+          echo "${TRIVY_SHA256}  $dir/$asset" | sha256sum -c -
+          gh release verify-asset "v${TRIVY_VERSION}" "$dir/$asset" -R aquasecurity/trivy
+          tar -xzf "$dir/$asset" -C "$dir" trivy
+          echo "$dir" >> "$GITHUB_PATH"
+          "$dir/trivy" --version
+
+      - name: Date
+        id: date
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # One database download per day; Trivy still refreshes a stale copy.
+      - name: Cache vulnerability database
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ steps.date.outputs.day }}
+          restore-keys: trivy-db-
+
+      # Blocking: Go module vulnerabilities rated HIGH or CRITICAL that have a
+      # fixed version. Secrets are covered by gitleaks in nightly.yml.
+      - name: Vulnerabilities (go.mod)
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --pkg-types library \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --no-progress
+
+      # Report only: Dockerfile and workflow misconfigurations, every
+      # severity, so they are visible without blocking unrelated changes.
+      - name: Misconfigurations (report only)
+        if: always()
+        run: |
+          trivy fs . \
+            --scanners misconfig \
+            --exit-code 0 \
+            --no-progress
+
+      - name: SARIF report
+        if: always()
+        run: |
+          trivy fs . \
+            --scanners vuln,misconfig \
+            --pkg-types library \
+            --format sarif \
+            --output trivy.sarif \
+            --exit-code 0 \
+            --no-progress
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy.sarif
+          if-no-files-found: ignore
