@@ -592,10 +592,11 @@ type ConsensusSettings struct {
 	PeriodCapRaiseFromHeight uint64 `mapstructure:"period_cap_raise_from_height" yaml:"period_cap_raise_from_height"`
 	VotePeriodSlack          uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
 	// NewRecipientGasFromHeight: from this block height on, this node's RPC
-	// rejects a plain transfer to an address with no account whose gas limit is
-	// below config.TransferGas + config.NewRecipientGas (46,000), and
-	// eth_estimateGas returns that limit. An existing account, even at zero
-	// balance, needs only 21,000. Submission and estimation only: block
+	// rejects a plain transfer to a new recipient (no account, or one that has
+	// never held value or sent a transaction, e.g. DID-registered only) whose
+	// gas limit is below config.TransferGas + config.NewRecipientGas (46,000),
+	// and eth_estimateGas returns that limit. A used account, even drained to
+	// zero, needs only 21,000. Submission and estimation only: block
 	// validation does not check it. Set the same value on every RPC node, or the
 	// same transfer is accepted by one node and rejected by another. 0 = off.
 	NewRecipientGasFromHeight uint64 `mapstructure:"new_recipient_gas_from_height" yaml:"new_recipient_gas_from_height"`

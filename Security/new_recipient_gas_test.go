@@ -17,13 +17,15 @@ var (
 	nrgFunded  = common.HexToAddress("0x2000000000000000000000000000000000000002")
 	nrgFresh   = common.HexToAddress("0x3000000000000000000000000000000000000003")
 	nrgDrained = common.HexToAddress("0x4000000000000000000000000000000000000004")
+	nrgDIDOnly = common.HexToAddress("0x5000000000000000000000000000000000000005")
 )
 
 func nrgCache() *SecurityCache {
 	c := NewSecurityCache()
 	c.RegisterAccount(nrgSender, &DB_OPs.Account{Address: nrgSender, Balance: "1000000000000000000"})
 	c.RegisterAccount(nrgFunded, &DB_OPs.Account{Address: nrgFunded, Balance: "1"})
-	c.RegisterAccount(nrgDrained, &DB_OPs.Account{Address: nrgDrained, Balance: "0"})
+	c.RegisterAccount(nrgDrained, &DB_OPs.Account{Address: nrgDrained, Balance: "0", TxNonce: 2})
+	c.RegisterAccount(nrgDIDOnly, &DB_OPs.Account{Address: nrgDIDOnly, Balance: "0"})
 	return c
 }
 
@@ -42,6 +44,9 @@ func TestCheckNewRecipientGas(t *testing.T) {
 		// An existing account drained to zero creates no new state.
 		{"drained account at 21000", nrgTx(&nrgDrained, 21_000), ""},
 		{"new address at 21000", nrgTx(&nrgFresh, 21_000), newErr},
+		// A free DID registration does not make the address "used".
+		{"registered but never used at 21000", nrgTx(&nrgDIDOnly, 21_000), newErr},
+		{"registered but never used at 46000", nrgTx(&nrgDIDOnly, 46_000), ""},
 		{"new address, gas limit 0", nrgTx(&nrgFresh, 0), newErr},
 		{"new address at 45999", nrgTx(&nrgFresh, 45_999), "gas limit 45999 below 46000 required for a new recipient"},
 		{"new address at 46000", nrgTx(&nrgFresh, 46_000), ""},

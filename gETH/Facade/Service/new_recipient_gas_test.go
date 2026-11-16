@@ -11,14 +11,14 @@ import (
 // stubNewRecipientLookups replaces the tip and account lookups for one test.
 func stubNewRecipientLookups(t *testing.T, from uint64, tip uint64, tipErr error, exists bool, existsErr error) {
 	t.Helper()
-	prevTip, prevExists := estimateChainTip, estimateAccountExists
+	prevTip, prevUsed := estimateChainTip, estimateAccountUsed
 	t.Cleanup(func() {
-		estimateChainTip, estimateAccountExists = prevTip, prevExists
+		estimateChainTip, estimateAccountUsed = prevTip, prevUsed
 		config.SetNewRecipientGasFrom(0)
 	})
 	config.SetNewRecipientGasFrom(from)
 	estimateChainTip = func(context.Context) (uint64, error) { return tip, tipErr }
-	estimateAccountExists = func(string) (bool, error) { return exists, existsErr }
+	estimateAccountUsed = func(string) (bool, error) { return exists, existsErr }
 }
 
 func TestNewRecipientExtraGas(t *testing.T) {
@@ -35,8 +35,8 @@ func TestNewRecipientExtraGas(t *testing.T) {
 		{"rule off", 0, 500, nil, false, nil, 0},
 		{"before activation", 100, 98, nil, false, nil, 0},         // next block 99
 		{"next block activates", 100, 99, nil, false, nil, 25_000}, // next block 100
-		{"active, existing account", 100, 500, nil, true, nil, 0},
-		{"active, new account", 100, 500, nil, false, nil, 25_000},
+		{"active, used account", 100, 500, nil, true, nil, 0},
+		{"active, new or unused account", 100, 500, nil, false, nil, 25_000},
 		{"tip unreadable: assume active", 100, 0, boom, false, nil, 25_000},
 		{"account unreadable: assume new", 100, 500, nil, false, boom, 25_000},
 	}

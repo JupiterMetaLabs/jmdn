@@ -17,12 +17,13 @@ var (
 	estimateChainTip = func(ctx context.Context) (uint64, error) {
 		return DB_OPs.GetLatestBlockNumber(ctx, nil)
 	}
-	// estimateAccountExists reports whether to has an account. A missing
-	// account is (false, nil); only a genuine read failure is an error.
-	estimateAccountExists = func(to string) (bool, error) {
-		_, err := DB_OPs.GetAccount(nil, Utils.ConvertAddressCaseInsensitive(to))
+	// estimateAccountUsed reports whether to is a used account
+	// (DB_OPs.IsUsedAccount). A missing account is (false, nil); only a
+	// genuine read failure is an error.
+	estimateAccountUsed = func(to string) (bool, error) {
+		acct, err := DB_OPs.GetAccount(nil, Utils.ConvertAddressCaseInsensitive(to))
 		if err == nil {
-			return true, nil
+			return DB_OPs.IsUsedAccount(acct), nil
 		}
 		if DB_OPs.IsNotFound(err) {
 			return false, nil
@@ -32,8 +33,8 @@ var (
 )
 
 // newRecipientExtraGas returns the gas to add to a plain transfer's estimate:
-// config.NewRecipientGas when the rule is on and the recipient has no account,
-// otherwise 0.
+// config.NewRecipientGas when the rule is on and the recipient is not a used
+// account, otherwise 0.
 //
 // It never fails the estimate. When the chain tip or the account cannot be
 // read it assumes the rule applies and the recipient is new: the estimate can
@@ -49,13 +50,13 @@ func newRecipientExtraGas(ctx context.Context, to string) uint64 {
 		logger().Warn(ctx, "eth_estimateGas: chain tip unreadable, assuming the new-recipient rule applies",
 			ion.String("error", err.Error()))
 	}
-	exists, err := estimateAccountExists(to)
+	used, err := estimateAccountUsed(to)
 	if err != nil {
 		logger().Warn(ctx, "eth_estimateGas: recipient account unreadable, assuming a new recipient",
 			ion.String("to", to), ion.String("error", err.Error()))
 		return config.NewRecipientGas
 	}
-	if exists {
+	if used {
 		return 0
 	}
 	return config.NewRecipientGas

@@ -36,12 +36,14 @@ func isRuleTransfer(tx *config.Transaction) bool {
 // checkNewRecipientGas applies the rule to tx against the accounts in cache,
 // without checking activation. LoadAccounts has already loaded the recipient
 // (fail-closed on a read error), so an absent cache entry means no account.
+// A row that was registered but never used counts as new
+// (DB_OPs.IsUsedAccount).
 func checkNewRecipientGas(tx *config.Transaction, cache *SecurityCache) error {
 	if !isRuleTransfer(tx) {
 		return nil
 	}
-	exists := cache.GetAccount(*tx.To) != nil
-	return config.CheckNewRecipientGas(tx.GasLimit, exists)
+	used := DB_OPs.IsUsedAccount(cache.GetAccount(*tx.To))
+	return config.CheckNewRecipientGas(tx.GasLimit, used)
 }
 
 // checkSubmissionNewRecipientGas applies the rule to a submitted transaction

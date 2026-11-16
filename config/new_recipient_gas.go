@@ -8,11 +8,15 @@ import (
 
 // New-recipient gas (consensus.new_recipient_gas_from_height).
 //
-// A plain value transfer to an address that has NO ACCOUNT yet must carry a
-// gas limit of at least TransferGas + NewRecipientGas. That transfer is what
-// creates the account, so it pays for it, as Ethereum's G_newaccount did.
-// An existing account pays nothing extra, whatever its balance: a transfer to
-// an account drained to zero creates no new state.
+// A plain value transfer to a NEW recipient must carry a gas limit of at least
+// TransferGas + NewRecipientGas. That transfer is what brings the account into
+// use, so it pays for it, as Ethereum's G_newaccount did.
+//
+// "New" means no USED account (DB_OPs.IsUsedAccount): no row at all, or a row
+// that has never held value or sent a transaction, such as one written by a
+// free DID registration. Registering an address first therefore does not avoid
+// the cost. An account drained to zero is used (draining it took a sent
+// transaction) and pays nothing extra.
 //
 // Enforced at submission (Security.AllChecks) and reflected in eth_estimateGas
 // only; block validation does not check it. The fee formula is unchanged:
@@ -65,10 +69,10 @@ func NewRecipientGasActiveAt(height uint64) bool {
 }
 
 // RequiredTransferGas returns the minimum gas limit for a plain transfer to a
-// recipient that does (recipientExists) or does not yet have an account. It
-// does not check activation; callers do.
-func RequiredTransferGas(recipientExists bool) uint64 {
-	if recipientExists {
+// recipient that is (recipientUsed) or is not a used account. It does not
+// check activation; callers do.
+func RequiredTransferGas(recipientUsed bool) uint64 {
+	if recipientUsed {
 		return TransferGas
 	}
 	return TransferGas + NewRecipientGas
@@ -78,8 +82,8 @@ func RequiredTransferGas(recipientExists bool) uint64 {
 // with gasLimit (0 meaning FallbackTxGasLimit, as GasFee charges it) is below
 // the limit RequiredTransferGas gives. It does not check activation or whether
 // the transfer is a contract transaction; callers do.
-func CheckNewRecipientGas(gasLimit uint64, recipientExists bool) error {
-	need := RequiredTransferGas(recipientExists)
+func CheckNewRecipientGas(gasLimit uint64, recipientUsed bool) error {
+	need := RequiredTransferGas(recipientUsed)
 	if have := EffectiveGasLimit(gasLimit); have < need {
 		return &NewRecipientGasError{Have: have, Need: need}
 	}
