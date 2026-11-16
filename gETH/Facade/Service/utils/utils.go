@@ -167,11 +167,15 @@ func ConvertBalance(balance string) (*big.Int, error) {
 
 // Conversion
 func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
-	// First Compute the Receipts
-	Receipts, err := DB_OPs.GetReceiptsofBlock(nil, ZKBlock.BlockNumber)
-	if err != nil {
-		return Types.BlockHeader{}
-	}
+	// First Compute the Receipts.
+	//
+	// Built from the block already in hand. This used to call
+	// GetReceiptsofBlock(nil, ZKBlock.BlockNumber), re-reading from storage the
+	// very block it was passed — and that read, before the single-read rewrite,
+	// was itself one of N+1. Every caller of ConvertZKBlockToBlock holds a full
+	// block (ReadZKBlockByNumber / GetZKBlockByNumber / GetZKBlockByHash), so
+	// there is nothing to re-read.
+	Receipts := DB_OPs.ReceiptsOfStoredBlock(nil, &ZKBlock)
 
 	// Second Compute the Receipt hash
 	Receiptshash, err := utils.GenerateReceiptRoot(Receipts)
