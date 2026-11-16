@@ -327,17 +327,38 @@ func txRecordToTransaction(r *thebegateway.TransactionRecord) *config.Transactio
 	gasLimit, _ := strconv.ParseUint(r.GasLimit, 10, 64)
 	tx.GasLimit = gasLimit
 
-	if r.GasPriceWei != "" && r.GasPriceWei != "0" {
+	// A STORED ZERO IS A VALUE, NOT AN ABSENCE. These used to skip "0" as well
+	// as "", which made a zero-fee transaction read back with a nil fee — and
+	// nil is what config.EffectiveGasPrice treats as "unset", falling back to
+	// FallbackGasPriceWei (legacy) or BaseFeeWei (type 2). So the same block
+	// charged 0 when applied live and 21_000_000_000_000 / 735_000_000_000_000
+	// wei when replayed through ApplyBlockRecon, giving the reconciling node a
+	// different sender balance from every node that applied it live. Balances
+	// feed the account-state fingerprint, so that node then fails its own
+	// fingerprint check and halts.
+	//
+	// Only "" means absent: tx.go writes a field ONLY when the pointer is
+	// non-nil, and the columns are plain VARCHAR with no DEFAULT, so a value
+	// that was never set stores as "" — never as "0". Reading "0" as 0 is
+	// therefore safe for existing rows: it changes the result only where a
+	// genuine zero was recorded, which is exactly the case that was wrong.
+	//
+	// Block hashes are unaffected either way: ethTxFromConfig hands these to
+	// go-ethereum's LegacyTx/DynamicFeeTx, whose copy() initialises the fee
+	// fields to new(big.Int) and Set()s only when non-nil — so nil and 0
+	// produce an identical transaction and an identical hash. This is a
+	// balance-only correction.
+	if r.GasPriceWei != "" {
 		if p, ok := new(big.Int).SetString(r.GasPriceWei, 10); ok {
 			tx.GasPrice = p
 		}
 	}
-	if r.MaxFeeWei != "" && r.MaxFeeWei != "0" {
+	if r.MaxFeeWei != "" {
 		if p, ok := new(big.Int).SetString(r.MaxFeeWei, 10); ok {
 			tx.MaxFee = p
 		}
 	}
-	if r.MaxPriorityFeeWei != "" && r.MaxPriorityFeeWei != "0" {
+	if r.MaxPriorityFeeWei != "" {
 		if p, ok := new(big.Int).SetString(r.MaxPriorityFeeWei, 10); ok {
 			tx.MaxPriorityFee = p
 		}
