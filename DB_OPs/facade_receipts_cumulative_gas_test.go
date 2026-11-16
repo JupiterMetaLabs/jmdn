@@ -1,76 +1,153 @@
 package DB_OPs
 
-// Security review finding #6. cumulativeGasUsed is defined as the gas used by
-// this transaction plus every transaction before it in the block. The receipt
-// builder summed reconstructedGasUsed for all of them — the intrinsic FLOOR for
-// a contract call (21,000 plus calldata), never the gas a contract actually
-// burned. Only the requested transaction's own GasUsed was replaced with the
-// persisted value, so a receipt could report a cumulative total BELOW its own
-// gasUsed, and every wallet or indexer that derives per-transaction gas by
-// differencing consecutive cumulative totals got wrong numbers.
+// Security review finding #6 and the two follow-up notes on it.
+//
+// #6: cumulativeGasUsed is this transaction's gas plus every earlier
+// transaction's in the block. The builder summed reconstructedGasUsed for all
+// of them — exact for a value transfer between accounts, but only the
+// intrinsic FLOOR for anything that runs EVM code. Only the requested
+// transaction's own GasUsed was replaced with the persisted value, so a receipt
+// could report a cumulative total BELOW its own gasUsed.
+//
+// PP-f24b51: the first fix skipped the lookup for transactions with no
+// calldata. Apply classifies by whether the recipient HOLDS CODE
+// (evmexec.Executor.IsContractTx), so a no-calldata transfer into a contract's
+// receive() does have a persisted receipt — and the inversion survived for it.
+//
+// PP-ab2798: resolving the whole block to answer one receipt request did work
+// proportional to the block rather than to the index asked for.
 
 import (
 	"math/big"
 	"testing"
 
+	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// contractTx is a call with calldata; transferTx is a plain value transfer.
 func contractTx(n int64, data []byte) config.Transaction {
 	to := common.BigToAddress(common.Big1)
 	from := common.BigToAddress(common.Big2)
 	return config.Transaction{Hash: common.BigToHash(big.NewInt(n)), To: &to, From: &from, Data: data}
 }
 
+// transferTx has a recipient and NO calldata. Whether it runs code depends on
+// whether that recipient holds any — which this layer cannot see.
 func transferTx(n int64) config.Transaction {
 	to := common.BigToAddress(common.Big1)
 	from := common.BigToAddress(common.Big2)
 	return config.Transaction{Hash: common.BigToHash(big.NewInt(n)), To: &to, From: &from}
 }
 
+// countingLookup answers from a fixture and records what was asked for.
+func countingLookup(real map[string]uint64, asked *[]string) func(string) *store.ContractReceipt {
+	return func(h string) *store.ContractReceipt {
+		*asked = append(*asked, h)
+		g, ok := real[h]
+		if !ok {
+			return nil
+		}
+		return &store.ContractReceipt{Found: true, Status: 1, GasUsed: g}
+	}
+}
+
 // An earlier contract call's REAL gas must be in the total, not its floor.
-func TestGasUsedOfBlock_UsesRealGasForContractCalls(t *testing.T) {
+func TestResolveReceipts_UsesRealGasForContractCalls(t *testing.T) {
 	blk := &config.ZKBlock{Transactions: []config.Transaction{
 		contractTx(1, []byte{1, 2, 3}),
 		transferTx(2),
 		contractTx(3, []byte{4}),
 	}}
-
 	real := map[string]uint64{
 		blk.Transactions[0].Hash.Hex(): 500_000,
 		blk.Transactions[2].Hash.Hex(): 300_000,
 	}
-	var lookups []string
-	used := gasUsedOfBlock(blk, func(h string) (uint64, bool) {
-		lookups = append(lookups, h)
-		g, ok := real[h]
-		return g, ok
-	})
+	var asked []string
+
+	crs := resolveReceipts(blk, 2, countingLookup(real, &asked))
+	used := gasUsedFrom(blk, crs)
 
 	if used[0] != 500_000 || used[2] != 300_000 {
 		t.Fatalf("contract calls must report persisted gas, got %v", used)
 	}
 	if want := reconstructedGasUsed(&blk.Transactions[1]); used[1] != want {
-		t.Fatalf("plain transfer must keep the exact reconstruction %d, got %d", want, used[1])
+		t.Fatalf("a transaction with no receipt keeps the reconstruction %d, got %d", want, used[1])
 	}
-
-	// A plain transfer has no persisted receipt; looking it up is a wasted read.
-	if len(lookups) != 2 {
-		t.Fatalf("want 2 lookups (contract txs only), got %d: %v", len(lookups), lookups)
-	}
-
-	// The cumulative total is the prefix sum of the REAL values.
 	if got, want := cumulativeGasUpTo(used, 2), uint64(500_000)+used[1]+uint64(300_000); got != want {
 		t.Fatalf("cumulative at index 2 = %d, want %d", got, want)
 	}
 }
 
-// The defect as reported: with estimates only, the total for a block whose
-// earlier transactions are contract calls is far below the truth, and the last
-// receipt's cumulative can fall below its own gasUsed.
+// PP-f24b51. A no-calldata transfer INTO A CONTRACT runs its receive() and has
+// a real receipt. It must be looked up like any other transaction, or its real
+// gas lands in the receipt while the floor lands in the cumulative sum.
+func TestResolveReceipts_NoCalldataTransferToContractIsLookedUp(t *testing.T) {
+	blk := &config.ZKBlock{Transactions: []config.Transaction{transferTx(1), contractTx(2, []byte{9})}}
+	real := map[string]uint64{blk.Transactions[0].Hash.Hex(): 40_000}
+	var asked []string
+
+	crs := resolveReceipts(blk, 1, countingLookup(real, &asked))
+	used := gasUsedFrom(blk, crs)
+
+	if len(asked) != 2 {
+		t.Fatalf("every transaction must be looked up, got %d: %v", len(asked), asked)
+	}
+	if used[0] != 40_000 {
+		t.Fatalf("receive() gas must reach the sum: used[0] = %d, want 40000", used[0])
+	}
+
+	// The inversion, stated as the invariant it violated.
+	r := generateReceiptFromTransaction(&blk.Transactions[0], blk, 0, cumulativeGasUpTo(used, 0), crs[0])
+	if r.CumulativeGasUsed < r.GasUsed {
+		t.Fatalf("cumulative %d is below this tx's own %d", r.CumulativeGasUsed, r.GasUsed)
+	}
+	if r.GasUsed != 40_000 {
+		t.Fatalf("receipt gasUsed = %d, want the persisted 40000", r.GasUsed)
+	}
+}
+
+// PP-ab2798. One receipt request must resolve up to its index and no further.
+func TestResolveReceipts_StopsAtTheRequestedIndex(t *testing.T) {
+	txs := make([]config.Transaction, 10)
+	for i := range txs {
+		txs[i] = contractTx(int64(i+1), []byte{byte(i)})
+	}
+	blk := &config.ZKBlock{Transactions: txs}
+
+	var asked []string
+	crs := resolveReceipts(blk, 0, countingLookup(map[string]uint64{}, &asked))
+
+	if len(asked) != 1 {
+		t.Fatalf("a receipt for index 0 of a 10-tx block must cost 1 lookup, got %d", len(asked))
+	}
+	if len(crs) != 1 {
+		t.Fatalf("resolved %d entries, want 1", len(crs))
+	}
+}
+
+// An index past the end is clamped, not a panic; an empty block resolves to
+// nothing.
+func TestResolveReceipts_BoundsAreSafe(t *testing.T) {
+	blk := &config.ZKBlock{Transactions: []config.Transaction{transferTx(1)}}
+	var asked []string
+	if got := len(resolveReceipts(blk, 99, countingLookup(nil, &asked))); got != 1 {
+		t.Fatalf("out-of-range upTo must clamp to the block, got %d entries", got)
+	}
+	if got := resolveReceipts(&config.ZKBlock{}, 0, countingLookup(nil, &asked)); got != nil {
+		t.Fatalf("an empty block resolves to nothing, got %v", got)
+	}
+	if got := len(resolveReceipts(blk, 0, nil)); got != 1 {
+		t.Fatalf("a nil lookup still yields one nil entry, got %d", got)
+	}
+	if got := receiptAt(nil, 3); got != nil {
+		t.Fatalf("receiptAt past the end must be nil, got %v", got)
+	}
+}
+
+// The defect as reported: estimates understate the total and invert the
+// invariant; real gas restores both.
 func TestCumulativeGas_EstimateOnlyUnderstatesAndInverts(t *testing.T) {
 	blk := &config.ZKBlock{Transactions: []config.Transaction{
 		contractTx(1, []byte{1, 2, 3}),
@@ -80,39 +157,20 @@ func TestCumulativeGas_EstimateOnlyUnderstatesAndInverts(t *testing.T) {
 		blk.Transactions[0].Hash.Hex(): 900_000,
 		blk.Transactions[1].Hash.Hex(): 800_000,
 	}
-	lookup := func(h string) (uint64, bool) { g, ok := real[h]; return g, ok }
+	var asked []string
 
-	estimateOnly := cumulativeGasUpTo(gasUsedOfBlock(blk, nil), 1)
-	withRealGas := cumulativeGasUpTo(gasUsedOfBlock(blk, lookup), 1)
+	estimateOnly := cumulativeGasUpTo(gasUsedFrom(blk, resolveReceipts(blk, 1, nil)), 1)
+	withRealGas := cumulativeGasUpTo(gasUsedFrom(blk, resolveReceipts(blk, 1, countingLookup(real, &asked))), 1)
 
 	if estimateOnly >= withRealGas {
 		t.Fatalf("estimate-only total %d should understate the real %d", estimateOnly, withRealGas)
 	}
-	// The inversion wallets actually hit: own gasUsed above the cumulative total.
-	if ownGasUsed := real[blk.Transactions[1].Hash.Hex()]; estimateOnly >= ownGasUsed {
+	ownGasUsed := real[blk.Transactions[1].Hash.Hex()]
+	if estimateOnly >= ownGasUsed {
 		t.Fatalf("fixture too weak: estimate-only cumulative %d must fall below this tx's own %d",
 			estimateOnly, ownGasUsed)
 	}
-	if withRealGas < real[blk.Transactions[1].Hash.Hex()] {
+	if withRealGas < ownGasUsed {
 		t.Fatalf("cumulative %d must never be below this tx's own gas", withRealGas)
-	}
-}
-
-// Classification: only a creation or a call with calldata can have a receipt.
-func TestHasPersistedReceipt(t *testing.T) {
-	create := contractTx(1, []byte{1})
-	create.To = nil
-	for _, c := range []struct {
-		name string
-		tx   config.Transaction
-		want bool
-	}{
-		{"plain transfer", transferTx(1), false},
-		{"call with calldata", contractTx(2, []byte{1}), true},
-		{"creation", create, true},
-	} {
-		if got := hasPersistedReceipt(&c.tx); got != c.want {
-			t.Fatalf("%s: hasPersistedReceipt = %v, want %v", c.name, got, c.want)
-		}
 	}
 }

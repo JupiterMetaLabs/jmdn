@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"gossipnode/DB_OPs/store"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 	"gossipnode/config/utils"
@@ -59,10 +60,11 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			}
 		}
 
-		// Generate receipt from transaction and block data. cumulativeGasUsed needs
-		// every earlier transaction's REAL gas, so it is computed from the block.
-		cumulative := cumulativeGasUpTo(blockGasUsed(mainDBClient, block), txIndex)
-		receipt := generateReceiptFromTransaction(mainDBClient, tx, block, txIndex, cumulative)
+		// cumulativeGasUsed needs every EARLIER transaction's real gas, so the
+		// block's receipts are resolved once, up to this index and no further.
+		crs := blockReceipts(mainDBClient, block, txIndex)
+		cumulative := cumulativeGasUpTo(gasUsedFrom(block, crs), txIndex)
+		receipt := generateReceiptFromTransaction(tx, block, txIndex, cumulative, receiptAt(crs, txIndex))
 
 		return receipt, nil
 	}
@@ -112,63 +114,90 @@ func reconstructedGasUsed(tx *config.Transaction) uint64 {
 	return gas
 }
 
-// hasPersistedReceipt reports whether a transaction can have a persisted EVM
-// receipt. A plain value transfer (recipient present, no calldata) never runs
-// EVM code, so apply writes no receipt for it and reconstructedGasUsed is EXACT
-// — the lookup would always miss. Skipping those keeps blockGasUsed at one read
-// per CONTRACT transaction rather than one per transaction.
-func hasPersistedReceipt(tx *config.Transaction) bool {
-	return tx.To == nil || len(tx.Data) > 0
-}
-
-// blockGasUsed returns the gas actually used by every transaction in blk: the
-// persisted EVM receipt's value where one exists, the intrinsic reconstruction
-// otherwise.
+// blockReceipts resolves the persisted EVM receipt for blk.Transactions[0..upTo].
+// Entry i is nil when that transaction has none.
 //
-// WHY A WHOLE-BLOCK PASS. cumulativeGasUsed is a prefix sum, so the receipt at
-// index i needs every EARLIER transaction's real gas, not an estimate of it.
-// Reading those inside generateReceiptFromTransaction would cost i keyed reads
-// per receipt and N²/2 for a block — undoing the single-block read this file
-// just gained. One pass per block is at most one read per contract transaction,
-// shared by every receipt built from that block.
+// WHY ONE PASS, AND WHY BOUNDED. cumulativeGasUsed is a prefix sum, so the
+// receipt at index i needs every EARLIER transaction's real gas. Resolving
+// those inside generateReceiptFromTransaction would cost i keyed reads per
+// receipt and N²/2 for a whole block, undoing the single block read this file
+// exists to introduce. Resolving the WHOLE block for a single receipt request
+// is the opposite waste: entries above upTo are never summed, so an
+// unauthenticated eth_getTransactionReceipt for the first transaction of a
+// busy block would do work proportional to the whole block. upTo bounds it.
 //
-// Best effort, like the per-receipt lookup: a handle or read failure leaves the
-// reconstruction in place rather than failing the RPC.
-func blockGasUsed(mainDBClient *config.PooledConnection, blk *config.ZKBlock) []uint64 {
+// The resolved receipts are handed to generateReceiptFromTransaction so a
+// transaction's own gasUsed and the cumulative total come from the SAME read:
+// a second, independently classified lookup is how they fell out of step.
+//
+// Best effort: a handle or read failure leaves a nil entry and the caller falls
+// back to the reconstruction rather than failing the RPC.
+func blockReceipts(mainDBClient *config.PooledConnection, blk *config.ZKBlock, upTo uint64) []*store.ContractReceipt {
 	h, herr := getHandle(mainDBClient)
 	if herr != nil {
-		// No handle: every entry is the reconstruction, which is what the whole
-		// block would fall back to anyway.
-		return gasUsedOfBlock(blk, nil)
+		return resolveReceipts(blk, upTo, nil)
 	}
-	return gasUsedOfBlock(blk, func(txHash string) (uint64, bool) {
+	return resolveReceipts(blk, upTo, func(txHash string) *store.ContractReceipt {
 		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer rcancel()
 		cr, cerr := h.GetContractReceipt(rctx, txHash)
 		if cerr != nil || cr == nil || !cr.Found {
-			return 0, false
+			return nil
 		}
-		return cr.GasUsed, true
+		return cr
 	})
 }
 
-// gasUsedOfBlock is blockGasUsed with the receipt lookup injected, so the
-// prefix-sum behaviour can be tested without a database. realGas may be nil,
-// meaning "no receipts available"; it is called only for transactions that can
-// have one.
-func gasUsedOfBlock(blk *config.ZKBlock, realGas func(txHash string) (uint64, bool)) []uint64 {
-	used := make([]uint64, len(blk.Transactions))
-	for i := range blk.Transactions {
-		tx := &blk.Transactions[i]
-		used[i] = reconstructedGasUsed(tx)
-		if realGas == nil || !hasPersistedReceipt(tx) {
+// resolveReceipts is blockReceipts with the lookup injected, so the bounds and
+// the fallbacks are testable without a database. lookup may be nil, meaning no
+// receipts are available.
+//
+// Every transaction is looked up. There is no "this one cannot have a receipt"
+// shortcut: apply decides that by whether the recipient HOLDS CODE
+// (SmartContract/evmexec/executor.go IsContractTx), not by calldata, so a
+// no-calldata value transfer into a contract's receive() has a real receipt
+// with real gas. Skipping it put the 21,000 floor in the cumulative sum while
+// the receipt itself reported the true gas — the very inversion this code is
+// here to remove. A transaction that genuinely has none costs one keyed miss.
+func resolveReceipts(blk *config.ZKBlock, upTo uint64, lookup func(txHash string) *store.ContractReceipt) []*store.ContractReceipt {
+	n := uint64(len(blk.Transactions))
+	if upTo >= n {
+		if n == 0 {
+			return nil
+		}
+		upTo = n - 1
+	}
+	out := make([]*store.ContractReceipt, upTo+1)
+	if lookup == nil {
+		return out
+	}
+	for i := uint64(0); i <= upTo; i++ {
+		out[i] = lookup(blk.Transactions[i].Hash.Hex())
+	}
+	return out
+}
+
+// gasUsedFrom returns the gas actually used by each transaction covered by crs:
+// the persisted receipt's value where there is one, the intrinsic
+// reconstruction otherwise.
+func gasUsedFrom(blk *config.ZKBlock, crs []*store.ContractReceipt) []uint64 {
+	used := make([]uint64, len(crs))
+	for i := range crs {
+		if crs[i] != nil {
+			used[i] = crs[i].GasUsed
 			continue
 		}
-		if g, ok := realGas(tx.Hash.Hex()); ok {
-			used[i] = g
-		}
+		used[i] = reconstructedGasUsed(&blk.Transactions[i])
 	}
 	return used
+}
+
+// receiptAt returns crs[i] or nil when i is beyond what was resolved.
+func receiptAt(crs []*store.ContractReceipt, i uint64) *store.ContractReceipt {
+	if i >= uint64(len(crs)) {
+		return nil
+	}
+	return crs[i]
 }
 
 // cumulativeGasUpTo sums used[0..idx] — the prefix sum a receipt reports as
@@ -186,7 +215,9 @@ func cumulativeGasUpTo(used []uint64, idx uint64) uint64 {
 // cumulativeGasUsed is supplied by the caller because it is a property of the
 // BLOCK, not of this transaction: see blockGasUsed for why computing it here
 // would be quadratic.
-func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64, cumulativeGasUsed uint64) *config.Receipt {
+// The connection is gone from this signature on purpose: the function no longer
+// reads anything. Its one read is now the caller's, shared across the block.
+func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBlock, txIndex uint64, cumulativeGasUsed uint64, cr *store.ContractReceipt) *config.Receipt {
 
 	// Reconstruction defaults — correct for plain value transfers, overridden below
 	// by the persisted EVM receipt for contract txs. No synthetic logs.
@@ -204,36 +235,32 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	}
 
 	// Persisted EVM receipt (written at apply time) is authoritative: it carries the
-	// ACTUAL revert status, true gas, contract address, and logs. Override the
-	// reconstruction with it when present; a plain transfer has none (Found=false)
-	// and keeps the reconstruction above. Best-effort read — a lookup failure falls
-	// back to the reconstruction rather than failing the RPC.
-	if h, herr := getHandle(mainDBClient); herr == nil {
-		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if cr, cerr := h.GetContractReceipt(rctx, tx.Hash.Hex()); cerr == nil && cr != nil && cr.Found {
-			status = cr.Status
-			gasUsed = cr.GasUsed
-			if cr.ContractAddress != nil {
-				contractAddress = cr.ContractAddress
-			}
-			if len(cr.Logs) > 0 {
-				logs = cr.Logs
-				// Receipts persisted before the apply path stamped block/tx context
-				// carry zeroed blockHash/txHash/logIndex. Fill them here so old
-				// blocks read the same as new ones; logIndex falls back to the
-				// receipt-local position (block-wide index is unknown for them).
-				for i := range logs {
-					if logs[i].TxHash == (common.Hash{}) {
-						logs[i].TxHash = tx.Hash
-						logs[i].BlockHash = block.BlockHash
-						logs[i].BlockNumber = block.BlockNumber
-						logs[i].TxIndex = txIndex
-						logs[i].LogIndex = uint64(i)
-					}
+	// ACTUAL revert status, true gas, contract address, and logs. It is resolved by
+	// the caller, in the same pass that built cumulativeGasUsed, so this
+	// transaction's gasUsed and the running total can never disagree. nil means
+	// none was found and the reconstruction above stands.
+	if cr != nil {
+		status = cr.Status
+		gasUsed = cr.GasUsed
+		if cr.ContractAddress != nil {
+			contractAddress = cr.ContractAddress
+		}
+		if len(cr.Logs) > 0 {
+			logs = cr.Logs
+			// Receipts persisted before the apply path stamped block/tx context
+			// carry zeroed blockHash/txHash/logIndex. Fill them here so old
+			// blocks read the same as new ones; logIndex falls back to the
+			// receipt-local position (block-wide index is unknown for them).
+			for i := range logs {
+				if logs[i].TxHash == (common.Hash{}) {
+					logs[i].TxHash = tx.Hash
+					logs[i].BlockHash = block.BlockHash
+					logs[i].BlockNumber = block.BlockNumber
+					logs[i].TxIndex = txIndex
+					logs[i].LogIndex = uint64(i)
 				}
 			}
 		}
-		rcancel()
 	}
 
 	logsBloom := utils.GenerateLogsBloom(logs)
@@ -275,12 +302,16 @@ func ReceiptsOfStoredBlock(mainDBClient *config.PooledConnection, blk *config.ZK
 	if blk == nil {
 		return nil
 	}
+	if len(blk.Transactions) == 0 {
+		return []*config.Receipt{}
+	}
 	receipts := make([]*config.Receipt, len(blk.Transactions))
-	used := blockGasUsed(mainDBClient, blk)
+	crs := blockReceipts(mainDBClient, blk, uint64(len(blk.Transactions)-1))
+	used := gasUsedFrom(blk, crs)
 	var cumulative uint64
 	for i := range blk.Transactions {
 		cumulative += used[i]
-		receipts[i] = generateReceiptFromTransaction(mainDBClient, &blk.Transactions[i], blk, uint64(i), cumulative)
+		receipts[i] = generateReceiptFromTransaction(&blk.Transactions[i], blk, uint64(i), cumulative, receiptAt(crs, uint64(i)))
 	}
 	return receipts
 }
