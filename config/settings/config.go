@@ -44,8 +44,20 @@ type NodeConfig struct {
 // validator are forced to run the same numbers.
 //
 // FAIL CLOSED. A zero or negative value means "use the compiled default", never
-// "unlimited". The defaults are the values that shipped as consts, so a node
-// with no rpc: section behaves exactly as before.
+// "unlimited".
+//
+// THE UPGRADE IS NOT BEHAVIOUR-NEUTRAL. A node with no rpc: section gets the
+// defaults in DefaultConfig, and two of them are narrower than what shipped:
+//
+//	logs.max_block_span   10_000 -> 2_000   address-less spans of 2,001..10,000
+//	                                        blocks are now refused
+//	logs.max_scan_blocks  (new)      2_000   the address path gains an in-range
+//	                                        work budget it never had
+//	logs.max_addresses    (new)        100   the address list was uncapped
+//	batch.max_concurrency (new)          8   a batch ran fully in parallel
+//
+// logs.max_results (10_000) and batch.max_size (100) are unchanged. Operators
+// who need the old span back set rpc.logs.max_block_span: 10000.
 //
 // These are COST bounds, not correctness rules — no consensus behaviour depends
 // on them, so they may differ between nodes in a fleet.
@@ -56,9 +68,13 @@ type RPCSettings struct {
 
 // RPCLogsSettings bounds eth_getLogs.
 //
-// MaxBlockSpan and MaxResults are the two bounds that shipped as consts
-// (10_000 each, chosen to match common public-RPC provider limits). MaxScanBlocks
-// is new and is the one that actually bounds WORK: the span is a block count, so
+// MaxBlockSpan and MaxResults are the two bounds that shipped as consts (10_000
+// each, chosen to match common public-RPC provider limits). MaxBlockSpan now
+// DEFAULTS TO 2_000 — see DefaultConfig for why — so an upgraded node with no
+// rpc: section serves a narrower range than before. MaxScanBlocks and
+// MaxAddresses are new bounds with no predecessor.
+//
+// MaxScanBlocks is the one that actually bounds WORK: the span is a block count, so
 // it says nothing about how much scanning a query causes, and MaxResults is only
 // reached once a log MATCHES — a filter that matches nothing never trips it. See
 // the refusal metric (metrics.RPCQueryRefusedCounter) before changing any of

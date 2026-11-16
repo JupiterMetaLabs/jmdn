@@ -912,12 +912,23 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 		// scan in logstore.GetLogs, and the result map deduplicates RESULTS but
 		// not SCANS — so listing one address N times cost N full scans of the
 		// same contract, from one unauthenticated request, multiplied again by
-		// the batch endpoint. Duplicates are collapsed on the normalised
-		// (lower-cased) form, because that is what the scan key uses.
+		// the batch endpoint.
+		//
+		// Duplicates are collapsed on the PARSED address, not on the input
+		// string. The scan key is built downstream with common.HexToAddress
+		// (DB_OPs/BlockLogs.go filterQueryToStoreFilter), which left-pads short
+		// hex, tolerates a missing 0x and keeps only the last 20 bytes — so
+		// "0xa1", "a1" and "0xff..a1" are different strings but one contract.
+		// Keying the dedupe on the raw string let all of them through and cost
+		// a scan each, up to the cap. Malformed entries are rejected rather
+		// than silently folded onto the zero address, which is a real account.
 		switch a := filterObj["address"].(type) {
 		case string:
 			if a != "" {
-				query.Addresses = []string{a}
+				if !common.IsHexAddress(a) {
+					return nil, fmt.Errorf("invalid address in filter: %q", a)
+				}
+				query.Addresses = []string{common.HexToAddress(a).Hex()}
 			}
 		case []any:
 			seen := make(map[string]struct{}, len(a))
@@ -926,12 +937,15 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 				if !ok || addrStr == "" {
 					continue
 				}
-				key := strings.ToLower(addrStr)
-				if _, dup := seen[key]; dup {
+				if !common.IsHexAddress(addrStr) {
+					return nil, fmt.Errorf("invalid address in filter: %q", addrStr)
+				}
+				canonical := common.HexToAddress(addrStr).Hex()
+				if _, dup := seen[canonical]; dup {
 					continue
 				}
-				seen[key] = struct{}{}
-				query.Addresses = append(query.Addresses, addrStr)
+				seen[canonical] = struct{}{}
+				query.Addresses = append(query.Addresses, canonical)
 			}
 		}
 		if limit := maxFilterAddresses(); len(query.Addresses) > limit {

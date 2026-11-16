@@ -80,3 +80,41 @@ func TestToFilterQuery_SingleAddressStringUnchanged(t *testing.T) {
 		t.Fatalf("want 1 address, got %d", len(q.Addresses))
 	}
 }
+
+// Review (PP-fc4f2e): the dedupe key must be the PARSED address, not the input
+// string. The scan key is common.HexToAddress, which left-pads short hex and
+// keeps the last 20 bytes, so spelling one contract several ways used to defeat
+// the dedupe entirely and cost one index scan per spelling, up to the cap.
+func TestToFilterQuery_DeduplicatesOnParsedAddress(t *testing.T) {
+	q, err := toFilterQuery(map[string]any{"address": []any{
+		"0x00000000000000000000000000000000000000a1",
+		"0x00000000000000000000000000000000000000A1",
+		"00000000000000000000000000000000000000a1", // no 0x prefix
+	}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(q.Addresses) != 1 {
+		t.Fatalf("three spellings of one contract must collapse to 1, got %d: %v",
+			len(q.Addresses), q.Addresses)
+	}
+}
+
+// Short or over-long hex is not an address. HexToAddress would silently fold it
+// onto the last 20 bytes — for "0xa1" that is the real account 0x..00a1, whose
+// logs the caller never asked for. Refuse instead of answering a different
+// question, and do it on both the array and the single-string form.
+func TestToFilterQuery_RejectsMalformedAddress(t *testing.T) {
+	for _, bad := range []string{
+		"0xa1",   // too short
+		"0xzzzz", // not hex
+		"0x00000000000000000000000000000000000000a1ff", // too long
+	} {
+		if _, err := toFilterQuery(map[string]any{"address": []any{bad}}); err == nil {
+			t.Fatalf("array form: %q must be refused", bad)
+		}
+		if _, err := toFilterQuery(map[string]any{"address": bad}); err == nil {
+			t.Fatalf("string form: %q must be refused", bad)
+		}
+	}
+}
