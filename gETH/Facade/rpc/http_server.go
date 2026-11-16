@@ -118,6 +118,9 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 const (
 	maxBatchSize        = 100
 	maxBatchConcurrency = 8
+	// batchDeadline bounds a whole batch. Below the 30s WriteTimeout above, so
+	// the response is still deliverable when the last element finishes.
+	batchDeadline = 25 * time.Second
 )
 
 // batchLimits returns the batch bounds in force. Config wins; a zero or
@@ -195,11 +198,45 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		// The semaphore keeps batching useful for cheap calls without letting
 		// one request own the machine. Ordering of resps is unaffected — each
 		// element still writes its own slot.
+		//
+		// BOUNDED IN TIME AS WELL AS WIDTH (review). Limiting the width alone
+		// trades concurrency for wall time: batchLimit elements at
+		// batchConcurrency a time is ceil(batchLimit/batchConcurrency) waves,
+		// and each eth_getLogs carries its own 10s deadline (DB_OPs.GetLogs)
+		// that is NOT tied to this connection. Enough slow elements and the
+		// batch outruns the server's WriteTimeout: the node does every element's
+		// work and the client, already disconnected, gets nothing and retries.
+		// Before the semaphore the whole batch ran at once and finished in about
+		// one element's time, so this was width-bounded and time-unbounded only
+		// after that change.
+		//
+		// So: one deadline for the batch, below WriteTimeout, derived from the
+		// request context so a client disconnect cancels it too. Elements
+		// inherit it, and a slot is taken only while that context is alive —
+		// nothing new starts once the answer can no longer be delivered.
+		batchCtx, cancelBatch := context.WithTimeout(
+			withAuthHeader(c.Request.Context(), c.GetHeader("Authorization")),
+			batchDeadline,
+		)
+		defer cancelBatch()
+
 		sem := make(chan struct{}, batchConcurrency)
 		var wg sync.WaitGroup
+	dispatch:
 		for i, req := range reqs {
+			select {
+			case sem <- struct{}{}:
+			case <-batchCtx.Done():
+				// Deadline hit or client gone. Answer the elements that never
+				// ran rather than leaving their slots zero-valued, and stop
+				// dispatching: work whose answer cannot be delivered is work
+				// this node should not do.
+				for j := i; j < len(reqs); j++ {
+					resps[j] = RespErr(reqs[j].ID, -32603, "batch deadline exceeded before this request ran")
+				}
+				break dispatch
+			}
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(i int, req Request) {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -208,7 +245,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 				defer saferun.RecoverInto("rpc.batch", func(any) {
 					resps[i] = RespErr(req.ID, -32603, "Internal error")
 				})
-				resps[i], _ = s.h.Handle(withAuthHeader(c.Request.Context(), c.GetHeader("Authorization")), req)
+				resps[i], _ = s.h.Handle(batchCtx, req)
 			}(i, req)
 		}
 		wg.Wait()
