@@ -37,7 +37,7 @@ func TestNewRecipientExtraGas(t *testing.T) {
 		{"next block activates", 100, 99, nil, false, nil, 25_000}, // next block 100
 		{"active, used account", 100, 500, nil, true, nil, 0},
 		{"active, new or unused account", 100, 500, nil, false, nil, 25_000},
-		{"tip unreadable: assume active", 100, 0, boom, false, nil, 25_000},
+		{"tip unreadable: not quoted, as submission skips it", 100, 0, boom, false, nil, 0},
 		{"account unreadable: assume new", 100, 500, nil, false, boom, 25_000},
 	}
 	for _, c := range cases {

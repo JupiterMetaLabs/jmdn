@@ -36,19 +36,26 @@ var (
 // config.NewRecipientGas when the rule is on and the recipient is not a used
 // account, otherwise 0.
 //
-// It never fails the estimate. When the chain tip or the account cannot be
-// read it assumes the rule applies and the recipient is new: the estimate can
-// only come out high, which submission accepts, whereas an error would block
-// every plain transfer on this node, funded recipients included.
+// It never fails the estimate, and it quotes only what submission on this node
+// enforces:
+//   - chain tip unreadable: 0. Submission skips the rule in that case
+//     (Security.checkSubmissionNewRecipientGas), so quoting the extra gas would
+//     overcharge the sender for a rule the node is not applying.
+//   - account unreadable: the extra gas. Submission would reject the transfer
+//     if the recipient is in fact new, so the estimate errs high; an error here
+//     would instead block every plain transfer on this node.
 func newRecipientExtraGas(ctx context.Context, to string) uint64 {
 	if config.NewRecipientGasFrom() == 0 || to == "" {
 		return 0
 	}
-	if tip, err := estimateChainTip(ctx); err == nil && !config.NewRecipientGasActiveAt(tip+1) {
-		return 0
-	} else if err != nil {
-		logger().Warn(ctx, "eth_estimateGas: chain tip unreadable, assuming the new-recipient rule applies",
+	tip, err := estimateChainTip(ctx)
+	if err != nil {
+		logger().Warn(ctx, "eth_estimateGas: chain tip unreadable, new-recipient gas not quoted (submission skips the rule too)",
 			ion.String("error", err.Error()))
+		return 0
+	}
+	if !config.NewRecipientGasActiveAt(tip + 1) {
+		return 0
 	}
 	used, err := estimateAccountUsed(to)
 	if err != nil {
