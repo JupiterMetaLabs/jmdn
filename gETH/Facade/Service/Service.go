@@ -826,6 +826,7 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	// Plain value transfer (no code at To) — no EVM execution; intrinsic only.
 	// This is the old behaviour and is exact (~21000 for a bare transfer).
 	if !isCreate && !isContractCall {
+		intrinsic += newRecipientExtraGas(opCtx, msg.To)
 		est := intrinsic + intrinsic*5/100
 		if est > blockGasLimit {
 			est = blockGasLimit

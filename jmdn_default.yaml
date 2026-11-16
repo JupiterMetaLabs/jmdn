@@ -228,6 +228,14 @@ consensus:
   # proposer. Fleet-agreed: same value on every node, a height not yet
   # reached. 0 = off (cap stays 1024).
   period_cap_raise_from_height: 0
+  # From this height on, this node's RPC rejects a plain transfer to a
+  # new recipient whose gas limit is below 46,000, and eth_estimateGas returns
+  # 46,000 (+5%) for it. New = no account, or one that has never held value
+  # or sent a transaction (e.g. DID-registered only). A used account, even
+  # drained to zero, needs only 21,000. Contract calls and deployments are
+  # exempt. Submission and estimation only; block validation does not check
+  # it. Set the same value on every RPC node. 0 = off.
+  new_recipient_gas_from_height: 0
   # Migration only: follow the mainnet sequencer that still runs the main
   # branch. Legacy blocks (<= until_height; all while 0) are accepted only from
   # main_sequencer (full multiaddr with /p2p/<id>); missed blocks are fetched

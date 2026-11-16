@@ -977,6 +977,7 @@ func main() {
 	}
 	Security.SetHeaderBinding(headerBinding)
 	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
+	config.SetNewRecipientGasFrom(cfg.Consensus.NewRecipientGasFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first

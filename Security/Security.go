@@ -358,6 +358,11 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		span.SetAttributes(attribute.String("status", "submission_policy_rejected"))
 		return false, err
 	}
+	if err := checkSubmissionNewRecipientGas(ctx, tx, security_cache); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "new_recipient_gas"))
+		return false, err
+	}
 
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
 
