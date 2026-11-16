@@ -56,9 +56,11 @@ func blockWithTxs(n int, proof []byte) *config.ZKBlock {
 func TestReceiptsFromOneBlockRead_IndexAndCumulativeGas(t *testing.T) {
 	blk := blockWithTxs(3, []byte("proof"))
 
+	used := blockGasUsed(nil, blk)
 	var running uint64
 	for i := range blk.Transactions {
-		r := generateReceiptFromTransaction(nil, &blk.Transactions[i], blk, uint64(i))
+		running += used[i]
+		r := generateReceiptFromTransaction(nil, &blk.Transactions[i], blk, uint64(i), running)
 
 		if r.TransactionIndex != uint64(i) {
 			t.Fatalf("receipt %d: TransactionIndex = %d", i, r.TransactionIndex)
@@ -66,7 +68,6 @@ func TestReceiptsFromOneBlockRead_IndexAndCumulativeGas(t *testing.T) {
 		if r.BlockHash != blk.BlockHash || r.BlockNumber != blk.BlockNumber {
 			t.Fatalf("receipt %d: block identity not carried: %s/%d", i, r.BlockHash.Hex(), r.BlockNumber)
 		}
-		running += reconstructedGasUsed(&blk.Transactions[i])
 		if r.CumulativeGasUsed != running {
 			t.Fatalf("receipt %d: CumulativeGasUsed = %d, want the running sum %d", i, r.CumulativeGasUsed, running)
 		}
@@ -85,7 +86,7 @@ func TestReceiptsFromOneBlockRead_ShareOneProof(t *testing.T) {
 
 	receipts := make([]*config.Receipt, len(blk.Transactions))
 	for i := range blk.Transactions {
-		receipts[i] = generateReceiptFromTransaction(nil, &blk.Transactions[i], blk, uint64(i))
+		receipts[i] = generateReceiptFromTransaction(nil, &blk.Transactions[i], blk, uint64(i), 0)
 	}
 
 	for i, r := range receipts {
