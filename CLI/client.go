@@ -135,17 +135,6 @@ func (c *Client) GetDID(did string) (*pb.DIDDocument, error) {
 	return c.conn.GetDID(ctx, &pb.DIDRequest{Did: did})
 }
 
-// PropagateDID propagates a DID to the network
-func (c *Client) PropagateDID(did, publicKey, balance string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return c.conn.PropagateDID(ctx, &pb.DIDPropagationRequest{
-		Did:       did,
-		PublicKey: publicKey,
-		Balance:   balance,
-	})
-}
-
 // FastSyncV2 performs fast sync using the V2 engine
 func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
 	ctx := context.Background()

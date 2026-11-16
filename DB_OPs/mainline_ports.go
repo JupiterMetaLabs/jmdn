@@ -5,7 +5,6 @@
 // the pooled ThebeHandle (getHandle) / compat helpers instead of ImmuDB.
 //
 // PORTED HERE:
-//   - NormalizePropagatedAccountState — pure, copied verbatim (cf09a26).
 //   - ListAccountsPaginatedFrom — keyset-cursor contract preserved; the cursor
 //     is the last returned address over ListAccountsAfterCtx (SQL keyset on
 //     LOWER(address), canonical fingerprint order), not an ImmuDB SeekKey scan.
@@ -24,34 +23,6 @@ import (
 
 	"gossipnode/config"
 )
-
-// NormalizePropagatedAccountState resets the volatile ledger fields of an
-// account received via DID propagation to their canonical initial values.
-// Balance, TxNonce, and TxCountSent are owned by block processing and
-// reconciliation, so an identity-propagation event always initializes them to
-// zero. This is the single source of truth for that policy, shared by the store
-// path (StorePropagatedAccount) and the forward path (HandleDIDStream) so both
-// the stored and the re-broadcast copy stay consistent.
-//
-// Left untouched: the ART identity Nonce (preserved for Fastsync ART routing)
-// and CreatedAt/UpdatedAt (timestamp policy is owned by the caller — the store
-// path stamps them locally; the forward path keeps them so downstream LWW
-// ordering is not affected). Pure and unit-tested.
-//
-// Returns true if any reset field carried a non-canonical value on input, so
-// callers can record it for observability.
-func NormalizePropagatedAccountState(acc *Account) bool {
-	if acc == nil {
-		return false
-	}
-	adjusted := (acc.Balance != "" && acc.Balance != "0") ||
-		acc.TxNonce != 0 ||
-		acc.TxCountSent != 0
-	acc.Balance = "0"
-	acc.TxNonce = 0
-	acc.TxCountSent = 0
-	return adjusted
-}
 
 // ListAccountsPaginatedFrom retrieves up to limit accounts starting after the
 // opaque cursor seekKey in the backend listing order. seekKey=nil starts from

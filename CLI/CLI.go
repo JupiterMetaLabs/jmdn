@@ -16,7 +16,6 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
 	"gossipnode/node"
@@ -114,7 +113,7 @@ func PrintFuncs() {
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
-	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
+	fmt.Println("  propagateDID                     - (retired) an account is created by its first incoming transfer")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  grometrics                        - Show GRO metrics")
@@ -663,50 +662,8 @@ func (h *CommandHandler) handleAccountSync(parts []string) {
 }
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {
-	if len(parts) < 3 || len(parts) > 4 {
-		fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
-		return
-	}
-	did := parts[1]
-	publicKey := parts[2]
-
-	// Default balance is "0" if not provided
-	balance := "0"
-	if len(parts) == 4 {
-		balance = parts[3]
-	}
-
-	// First create document then propagate.
-	// GATED out-of-band creation (operator CLI): a manually created account exists
-	// on this node only, with a locally minted ART nonce. Accounts are created at
-	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
-	// re-enables this path for emergencies.
-	if !DB_OPs.AllowLocalAccountCreate {
-		fmt.Printf("Failed to create account: %v\n", DB_OPs.ErrLocalAccountCreateDisabled)
-		return
-	}
-	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
-	if err != nil {
-		fmt.Printf("Failed to create account: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n",
-		did, publicKey, balance)
-
-	Document, err := DB_OPs.GetAccount(nil, common.HexToAddress(publicKey))
-	if err != nil {
-		fmt.Printf("Failed to get account: %v\n", err)
-		return
-	}
-
-	// First create the DID and then propagate
-	err = messaging.PropagateDID(h.Node.Host, Document)
-	if err != nil {
-		fmt.Printf("Failed to propagate DID: %v\n", err)
-	} else {
-		fmt.Println("DID propagated successfully to all connected peers")
-	}
+	fmt.Println("propagateDID is retired — an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
+	printDashes()
 }
 
 func (h *CommandHandler) handleGetDID(parts []string) {

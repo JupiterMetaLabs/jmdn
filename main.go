@@ -332,7 +332,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
+		fmt.Println("  propagatedid                      - (retired) an account is created by its first incoming transfer")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
 		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
@@ -475,26 +475,8 @@ func runCommand(command string, args []string, grpcPort int) {
 		}
 
 	case "propagatedid":
-		if len(args) < 2 {
-			fmt.Println("Usage: jmdn -cmd propagatedid <did> <public_key> [balance]")
-			os.Exit(1)
-		}
-		balance := "0"
-		if len(args) >= 3 {
-			balance = args[2]
-		}
-		resp, err := client.PropagateDID(args[0], args[1], balance)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		if resp.Success {
-			fmt.Printf("Success: %s\n", resp.Message)
-		} else {
-			fmt.Printf("Error: %s\n", resp.Message)
-			os.Exit(1)
-		}
-
+		fmt.Println("propagatedid is retired: an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
+		os.Exit(1)
 	case "fastsync", "fastsyncv2", "firstsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
@@ -2418,14 +2400,9 @@ func main() {
 	nodeManager.StartHeartbeat(cfg.Network.HeartbeatInterval)
 	defer nodeManager.Shutdown()
 
-	// Initialize DID propagation handler
-	n.Host.SetStreamHandler(config.DIDPropagationProtocol, saferun.Stream(string(config.DIDPropagationProtocol), messaging.HandleDIDStream))
-
-	// Initialize DID propagation system
-	if err := messaging.InitDIDPropagation(nil); err != nil {
-		fmt.Printf("Failed to initialize DID propagation: %v\n", err)
-		mainLogger().Error(context.Background(), "Failed to initialize DID propagation", err)
-	}
+	// DID propagation (config.DIDPropagationProtocol) is not registered: it let
+	// any peer write an account row on every node. Accounts are created only by
+	// block application, by their first incoming transfer.
 
 	// The contract push protocol (config.ContractPropagationProtocol) is not
 	// registered. Nothing sends it since push propagation was retired (see

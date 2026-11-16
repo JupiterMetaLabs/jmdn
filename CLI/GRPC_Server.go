@@ -13,10 +13,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
-	"gossipnode/messaging"
 	"gossipnode/pkg/gatekeeper"
-
-	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
@@ -212,38 +209,9 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 	}, nil
 }
 
+// PropagateDID is retired: accounts are created only by block application.
 func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
-	if req.Did == "" || req.PublicKey == "" {
-		return &pb.OperationResponse{Success: false, Message: "did and public_key are required"}, nil
-	}
-
-	addr := common.HexToAddress(req.PublicKey)
-
-	// GATED out-of-band creation (operator RPC): a manually created account exists
-	// on this node only, with a locally minted ART nonce. Accounts are created at
-	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
-	// re-enables this path for emergencies.
-	if !DB_OPs.AllowLocalAccountCreate {
-		return &pb.OperationResponse{Success: false, Message: DB_OPs.ErrLocalAccountCreateDisabled.Error()}, nil
-	}
-
-	if err := DB_OPs.CreateAccount(nil, req.Did, addr, nil); err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to create account: %v", err)}, nil
-	}
-
-	doc, err := DB_OPs.GetAccount(nil, addr)
-	if err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to get account: %v", err)}, nil
-	}
-
-	// Balance is not taken from the request: it is owned by block processing
-	// and reconciliation, so a newly created account starts at zero.
-
-	if err := messaging.PropagateDID(s.handler.Node.Host, doc); err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to propagate DID: %v", err)}, nil
-	}
-
-	return &pb.OperationResponse{Success: true, Message: "DID propagated successfully"}, nil
+	return nil, status.Error(codes.Unimplemented, "propagateDID is retired: an account is created by its first incoming transfer")
 }
 
 // Database Operations
