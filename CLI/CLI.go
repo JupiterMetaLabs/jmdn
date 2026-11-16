@@ -113,7 +113,7 @@ func PrintFuncs() {
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
-	fmt.Println("  propagateDID                     - (retired) an account is created by its first incoming transfer")
+	fmt.Println("  propagateDID                     - (retired) an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  grometrics                        - Show GRO metrics")

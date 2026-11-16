@@ -332,7 +332,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  propagatedid                      - (retired) an account is created by its first incoming transfer")
+		fmt.Println("  propagatedid                      - (retired) an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
 		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
@@ -2400,9 +2400,10 @@ func main() {
 	nodeManager.StartHeartbeat(cfg.Network.HeartbeatInterval)
 	defer nodeManager.Shutdown()
 
-	// DID propagation (config.DIDPropagationProtocol) is not registered: it let
-	// any peer write an account row on every node. Accounts are created only by
-	// block application, by their first incoming transfer.
+	// DID propagation (/gossipnode/did/2.0.0) is retired and its protocol ID
+	// deleted: it let any peer write an account row on every node, unsigned.
+	// Never re-add a handler for it. Accounts are created only by block
+	// application, by their first incoming transfer.
 
 	// The contract push protocol (config.ContractPropagationProtocol) is not
 	// registered. Nothing sends it since push propagation was retired (see
