@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/messaging"
 	"gossipnode/txstatus"
 )
 
@@ -66,6 +67,13 @@ type Service interface {
 	GetGasPrice(ctx context.Context) (string, error)
 	GetFeeHistory(ctx context.Context, blockCount int, newestBlock string, rewardPercentiles []float64) (interface{}, error)
 	GetMaxPriorityFeePerGas(ctx context.Context) (string, error)
+	// FinalizedBlockNumber is the highest block this node holds with a
+	// strictly verified committee certificate AND a certified child that
+	// names it as parent. See docs/finality.md.
+	FinalizedBlockNumber(ctx context.Context) (*big.Int, error)
+	// CertifiedBlock reports the block at height with its certificate and the
+	// outcome of the strict check (jmdt_getCertifiedBlock).
+	CertifiedBlock(ctx context.Context, height uint64) (*messaging.CertifiedBlockReport, error)
 	IsListening(ctx context.Context) (bool, error)
 	GetPeerCount(ctx context.Context) (string, error)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)

@@ -662,6 +662,21 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
+	case "jmdt_getCertifiedBlock":
+		// params: [height] (hex quantity or decimal number)
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing block height")
+			return resp, nil
+		}
+		height, perr := parseHeightParam(req.Params[0])
+		if perr != nil {
+			resp, _ := invalidParams(req, perr.Error())
+			return resp, nil
+		}
+		result, err := handler.service.CertifiedBlock(ctx, height)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
 	case "eth_maxPriorityFeePerGas":
 		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
 		resp, _ := finish(req, result, err)
@@ -729,6 +744,11 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 	case "pending":
 		// map to latest for now; refine if you track pending state
 		return be.BlockNumber(ctx)
+	case "safe", "finalized":
+		// The highest block with a verified certificate and a certified child
+		// (docs/finality.md), never the head. "safe" is served the same,
+		// stronger answer rather than the head.
+		return be.FinalizedBlockNumber(ctx)
 	default:
 		if strings.HasPrefix(tag, "0x") {
 			// big.Int accepts a sign, so "0x-40000000" parses as a negative
@@ -854,8 +874,11 @@ func resolveFilterRange(ctx context.Context, be Service.Service, raw any, q *Typ
 		switch strings.ToLower(strings.TrimSpace(tag)) {
 		case "earliest":
 			return big.NewInt(0), nil
-		case "", "latest", "pending", "safe", "finalized": // BFT-final: all the same head
+		case "", "latest", "pending":
 			return be.BlockNumber(ctx)
+		case "safe", "finalized":
+			// Certified with a certified child (docs/finality.md), not the head.
+			return be.FinalizedBlockNumber(ctx)
 		}
 		return nil, fmt.Errorf("unsupported block tag %q", tag)
 	}
@@ -1235,4 +1258,27 @@ func logger() *ion.Ion {
 		return nil
 	}
 	return logInstance.GetNamedLogger()
+}
+
+// parseHeightParam reads a block height given as a hex quantity ("0x1a") or a
+// JSON number. Tags are not accepted: the caller asks about one height.
+func parseHeightParam(v any) (uint64, error) {
+	switch x := v.(type) {
+	case string:
+		if !strings.HasPrefix(x, "0x") {
+			return 0, errors.New("height must be a hex quantity or a number")
+		}
+		n, ok := new(big.Int).SetString(x[2:], 16)
+		if !ok || n.Sign() < 0 || !n.IsUint64() {
+			return 0, errors.New("invalid block height")
+		}
+		return n.Uint64(), nil
+	case float64:
+		if x < 0 || x != float64(uint64(x)) {
+			return 0, errors.New("invalid block height")
+		}
+		return uint64(x), nil
+	default:
+		return 0, errors.New("height must be a hex quantity or a number")
+	}
 }
