@@ -22,7 +22,6 @@
 //	DOES NOT TAKE THE LOCK
 //	  sync path   BatchRestoreAccounts, driven by the Redis drain worker and by
 //	              writeAccountsDirect when Redis is unavailable
-//	  DID path    StorePropagatedAccount and the DID-propagation writes
 //
 // What actually stops the unlocked writers from destroying an authoritative
 // balance is NOT this mutex — it is mergeAccountForWrite's last-writer-wins

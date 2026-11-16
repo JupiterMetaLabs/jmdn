@@ -2,7 +2,7 @@ package DB_OPs
 
 // LANDING GUARD (ticket: docs/audit/STO-ACCOUNT-UPDATEDAT-CLOBBER.md)
 //
-// storeAccount and StorePropagatedAccount currently clobber the caller's
+// storeAccount currently clobbers the caller's
 // updated_at with wall-clock now(). That is a rollback-safety trap: restoring an
 // older account snapshot through storeAccount would stamp the restored row with
 // a NEWER updated_at than the state it represents, so any "higher updated_at

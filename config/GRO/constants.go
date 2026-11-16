@@ -23,7 +23,6 @@ const (
 	PubsubChannelLocal       = "local:pubsub:channel"
 	NodeLocal                = "local:node"
 	MessagingLocal           = "local:messaging"
-	DIDPropagationLocal      = "local:did:propagation"
 	ContractPropagationLocal = "local:contract:propagation"
 	BroadcastLocal           = "local:direct:msg"
 
@@ -94,11 +93,6 @@ const (
 	MessageListenerThread   = "thread:messaging:listener"
 	YGGMessageCleanerThread = "thread:messaging:yggdrasil:cleaner"
 	MessageYggdrasilThread  = "thread:messaging:yggdrasil"
-
-	DIDStoreThread             = "thread:did:store"
-	DIDPropagationThread       = "thread:did:propagation"
-	DIDForwardThread           = "thread:did:forward"
-	DIDPropagationStreamThread = "thread:did:propagation:stream"
 
 	ContractStoreThread             = "thread:contract:store"
 	ContractPropagationThread       = "thread:contract:propagation"

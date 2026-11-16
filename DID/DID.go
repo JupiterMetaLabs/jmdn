@@ -16,13 +16,11 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	pb "gossipnode/DID/proto"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/logging"
-	"gossipnode/messaging"
 	"gossipnode/pkg/gatekeeper"
 )
 
@@ -153,40 +151,6 @@ func (s *AccountServer) Close() {
 	s.standalone = true
 }
 
-// storeAccount stores a Account either in the database or in memory
-func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
-	// GATED out-of-band creation: a DID-service account exists only on the nodes
-	// the registration reached, with a locally minted ART nonce — the fleet
-	// divergence removed by block-carried identities. Accounts are created at
-	// block apply; DID metadata for EXISTING accounts is unaffected by this gate.
-	if !DB_OPs.AllowLocalAccountCreate {
-		return DB_OPs.ErrLocalAccountCreateDisabled
-	}
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// Store in the database via our interface
-	err := s.db.CreateAccount(s.accountsClient, DIDAddress, Address, metadata)
-	if err != nil {
-
-		logger().Error(loggerCtx, "Failed to store Account",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DID.storeAccount"))
-		return err
-	}
-
-	logger().Info(loggerCtx, "Account stored successfully",
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DID.storeAccount"))
-	return nil
-}
-
 // getAccount retrieves a Account either from the database or memory
 func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 	s.mutex.RLock()
@@ -245,125 +209,12 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 	return data, nil
 }
 
-// RegisterDID registers a new DID
+// RegisterDID is retired. Accounts are created only by block application,
+// from the identity the block carries, when they first receive a transfer —
+// which pays for the account (config.NewRecipientGas). A registration that
+// wrote an account row out of band would let an address be created for free.
 func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequest) (*pb.RegisterDIDResponse, error) {
-	if req.Did == "" || req.PublicKey == "" {
-		return nil, status.Error(codes.InvalidArgument, "DID and public key are required")
-	}
-	// Validate the public key is a well-formed 20-byte hex address BEFORE
-	// common.HexToAddress, which otherwise silently pads/truncates malformed
-	// input and would let junk be registered.
-	if !common.IsHexAddress(req.PublicKey) {
-		return nil, status.Error(codes.InvalidArgument, "public key must be a valid 20-byte hex address")
-	}
-	// Ownership proof: the caller must sign the registration message with the
-	// key being registered, so nobody can claim another party's address.
-	if err := verifyDIDOwnership(req.Did, common.HexToAddress(req.PublicKey), req.Signature, BLS_Signer.DomainChainID()); err != nil {
-		return nil, status.Error(codes.Unauthenticated, err.Error())
-	}
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// Check if account already exists
-	existingAccount, err := s.getAccount(req.PublicKey)
-	if err == nil && existingAccount != nil {
-		var Tempmetadata []byte
-		Tempmetadata, err = json.Marshal(existingAccount.Metadata)
-		if err != nil {
-			Tempmetadata = []byte("{}")
-		}
-
-		logger().Info(loggerCtx, "Given account already exists",
-			ion.String("address", existingAccount.Address.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DID.RegisterDID"))
-		return &pb.RegisterDIDResponse{
-			Success: false,
-			Message: fmt.Sprintf("Account with public key %s already exists", req.PublicKey),
-			DidInfo: &pb.DIDInfo{
-				Did:         existingAccount.DIDAddress,
-				PublicKey:   existingAccount.Address.Hex(),
-				Balance:     existingAccount.Balance,
-				CreatedAt:   existingAccount.CreatedAt,
-				UpdatedAt:   existingAccount.UpdatedAt,
-				AccountType: existingAccount.AccountType,
-				Nonce:       fmt.Sprintf("%d", existingAccount.Nonce),
-				Metadata:    string(Tempmetadata),
-			},
-		}, nil
-	}
-
-	// Store the account using our helper method
-	err = s.storeAccount(req.Did, common.HexToAddress(req.PublicKey), nil)
-	if err != nil {
-
-		logger().Error(loggerCtx, "Failed to store account",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DID.RegisterDID"))
-		return nil, status.Errorf(codes.Internal, "Failed to store account: %v", err)
-	}
-
-	// Retrive the account from the DB
-	account, err := s.getAccount(req.PublicKey)
-	if err != nil {
-
-		logger().Error(loggerCtx, "Failed to retrieve account",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DID.RegisterDID"))
-		return nil, status.Errorf(codes.Internal, "Failed to retrieve account: %v", err)
-	}
-
-	// If not in standalone mode, propagate the DID
-	if !s.standalone && s.accountsClient != nil {
-		// Try to propagate to network, but don't fail if it doesn't work
-		err = messaging.PropagateDID(s.host, &DB_OPs.Account{
-			Address:     account.Address,
-			Balance:     account.Balance,
-			Nonce:       account.Nonce,
-			CreatedAt:   account.CreatedAt,
-			UpdatedAt:   account.UpdatedAt,
-			DIDAddress:  account.DIDAddress,
-			AccountType: account.AccountType,
-			Metadata:    account.Metadata,
-		})
-		if err != nil {
-
-			logger().Warn(loggerCtx, "Failed to propagate DID to network",
-				ion.String("error", err.Error()),
-				ion.String("did", req.Did),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "DID.RegisterDID"))
-		}
-
-		logger().Info(loggerCtx, "Successfully propagated DID to network",
-			ion.String("did", req.Did),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DID.RegisterDID"))
-	}
-
-	// Return success response
-	return &pb.RegisterDIDResponse{
-		Success: true,
-		Message: "DID registered successfully",
-		DidInfo: &pb.DIDInfo{
-			Did:       req.Did,
-			PublicKey: req.PublicKey,
-			Balance:   "0",
-			CreatedAt: time.Now().UTC().UnixNano(),
-			UpdatedAt: time.Now().UTC().UnixNano(),
-		},
-	}, nil
+	return nil, status.Error(codes.Unimplemented, "DID registration is retired: an account is created by its first incoming transfer")
 }
 
 // GetDID retrieves information about a specific DID
