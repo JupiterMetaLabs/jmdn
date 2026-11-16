@@ -258,7 +258,7 @@ func DefaultConfig() NodeConfig {
 			BlockTimestampMaxFutureSeconds:  15,
 			VotePeriodMinRoundSeconds:       1,
 			PeriodCapRaiseFromHeight:        0,
-			UnfundedRecipientGasFromHeight:  0,
+			NewRecipientGasFromHeight:       0,
 			VotePeriodSlack:                 16,
 			LegacyFollow:                    LegacyFollowSettings{CatchUpInterval: 30 * time.Second},
 			EVMUnstampedAccountRevertHeight: 0,

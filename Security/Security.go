@@ -358,9 +358,9 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		span.SetAttributes(attribute.String("status", "submission_policy_rejected"))
 		return false, err
 	}
-	if err := checkSubmissionUnfundedRecipientGas(ctx, tx, security_cache); err != nil {
+	if err := checkSubmissionNewRecipientGas(ctx, tx, security_cache); err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "unfunded_recipient_gas"))
+		span.SetAttributes(attribute.String("status", "new_recipient_gas"))
 		return false, err
 	}
 
