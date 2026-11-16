@@ -50,9 +50,16 @@ func TestInsecurePublicServices_PublicRPCExempt(t *testing.T) {
 // the global rate limit is set; not flagged once either is present.
 func TestPublicRPC_RequiresRateLimit(t *testing.T) {
 	cfg := baseConfig()
-	cfg.Security.GlobalRateLimit = 0 // remove the global cap
+	// Construct the unprotected state explicitly rather than inheriting it from
+	// the defaults. eth_rpc now ships with a per-service RateLimit of its own
+	// (it was the only public service without one), so zeroing the global cap
+	// alone no longer leaves it unprotected — and a test that silently stopped
+	// exercising its own branch would be worse than one that fails here.
+	cfg.Security.GlobalRateLimit = 0
+	unprotected := cfg.Security.Services[ServiceEthRPC]
+	unprotected.RateLimit, unprotected.Burst = 0, 0
+	cfg.Security.Services[ServiceEthRPC] = unprotected
 
-	// eth_rpc default per-service RateLimit is 0 → now unprotected → flagged.
 	if got := flaggedSet(cfg); got[ServiceEthRPC] != "public RPC with no rate limit" {
 		t.Fatalf("public RPC with no rate limit must be flagged, got %q", got[ServiceEthRPC])
 	}

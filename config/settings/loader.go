@@ -90,6 +90,16 @@ func Load() (*NodeConfig, error) {
 		"tx_status.breaker_failure_threshold": "JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD",
 		"tx_status.breaker_cooldown":          "JMDN_TX_STATUS_BREAKER_COOLDOWN",
 		"tx_status.pending_tx_by_hash":        "JMDN_TX_STATUS_PENDING_TX_BY_HASH",
+
+		// Public JSON-RPC cost bounds. Bound explicitly for the same reason as
+		// tx_status above: AutomaticEnv does not reach nested keys through
+		// Unmarshal, so JMDN_RPC_LOGS_MAX_BLOCK_SPAN would be silently ignored.
+		"rpc.logs.max_block_span":   "JMDN_RPC_LOGS_MAX_BLOCK_SPAN",
+		"rpc.logs.max_results":      "JMDN_RPC_LOGS_MAX_RESULTS",
+		"rpc.logs.max_scan_blocks":  "JMDN_RPC_LOGS_MAX_SCAN_BLOCKS",
+		"rpc.logs.max_addresses":    "JMDN_RPC_LOGS_MAX_ADDRESSES",
+		"rpc.batch.max_size":        "JMDN_RPC_BATCH_MAX_SIZE",
+		"rpc.batch.max_concurrency": "JMDN_RPC_BATCH_MAX_CONCURRENCY",
 		// Chain-head checkpoint feature. Bound explicitly for the
 		// same reason as tx_status/security: AutomaticEnv does not reach nested
 		// keys through Unmarshal, so JMDN_CHECKPOINT_ENABLED=true would silently
@@ -392,6 +402,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tx_status.breaker_failure_threshold", d.TxStatus.BreakerFailureThreshold)
 	v.SetDefault("tx_status.breaker_cooldown", d.TxStatus.BreakerCooldown)
 	v.SetDefault("tx_status.pending_tx_by_hash", d.TxStatus.PendingTxByHash)
+	v.SetDefault("rpc.logs.max_block_span", d.RPC.Logs.MaxBlockSpan)
+	v.SetDefault("rpc.logs.max_results", d.RPC.Logs.MaxResults)
+	v.SetDefault("rpc.logs.max_scan_blocks", d.RPC.Logs.MaxScanBlocks)
+	v.SetDefault("rpc.logs.max_addresses", d.RPC.Logs.MaxAddresses)
+	v.SetDefault("rpc.batch.max_size", d.RPC.Batch.MaxSize)
+	v.SetDefault("rpc.batch.max_concurrency", d.RPC.Batch.MaxConcurrency)
 
 	// Chain-head checkpoint (committee-signed anchor).
 	v.SetDefault("checkpoint.enabled", d.Checkpoint.Enabled)
