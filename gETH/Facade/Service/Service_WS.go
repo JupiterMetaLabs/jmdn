@@ -16,6 +16,7 @@ import (
 	"gossipnode/gETH/common"
 
 	"github.com/JupiterMetaLabs/ion"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -265,6 +266,10 @@ func GetActiveSubscriptionsCount() int {
 	return len(newHeadsSubscriptions.subscribers)
 }
 
+// logBlockStoreWait bounds how long a subscription holds a log while its
+// block is being stored. Apply and store normally finish within a second.
+const logBlockStoreWait = 10 * time.Second
+
 // SubscribeLogs implements the Service interface.
 // It attaches to the GlobalLogWriter fan-out channel and forwards logs that
 // match the supplied FilterQuery (address + topic filters) to the caller.
@@ -279,6 +284,8 @@ func (s *ServiceImpl) SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (
 
 	go func() {
 		defer close(out)
+		var confirmedHeight uint64
+		var confirmedHash ethcommon.Hash
 		for {
 			select {
 			case <-ctx.Done():
@@ -290,6 +297,17 @@ func (s *ServiceImpl) SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (
 				}
 				if !logMatchesFilter(ethLog, q) {
 					continue
+				}
+				// Logs are fanned out while their block is applied, before it
+				// is stored. Forward one only once its block is the stored
+				// block at that height; a rolled-back or competing block's
+				// logs are dropped. The last confirmed block is remembered so
+				// the rest of its logs pass without another read.
+				if ethLog.BlockNumber != confirmedHeight || ethLog.BlockHash != confirmedHash {
+					if !DB_OPs.WaitBlockStored(ctx, ethLog.BlockNumber, ethLog.BlockHash, logBlockStoreWait) {
+						continue
+					}
+					confirmedHeight, confirmedHash = ethLog.BlockNumber, ethLog.BlockHash
 				}
 				// Convert go-ethereum types.Log -> Service Types.Log
 				tl := ethLogToTypesLog(ethLog)

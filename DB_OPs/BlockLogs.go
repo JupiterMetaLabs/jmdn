@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/store"
@@ -47,6 +48,11 @@ func GetLogs(ctx context.Context, mainDBClient *config.PooledConnection, filterQ
 	ethLogs, err := h.GetLogs(ctx, filter)
 	if err != nil {
 		countLogQueryRefusal(err)
+		return nil, fmt.Errorf("GetLogs: %w", err)
+	}
+
+	ethLogs, err = keepLogsOfStoredBlocks(ethLogs)
+	if err != nil {
 		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
@@ -126,5 +132,89 @@ func filterQueryToStoreFilter(q Types.FilterQuery) store.LogFilter {
 		ToBlock:   to,
 		Addresses: addrs,
 		Topics:    topics,
+	}
+}
+
+// storedBlockHashFn returns the BlockHash of the block stored at height, or
+// found=false when no block is stored there. A seam for tests.
+var storedBlockHashFn = func(height uint64) (hash common.Hash, found bool, err error) {
+	blk, err := GetZKBlockHeaderByNumber(height)
+	if err != nil {
+		if IsNotFound(err) {
+			return common.Hash{}, false, nil
+		}
+		return common.Hash{}, false, err
+	}
+	if blk == nil {
+		return common.Hash{}, false, nil
+	}
+	return blk.BlockHash, true, nil
+}
+
+// keepLogsOfStoredBlocks drops every log whose block is not the block stored
+// at its height.
+//
+// Logs are indexed while a block is APPLIED (contract_apply.go), before the
+// block itself is stored, and nothing removes them if the block is then
+// rolled back or never stored. Without this filter eth_getLogs would serve
+// events of a block the chain does not contain - the case a bridge relayer
+// must never act on. Matching both height and BlockHash also drops logs left
+// by a competing block at a height whose stored block is a different one.
+//
+// One header read per distinct height in the result. A read error fails the
+// query rather than guessing.
+func keepLogsOfStoredBlocks(logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
+	if len(logs) == 0 {
+		return logs, nil
+	}
+	type stored struct {
+		hash  common.Hash
+		found bool
+	}
+	seen := make(map[uint64]stored)
+	out := logs[:0]
+	for _, l := range logs {
+		if l == nil {
+			continue
+		}
+		st, ok := seen[l.BlockNumber]
+		if !ok {
+			h, found, err := storedBlockHashFn(l.BlockNumber)
+			if err != nil {
+				return nil, fmt.Errorf("check block %d of a log: %w", l.BlockNumber, err)
+			}
+			st = stored{hash: h, found: found}
+			seen[l.BlockNumber] = st
+		}
+		if st.found && st.hash == l.BlockHash {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// WaitBlockStored reports whether the block stored at height has the given
+// hash, polling until it is or timeout passes. eth_subscribe("logs") uses it
+// to hold back logs that were fanned out during apply until their block is
+// stored, and to drop logs of a block that never is (rolled back, or a
+// competing block at that height). A read error stops the wait with false.
+func WaitBlockStored(ctx context.Context, height uint64, hash common.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		h, found, err := storedBlockHashFn(height)
+		if err != nil {
+			return false
+		}
+		if found {
+			return h == hash
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
