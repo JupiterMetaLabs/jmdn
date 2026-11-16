@@ -15,10 +15,27 @@ import (
 	"gossipnode/metrics"
 )
 
+// logQueryTimeout caps one eth_getLogs scan. It is a ceiling on top of the
+// caller's context, never a replacement for it: the scan stops at whichever
+// comes first.
+const logQueryTimeout = 10 * time.Second
+
 // GetLogs retrieves event logs matching the given filter query via ThebeDB SQL.
 // PooledConnection may be nil — getHandle falls back to the global ThebeDB handle.
-func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuery) ([]Types.Log, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//
+// ctx is the CALLER'S context and must be honoured: this is the heaviest RPC
+// element, and it used to build its own deadline from context.Background(). A
+// scan therefore outlived the request that asked for it — the batch deadline
+// (gETH/Facade/rpc/http_server.go) stopped DISPATCHING at 25s but an element
+// already running kept scanning for its full 10s, so a batch could reach ~35s
+// against a 30s WriteTimeout and the client lost the response it had paid for.
+// A client disconnect did not stop an in-flight scan either. A nil ctx is
+// treated as context.Background() so a caller that has none is unchanged.
+func GetLogs(ctx context.Context, mainDBClient *config.PooledConnection, filterQuery Types.FilterQuery) ([]Types.Log, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
 	h, err := getHandle(mainDBClient)

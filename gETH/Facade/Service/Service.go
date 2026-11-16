@@ -759,8 +759,9 @@ func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Get the logs from the database
-	logs, err := DB_OPs.GetLogs(nil, q)
+	// Get the logs from the database. opCtx, not nil: the scan must stop when the
+	// batch deadline passes or the client disconnects.
+	logs, err := DB_OPs.GetLogs(opCtx, nil, q)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetLogs failed: %v", err), "GetLogs", -1); logErr != nil {
 			logger().Error(opCtx, "Failed to log GetLogs error", logErr)
