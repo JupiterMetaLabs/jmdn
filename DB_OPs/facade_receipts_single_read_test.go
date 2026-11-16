@@ -102,14 +102,55 @@ func TestReceiptsFromOneBlockRead_ShareOneProof(t *testing.T) {
 	}
 }
 
-// An empty block yields no receipts and must not read anything per transaction.
-func TestReceiptsFromOneBlockRead_EmptyBlock(t *testing.T) {
-	blk := blockWithTxs(0, nil)
-	if len(blk.Transactions) != 0 {
-		t.Fatal("fixture")
+// ReceiptsOfStoredBlock is the function the rewrite introduced, so it is the one
+// that has to be exercised: the tests above call the per-transaction helper and
+// would pass even if this wrapper were wrong. (Review catch — the previous
+// empty-block test asserted on a slice the test itself built, so it could not
+// fail.)
+func TestReceiptsOfStoredBlock(t *testing.T) {
+	proof := []byte("a-stark-proof-stands-in-for-megabytes")
+	blk := blockWithTxs(3, proof)
+
+	got := ReceiptsOfStoredBlock(nil, blk)
+	if len(got) != 3 {
+		t.Fatalf("want one receipt per transaction, got %d", len(got))
 	}
-	receipts := make([]*config.Receipt, len(blk.Transactions))
-	if len(receipts) != 0 {
-		t.Fatalf("want no receipts, got %d", len(receipts))
+
+	var running uint64
+	for i, r := range got {
+		if r == nil {
+			t.Fatalf("receipt %d is nil", i)
+		}
+		if r.TransactionIndex != uint64(i) {
+			t.Fatalf("receipt %d: TransactionIndex = %d — receipts must keep block order", i, r.TransactionIndex)
+		}
+		if r.BlockHash != blk.BlockHash || r.BlockNumber != blk.BlockNumber {
+			t.Fatalf("receipt %d: block identity not carried", i)
+		}
+		running += reconstructedGasUsed(&blk.Transactions[i])
+		if r.CumulativeGasUsed != running {
+			t.Fatalf("receipt %d: CumulativeGasUsed = %d, want %d", i, r.CumulativeGasUsed, running)
+		}
+		// One block read means one proof: every receipt references the block's,
+		// not a copy of it.
+		if &r.ZKProof[0] != &blk.StarkProof[0] {
+			t.Fatalf("receipt %d: proof was copied instead of shared", i)
+		}
+	}
+}
+
+// An empty block yields no receipts — asserted through the function, not
+// through a slice the test built.
+func TestReceiptsOfStoredBlock_EmptyBlock(t *testing.T) {
+	if got := ReceiptsOfStoredBlock(nil, blockWithTxs(0, nil)); len(got) != 0 {
+		t.Fatalf("want no receipts for an empty block, got %d", len(got))
+	}
+}
+
+// A nil block must not panic: GetReceiptsofBlock returns an error before
+// reaching here, but the function is exported and callers can get this wrong.
+func TestReceiptsOfStoredBlock_NilBlock(t *testing.T) {
+	if got := ReceiptsOfStoredBlock(nil, nil); got != nil {
+		t.Fatalf("want nil for a nil block, got %d receipts", len(got))
 	}
 }
