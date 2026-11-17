@@ -60,6 +60,10 @@ env:
   DEADCODE_XTOOLS_VERSION: v0.52.0
   GOVULNCHECK_VERSION: v1.9.0
   GOSEC_VERSION: v2.30.0
+  # Trivy is installed from its release tarball and verified by sha256; see the
+  # note in docker.yml's env block for why no aquasecurity action is used.
+  TRIVY_VERSION: v0.76.2
+  TRIVY_SHA256_LINUX_AMD64: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
   # Every custom build tag in the tree. A tag-gated file is invisible to the
   # default build, so anything it references can be deleted without the PR gate
   # noticing (this happened in #250: -tags applygate stopped compiling).
@@ -504,21 +508,37 @@ jobs:
             --secret id=go_modules_token,env=GO_MODULES_TOKEN \
             -t jmdn:nightly .
 
-      # trivy-action v0.36.0 is an immutable release; it installs Trivy through
-      # a SHA-pinned setup-trivy. Scans the Debian packages and the Go modules in the binary.
+      # Trivy from its release tarball, checked against the sha256 the release
+      # publishes — not aquasecurity/trivy-action. `gh actions-lock --verify`
+      # runs with the Actions GITHUB_TOKEN and the aquasecurity organization's
+      # IP allow list refuses runner IPs, so that action's pin can never be
+      # verified from CI. See the note in docker.yml's env block.
+      #
+      # To bump: change TRIVY_VERSION, then take the matching line from
+      #   https://github.com/aquasecurity/trivy/releases/download/<ver>/trivy_<ver>_checksums.txt
+      - name: Install Trivy ${{ env.TRIVY_VERSION }}
+        env:
+          VERSION: ${{ env.TRIVY_VERSION }}
+          SHA256: ${{ env.TRIVY_SHA256_LINUX_AMD64 }}
+        run: |
+          set -euo pipefail
+          tarball="trivy_${VERSION#v}_Linux-64bit.tar.gz"
+          curl -sSfL -o "/tmp/${tarball}" \
+            "https://github.com/aquasecurity/trivy/releases/download/${VERSION}/${tarball}"
+          echo "${SHA256}  /tmp/${tarball}" | sha256sum -c -
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "/tmp/${tarball}" -C "${HOME}/.local/bin" trivy
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+          "${HOME}/.local/bin/trivy" --version
+
+      # Advisory, like its siblings: a new CVE raises a report rather than
+      # breaking the branch. exit-code 0 and continue-on-error both say so.
       - name: Image scan (trivy)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          # Engine pin. trivy-action v0.36.0 still defaults to Trivy v0.70.0;
-          # the vulnerability matcher is the part that must be current.
-          version: v0.76.2
-          image-ref: jmdn:nightly
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-          format: sarif
-          output: trivy-image.sarif
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+                      --exit-code 0 --format sarif \
+                      --output trivy-image.sarif jmdn:nightly
 
       - name: Upload security reports
         if: always()

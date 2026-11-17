@@ -16,6 +16,20 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: jupitermetalabs/jmdn
+  # Trivy is installed from its release tarball and checked against the sha256
+  # the release publishes, rather than through aquasecurity/trivy-action or
+  # setup-trivy. Those actions cannot be used here: `gh actions-lock --verify`
+  # runs with the Actions GITHUB_TOKEN, and the aquasecurity organization has an
+  # IP allow list that refuses runner IPs, so their pins can never be verified
+  # from CI (confirmed on two runs of the Action lockfile job, 2026-11-17).
+  # An action whose repository CI cannot read is an action whose pin CI cannot
+  # check — exactly what the lockfile exists to prevent.
+  #
+  # To bump: change TRIVY_VERSION, then take the matching line from
+  #   https://github.com/aquasecurity/trivy/releases/download/<ver>/trivy_<ver>_checksums.txt
+  # Both constants move together or the step fails closed.
+  TRIVY_VERSION: v0.76.2
+  TRIVY_SHA256_LINUX_AMD64: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
 
 jobs:
   # ── Gate: nothing is published unless the tagged commit builds and passes
@@ -269,13 +283,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # setup-trivy, not trivy-action: this job runs Trivy twice over one image
-      # and needs the --platform flag, which trivy-action does not expose. It is
-      # the same action trivy-action installs with, and it is in actions.lock.
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.2.6
-        with:
-          version: v0.76.2
+      # Runners are amd64; the digest below is the Linux-64bit tarball's. If a
+      # runner arch is ever added, this needs the matching checksum, not a
+      # looser check.
+      - name: Install Trivy ${{ env.TRIVY_VERSION }}
+        env:
+          VERSION: ${{ env.TRIVY_VERSION }}
+          SHA256: ${{ env.TRIVY_SHA256_LINUX_AMD64 }}
+        run: |
+          set -euo pipefail
+          tarball="trivy_${VERSION#v}_Linux-64bit.tar.gz"
+          curl -sSfL -o "/tmp/${tarball}" \
+            "https://github.com/aquasecurity/trivy/releases/download/${VERSION}/${tarball}"
+          echo "${SHA256}  /tmp/${tarball}" | sha256sum -c -
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "/tmp/${tarball}" -C "${HOME}/.local/bin" trivy
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+          "${HOME}/.local/bin/trivy" --version
 
       # Machine-readable report FIRST, with --exit-code 0, so the artifact
       # exists whatever the gate below decides and a failure can be triaged
