@@ -49,6 +49,9 @@ env:
   # Single source of truth for the linter version.
   # Update here when you upgrade golangci-lint locally.
   GOLANGCI_LINT_VERSION: v2.15.0
+  # sha256 of that release's install.sh, checked before it is executed. See the
+  # install step in quality-gate for why the version pin alone is not enough.
+  GOLANGCI_LINT_INSTALLER_SHA256: 1022ddb4d87ed252350ed03fc9677e250a4ae95cc6bcd4658c2a20a8a23d390f
   # Keep in step with nightly.yml, which pins the same tool.
   GOVULNCHECK_VERSION: v1.9.0
 
@@ -86,6 +89,37 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Installed once; both the format check and the lint step below use this
+      # binary.
+      #
+      # Installed BEFORE the private-modules token exists, deliberately. This is
+      # the one step in CI that executes code fetched at run time, and the token
+      # below lands in the GLOBAL git config, where every later step can read
+      # it. Running the installer first means a compromised installer has no
+      # secret to take. Ordering is the control here; do not move this step
+      # down.
+      #
+      # The fetch is also pinned by CONTENT, not just by tag. A tag is a moving
+      # pointer — the same property the convention note at the top of ci.yml
+      # refuses to rely on for actions — so the version pin alone would not
+      # survive a repointed tag. install.sh then verifies the binary it
+      # downloads against the release's own checksums file.
+      #
+      # To bump: change GOLANGCI_LINT_VERSION, then
+      #   curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/<ver>/install.sh | sha256sum
+      # and put the result in GOLANGCI_LINT_INSTALLER_SHA256. Both move together
+      # or the step fails closed.
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        env:
+          VERSION: ${{ env.GOLANGCI_LINT_VERSION }}
+          INSTALLER_SHA256: ${{ env.GOLANGCI_LINT_INSTALLER_SHA256 }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/golangci-install.sh \
+            "https://raw.githubusercontent.com/golangci/golangci-lint/${VERSION}/install.sh"
+          echo "${INSTALLER_SHA256}  /tmp/golangci-install.sh" | sha256sum -c -
+          sh /tmp/golangci-install.sh -b "$(go env GOPATH)/bin" "${VERSION}"
+
       - name: Access private Go modules
         env:
           GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
@@ -103,14 +137,6 @@ jobs:
           fi
           echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GO_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      # Install golangci-lint once. Both the format check and lint step below
-      # will use this binary, so it is only installed once.
-      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
-        run: |
-          # Installer fetched at the pinned release tag, not the moving HEAD.
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/${{ env.GOLANGCI_LINT_VERSION }}/install.sh \
-            | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
 
       # ── Dependency Integrity ────────────────────────────────────────────
       # Verifies downloaded packages match their expected checksums in go.sum.
