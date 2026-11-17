@@ -43,6 +43,9 @@ type BlockStore interface {
 	GetBlockByHash(ctx context.Context, hash string) (*thebegateway.BlockRecord, error)
 	GetLatestBlockNumber(ctx context.Context) (uint64, error)
 	BulkGetBlocks(ctx context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error)
+	// GetBlockHashes returns the stored BlockHash of each listed height that
+	// has a block; heights without one are absent. Reads only those rows.
+	GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error)
 	StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error
 	PutSyncKV(key string, value []byte) error
 	GetSyncKV(key string) ([]byte, error)

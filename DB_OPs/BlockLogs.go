@@ -153,9 +153,12 @@ var storedBlockHashFn = func(height uint64) (hash common.Hash, found bool, err e
 }
 
 // perHeightBlockReads is the most distinct heights keepLogsOfStoredBlocks
-// reads one at a time (each through the block cache). Past it, one range read
-// over the result's heights replaces the per-height reads.
-const perHeightBlockReads = 32
+// reads one at a time (each through the block cache). Past it, the hashes of
+// exactly those heights are read in batches of blockHashChunk.
+const (
+	perHeightBlockReads = 32
+	blockHashChunk      = 1000
+)
 
 // storedBlockHashesFn returns the BlockHash stored at each of heights (sorted
 // ascending, distinct). A height with no stored block is absent from the map.
@@ -192,25 +195,22 @@ var storedBlockHashesFn = func(ctx context.Context, heights []uint64) (map[uint6
 		}
 		return out, nil
 	}
-	// One read over the span. The span is already bounded by the log store's
-	// block-span limit, which the query that produced these logs passed.
-	recs, err := h.BulkGetBlocks(ctx, heights[0], heights[len(heights)-1])
-	if err != nil {
-		return nil, err
-	}
-	want := make(map[uint64]bool, len(heights))
-	for _, n := range heights {
-		want[n] = true
-	}
-	for _, rec := range recs {
-		if rec == nil || !want[rec.BlockNumber] {
-			continue
+	// One read of exactly these heights (WHERE block_number = ANY), in chunks.
+	// Not a range read: on the address path the heights can lie anywhere
+	// between genesis and the tip, and a range over them would read every
+	// block in between. The rows read equal the heights asked for.
+	for start := 0; start < len(heights); start += blockHashChunk {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		blk, err := blockRecordToZKBlock(rec)
+		end := min(start+blockHashChunk, len(heights))
+		hashes, err := h.GetBlockHashes(ctx, heights[start:end])
 		if err != nil {
 			return nil, err
 		}
-		out[rec.BlockNumber] = blk.BlockHash
+		for n, hx := range hashes {
+			out[n] = common.HexToHash(hx)
+		}
 	}
 	return out, nil
 }
@@ -226,8 +226,10 @@ var storedBlockHashesFn = func(ctx context.Context, heights []uint64) (map[uint6
 // by a competing block at a height whose stored block is a different one.
 //
 // The reads run under the caller's ctx (the same deadline and cancellation as
-// the log scan): per height through the block cache for a few heights, one
-// range read otherwise. A read error fails the query rather than guessing.
+// the log scan): per height through the block cache for a few heights, else
+// one batched read of exactly those heights. Either way the rows read are the
+// heights in the result, never the span between them. A read error fails the
+// query rather than guessing.
 func keepLogsOfStoredBlocks(ctx context.Context, logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
 	if len(logs) == 0 {
 		return logs, nil

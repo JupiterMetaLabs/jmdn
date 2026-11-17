@@ -181,6 +181,9 @@ const (
         FROM blocks WHERE block_number >= $1 AND block_number <= $2
         ORDER BY block_number ASC`
 
+	sqlGetBlockHashes = `
+        SELECT block_number, block_hash FROM blocks WHERE block_number = ANY($1)`
+
 	sqlGetAccountByDID = `
         SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
@@ -687,6 +690,40 @@ func (r *thebeReader) GetBlockByHash(ctx context.Context, hash string) (*BlockRe
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// GetBlockHashes returns the BlockHash stored at each of numbers, reading only
+// those rows (two columns each). Heights with no block are absent from the map.
+// Time: O(len(numbers)) — single WHERE block_number = ANY($1) query.
+func (r *thebeReader) GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error) {
+	out := make(map[uint64]string, len(numbers))
+	if len(numbers) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, 0, len(numbers))
+	for _, n := range numbers {
+		if n > math.MaxInt64 {
+			continue // no block can be stored at such a height
+		}
+		ids = append(ids, int64(n))
+	}
+	rows, err := r.db.QueryContext(ctx, sqlGetBlockHashes, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("GetBlockHashes: query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n int64
+		var hash string
+		if err := rows.Scan(&n, &hash); err != nil {
+			return nil, fmt.Errorf("GetBlockHashes: scan: %w", err)
+		}
+		out[uint64(n)] = strings.TrimSpace(hash) //nolint:gosec // block_number is a non-negative BIGINT.
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetBlockHashes: rows: %w", err)
+	}
+	return out, nil
 }
 
 // BulkGetBlocks returns all blocks in [from, to] inclusive ordered by block_number ASC.

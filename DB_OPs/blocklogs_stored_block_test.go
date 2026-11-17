@@ -94,8 +94,9 @@ func TestGetLogs_BlockReadErrorFailsTheQuery(t *testing.T) {
 // blockReadHandle serves stored blocks and counts the reads made.
 type blockReadHandle struct {
 	fixedLogHandle
-	hashes       map[uint64]common.Hash
-	single, bulk int
+	hashes             map[uint64]common.Hash
+	single, batch      int
+	rowsAsked, rangeRd int
 }
 
 func (h *blockReadHandle) GetBlock(_ context.Context, n uint64) (*thebegateway.BlockRecord, error) {
@@ -107,22 +108,29 @@ func (h *blockReadHandle) GetBlock(_ context.Context, n uint64) (*thebegateway.B
 	return &thebegateway.BlockRecord{BlockNumber: n, BlockHash: hash.Hex()}, nil
 }
 
-func (h *blockReadHandle) BulkGetBlocks(_ context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error) {
-	h.bulk++
-	var out []*thebegateway.BlockRecord
-	for n := from; n <= to; n++ {
+func (h *blockReadHandle) GetBlockHashes(_ context.Context, numbers []uint64) (map[uint64]string, error) {
+	h.batch++
+	h.rowsAsked += len(numbers)
+	out := map[uint64]string{}
+	for _, n := range numbers {
 		if hash, ok := h.hashes[n]; ok {
-			out = append(out, &thebegateway.BlockRecord{BlockNumber: n, BlockHash: hash.Hex()})
+			out[n] = hash.Hex()
 		}
 	}
 	return out, nil
 }
 
-func logsAtHeights(n int, hashes map[uint64]common.Hash) []*ethtypes.Log {
+func (h *blockReadHandle) BulkGetBlocks(context.Context, uint64, uint64) ([]*thebegateway.BlockRecord, error) {
+	h.rangeRd++
+	return nil, errors.New("a range read must not be used to check log blocks")
+}
+
+// logsAtHeights returns one log in each of n heights spaced step apart.
+func logsAtHeights(n int, step uint64, hashes map[uint64]common.Hash) []*ethtypes.Log {
 	logs := make([]*ethtypes.Log, 0, n)
 	for i := 0; i < n; i++ {
-		h := uint64(100 + 2*i)
-		hash := common.BigToHash(new(big.Int).SetUint64(h))
+		h := 100 + step*uint64(i)
+		hash := common.BigToHash(new(big.Int).SetUint64(h + 1))
 		hashes[h] = hash
 		logs = append(logs, &ethtypes.Log{BlockNumber: h, BlockHash: hash})
 	}
@@ -138,28 +146,34 @@ func withBlockReadHandle(t *testing.T, h *blockReadHandle) {
 	t.Cleanup(func() { SetGlobalHandle(prev) })
 }
 
-// Few heights: one cached read each. Many heights: one range read in total,
-// never one round trip per height.
-func TestGetLogs_StoredBlockReadsAreBounded(t *testing.T) {
+// The block check reads exactly the heights in the result: one cached read
+// each for a few, batched reads of those heights otherwise. It never reads
+// the span between them, however far apart they are (the address path of
+// eth_getLogs can return heights from genesis to the tip).
+func TestGetLogs_StoredBlockReadsAreTheResultHeights(t *testing.T) {
 	for _, tc := range []struct {
-		heights      int
-		single, bulk int
+		heights       int
+		step          uint64
+		single, batch int
 	}{
-		{perHeightBlockReads, perHeightBlockReads, 0},
-		{perHeightBlockReads + 1, 0, 1},
-		{1000, 0, 1},
+		{perHeightBlockReads, 2, perHeightBlockReads, 0},
+		{perHeightBlockReads + 1, 1_000_000, 0, 1},
+		{2500, 50_000, 0, 3},
 	} {
 		hashes := map[uint64]common.Hash{}
-		logs := logsAtHeights(tc.heights, hashes)
+		logs := logsAtHeights(tc.heights, tc.step, hashes)
 		h := &blockReadHandle{fixedLogHandle: fixedLogHandle{logs: logs}, hashes: hashes}
 		withBlockReadHandle(t, h)
 		got, err := GetLogs(context.Background(), nil, Types.FilterQuery{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != tc.heights || h.single != tc.single || h.bulk != tc.bulk {
-			t.Fatalf("%d heights: %d logs, %d single reads, %d range reads; want %d, %d, %d",
-				tc.heights, len(got), h.single, h.bulk, tc.heights, tc.single, tc.bulk)
+		if len(got) != tc.heights || h.single != tc.single || h.batch != tc.batch || h.rangeRd != 0 {
+			t.Fatalf("%d heights: %d logs, %d single, %d batched, %d range reads; want %d, %d, %d, 0",
+				tc.heights, len(got), h.single, h.batch, h.rangeRd, tc.heights, tc.single, tc.batch)
+		}
+		if tc.batch > 0 && h.rowsAsked != tc.heights {
+			t.Fatalf("%d heights: asked for %d rows; want exactly the result's heights", tc.heights, h.rowsAsked)
 		}
 	}
 }
@@ -167,14 +181,14 @@ func TestGetLogs_StoredBlockReadsAreBounded(t *testing.T) {
 // A cancelled request reads no blocks at all.
 func TestGetLogs_CancelledRequestReadsNoBlocks(t *testing.T) {
 	hashes := map[uint64]common.Hash{}
-	h := &blockReadHandle{fixedLogHandle: fixedLogHandle{logs: logsAtHeights(10, hashes)}, hashes: hashes}
+	h := &blockReadHandle{fixedLogHandle: fixedLogHandle{logs: logsAtHeights(40, 3, hashes)}, hashes: hashes}
 	withBlockReadHandle(t, h)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := GetLogs(ctx, nil, Types.FilterQuery{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
-	if h.single+h.bulk != 0 {
-		t.Fatalf("a cancelled request made %d block reads", h.single+h.bulk)
+	if h.single+h.batch+h.rangeRd != 0 {
+		t.Fatalf("a cancelled request made %d block reads", h.single+h.batch+h.rangeRd)
 	}
 }
