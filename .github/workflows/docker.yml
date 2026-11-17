@@ -22,17 +22,21 @@ jobs:
   # the unit tests. Mirrors the CI quality gate's build + test steps.
   test:
     name: Build & Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
       CGO_ENABLED: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -63,7 +67,7 @@ jobs:
 
   build-and-push:
     name: Build & Push (${{ matrix.platform }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     permissions:
       contents: read
@@ -87,16 +91,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
 
       - name: Set up QEMU (cross-compilation for non-native arches)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -130,7 +138,7 @@ jobs:
 
       - name: Extract metadata (labels, annotations)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -140,7 +148,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -168,35 +176,152 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: digest-${{ matrix.runner_arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
+  # ── Scan every per-arch image BEFORE any tag points at it ────────────────────
+  #
+  # Order is the whole point. build-and-push pushes by DIGEST only — no tag
+  # exists yet, so nothing is reachable by name. This job scans each of those
+  # digests, and merge-manifest does not run unless it passes. A vulnerable
+  # build therefore never becomes :vX.Y.Z and never becomes :latest.
+  #
+  # The earlier shape scanned AFTER merge-manifest, which was too late: that job
+  # tags :latest on a plain release, so `latest` had already moved to an
+  # unscanned image by the time the scan ran, and failing afterwards could not
+  # take it back.
+  #
+  # Scanned BY DIGEST, not by tag, so the bytes scanned are exactly the bytes
+  # merge-manifest will point a tag at — it builds the same `IMAGE@sha256:<hex>`
+  # references from the same artifacts.
+  #
+  # One leg per platform, mirroring build-and-push. --platform is required, not
+  # cosmetic: both legs build on an amd64 runner under QEMU, and buildx pushes
+  # an index (provenance + SBOM attestations ride along), so without it Trivy
+  # resolves the arm64 index to the runner's own platform and scans the wrong
+  # thing — or nothing.
+  scan-digests:
+    name: Scan Image (${{ matrix.platform }})
+    runs-on: ubuntu-24.04
+    needs: build-and-push
+    permissions:
+      contents: read
+      packages: read
+
+    strategy:
+      # Report both arches in one run; a HIGH on arm64 should not hide amd64.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner_arch: amd64
+          - platform: linux/arm64
+            runner_arch: arm64
+
+    steps:
+      - name: Download digest
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: digest-${{ matrix.runner_arch }}
+          path: /tmp/digests
+
+      # The artifact holds exactly one empty file named for the digest. Assert
+      # that rather than globbing blindly: scanning the wrong digest, or
+      # silently scanning none, is the failure this job exists to prevent.
+      - name: Resolve image reference
+        id: ref
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find /tmp/digests -type f)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one digest file, found ${#files[@]}"
+            exit 1
+          fi
+          digest=$(basename "${files[0]}")
+          if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::not a sha256 digest: $digest"
+            exit 1
+          fi
+          echo "value=${IMAGE}@sha256:${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # setup-trivy, not trivy-action: this job runs Trivy twice over one image
+      # and needs the --platform flag, which trivy-action does not expose. It is
+      # the same action trivy-action installs with, and it is in actions.lock.
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.6
+        with:
+          version: v0.76.2
+
+      # Machine-readable report FIRST, with --exit-code 0, so the artifact
+      # exists whatever the gate below decides and a failure can be triaged
+      # without re-running the scan.
+      - name: Scan report (sarif)
+        env:
+          REF: ${{ steps.ref.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.runner_arch }}
+        run: |
+          trivy image --platform "$PLATFORM" \
+                      --severity HIGH,CRITICAL --ignore-unfixed \
+                      --exit-code 0 --format sarif \
+                      --output "trivy-image-${ARCH}.sarif" "$REF"
+
+      - name: Upload scan report
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: trivy-image-${{ matrix.runner_arch }}-sarif
+          path: trivy-image-${{ matrix.runner_arch }}.sarif
+          if-no-files-found: error
+
+      # THE GATE. Cache is warm from the step above, so this re-reads rather
+      # than re-pulls. ignore-unfixed: only vulnerabilities with a published fix
+      # hold a release — blocking on an unfixable CVE resolves nothing.
+      - name: Scan (blocking)
+        env:
+          REF: ${{ steps.ref.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          trivy image --platform "$PLATFORM" \
+                      --severity HIGH,CRITICAL --ignore-unfixed \
+                      --exit-code 1 --format table "$REF"
+
   # ── Merge per-arch digests into a single multi-arch manifest ──
   merge-manifest:
     name: Merge Multi-Arch Manifest
-    runs-on: ubuntu-latest
-    needs: build-and-push
+    runs-on: ubuntu-24.04
+    # Gated on scan-digests: no tag — including :latest — is created until every
+    # per-arch image has passed.
+    needs: scan-digests
     permissions:
       contents: read
       packages: write
 
     steps:
       - name: Download all digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           path: /tmp/digests
           pattern: digest-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -248,3 +373,4 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           TAG: ${{ steps.tag.outputs.value }}
         run: docker buildx imagetools inspect "${IMAGE}:${TAG}"
+

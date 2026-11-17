@@ -57,7 +57,7 @@ env:
   STATICCHECK_VERSION: "2026.2.2"
   DEADCODE_XTOOLS_VERSION: v0.52.0
   GOVULNCHECK_VERSION: v1.9.0
-  GOSEC_VERSION: v2.29.0
+  GOSEC_VERSION: v2.30.0
   # Every custom build tag in the tree. A tag-gated file is invisible to the
   # default build, so anything it references can be deleted without the PR gate
   # noticing (this happened in #250: -tags applygate stopped compiling).
@@ -68,7 +68,7 @@ jobs:
   # ── Resolve the ref and decide whether anything needs to run ────────────
   gate:
     name: Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read # to list previous runs and download their tested-sha artifact
@@ -133,7 +133,7 @@ jobs:
     name: Vet (${{ matrix.name }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -147,12 +147,15 @@ jobs:
           - { name: all-tags,      tags: "applygate,sequencertest,pgtest" }
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -191,17 +194,20 @@ jobs:
     name: Static analysis
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -273,7 +279,7 @@ jobs:
 
       - name: Upload static-analysis reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: static-analysis
           path: |
@@ -286,7 +292,7 @@ jobs:
     name: Test (${{ matrix.name }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -309,12 +315,15 @@ jobs:
           - { name: coverage,            args: "-short -covermode=atomic -coverprofile=cover.out" }
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -352,7 +361,7 @@ jobs:
 
       - name: Upload test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: test-${{ matrix.name }}
           path: |
@@ -365,18 +374,21 @@ jobs:
     name: Security
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -401,10 +413,18 @@ jobs:
         continue-on-error: true
         run: govulncheck -tags "${{ env.ALL_TAGS }}" ./...
 
-      # Module mode lists every vulnerable module in go.mod whether reachable or not.
+      # Module scanning lists every vulnerable module in go.mod whether reachable
+      # or not.
+      #
+      # WAS BROKEN: this ran `govulncheck -mode=module ./...`, and govulncheck
+      # rejects both halves of that — `module` is a -scan level, not a -mode
+      # (-mode takes source/binary/extract), and module-only scanning accepts no
+      # package patterns. The step exited 2 on the flag before scanning anything,
+      # and continue-on-error meant nobody ever saw it. This check has therefore
+      # never run. Verified against govulncheck v1.9.0 on 2026-11-16.
       - name: govulncheck (every module in go.mod)
         continue-on-error: true
-        run: govulncheck -mode=module ./...
+        run: govulncheck -scan=module
 
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
@@ -423,17 +443,55 @@ jobs:
 
       - name: Secret scan (gitleaks)
         continue-on-error: true
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
+      # Image scan lives here, not in ci.yml: its findings are Debian CVEs that
+      # no PR causes and no PR author can fix, and its verdict moves with
+      # Trivy's vulnerability database rather than with the commit. Nightly is
+      # the right cadence for "a fix became available, bump the base digest" —
+      # advisory like its siblings above, so a new CVE raises a report rather
+      # than breaking the branch.
+      - name: Build image
+        continue-on-error: true
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set; the image build needs it for the private Go modules."
+            exit 1
+          fi
+          DOCKER_BUILDKIT=1 docker build \
+            --secret id=go_modules_token,env=GO_MODULES_TOKEN \
+            -t jmdn:nightly .
+
+      # trivy-action 0.35.0 is the immutable release published after
+      # GHSA-69fq-xp46-6x23; it installs Trivy v0.69.3 through a SHA-pinned
+      # setup-trivy. Scans the Debian packages and the Go modules in the binary.
+      - name: Image scan (trivy)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          # Engine pin. trivy-action v0.36.0 still defaults to Trivy v0.70.0;
+          # the vulnerability matcher is the part that must be current.
+          version: v0.76.2
+          image-ref: jmdn:nightly
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: sarif
+          output: trivy-image.sarif
+
       - name: Upload security reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: security-reports
-          path: gosec.sarif
+          path: |
+            gosec.sarif
+            trivy-image.sarif
           if-no-files-found: ignore
 
   # ── Record what was tested, only when everything that can fail passed ───
@@ -441,7 +499,7 @@ jobs:
     name: Record tested commit
     needs: [gate, vet, static, test, security]
     if: needs.gate.outputs.run == 'true' && success()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -453,7 +511,7 @@ jobs:
           mkdir -p out && echo "$SHA" > out/sha
           echo "name=tested-sha-$(echo "$REF" | tr '/' '_')" >> "$GITHUB_ENV"
       - name: Upload tested sha
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ env.name }}
           path: out/sha
