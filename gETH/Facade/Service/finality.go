@@ -9,8 +9,8 @@ import (
 
 // FinalizedBlockNumber implements Service. See docs/finality.md for what
 // "finalized" promises.
-func (s *ServiceImpl) FinalizedBlockNumber(_ context.Context) (*big.Int, error) {
-	h, err := messaging.FinalizedHeight()
+func (s *ServiceImpl) FinalizedBlockNumber(ctx context.Context) (*big.Int, error) {
+	h, err := messaging.FinalizedHeight(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -95,3 +95,23 @@ func TestGetCertifiedBlock(t *testing.T) {
 		t.Fatal("a tag must be refused: the method answers about one explicit height")
 	}
 }
+
+// Methods that read head state whatever block is asked for refuse the
+// finality tags instead of answering with unfinalized state.
+func TestHeadStateMethodsRefuseFinalityTags(t *testing.T) {
+	svc := &finalityService{head: 10, finalized: 8}
+	h := NewHandlers(svc)
+	addr := "0x00000000000000000000000000000000000000a1"
+	cases := []Request{
+		{Method: "eth_call", Params: []any{map[string]any{"to": addr}, "finalized"}, ID: 1},
+		{Method: "eth_getCode", Params: []any{addr, "finalized"}, ID: 2},
+		{Method: "eth_getTransactionCount", Params: []any{addr, "safe"}, ID: 3},
+		{Method: "eth_getStorageAt", Params: []any{addr, "0x0", "finalized"}, ID: 4},
+	}
+	for _, req := range cases {
+		resp, _ := h.Handle(context.Background(), req)
+		if resp.Error == nil || resp.Error.Code != -32602 {
+			t.Errorf("%s with a finality tag: want an invalid-params error, got %+v", req.Method, resp)
+		}
+	}
+}

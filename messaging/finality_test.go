@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/big"
@@ -25,7 +26,11 @@ func hashAt(n uint64) common.Hash { return common.BigToHash(new(big.Int).SetUint
 func (c finalityChain) install(t *testing.T) {
 	t.Helper()
 	prevBlock, prevVerify, prevTip := finalityBlockFn, finalityVerifyFn, finalityTipFn
-	t.Cleanup(func() { finalityBlockFn, finalityVerifyFn, finalityTipFn = prevBlock, prevVerify, prevTip })
+	t.Cleanup(func() {
+		finalityBlockFn, finalityVerifyFn, finalityTipFn = prevBlock, prevVerify, prevTip
+		resetFinalityCaches()
+	})
+	resetFinalityCaches()
 	finalityTipFn = func() (uint64, error) { return c.tip, nil }
 	finalityBlockFn = func(n uint64) (*config.ZKBlock, error) {
 		if n > c.tip {
@@ -65,7 +70,7 @@ func TestFinalizedHeight(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			c.chain.install(t)
-			got, err := FinalizedHeight()
+			got, err := FinalizedHeight(context.Background())
 			if c.none {
 				if !errors.Is(err, ErrNotFinalized) {
 					t.Fatalf("want ErrNotFinalized, got %d, %v", got, err)
@@ -103,4 +108,66 @@ func TestVerifyFinalityCertificateFailsClosed(t *testing.T) {
 	if _, err := VerifyFinalityCertificate(&config.ZKBlock{BlockNumber: 7, CommitteeCertificate: "[]"}); !errors.Is(err, ErrFinalityNotAnchored) {
 		t.Fatalf("committee-v2 off: got %v", err)
 	}
+}
+
+// Polling "finalized" at an unchanged tip verifies nothing again, and a
+// verified block is not re-verified when the tip moves.
+func TestFinalizedHeight_Cached(t *testing.T) {
+	c := finalityChain{tip: 10}
+	c.install(t)
+	var calls int
+	inner := finalityVerifyFn
+	finalityVerifyFn = func(b *config.ZKBlock) (CertificateResult, error) {
+		calls++
+		return inner(b)
+	}
+	if _, err := FinalizedHeight(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := calls
+	if first != 2 {
+		t.Fatalf("first call verified %d blocks, want 2", first)
+	}
+	if _, err := FinalizedHeight(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != first {
+		t.Fatalf("same tip re-verified: %d calls after %d", calls, first)
+	}
+	c.tip = 11
+	finalityTipFn = func() (uint64, error) { return 11, nil }
+	prevBlock := finalityBlockFn
+	finalityBlockFn = func(n uint64) (*config.ZKBlock, error) {
+		if n == 11 {
+			return &config.ZKBlock{BlockNumber: 11, BlockHash: hashAt(11), PrevHash: hashAt(10)}, nil
+		}
+		return prevBlock(n)
+	}
+	got, err := FinalizedHeight(context.Background())
+	if err != nil || got != 10 {
+		t.Fatalf("got %d, %v; want 10", got, err)
+	}
+	if calls != first+1 {
+		t.Fatalf("new tip verified %d blocks, want 1 (the new block only)", calls-first)
+	}
+}
+
+// A cancelled request stops the search.
+func TestFinalizedHeight_HonoursContext(t *testing.T) {
+	finalityChain{tip: 10, uncertified: map[uint64]bool{10: true, 9: true, 8: true}}.install(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := FinalizedHeight(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+// resetFinalityCaches drops both caches (tests swap the seams underneath them).
+func resetFinalityCaches() {
+	certifiedCache.Lock()
+	certifiedCache.m = make(map[certKey]CertificateResult)
+	certifiedCache.Unlock()
+	finalizedAtTip.Lock()
+	finalizedAtTip.valid = false
+	finalizedAtTip.Unlock()
 }

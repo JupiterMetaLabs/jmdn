@@ -115,6 +115,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		addr, _ := req.Params[0].(string)
 		block, _ := req.Params[1].(string)
+		if err := refuseFinalityTag(req.Method, block); err != nil {
+			resp, _ := invalidParams(req, err.Error())
+			return resp, nil
+		}
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -257,6 +261,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		var num *big.Int
 		if len(req.Params) > 1 {
+			if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+				resp, _ := invalidParams(req, ferr.Error())
+				return resp, nil
+			}
 			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 			if err != nil {
 				resp, _ := finish(req, nil, err)
@@ -560,6 +568,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
+		if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
+		}
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -588,6 +600,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			if b, ok := req.Params[2].(string); ok {
 				blockNum = b
 			}
+		}
+		if ferr := refuseFinalityTag(req.Method, blockNum); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
 		}
 		result, err := handler.service.GetStorageAt(ctx, address, slot, blockNum)
 		resp, _ := finish(req, result, err)
@@ -1281,4 +1297,17 @@ func parseHeightParam(v any) (uint64, error) {
 	default:
 		return 0, errors.New("height must be a hex quantity or a number")
 	}
+}
+
+// refuseFinalityTag rejects the "finalized" and "safe" tags for methods that
+// serve the latest state whatever block is asked for (eth_call, eth_getCode,
+// eth_getTransactionCount, eth_getStorageAt). Those tags promise a certified
+// block (docs/finality.md); answering them with head state would claim that
+// promise for data that does not keep it.
+func refuseFinalityTag(method, tag string) error {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
+	case "safe", "finalized":
+		return fmt.Errorf("%s serves the latest state only; block tag %q is not supported", method, tag)
+	}
+	return nil
 }

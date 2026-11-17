@@ -16,6 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
@@ -84,6 +87,54 @@ type CertifiedBlock struct {
 	VerifyErr error // why it is not certified, when it is not
 }
 
+// certifiedCache remembers blocks whose certificate verified strictly. A
+// stored block and its certificate do not change, so a (height, BlockHash)
+// that verified once stays verified; only positive results are kept, because
+// a failure can be transient (an anchor or committee source not yet
+// available). Cleared wholesale when full: it is a cost bound, not state.
+var certifiedCache = struct {
+	sync.Mutex
+	m map[certKey]CertificateResult
+}{m: make(map[certKey]CertificateResult)}
+
+type certKey struct {
+	height uint64
+	hash   common.Hash
+}
+
+const certifiedCacheMax = 4096
+
+// finalizedAtTip caches FinalizedHeight for the tip it was computed at, so a
+// client polling "finalized" costs one computation per new block.
+var finalizedAtTip struct {
+	sync.Mutex
+	valid  bool
+	tip    uint64
+	height uint64
+	err    error
+}
+
+// verifyFinalityCached is finalityVerifyFn behind certifiedCache.
+func verifyFinalityCached(blk *config.ZKBlock) (CertificateResult, error) {
+	k := certKey{blk.BlockNumber, blk.BlockHash}
+	certifiedCache.Lock()
+	res, ok := certifiedCache.m[k]
+	certifiedCache.Unlock()
+	if ok {
+		return res, nil
+	}
+	res, err := finalityVerifyFn(blk)
+	if err == nil && res.Reached {
+		certifiedCache.Lock()
+		if len(certifiedCache.m) >= certifiedCacheMax {
+			certifiedCache.m = make(map[certKey]CertificateResult)
+		}
+		certifiedCache.m[k] = res
+		certifiedCache.Unlock()
+	}
+	return res, err
+}
+
 // LoadCertifiedBlock reads the block at height and verifies its certificate
 // strictly. A missing block is an error; an unverifiable certificate is not
 // (Certified is false and VerifyErr says why).
@@ -95,7 +146,7 @@ func LoadCertifiedBlock(height uint64) (*CertifiedBlock, error) {
 	if blk == nil {
 		return nil, fmt.Errorf("finality: block %d not found", height)
 	}
-	res, verr := finalityVerifyFn(blk)
+	res, verr := verifyFinalityCached(blk)
 	if verr == nil && !res.Reached {
 		verr = fmt.Errorf("finality: certificate below quorum (%d of %d required)", res.YesVotes, res.Threshold)
 	}
@@ -121,17 +172,38 @@ func IsFinalized(height uint64) (bool, error) {
 // FinalizedHeight returns the highest height this node holds that is
 // finalized in the sense of IsFinalized, searching at most
 // FinalizedSearchWindow heights below the tip. ErrNotFinalized when none is.
-func FinalizedHeight() (uint64, error) {
+// The answer is cached per tip, and the search stops when ctx is done.
+func FinalizedHeight(ctx context.Context) (uint64, error) {
 	tip, err := finalityTipFn()
 	if err != nil {
 		return 0, fmt.Errorf("finality: read tip: %w", err)
 	}
+	finalizedAtTip.Lock()
+	if finalizedAtTip.valid && finalizedAtTip.tip == tip {
+		h, ferr := finalizedAtTip.height, finalizedAtTip.err
+		finalizedAtTip.Unlock()
+		return h, ferr
+	}
+	finalizedAtTip.Unlock()
+	h, ferr := finalizedHeightAt(ctx, tip)
+	if ctx.Err() == nil && (ferr == nil || errors.Is(ferr, ErrNotFinalized)) {
+		finalizedAtTip.Lock()
+		finalizedAtTip.valid, finalizedAtTip.tip, finalizedAtTip.height, finalizedAtTip.err = true, tip, h, ferr
+		finalizedAtTip.Unlock()
+	}
+	return h, ferr
+}
+
+func finalizedHeightAt(ctx context.Context, tip uint64) (uint64, error) {
 	if tip == 0 {
 		return 0, ErrNotFinalized
 	}
 	// The child of h must be stored, so the highest candidate is tip-1.
 	child, cerr := LoadCertifiedBlock(tip)
 	for h := tip; h > 0 && tip-h < FinalizedSearchWindow; h-- {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		parent, perr := LoadCertifiedBlock(h - 1)
 		if perr != nil {
 			return 0, perr
