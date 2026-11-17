@@ -12,7 +12,7 @@ workflows:
         - 'actions/download-artifact@v8.0.2'
         - 'actions/setup-go@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
-        - 'aquasecurity/trivy-action@v0.36.0'
+        - 'aquasecurity/setup-trivy@v0.2.6'
         - 'docker/build-push-action@v7.4.0'
         - 'docker/login-action@v4.8.0'
         - 'docker/metadata-action@v6.2.0'
@@ -71,6 +71,14 @@ dependencies:
         owner_id: 44036562
         repo_id: 192625955
     'aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514':
+        ref: 'v0.2.6'
+        commit: 'sha1-3fb12ec12f41e471780db15c232d5dd185dcb514'
+        owner_id: 12783832
+        repo_id: 869952525
+        uses:
+            - 'actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb'
+            - 'actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8'
+    'aquasecurity/setup-trivy@v0.2.6':
         ref: 'v0.2.6'
         commit: 'sha1-3fb12ec12f41e471780db15c232d5dd185dcb514'
         owner_id: 12783832
