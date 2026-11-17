@@ -1,0 +1,51 @@
+# CODEOWNERS — who must review what.
+#
+# This file only REQUESTS review on its own. It becomes a requirement when the
+# v3base ruleset enables "Require review from Code Owners" (Settings -> Rules ->
+# Rulesets). Until then, treat it as routing rather than as a gate.
+#
+# Both maintainers own everything, deliberately. The alternative — splitting
+# ownership by area — creates paths that one person can land alone, and on a
+# chain the areas that look safest to split (CI, dependency manifests) are the
+# ones where a single unreviewed change does the most damage.
+#
+# Handles are the repository's two admin collaborators, verified against the
+# API. An invalid or non-collaborator handle makes a rule silently fail to
+# apply, so only add accounts with write access here.
+
+# ── Everything ──────────────────────────────────────────────────────────────
+*                                   @i-naman @saishibunb
+
+# The entries below do not narrow the rule above; they restate it so that a
+# future edit to the default line cannot quietly drop review on the paths where
+# it matters most. GitHub applies the LAST matching rule, so each of these must
+# name both owners too.
+
+# ── CI and supply chain ─────────────────────────────────────────────────────
+# These decide what runs with repository secrets in scope, and what is allowed
+# to reach a release. A change here can disable a gate without touching a line
+# of Go — the change least likely to be noticed in review.
+/.github/                           @i-naman @saishibunb
+/.github/workflows/                 @i-naman @saishibunb
+/.github/workflows/actions.lock     @i-naman @saishibunb
+/.github/dependabot.yml             @i-naman @saishibunb
+/.github/CODEOWNERS                 @i-naman @saishibunb
+/Dockerfile                         @i-naman @saishibunb
+/.golangci.yml                      @i-naman @saishibunb
+/.golangci-telemetry.yml            @i-naman @saishibunb
+
+# ── Dependency manifests ────────────────────────────────────────────────────
+# go.mod/go.sum are the supply chain: a bump here changes what is linked into
+# the node binary. govulncheck in CI reports; it does not decide.
+/go.mod                             @i-naman @saishibunb
+/go.sum                             @i-naman @saishibunb
+
+# ── Consensus-critical ──────────────────────────────────────────────────────
+# A defect in these is a fleet-wide halt or a divergent ledger, not a bug on one
+# node.
+/Security/                          @i-naman @saishibunb
+/consensus/                         @i-naman @saishibunb
+/consensushash/                     @i-naman @saishibunb
+/messaging/BlockProcessing/         @i-naman @saishibunb
+/thebesync/                         @i-naman @saishibunb
+/Sequencer/                         @i-naman @saishibunb
