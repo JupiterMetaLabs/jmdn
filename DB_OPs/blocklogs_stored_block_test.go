@@ -7,12 +7,14 @@ package DB_OPs
 import (
 	"context"
 	"errors"
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"gossipnode/DB_OPs/store"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/gETH/Facade/Service/Types"
 )
 
@@ -33,17 +35,22 @@ func withLogsAndStoredBlocks(t *testing.T, logs []*ethtypes.Log, stored map[uint
 	prev := globalThebeHandle
 	globalThebeHandleMu.RUnlock()
 	SetGlobalHandle(&fixedLogHandle{logs: logs})
-	prevFn := storedBlockHashFn
-	storedBlockHashFn = func(height uint64) (common.Hash, bool, error) {
+	prevFn := storedBlockHashesFn
+	storedBlockHashesFn = func(_ context.Context, heights []uint64) (map[uint64]common.Hash, error) {
 		if readErr != nil {
-			return common.Hash{}, false, readErr
+			return nil, readErr
 		}
-		h, ok := stored[height]
-		return h, ok, nil
+		out := map[uint64]common.Hash{}
+		for _, n := range heights {
+			if h, ok := stored[n]; ok {
+				out[n] = h
+			}
+		}
+		return out, nil
 	}
 	t.Cleanup(func() {
 		SetGlobalHandle(prev)
-		storedBlockHashFn = prevFn
+		storedBlockHashesFn = prevFn
 	})
 }
 
@@ -81,5 +88,93 @@ func TestGetLogs_BlockReadErrorFailsTheQuery(t *testing.T) {
 	withLogsAndStoredBlocks(t, logs, nil, errors.New("db down"))
 	if _, err := GetLogs(context.Background(), nil, Types.FilterQuery{}); err == nil {
 		t.Fatal("a block read error must fail the query, not serve unchecked logs")
+	}
+}
+
+// blockReadHandle serves stored blocks and counts the reads made.
+type blockReadHandle struct {
+	fixedLogHandle
+	hashes       map[uint64]common.Hash
+	single, bulk int
+}
+
+func (h *blockReadHandle) GetBlock(_ context.Context, n uint64) (*thebegateway.BlockRecord, error) {
+	h.single++
+	hash, ok := h.hashes[n]
+	if !ok {
+		return nil, errors.New("block not found")
+	}
+	return &thebegateway.BlockRecord{BlockNumber: n, BlockHash: hash.Hex()}, nil
+}
+
+func (h *blockReadHandle) BulkGetBlocks(_ context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error) {
+	h.bulk++
+	var out []*thebegateway.BlockRecord
+	for n := from; n <= to; n++ {
+		if hash, ok := h.hashes[n]; ok {
+			out = append(out, &thebegateway.BlockRecord{BlockNumber: n, BlockHash: hash.Hex()})
+		}
+	}
+	return out, nil
+}
+
+func logsAtHeights(n int, hashes map[uint64]common.Hash) []*ethtypes.Log {
+	logs := make([]*ethtypes.Log, 0, n)
+	for i := 0; i < n; i++ {
+		h := uint64(100 + 2*i)
+		hash := common.BigToHash(new(big.Int).SetUint64(h))
+		hashes[h] = hash
+		logs = append(logs, &ethtypes.Log{BlockNumber: h, BlockHash: hash})
+	}
+	return logs
+}
+
+func withBlockReadHandle(t *testing.T, h *blockReadHandle) {
+	t.Helper()
+	globalThebeHandleMu.RLock()
+	prev := globalThebeHandle
+	globalThebeHandleMu.RUnlock()
+	SetGlobalHandle(h)
+	t.Cleanup(func() { SetGlobalHandle(prev) })
+}
+
+// Few heights: one cached read each. Many heights: one range read in total,
+// never one round trip per height.
+func TestGetLogs_StoredBlockReadsAreBounded(t *testing.T) {
+	for _, tc := range []struct {
+		heights      int
+		single, bulk int
+	}{
+		{perHeightBlockReads, perHeightBlockReads, 0},
+		{perHeightBlockReads + 1, 0, 1},
+		{1000, 0, 1},
+	} {
+		hashes := map[uint64]common.Hash{}
+		logs := logsAtHeights(tc.heights, hashes)
+		h := &blockReadHandle{fixedLogHandle: fixedLogHandle{logs: logs}, hashes: hashes}
+		withBlockReadHandle(t, h)
+		got, err := GetLogs(context.Background(), nil, Types.FilterQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != tc.heights || h.single != tc.single || h.bulk != tc.bulk {
+			t.Fatalf("%d heights: %d logs, %d single reads, %d range reads; want %d, %d, %d",
+				tc.heights, len(got), h.single, h.bulk, tc.heights, tc.single, tc.bulk)
+		}
+	}
+}
+
+// A cancelled request reads no blocks at all.
+func TestGetLogs_CancelledRequestReadsNoBlocks(t *testing.T) {
+	hashes := map[uint64]common.Hash{}
+	h := &blockReadHandle{fixedLogHandle: fixedLogHandle{logs: logsAtHeights(10, hashes)}, hashes: hashes}
+	withBlockReadHandle(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := GetLogs(ctx, nil, Types.FilterQuery{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if h.single+h.bulk != 0 {
+		t.Fatalf("a cancelled request made %d block reads", h.single+h.bulk)
 	}
 }

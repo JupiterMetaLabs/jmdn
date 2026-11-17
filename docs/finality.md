@@ -25,7 +25,7 @@ Phase 3 (§4) makes it rest on the committee alone.
    - with no trusted-sequencer relaxation and no legacy or pool-wide fallback.
 2. The stored block at H+1 also verifies strictly and has `PrevHash == H.BlockHash`.
 
-If no such block is within 64 blocks of the tip, the call is an **error**, never the head. The answer is cached per tip, and a verified certificate is cached per (height, BlockHash), so polling costs one computation per new block. If the committee period is not anchored, nothing is finalized. The answer fails closed.
+If no such block is within 64 blocks of the tip, the call is an **error**, never the head. A finalized answer is cached per tip and a verified certificate per (height, BlockHash), so polling costs one computation per new block. A "nothing finalized" answer is reused for at most a second, so a committee source or anchor that becomes available is picked up without waiting for a new block. If the committee period is not anchored, nothing is finalized. The answer fails closed.
 
 **What it does not promise, until phase 3 ships:** that no other certified block exists at H. Until then, uniqueness also rests on the sequencer (§1). A certified child does not change that, because committee members sign a child of whichever block reached them first.
 
@@ -107,5 +107,7 @@ Block and transaction hashing don't change.
 | `eth_getLogs` | `toBlock`/`fromBlock` `"finalized"`/`"safe"` resolve the same way. Logs of blocks not stored at their height are no longer returned. |
 | `eth_subscribe("logs")` | A log is delivered only once its block is stored (checked every 100 ms, in arrival order), and dropped if a different block is stored at its height or none is within 10 s. The subscription keeps draining while it waits, so a busy block loses nothing. A subscription is closed if its client takes nothing for 10 s while a log is ready, or if it would hold more than 65,536 logs; a WebSocket write that blocks for 10 s closes the connection. When the node ends a subscription it closes the connection with close code 1013 ("try again later"), so the client reconnects and resubscribes. |
 | `eth_call`, `eth_getCode`, `eth_getTransactionCount`, `eth_getStorageAt` | Refuse `"finalized"` and `"safe"`: they serve the latest state whatever block is asked for, so they cannot keep the promise those tags make. |
+| `eth_getBalance` | Accepts `"finalized"` and `"safe"`: the balance at the finalized height, rebuilt from history. If the node cannot read its tip it returns an error, never the current balance. |
+| `eth_feeHistory` | Accepts `"finalized"` and `"safe"` as the newest block: fee history up to the finalized height. |
 | `jmdt_getCertifiedBlock` | New method. |
 | P2P protocol IDs, message formats | **None changed.** |

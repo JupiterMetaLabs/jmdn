@@ -115,3 +115,28 @@ func TestHeadStateMethodsRefuseFinalityTags(t *testing.T) {
 		}
 	}
 }
+
+// balanceService records the block eth_getBalance asks the backend for.
+type balanceService struct {
+	finalityService
+	balanceBlock *big.Int
+}
+
+func (s *balanceService) Balance(_ context.Context, _ string, block *big.Int, _ string) (*big.Int, error) {
+	s.balanceBlock = block
+	return big.NewInt(1), nil
+}
+
+// eth_getBalance keeps the finality tags: they resolve to the finalized
+// height, never the head, and the backend answers that height from history.
+func TestGetBalance_FinalizedAsksForTheFinalizedHeight(t *testing.T) {
+	svc := &balanceService{finalityService: finalityService{head: 10, finalized: 8}}
+	resp, _ := NewHandlers(svc).Handle(context.Background(), Request{
+		Method: "eth_getBalance",
+		Params: []any{"0x0000000000000000000000000000000000000001", "finalized"},
+		ID:     1,
+	})
+	if resp.Error != nil || svc.balanceBlock == nil || svc.balanceBlock.Uint64() != 8 {
+		t.Fatalf("asked for block %v (err %+v), want the finalized height 8", svc.balanceBlock, resp.Error)
+	}
+}

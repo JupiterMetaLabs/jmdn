@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -51,7 +52,7 @@ func GetLogs(ctx context.Context, mainDBClient *config.PooledConnection, filterQ
 		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
-	ethLogs, err = keepLogsOfStoredBlocks(ethLogs)
+	ethLogs, err = keepLogsOfStoredBlocks(ctx, ethLogs)
 	if err != nil {
 		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
@@ -151,6 +152,69 @@ var storedBlockHashFn = func(height uint64) (hash common.Hash, found bool, err e
 	return blk.BlockHash, true, nil
 }
 
+// perHeightBlockReads is the most distinct heights keepLogsOfStoredBlocks
+// reads one at a time (each through the block cache). Past it, one range read
+// over the result's heights replaces the per-height reads.
+const perHeightBlockReads = 32
+
+// storedBlockHashesFn returns the BlockHash stored at each of heights (sorted
+// ascending, distinct). A height with no stored block is absent from the map.
+// It honours ctx: the reads run inside the caller's deadline. A seam for tests.
+var storedBlockHashesFn = func(ctx context.Context, heights []uint64) (map[uint64]common.Hash, error) {
+	out := make(map[uint64]common.Hash, len(heights))
+	if len(heights) == 0 {
+		return out, nil
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(heights) <= perHeightBlockReads {
+		for _, n := range heights {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			rec, err := h.GetBlock(ctx, n)
+			if err != nil {
+				if IsNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+			if rec == nil {
+				continue
+			}
+			blk, err := blockRecordToZKBlock(rec)
+			if err != nil {
+				return nil, err
+			}
+			out[n] = blk.BlockHash
+		}
+		return out, nil
+	}
+	// One read over the span. The span is already bounded by the log store's
+	// block-span limit, which the query that produced these logs passed.
+	recs, err := h.BulkGetBlocks(ctx, heights[0], heights[len(heights)-1])
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[uint64]bool, len(heights))
+	for _, n := range heights {
+		want[n] = true
+	}
+	for _, rec := range recs {
+		if rec == nil || !want[rec.BlockNumber] {
+			continue
+		}
+		blk, err := blockRecordToZKBlock(rec)
+		if err != nil {
+			return nil, err
+		}
+		out[rec.BlockNumber] = blk.BlockHash
+	}
+	return out, nil
+}
+
 // keepLogsOfStoredBlocks drops every log whose block is not the block stored
 // at its height.
 //
@@ -161,32 +225,37 @@ var storedBlockHashFn = func(height uint64) (hash common.Hash, found bool, err e
 // must never act on. Matching both height and BlockHash also drops logs left
 // by a competing block at a height whose stored block is a different one.
 //
-// One header read per distinct height in the result. A read error fails the
-// query rather than guessing.
-func keepLogsOfStoredBlocks(logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
+// The reads run under the caller's ctx (the same deadline and cancellation as
+// the log scan): per height through the block cache for a few heights, one
+// range read otherwise. A read error fails the query rather than guessing.
+func keepLogsOfStoredBlocks(ctx context.Context, logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
 	if len(logs) == 0 {
 		return logs, nil
 	}
-	type stored struct {
-		hash  common.Hash
-		found bool
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	seen := make(map[uint64]stored)
+	distinct := make(map[uint64]struct{})
+	for _, l := range logs {
+		if l != nil {
+			distinct[l.BlockNumber] = struct{}{}
+		}
+	}
+	heights := make([]uint64, 0, len(distinct))
+	for n := range distinct {
+		heights = append(heights, n)
+	}
+	slices.Sort(heights)
+	stored, err := storedBlockHashesFn(ctx, heights)
+	if err != nil {
+		return nil, fmt.Errorf("check the blocks of %d logs: %w", len(logs), err)
+	}
 	out := logs[:0]
 	for _, l := range logs {
 		if l == nil {
 			continue
 		}
-		st, ok := seen[l.BlockNumber]
-		if !ok {
-			h, found, err := storedBlockHashFn(l.BlockNumber)
-			if err != nil {
-				return nil, fmt.Errorf("check block %d of a log: %w", l.BlockNumber, err)
-			}
-			st = stored{hash: h, found: found}
-			seen[l.BlockNumber] = st
-		}
-		if st.found && st.hash == l.BlockHash {
+		if h, ok := stored[l.BlockNumber]; ok && h == l.BlockHash {
 			out = append(out, l)
 		}
 	}

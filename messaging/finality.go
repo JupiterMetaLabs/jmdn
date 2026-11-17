@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -105,14 +106,24 @@ type certKey struct {
 const certifiedCacheMax = 4096
 
 // finalizedAtTip caches FinalizedHeight for the tip it was computed at, so a
-// client polling "finalized" costs one computation per new block.
+// client polling "finalized" costs one computation per new block (see
+// notFinalizedTTL for the negative answer).
 var finalizedAtTip struct {
 	sync.Mutex
 	valid  bool
 	tip    uint64
 	height uint64
 	err    error
+	at     time.Time
 }
+
+// notFinalizedTTL is how long a "nothing finalized" answer is reused at an
+// unchanged tip. A finalized height cannot change without a new block, so a
+// success is kept for the whole tip; a negative can turn positive at the same
+// tip once a committee source or anchor that was missing becomes available
+// (the reason certifiedCache keeps positives only), so it is reused only
+// briefly, enough to spare a busy poller the window walk on every call.
+var notFinalizedTTL = time.Second
 
 // verifyFinalityCached is finalityVerifyFn behind certifiedCache.
 func verifyFinalityCached(blk *config.ZKBlock) (CertificateResult, error) {
@@ -179,7 +190,8 @@ func FinalizedHeight(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("finality: read tip: %w", err)
 	}
 	finalizedAtTip.Lock()
-	if finalizedAtTip.valid && finalizedAtTip.tip == tip {
+	if finalizedAtTip.valid && finalizedAtTip.tip == tip &&
+		(finalizedAtTip.err == nil || time.Since(finalizedAtTip.at) < notFinalizedTTL) {
 		h, ferr := finalizedAtTip.height, finalizedAtTip.err
 		finalizedAtTip.Unlock()
 		return h, ferr
@@ -189,6 +201,7 @@ func FinalizedHeight(ctx context.Context) (uint64, error) {
 	if ctx.Err() == nil && (ferr == nil || errors.Is(ferr, ErrNotFinalized)) {
 		finalizedAtTip.Lock()
 		finalizedAtTip.valid, finalizedAtTip.tip, finalizedAtTip.height, finalizedAtTip.err = true, tip, h, ferr
+		finalizedAtTip.at = time.Now()
 		finalizedAtTip.Unlock()
 	}
 	return h, ferr

@@ -310,6 +310,12 @@ func (s *ServiceImpl) LatestL1CommitBlock(ctx context.Context) (*Types.Block, er
 }
 
 // Need to add more functionality to this
+// Seams for Balance's tip and historical reads.
+var (
+	latestBlockNumberFn = func(ctx context.Context) (uint64, error) { return DB_OPs.GetLatestBlockNumber(ctx, nil) }
+	balanceAtBlockFn    = DB_OPs.GetBalanceAtBlock
+)
+
 func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error) {
 
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -320,22 +326,28 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	// Historical balance: when a concrete past block is requested, reconstruct
 	// via reverse-delta replay (DB_OPs.GetBalanceAtBlock). "latest"/"pending"
 	// resolve to the chain tip in parseBlockTag and fall through to the fast path.
+	//
+	// A concrete block whose position against the tip cannot be read is an
+	// error, not the head balance: "finalized" resolves to a past block, and
+	// answering it with head state would break the promise that tag makes.
 	if block != nil && block.IsUint64() {
-		if tip, tipErr := DB_OPs.GetLatestBlockNumber(opCtx, nil); tipErr == nil {
-			requested := block.Uint64()
-			if requested > tip {
-				return nil, fmt.Errorf("block %d not found (tip %d)", requested, tip)
+		tip, tipErr := latestBlockNumberFn(opCtx)
+		if tipErr != nil {
+			return nil, fmt.Errorf("balance at block %d: read tip: %w", block.Uint64(), tipErr)
+		}
+		requested := block.Uint64()
+		if requested > tip {
+			return nil, fmt.Errorf("block %d not found (tip %d)", requested, tip)
+		}
+		if requested < tip {
+			bal, histErr := balanceAtBlockFn(convertedAddr, requested)
+			if histErr != nil {
+				logger().Error(opCtx, "Historical balance reconstruction failed", histErr,
+					ion.String("address", convertedAddr.Hex()),
+					ion.Uint64("block", requested))
+				return nil, histErr
 			}
-			if requested < tip {
-				bal, histErr := DB_OPs.GetBalanceAtBlock(convertedAddr, requested)
-				if histErr != nil {
-					logger().Error(opCtx, "Historical balance reconstruction failed", histErr,
-						ion.String("address", convertedAddr.Hex()),
-						ion.Uint64("block", requested))
-					return nil, histErr
-				}
-				return bal, nil
-			}
+			return bal, nil
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -170,4 +171,33 @@ func resetFinalityCaches() {
 	finalizedAtTip.Lock()
 	finalizedAtTip.valid = false
 	finalizedAtTip.Unlock()
+}
+
+// A "nothing finalized" answer at a tip is not kept for the whole tip: once
+// the certificate check that failed transiently succeeds, the same tip
+// reports the finalized height after notFinalizedTTL.
+func TestFinalizedHeight_NegativeIsNotKeptForTheTip(t *testing.T) {
+	prevTTL := notFinalizedTTL
+	notFinalizedTTL = 50 * time.Millisecond
+	t.Cleanup(func() { notFinalizedTTL = prevTTL })
+
+	failing := true
+	chain := finalityChain{tip: 10}
+	chain.install(t)
+	inner := finalityVerifyFn
+	finalityVerifyFn = func(b *config.ZKBlock) (CertificateResult, error) {
+		if failing {
+			return CertificateResult{}, ErrFinalityNotAnchored
+		}
+		return inner(b)
+	}
+	if _, err := FinalizedHeight(context.Background()); !errors.Is(err, ErrNotFinalized) {
+		t.Fatalf("while the anchor is missing: want ErrNotFinalized, got %v", err)
+	}
+	failing = false
+	time.Sleep(60 * time.Millisecond)
+	got, err := FinalizedHeight(context.Background())
+	if err != nil || got != 9 {
+		t.Fatalf("after the anchor appeared at the same tip: got %d, %v; want 9", got, err)
+	}
 }
