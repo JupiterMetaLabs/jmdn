@@ -193,28 +193,8 @@ func keepLogsOfStoredBlocks(logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
 	return out, nil
 }
 
-// WaitBlockStored reports whether the block stored at height has the given
-// hash, polling until it is or timeout passes. eth_subscribe("logs") uses it
-// to hold back logs that were fanned out during apply until their block is
-// stored, and to drop logs of a block that never is (rolled back, or a
-// competing block at that height). A read error stops the wait with false.
-func WaitBlockStored(ctx context.Context, height uint64, hash common.Hash, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		h, found, err := storedBlockHashFn(height)
-		if err != nil {
-			return false
-		}
-		if found {
-			return h == hash
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+// StoredBlockHash returns the BlockHash of the block stored at height, or
+// found=false when none is stored there. A missing block is not an error.
+func StoredBlockHash(height uint64) (hash common.Hash, found bool, err error) {
+	return storedBlockHashFn(height)
 }

@@ -270,6 +270,14 @@ func GetActiveSubscriptionsCount() int {
 // block is being stored. Apply and store normally finish within a second.
 const logBlockStoreWait = 10 * time.Second
 
+// logFateCheckInterval is how often a subscription asks whether the blocks of
+// its held logs have been stored.
+const logFateCheckInterval = 100 * time.Millisecond
+
+// maxHeldLogs caps the logs one subscription holds while their blocks are
+// being stored. Beyond it the newest are dropped and the drop is logged.
+const maxHeldLogs = 65536
+
 // SubscribeLogs implements the Service interface.
 // It attaches to the GlobalLogWriter fan-out channel and forwards logs that
 // match the supplied FilterQuery (address + topic filters) to the caller.
@@ -284,47 +292,128 @@ func (s *ServiceImpl) SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (
 
 	go func() {
 		defer close(out)
-		var confirmedHeight uint64
-		var confirmedHash ethcommon.Hash
-		for {
-			select {
-			case <-ctx.Done():
-				DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
-				return
-			case ethLog, ok := <-rawCh:
-				if !ok {
-					return
-				}
-				if !logMatchesFilter(ethLog, q) {
-					continue
-				}
-				// Logs are fanned out while their block is applied, before it
-				// is stored. Forward one only once its block is the stored
-				// block at that height; a rolled-back or competing block's
-				// logs are dropped. The last confirmed block is remembered so
-				// the rest of its logs pass without another read.
-				if ethLog.BlockNumber != confirmedHeight || ethLog.BlockHash != confirmedHash {
-					if !DB_OPs.WaitBlockStored(ctx, ethLog.BlockNumber, ethLog.BlockHash, logBlockStoreWait) {
-						continue
-					}
-					confirmedHeight, confirmedHash = ethLog.BlockNumber, ethLog.BlockHash
-				}
-				// Convert go-ethereum types.Log -> Service Types.Log
-				tl := ethLogToTypesLog(ethLog)
-				select {
-				case out <- tl:
-				case <-ctx.Done():
-					DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
-					return
-				}
-			}
-		}
+		defer DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
+		forwardStoredLogs(ctx, rawCh, out, q, storedLogBlockFate, logFateCheckInterval, logBlockStoreWait)
 	}()
 
 	cleanup := func() {
 		DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
 	}
 	return out, cleanup, nil
+}
+
+// logBlockFate is what is known about the block a held log belongs to.
+type logBlockFate uint8
+
+const (
+	logBlockPending logBlockFate = iota // not stored (yet), or unreadable
+	logBlockStored                      // the stored block at that height is this block
+	logBlockGone                        // a different block is stored at that height
+)
+
+type logBlockKey struct {
+	height uint64
+	hash   ethcommon.Hash
+}
+
+// storedLogBlockFate reads the block stored at key.height.
+func storedLogBlockFate(key logBlockKey) logBlockFate {
+	h, found, err := DB_OPs.StoredBlockHash(key.height)
+	switch {
+	case err != nil || !found:
+		return logBlockPending
+	case h == key.hash:
+		return logBlockStored
+	default:
+		return logBlockGone
+	}
+}
+
+type heldLog struct {
+	log   *ethtypes.Log
+	since time.Time
+}
+
+// forwardStoredLogs forwards, in arrival order, the logs from rawCh that match
+// q and whose block is the block stored at their height.
+//
+// Logs are fanned out while their block is applied, before it is stored, and
+// the fan-out drops a log when a subscriber's channel is full. So this loop
+// never blocks on a block's fate: it keeps draining rawCh into a held queue,
+// checks the fate of each distinct held block once per interval (one read per
+// block, not per log), releases a block's logs once it is stored, and drops
+// them once a different block is stored at that height or wait passes with
+// nothing stored. A slow consumer of out holds logs in the queue rather than
+// stopping the drain.
+func forwardStoredLogs(ctx context.Context, rawCh <-chan *ethtypes.Log, out chan<- Types.Log, q *Types.FilterQuery,
+	fate func(logBlockKey) logBlockFate, interval, wait time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var held []heldLog
+	known := make(map[logBlockKey]logBlockFate)
+	dropped := 0
+
+	resolve := func() {
+		now := time.Now()
+		seen := make(map[logBlockKey]bool)
+		for _, h := range held {
+			k := logBlockKey{h.log.BlockNumber, h.log.BlockHash}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			if f := known[k]; f != logBlockPending {
+				continue
+			}
+			f := fate(k)
+			if f == logBlockPending && now.Sub(h.since) >= wait {
+				f = logBlockGone
+			}
+			known[k] = f
+		}
+		for k := range known {
+			if !seen[k] {
+				delete(known, k)
+			}
+		}
+		// Drop leading logs whose block is gone; release stops at the first
+		// log whose block is still pending, so order is kept.
+		for len(held) > 0 && known[logBlockKey{held[0].log.BlockNumber, held[0].log.BlockHash}] == logBlockGone {
+			held = held[1:]
+		}
+	}
+
+	for {
+		var sendCh chan<- Types.Log
+		var next Types.Log
+		if len(held) > 0 && known[logBlockKey{held[0].log.BlockNumber, held[0].log.BlockHash}] == logBlockStored {
+			sendCh, next = out, ethLogToTypesLog(held[0].log)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case l, ok := <-rawCh:
+			if !ok {
+				return
+			}
+			if l == nil || !logMatchesFilter(l, q) {
+				continue
+			}
+			if len(held) >= maxHeldLogs {
+				dropped++
+				if dropped == 1 || dropped%1000 == 0 {
+					logger().Warn(ctx, "log subscription is holding too many logs; dropping the newest",
+						ion.Int("held", len(held)), ion.Int("dropped", dropped))
+				}
+				continue
+			}
+			held = append(held, heldLog{log: l, since: time.Now()})
+		case <-ticker.C:
+			resolve()
+		case sendCh <- next:
+			held = held[1:]
+		}
+	}
 }
 
 // logMatchesFilter returns true if ethLog satisfies the address and topic
