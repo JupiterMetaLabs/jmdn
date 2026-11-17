@@ -134,6 +134,16 @@ fastsync:
   # 2026-07-26 snapshot: tip = 13449, so catch_up_from_block = 13450.
   catch_up_from_block: 13450
 
+# ── 8a. Consensus ────────────────────────────────────────────────────────────
+consensus:
+  # REQUIRED on every exchange node. Pinned libp2p peer ID of the JupiterMeta
+  # sequencer; JupiterMeta provides the value for the network you join.
+  # L1-finality gossip is applied only when the authenticated publisher equals
+  # this ID. Leaving it empty disables the check (any peer could then stamp L1
+  # finality on your blocks). A malformed value refuses to boot.
+  # Env: JMDN_CONSENSUS_SEQUENCER_PINNED_PEER_ID
+  sequencer_pinned_peer_id: ""
+
 # ── 9. Security ──────────────────────────────────────────────────────────────
 security:
   enabled: true
