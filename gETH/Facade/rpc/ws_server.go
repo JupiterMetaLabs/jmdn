@@ -201,6 +201,10 @@ const (
 type sub struct {
 	id   string
 	stop func()
+	// stopped is set when this connection ends the subscription itself
+	// (eth_unsubscribe or disconnect). A forwarder that finds its channel
+	// closed without it was ended by the node.
+	stopped atomic.Bool
 }
 
 func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -295,11 +299,12 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				chainID := s.be.GetChainIDValue()
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardBlocks(conn, sid, ch, chainID)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -315,10 +320,11 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardLogs(conn, sid, ch)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -328,10 +334,11 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardPending(conn, sid, ch)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -363,10 +370,31 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func storeSub(m map[string]*sub, mu *sync.Mutex, id string, stop func()) {
+func storeSub(m map[string]*sub, mu *sync.Mutex, id string, stop func()) *sub {
+	sb := &sub{id: id}
+	sb.stop = func() {
+		sb.stopped.Store(true)
+		stop()
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	m[id] = &sub{id: id, stop: stop}
+	m[id] = sb
+	return sb
+}
+
+// endIfNodeClosed closes the connection when a subscription's channel was
+// closed by the node (a log subscription whose client stopped reading or that
+// would hold too many logs) rather than by this connection. JSON-RPC has no
+// standard "subscription ended" notification, so the client is told the only
+// way every client understands: a close frame, after which it reconnects and
+// resubscribes instead of waiting on a subscription that will never deliver.
+func endIfNodeClosed(conn *wsConn, sb *sub) {
+	if sb.stopped.Load() {
+		return
+	}
+	msg := websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "subscription "+sb.id+" ended by the node; resubscribe")
+	_ = conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+	_ = conn.Close()
 }
 
 type subMsg struct {
