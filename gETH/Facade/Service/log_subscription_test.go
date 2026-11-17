@@ -147,3 +147,80 @@ func TestForwardStoredLogs_CompetingBlockDropped(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+// A consumer that stops taking logs while they are ready ends the
+// subscription after the slow-consumer timeout instead of holding logs and
+// rechecking them for ever.
+func TestForwardStoredLogs_StuckConsumerIsClosed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := make(chan *ethtypes.Log, 256)
+	out := make(chan Types.Log) // never read
+	fates := &fakeFates{stored: map[uint64]ethcommon.Hash{}}
+	hash := ethcommon.HexToHash("0xa1")
+	fates.mark(3, hash)
+	done := make(chan struct{})
+	go func() {
+		forwardStoredLogsLimits(ctx, raw, out, nil, fates.fate, 10*time.Millisecond, time.Second, 1000, 200*time.Millisecond)
+		close(done)
+	}()
+	for i := 0; i < 10; i++ {
+		raw <- &ethtypes.Log{BlockNumber: 3, BlockHash: hash, Index: uint(i)}
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("subscription with a stuck consumer was not closed")
+	}
+}
+
+// More than maxHeld logs closes the subscription rather than dropping logs
+// silently.
+func TestForwardStoredLogs_OverflowClosesSubscription(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := make(chan *ethtypes.Log, 256)
+	out := make(chan Types.Log)
+	fates := &fakeFates{stored: map[uint64]ethcommon.Hash{}} // nothing stored: all pending
+	done := make(chan struct{})
+	go func() {
+		forwardStoredLogsLimits(ctx, raw, out, nil, fates.fate, 10*time.Millisecond, time.Minute, 50, time.Minute)
+		close(done)
+	}()
+	hash := ethcommon.HexToHash("0xa2")
+	for i := 0; i < 51; i++ {
+		raw <- &ethtypes.Log{BlockNumber: 4, BlockHash: hash, Index: uint(i)}
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("subscription over its cap was not closed")
+	}
+}
+
+// Held logs are checked once per pending block per interval, never per log,
+// and blocks already known stored are not checked again: a full queue of
+// stored logs costs nothing per tick.
+func TestForwardStoredLogs_ChecksBlocksNotLogs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := make(chan *ethtypes.Log, 256)
+	out := make(chan Types.Log) // never read
+	hash := ethcommon.HexToHash("0xa3")
+	var calls atomic.Int64
+	fate := func(k logBlockKey) logBlockFate {
+		calls.Add(1)
+		if k.hash == hash {
+			return logBlockStored
+		}
+		return logBlockPending
+	}
+	go forwardStoredLogsLimits(ctx, raw, out, nil, fate, 5*time.Millisecond, time.Minute, 100000, time.Minute)
+	for i := 0; i < 20000; i++ {
+		raw <- &ethtypes.Log{BlockNumber: 5, BlockHash: hash, Index: uint(i)}
+	}
+	time.Sleep(200 * time.Millisecond) // ~40 ticks
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("fate checked %d times for one stored block; want 1", n)
+	}
+}

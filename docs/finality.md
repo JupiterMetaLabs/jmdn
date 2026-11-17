@@ -105,7 +105,7 @@ Block and transaction hashing don't change.
 |---|---|
 | `eth_getBlockByNumber` | `"finalized"` and `"safe"` return the certified-with-certified-child block, or an error. They no longer return the head. |
 | `eth_getLogs` | `toBlock`/`fromBlock` `"finalized"`/`"safe"` resolve the same way. Logs of blocks not stored at their height are no longer returned. |
-| `eth_subscribe("logs")` | A log is delivered only once its block is stored (checked every 100 ms, in arrival order), and dropped if a different block is stored at its height or none is within 10 s. The subscription keeps draining while it waits, so a busy block loses nothing. |
+| `eth_subscribe("logs")` | A log is delivered only once its block is stored (checked every 100 ms, in arrival order), and dropped if a different block is stored at its height or none is within 10 s. The subscription keeps draining while it waits, so a busy block loses nothing. A subscription is closed if its client takes nothing for 10 s while a log is ready, or if it would hold more than 65,536 logs; a WebSocket write that blocks for 10 s closes the connection. |
 | `eth_call`, `eth_getCode`, `eth_getTransactionCount`, `eth_getStorageAt` | Refuse `"finalized"` and `"safe"`: they serve the latest state whatever block is asked for, so they cannot keep the promise those tags make. |
 | `jmdt_getCertifiedBlock` | New method. |
 | P2P protocol IDs, message formats | **None changed.** |

@@ -70,6 +70,8 @@ type WSServer struct {
 	// gate rate-limits upgrades and every message; nil disables limiting.
 	gate  *gatekeeper.NetHTTPMiddleware
 	conns *connLimiter
+	// writeTimeout bounds one write to a client (see wsConn.WriteJSON).
+	writeTimeout time.Duration
 }
 
 // Connection caps for the public WS endpoint. Each connection holds a reader
@@ -119,8 +121,9 @@ func (l *connLimiter) release(ip string) {
 func NewWSServer(h *Handlers, be Service.Service) *WSServer {
 	return &WSServer{
 		h: h, be: be,
-		upg:   websocket.Upgrader{CheckOrigin: allowedWSOrigin},
-		conns: newConnLimiter(maxWSConns, maxWSConnsPerIP),
+		upg:          websocket.Upgrader{CheckOrigin: allowedWSOrigin},
+		conns:        newConnLimiter(maxWSConns, maxWSConnsPerIP),
+		writeTimeout: wsWriteTimeout,
 	}
 }
 
@@ -223,7 +226,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer rawConn.Close()
 	// gorilla/websocket allows one concurrent writer; the read loop and every
 	// subscription forwarder write to this connection, so serialize them.
-	conn := &wsConn{Conn: rawConn}
+	conn := &wsConn{Conn: rawConn, writeTimeout: s.writeTimeout}
 
 	// JMDN-V3-007: bound per-message size so one connection cannot force
 	// unbounded buffer growth reading a single frame.
@@ -404,14 +407,29 @@ func forwardPending(conn *wsConn, sid string, ch <-chan string) {
 // supports a single concurrent writer).
 type wsConn struct {
 	*websocket.Conn
-	wmu sync.Mutex
+	wmu          sync.Mutex
+	writeTimeout time.Duration
 }
 
-// WriteJSON writes v as one message; safe for concurrent use.
+// wsWriteTimeout bounds one write to a client. A client that stops reading
+// fills its TCP window and every write then blocks; past this the connection
+// is closed, which ends its read loop and stops all its subscriptions.
+const wsWriteTimeout = 10 * time.Second
+
+// WriteJSON writes v as one message; safe for concurrent use. A failed or
+// timed-out write closes the connection.
 func (c *wsConn) WriteJSON(v any) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.Conn.WriteJSON(v)
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+		_ = c.Conn.Close()
+		return err
+	}
+	if err := c.Conn.WriteJSON(v); err != nil {
+		_ = c.Conn.Close()
+		return err
+	}
+	return nil
 }
 
 // newSubscriptionID returns a random 16-byte hex subscription ID, the format

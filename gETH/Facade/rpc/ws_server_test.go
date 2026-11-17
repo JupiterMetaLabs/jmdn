@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,5 +109,63 @@ func TestWS_ConcurrentWritesAreSerialized(t *testing.T) {
 	}
 	if got < 100 {
 		t.Fatalf("received %d of 100 messages; a write was lost or the connection broke", got)
+	}
+}
+
+// slowReaderService serves newHeads from a channel that only its feeder
+// goroutine sends on and closes, so a stop never races a send.
+type slowReaderService struct {
+	Service.Service
+	stops   atomic.Int32
+	stopped chan struct{}
+	ch      chan *Types.Block
+}
+
+func (f *slowReaderService) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error) {
+	var once sync.Once
+	return f.ch, func() {
+		once.Do(func() {
+			f.stops.Add(1)
+			close(f.stopped)
+		})
+	}, nil
+}
+
+func (f *slowReaderService) GetChainIDValue() *big.Int { return big.NewInt(1) }
+
+// A client that stops reading is disconnected once a write blocks past the
+// write timeout, and its subscriptions are stopped.
+func TestWS_ClientThatStopsReadingIsDisconnected(t *testing.T) {
+	be := &slowReaderService{stopped: make(chan struct{}), ch: make(chan *Types.Block, 100)}
+	s := NewWSServer(NewHandlers(be), be)
+	s.writeTimeout = 200 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(s.handleWS))
+	defer srv.Close()
+
+	c := dialWS(t, srv)
+	defer c.Close()
+	_ = c.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "eth_subscribe", "params": []any{"newHeads"}})
+	var first map[string]any
+	if err := c.ReadJSON(&first); err != nil {
+		t.Fatal(err)
+	}
+
+	// The client reads nothing from here on; the server keeps pushing heads
+	// until its writes block and time out.
+	go func() {
+		defer close(be.ch)
+		for i := 0; ; i++ {
+			select {
+			case <-be.stopped:
+				return
+			case be.ch <- &Types.Block{Header: &Types.BlockHeader{Number: uint64(i)}}:
+			}
+		}
+	}()
+
+	select {
+	case <-be.stopped:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a client that stopped reading was not disconnected")
 	}
 }
