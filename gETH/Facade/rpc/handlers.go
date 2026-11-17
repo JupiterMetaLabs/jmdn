@@ -115,6 +115,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		addr, _ := req.Params[0].(string)
 		block, _ := req.Params[1].(string)
+		if err := refuseFinalityTag(req.Method, block); err != nil {
+			resp, _ := invalidParams(req, err.Error())
+			return resp, nil
+		}
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -257,6 +261,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		var num *big.Int
 		if len(req.Params) > 1 {
+			if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+				resp, _ := invalidParams(req, ferr.Error())
+				return resp, nil
+			}
 			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 			if err != nil {
 				resp, _ := finish(req, nil, err)
@@ -560,6 +568,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
+		if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
+		}
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -588,6 +600,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			if b, ok := req.Params[2].(string); ok {
 				blockNum = b
 			}
+		}
+		if ferr := refuseFinalityTag(req.Method, blockNum); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
 		}
 		result, err := handler.service.GetStorageAt(ctx, address, slot, blockNum)
 		resp, _ := finish(req, result, err)
@@ -662,6 +678,21 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
+	case "jmdt_getCertifiedBlock":
+		// params: [height] (hex quantity or decimal number)
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing block height")
+			return resp, nil
+		}
+		height, perr := parseHeightParam(req.Params[0])
+		if perr != nil {
+			resp, _ := invalidParams(req, perr.Error())
+			return resp, nil
+		}
+		result, err := handler.service.CertifiedBlock(ctx, height)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
 	case "eth_maxPriorityFeePerGas":
 		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
 		resp, _ := finish(req, result, err)
@@ -729,6 +760,11 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 	case "pending":
 		// map to latest for now; refine if you track pending state
 		return be.BlockNumber(ctx)
+	case "safe", "finalized":
+		// The highest block with a verified certificate and a certified child
+		// (docs/finality.md), never the head. "safe" is served the same,
+		// stronger answer rather than the head.
+		return be.FinalizedBlockNumber(ctx)
 	default:
 		if strings.HasPrefix(tag, "0x") {
 			// big.Int accepts a sign, so "0x-40000000" parses as a negative
@@ -854,8 +890,11 @@ func resolveFilterRange(ctx context.Context, be Service.Service, raw any, q *Typ
 		switch strings.ToLower(strings.TrimSpace(tag)) {
 		case "earliest":
 			return big.NewInt(0), nil
-		case "", "latest", "pending", "safe", "finalized": // BFT-final: all the same head
+		case "", "latest", "pending":
 			return be.BlockNumber(ctx)
+		case "safe", "finalized":
+			// Certified with a certified child (docs/finality.md), not the head.
+			return be.FinalizedBlockNumber(ctx)
 		}
 		return nil, fmt.Errorf("unsupported block tag %q", tag)
 	}
@@ -1235,4 +1274,40 @@ func logger() *ion.Ion {
 		return nil
 	}
 	return logInstance.GetNamedLogger()
+}
+
+// parseHeightParam reads a block height given as a hex quantity ("0x1a") or a
+// JSON number. Tags are not accepted: the caller asks about one height.
+func parseHeightParam(v any) (uint64, error) {
+	switch x := v.(type) {
+	case string:
+		if !strings.HasPrefix(x, "0x") {
+			return 0, errors.New("height must be a hex quantity or a number")
+		}
+		n, ok := new(big.Int).SetString(x[2:], 16)
+		if !ok || n.Sign() < 0 || !n.IsUint64() {
+			return 0, errors.New("invalid block height")
+		}
+		return n.Uint64(), nil
+	case float64:
+		if x < 0 || x != float64(uint64(x)) {
+			return 0, errors.New("invalid block height")
+		}
+		return uint64(x), nil
+	default:
+		return 0, errors.New("height must be a hex quantity or a number")
+	}
+}
+
+// refuseFinalityTag rejects the "finalized" and "safe" tags for methods that
+// serve the latest state whatever block is asked for (eth_call, eth_getCode,
+// eth_getTransactionCount, eth_getStorageAt). Those tags promise a certified
+// block (docs/finality.md); answering them with head state would claim that
+// promise for data that does not keep it.
+func refuseFinalityTag(method, tag string) error {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
+	case "safe", "finalized":
+		return fmt.Errorf("%s serves the latest state only; block tag %q is not supported", method, tag)
+	}
+	return nil
 }

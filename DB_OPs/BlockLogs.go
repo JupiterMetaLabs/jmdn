@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
 	"gossipnode/DB_OPs/logstore"
 	"gossipnode/DB_OPs/store"
@@ -47,6 +49,11 @@ func GetLogs(ctx context.Context, mainDBClient *config.PooledConnection, filterQ
 	ethLogs, err := h.GetLogs(ctx, filter)
 	if err != nil {
 		countLogQueryRefusal(err)
+		return nil, fmt.Errorf("GetLogs: %w", err)
+	}
+
+	ethLogs, err = keepLogsOfStoredBlocks(ctx, ethLogs)
+	if err != nil {
 		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
@@ -127,4 +134,138 @@ func filterQueryToStoreFilter(q Types.FilterQuery) store.LogFilter {
 		Addresses: addrs,
 		Topics:    topics,
 	}
+}
+
+// storedBlockHashFn returns the BlockHash of the block stored at height, or
+// found=false when no block is stored there. A seam for tests.
+var storedBlockHashFn = func(height uint64) (hash common.Hash, found bool, err error) {
+	blk, err := GetZKBlockHeaderByNumber(height)
+	if err != nil {
+		if IsNotFound(err) {
+			return common.Hash{}, false, nil
+		}
+		return common.Hash{}, false, err
+	}
+	if blk == nil {
+		return common.Hash{}, false, nil
+	}
+	return blk.BlockHash, true, nil
+}
+
+// perHeightBlockReads is the most distinct heights keepLogsOfStoredBlocks
+// reads one at a time (each through the block cache). Past it, the hashes of
+// exactly those heights are read in batches of blockHashChunk.
+const (
+	perHeightBlockReads = 32
+	blockHashChunk      = 1000
+)
+
+// storedBlockHashesFn returns the BlockHash stored at each of heights (sorted
+// ascending, distinct). A height with no stored block is absent from the map.
+// It honours ctx: the reads run inside the caller's deadline. A seam for tests.
+var storedBlockHashesFn = func(ctx context.Context, heights []uint64) (map[uint64]common.Hash, error) {
+	out := make(map[uint64]common.Hash, len(heights))
+	if len(heights) == 0 {
+		return out, nil
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(heights) <= perHeightBlockReads {
+		for _, n := range heights {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			rec, err := h.GetBlock(ctx, n)
+			if err != nil {
+				if IsNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+			if rec == nil {
+				continue
+			}
+			blk, err := blockRecordToZKBlock(rec)
+			if err != nil {
+				return nil, err
+			}
+			out[n] = blk.BlockHash
+		}
+		return out, nil
+	}
+	// One read of exactly these heights (WHERE block_number = ANY), in chunks.
+	// Not a range read: on the address path the heights can lie anywhere
+	// between genesis and the tip, and a range over them would read every
+	// block in between. The rows read equal the heights asked for.
+	for start := 0; start < len(heights); start += blockHashChunk {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := min(start+blockHashChunk, len(heights))
+		hashes, err := h.GetBlockHashes(ctx, heights[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for n, hx := range hashes {
+			out[n] = common.HexToHash(hx)
+		}
+	}
+	return out, nil
+}
+
+// keepLogsOfStoredBlocks drops every log whose block is not the block stored
+// at its height.
+//
+// Logs are indexed while a block is APPLIED (contract_apply.go), before the
+// block itself is stored, and nothing removes them if the block is then
+// rolled back or never stored. Without this filter eth_getLogs would serve
+// events of a block the chain does not contain - the case a bridge relayer
+// must never act on. Matching both height and BlockHash also drops logs left
+// by a competing block at a height whose stored block is a different one.
+//
+// The reads run under the caller's ctx (the same deadline and cancellation as
+// the log scan): per height through the block cache for a few heights, else
+// one batched read of exactly those heights. Either way the rows read are the
+// heights in the result, never the span between them. A read error fails the
+// query rather than guessing.
+func keepLogsOfStoredBlocks(ctx context.Context, logs []*ethtypes.Log) ([]*ethtypes.Log, error) {
+	if len(logs) == 0 {
+		return logs, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	distinct := make(map[uint64]struct{})
+	for _, l := range logs {
+		if l != nil {
+			distinct[l.BlockNumber] = struct{}{}
+		}
+	}
+	heights := make([]uint64, 0, len(distinct))
+	for n := range distinct {
+		heights = append(heights, n)
+	}
+	slices.Sort(heights)
+	stored, err := storedBlockHashesFn(ctx, heights)
+	if err != nil {
+		return nil, fmt.Errorf("check the blocks of %d logs: %w", len(logs), err)
+	}
+	out := logs[:0]
+	for _, l := range logs {
+		if l == nil {
+			continue
+		}
+		if h, ok := stored[l.BlockNumber]; ok && h == l.BlockHash {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// StoredBlockHash returns the BlockHash of the block stored at height, or
+// found=false when none is stored there. A missing block is not an error.
+func StoredBlockHash(height uint64) (hash common.Hash, found bool, err error) {
+	return storedBlockHashFn(height)
 }

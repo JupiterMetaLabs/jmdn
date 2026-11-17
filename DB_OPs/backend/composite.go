@@ -88,6 +88,11 @@ func (h *compositeHandle) GetLatestBlockNumber(ctx context.Context) (uint64, err
 	return h.blocks.GetLatestBlockNumber(ctx)
 }
 
+// GetBlockHashes delegates to the cache-decorated BlockStore.
+func (h *compositeHandle) GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error) {
+	return h.blocks.GetBlockHashes(ctx, numbers)
+}
+
 // BulkGetBlocks delegates to the cache-decorated BlockStore.
 func (h *compositeHandle) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error) {
 	return h.blocks.BulkGetBlocks(ctx, from, to)

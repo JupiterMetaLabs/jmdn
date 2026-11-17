@@ -70,6 +70,8 @@ type WSServer struct {
 	// gate rate-limits upgrades and every message; nil disables limiting.
 	gate  *gatekeeper.NetHTTPMiddleware
 	conns *connLimiter
+	// writeTimeout bounds one write to a client (see wsConn.WriteJSON).
+	writeTimeout time.Duration
 }
 
 // Connection caps for the public WS endpoint. Each connection holds a reader
@@ -119,8 +121,9 @@ func (l *connLimiter) release(ip string) {
 func NewWSServer(h *Handlers, be Service.Service) *WSServer {
 	return &WSServer{
 		h: h, be: be,
-		upg:   websocket.Upgrader{CheckOrigin: allowedWSOrigin},
-		conns: newConnLimiter(maxWSConns, maxWSConnsPerIP),
+		upg:          websocket.Upgrader{CheckOrigin: allowedWSOrigin},
+		conns:        newConnLimiter(maxWSConns, maxWSConnsPerIP),
+		writeTimeout: wsWriteTimeout,
 	}
 }
 
@@ -198,6 +201,10 @@ const (
 type sub struct {
 	id   string
 	stop func()
+	// stopped is set when this connection ends the subscription itself
+	// (eth_unsubscribe or disconnect). A forwarder that finds its channel
+	// closed without it was ended by the node.
+	stopped atomic.Bool
 }
 
 func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -223,7 +230,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer rawConn.Close()
 	// gorilla/websocket allows one concurrent writer; the read loop and every
 	// subscription forwarder write to this connection, so serialize them.
-	conn := &wsConn{Conn: rawConn}
+	conn := &wsConn{Conn: rawConn, writeTimeout: s.writeTimeout}
 
 	// JMDN-V3-007: bound per-message size so one connection cannot force
 	// unbounded buffer growth reading a single frame.
@@ -292,11 +299,12 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				chainID := s.be.GetChainIDValue()
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardBlocks(conn, sid, ch, chainID)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -312,10 +320,11 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardLogs(conn, sid, ch)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -325,10 +334,11 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, publicErrorMessage(ctx, err)))
 					continue
 				}
-				storeSub(subs, &mu, sid, stop)
+				sb := storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
 					forwardPending(conn, sid, ch)
+					endIfNodeClosed(conn, sb)
 					return nil
 				})
 
@@ -360,10 +370,31 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func storeSub(m map[string]*sub, mu *sync.Mutex, id string, stop func()) {
+func storeSub(m map[string]*sub, mu *sync.Mutex, id string, stop func()) *sub {
+	sb := &sub{id: id}
+	sb.stop = func() {
+		sb.stopped.Store(true)
+		stop()
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	m[id] = &sub{id: id, stop: stop}
+	m[id] = sb
+	return sb
+}
+
+// endIfNodeClosed closes the connection when a subscription's channel was
+// closed by the node (a log subscription whose client stopped reading or that
+// would hold too many logs) rather than by this connection. JSON-RPC has no
+// standard "subscription ended" notification, so the client is told the only
+// way every client understands: a close frame, after which it reconnects and
+// resubscribes instead of waiting on a subscription that will never deliver.
+func endIfNodeClosed(conn *wsConn, sb *sub) {
+	if sb.stopped.Load() {
+		return
+	}
+	msg := websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "subscription "+sb.id+" ended by the node; resubscribe")
+	_ = conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+	_ = conn.Close()
 }
 
 type subMsg struct {
@@ -404,14 +435,29 @@ func forwardPending(conn *wsConn, sid string, ch <-chan string) {
 // supports a single concurrent writer).
 type wsConn struct {
 	*websocket.Conn
-	wmu sync.Mutex
+	wmu          sync.Mutex
+	writeTimeout time.Duration
 }
 
-// WriteJSON writes v as one message; safe for concurrent use.
+// wsWriteTimeout bounds one write to a client. A client that stops reading
+// fills its TCP window and every write then blocks; past this the connection
+// is closed, which ends its read loop and stops all its subscriptions.
+const wsWriteTimeout = 10 * time.Second
+
+// WriteJSON writes v as one message; safe for concurrent use. A failed or
+// timed-out write closes the connection.
 func (c *wsConn) WriteJSON(v any) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.Conn.WriteJSON(v)
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+		_ = c.Conn.Close()
+		return err
+	}
+	if err := c.Conn.WriteJSON(v); err != nil {
+		_ = c.Conn.Close()
+		return err
+	}
+	return nil
 }
 
 // newSubscriptionID returns a random 16-byte hex subscription ID, the format

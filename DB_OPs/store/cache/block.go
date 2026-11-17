@@ -127,6 +127,11 @@ func (s *cachedBlockStore) BulkGetBlocks(ctx context.Context, from, to uint64) (
 	return s.inner.BulkGetBlocks(ctx, from, to)
 }
 
+// GetBlockHashes delegates directly — a height list is not a cache key.
+func (s *cachedBlockStore) GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error) {
+	return s.inner.GetBlockHashes(ctx, numbers)
+}
+
 // StoreL1Finality delegates directly — L1 finality writes are not cached.
 func (s *cachedBlockStore) StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error {
 	return s.inner.StoreL1Finality(ctx, rec)

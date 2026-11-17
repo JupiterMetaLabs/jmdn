@@ -72,6 +72,15 @@ func (b *thebeBackend) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*t
 	return recs, nil
 }
 
+// GetBlockHashes returns the stored BlockHash of each listed height.
+func (b *thebeBackend) GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error) {
+	m, err := b.r.GetBlockHashes(ctx, numbers)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetBlockHashes: %w", err)
+	}
+	return m, nil
+}
+
 // toBlockRecord converts a config.ZKBlock to thebegateway.BlockRecord.
 // Field-by-field mapping documented inline.
 func toBlockRecord(b *config.ZKBlock) *thebegateway.BlockRecord {

@@ -16,6 +16,7 @@ import (
 	"gossipnode/gETH/common"
 
 	"github.com/JupiterMetaLabs/ion"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -265,6 +266,25 @@ func GetActiveSubscriptionsCount() int {
 	return len(newHeadsSubscriptions.subscribers)
 }
 
+// logBlockStoreWait bounds how long a subscription holds a log while its
+// block is being stored. Apply and store normally finish within a second.
+const logBlockStoreWait = 10 * time.Second
+
+// logFateCheckInterval is how often a subscription asks whether the blocks of
+// its held logs have been stored.
+const logFateCheckInterval = 100 * time.Millisecond
+
+// maxHeldLogs caps the logs one subscription holds, whether their blocks are
+// still being stored or the consumer has not taken them yet. A subscription
+// that would exceed it is closed, as geth closes a subscription whose buffer
+// fills, instead of silently losing logs.
+const maxHeldLogs = 65536
+
+// slowConsumerTimeout is how long a subscription waits on a consumer that
+// takes nothing while a log is ready for it. Past it the subscription is
+// closed rather than holding logs for a client that stopped reading.
+const slowConsumerTimeout = 10 * time.Second
+
 // SubscribeLogs implements the Service interface.
 // It attaches to the GlobalLogWriter fan-out channel and forwards logs that
 // match the supplied FilterQuery (address + topic filters) to the caller.
@@ -279,34 +299,174 @@ func (s *ServiceImpl) SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (
 
 	go func() {
 		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
-				return
-			case ethLog, ok := <-rawCh:
-				if !ok {
-					return
-				}
-				if !logMatchesFilter(ethLog, q) {
-					continue
-				}
-				// Convert go-ethereum types.Log -> Service Types.Log
-				tl := ethLogToTypesLog(ethLog)
-				select {
-				case out <- tl:
-				case <-ctx.Done():
-					DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
-					return
-				}
-			}
-		}
+		defer DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
+		forwardStoredLogs(ctx, rawCh, out, q, storedLogBlockFate, logFateCheckInterval, logBlockStoreWait)
 	}()
 
 	cleanup := func() {
 		DB_OPs.GlobalLogWriter.Unsubscribe(rawCh)
 	}
 	return out, cleanup, nil
+}
+
+// logBlockFate is what is known about the block a held log belongs to.
+type logBlockFate uint8
+
+const (
+	logBlockPending logBlockFate = iota // not stored (yet), or unreadable
+	logBlockStored                      // the stored block at that height is this block
+	logBlockGone                        // a different block is stored at that height
+)
+
+type logBlockKey struct {
+	height uint64
+	hash   ethcommon.Hash
+}
+
+// storedLogBlockFate reads the block stored at key.height.
+func storedLogBlockFate(key logBlockKey) logBlockFate {
+	h, found, err := DB_OPs.StoredBlockHash(key.height)
+	switch {
+	case err != nil || !found:
+		return logBlockPending
+	case h == key.hash:
+		return logBlockStored
+	default:
+		return logBlockGone
+	}
+}
+
+// heldBlock is a run of consecutive held logs from one block.
+type heldBlock struct {
+	key   logBlockKey
+	since time.Time
+	fate  logBlockFate
+	logs  []*ethtypes.Log
+}
+
+// forwardStoredLogs forwards, in arrival order, the logs from rawCh that match
+// q and whose block is the block stored at their height.
+//
+// Logs are fanned out while their block is applied, before it is stored, and
+// the fan-out drops a log when a subscriber's channel is full. So this loop
+// never blocks on a block's fate: it keeps draining rawCh into a queue of
+// per-block runs, asks once per interval about the runs whose block is still
+// pending (one read per block, never per log), releases a run once its block
+// is stored, and drops it once a different block is stored at that height or
+// wait passes with nothing stored.
+//
+// The subscription ends (out is closed) when the consumer takes nothing for
+// slowConsumerTimeout while a log is ready for it, or when more than
+// maxHeldLogs are held. Either way a client that stopped reading costs nothing
+// afterwards.
+func forwardStoredLogs(ctx context.Context, rawCh <-chan *ethtypes.Log, out chan<- Types.Log, q *Types.FilterQuery,
+	fate func(logBlockKey) logBlockFate, interval, wait time.Duration) {
+	forwardStoredLogsLimits(ctx, rawCh, out, q, fate, interval, wait, maxHeldLogs, slowConsumerTimeout)
+}
+
+func forwardStoredLogsLimits(ctx context.Context, rawCh <-chan *ethtypes.Log, out chan<- Types.Log, q *Types.FilterQuery,
+	fate func(logBlockKey) logBlockFate, interval, wait time.Duration, maxHeld int, slowTimeout time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var queue []*heldBlock
+	held := 0                // logs in queue
+	pending := 0             // runs whose block is not yet known stored or gone
+	var readySince time.Time // when the head became sendable and has not been taken since
+
+	resolve := func() {
+		if pending == 0 {
+			return
+		}
+		now := time.Now()
+		asked := make(map[logBlockKey]logBlockFate, pending)
+		gone := false
+		for _, b := range queue {
+			if b.fate != logBlockPending {
+				continue
+			}
+			f, ok := asked[b.key]
+			if !ok {
+				f = fate(b.key)
+				asked[b.key] = f
+			}
+			if f == logBlockPending && now.Sub(b.since) >= wait {
+				f = logBlockGone
+			}
+			if f != logBlockPending {
+				b.fate = f
+				pending--
+				gone = gone || f == logBlockGone
+			}
+		}
+		if !gone {
+			return
+		}
+		// Remove runs whose block is gone; the order of the rest is kept.
+		kept := queue[:0]
+		for _, b := range queue {
+			if b.fate == logBlockGone {
+				held -= len(b.logs)
+				continue
+			}
+			kept = append(kept, b)
+		}
+		for i := len(kept); i < len(queue); i++ {
+			queue[i] = nil
+		}
+		queue = kept
+	}
+
+	for {
+		var sendCh chan<- Types.Log
+		var next Types.Log
+		if len(queue) > 0 && queue[0].fate == logBlockStored {
+			sendCh, next = out, ethLogToTypesLog(queue[0].logs[0])
+			if readySince.IsZero() {
+				readySince = time.Now()
+			}
+		} else {
+			readySince = time.Time{}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case l, ok := <-rawCh:
+			if !ok {
+				return
+			}
+			if l == nil || !logMatchesFilter(l, q) {
+				continue
+			}
+			if held >= maxHeld {
+				logger().Warn(ctx, "closing log subscription: too many logs held for it", ion.Int("held", held))
+				return
+			}
+			k := logBlockKey{l.BlockNumber, l.BlockHash}
+			if n := len(queue); n > 0 && queue[n-1].key == k && queue[n-1].fate != logBlockGone {
+				queue[n-1].logs = append(queue[n-1].logs, l)
+			} else {
+				queue = append(queue, &heldBlock{key: k, since: time.Now(), logs: []*ethtypes.Log{l}})
+				pending++
+			}
+			held++
+		case <-ticker.C:
+			resolve()
+			if !readySince.IsZero() && time.Since(readySince) >= slowTimeout {
+				logger().Warn(ctx, "closing log subscription: the client is not reading", ion.Int("held", held))
+				return
+			}
+		case sendCh <- next:
+			readySince = time.Time{}
+			head := queue[0]
+			head.logs[0] = nil
+			head.logs = head.logs[1:]
+			held--
+			if len(head.logs) == 0 {
+				queue[0] = nil
+				queue = queue[1:]
+			}
+		}
+	}
 }
 
 // logMatchesFilter returns true if ethLog satisfies the address and topic

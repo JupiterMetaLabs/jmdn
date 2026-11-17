@@ -89,6 +89,9 @@ type ThebeReader interface {
 	// Phase 2.0 — bulk and alternate-key reads
 	GetBlockByHash(ctx context.Context, hash string) (*BlockRecord, error)
 	BulkGetBlocks(ctx context.Context, from, to uint64) ([]*BlockRecord, error)
+	// GetBlockHashes returns the stored BlockHash of each listed height that
+	// has a block; heights without one are absent. Reads only those rows.
+	GetBlockHashes(ctx context.Context, numbers []uint64) (map[uint64]string, error)
 	GetAccountByDID(ctx context.Context, did string) (*AccountRecord, error)
 	BulkGetAccounts(ctx context.Context, addresses []string) ([]*AccountRecord, error)
 	ListAccounts(ctx context.Context, limit int) ([]*AccountRecord, error)
