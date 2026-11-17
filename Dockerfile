@@ -17,7 +17,18 @@
 # Base images are pinned by digest (multi-arch index) so a rebuilt tag upstream
 # cannot change what we ship. To update: pick the new tag, read its index
 # digest (docker buildx imagetools inspect <image>:<tag>), replace both here.
-FROM golang:1.27.3-bookworm@sha256:21ade014faf952365b9ecbd8dbdb87176fbacb82fac9fb132d9f2a7b8cc3f132 AS builder
+# go1.27.4 fixes GO-2026-6859 (net/http MaxBytesReader header race, an HTTP/1
+# server crash) — reachable here from gatekeeper.ServeHTTP, rpc.WSServer and
+# metrics.StartMetricsServer, i.e. the public RPC surface.
+#
+# The builder image is what pins the stdlib, NOT the `toolchain` line in go.mod:
+# GOTOOLCHAIN=local is set below, so the go command will not switch toolchains
+# and silently builds with whatever this image ships. Bumping go.mod alone
+# leaves the vulnerable stdlib in the released binary.
+#
+# Index (multi-arch manifest list) digest, matching the amd64/arm64 matrix in
+# docker.yml. Verify with: docker buildx imagetools inspect golang:1.27.4-bookworm
+FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS builder
 
 # Build only with the pinned image's toolchain; never download another one at
 # build time. Bump the base image when go.mod needs a newer Go.
@@ -76,10 +87,39 @@ RUN GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "u
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime
 # -----------------------------------------------------------------------------
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # Install runtime dependencies + Yggdrasil (required: network.yggdrasil: true in jmdn.yaml)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` STAYS, and the reproducibility argument for removing it does
+# not hold. This stage already installs ten packages (libc6, openssl, gnupg, …)
+# and yggdrasil from a third-party apt repo with NO version pins, so the image
+# is a function of the build clock whether or not the upgrade runs. Dropping it
+# would narrow that surface from ~155 packages to ~11 while leaving the property
+# it claimed to buy — one commit, one image — still false.
+#
+# Removing it was proposed on the basis that two replacement controls would take
+# over: a nightly image scan telling you when a digest bump is due, and
+# Dependabot raising that bump. Neither is in place on the cadence the argument
+# assumed, because BOTH are read from the DEFAULT branch (main) and this work is
+# on v3base:
+#   - dependabot.yml on a non-default branch is never read at all, so no digest
+#     bump is ever proposed. (`target-branch` redirects version updates once the
+#     file is on main; it does not make a file on v3base take effect.)
+#   - nightly.yml's `schedule:` only fires from the default branch. Its
+#     `push: branches: [v3base]` trigger DOES work and does build and scan the
+#     image — 40 runs to date, every one of them `push`, zero `schedule`
+#     (verified against the Actions API, 2026-11-17). So the image is scanned
+#     when someone pushes, and not at all during a quiet week, which is exactly
+#     when a newly published Debian CVE would go unseen.
+# Until the cadence is real, this line is what pulls Debian security fixes into
+# the runtime image between digest bumps.
+#
+# To revisit, in this order: land dependabot.yml and nightly.yml on main so the
+# digest bump is proposed and the scan runs daily, pin the package versions
+# below, then drop the upgrade.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
