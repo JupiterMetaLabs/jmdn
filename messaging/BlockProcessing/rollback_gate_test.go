@@ -22,7 +22,8 @@ import (
 // Value transfers only: tx1 pays a brand-new account, tx2 has a stale nonce, so
 // the whole block fails. The new account must not exist afterwards (not even
 // with a zero balance: the state fingerprint folds every account) and the
-// sender is restored. Run with the group commit on and off.
+// sender is restored, including the ART identity tx1 adopted. Run with the
+// group commit on and off.
 func TestRollback_NewRecipientIsRemoved(t *testing.T) {
 	for _, grouped := range []bool{true, false} {
 		t.Run(map[bool]string{true: "grouped", false: "per-tx"}[grouped], func(t *testing.T) {
@@ -37,6 +38,14 @@ func TestRollback_NewRecipientIsRemoved(t *testing.T) {
 				callTx(acctA, fresh, 0, nil, big.NewInt(5)),
 				callTx(acctA, acctB, 0, nil, big.NewInt(7)), // nonce 0 again: stale
 			}, false)
+			// Carry a different ART identity for the sender, so tx1 adopts it
+			// (identity heal) before tx2 fails the block: the rollback must
+			// restore the original.
+			for i := range blk.AccountNonces {
+				if blk.AccountNonces[i].Address == acctA {
+					blk.AccountNonces[i].Nonce = before.art + 1000
+				}
+			}
 			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), blk, nil); err == nil {
 				t.Fatal("precondition: the block must fail on its stale-nonce tx")
 			}

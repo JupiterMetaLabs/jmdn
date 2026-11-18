@@ -51,12 +51,7 @@ func snapshotAccount(conn *config.PooledConnection, addr common.Address) (Accoun
 	doc, err := DB_OPs.GetAccount(conn, addr)
 	switch {
 	case err == nil && doc != nil:
-		return AccountSnapshot{
-			Balance:     doc.Balance,
-			TxNonce:     doc.TxNonce,
-			TxCountSent: doc.TxCountSent,
-			UpdatedAt:   doc.UpdatedAt,
-		}, nil
+		return accountSnapshotOf(doc), nil
 	case err == nil || DB_OPs.IsNotFound(err):
 		return AccountSnapshot{Balance: "0", Absent: true}, nil
 	default:

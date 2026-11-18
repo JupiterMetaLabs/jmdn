@@ -43,6 +43,29 @@ type AccountSnapshot struct {
 	// Absent: no account existed before the block. The rollback deletes the
 	// account rather than writing a zero balance.
 	Absent bool
+	// Identity, restored too: a tx can adopt a block-carried ART nonce
+	// (adoptCarriedNonce) before a later tx fails the block. The other fields
+	// let the rollback rebuild an account that existed but is gone.
+	Nonce       uint64
+	DIDAddress  string
+	AccountType string
+	CreatedAt   int64
+	Metadata    map[string]interface{}
+}
+
+// accountSnapshotOf captures doc's mutable state and identity.
+func accountSnapshotOf(doc *DB_OPs.Account) AccountSnapshot {
+	return AccountSnapshot{
+		Balance:     doc.Balance,
+		TxNonce:     doc.TxNonce,
+		TxCountSent: doc.TxCountSent,
+		UpdatedAt:   doc.UpdatedAt,
+		Nonce:       doc.Nonce,
+		DIDAddress:  doc.DIDAddress,
+		AccountType: doc.AccountType,
+		CreatedAt:   doc.CreatedAt,
+		Metadata:    doc.Metadata,
+	}
 }
 
 // contractStateCommitted tracks, per block hash, whether applyContractTx durably
@@ -1099,10 +1122,18 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 			continue
 		}
 		if missing || doc == nil {
-			// Existed before the block but is gone now: recreate it.
-			doc = &DB_OPs.Account{Address: addr}
+			// Existed before the block but is gone now: recreate it with the
+			// identity it had.
+			doc = &DB_OPs.Account{
+				Address:     addr,
+				DIDAddress:  snap.DIDAddress,
+				AccountType: snap.AccountType,
+				CreatedAt:   snap.CreatedAt,
+				Metadata:    snap.Metadata,
+			}
 		}
 
+		doc.Nonce = snap.Nonce
 		doc.Balance = snap.Balance
 		doc.TxNonce = snap.TxNonce
 		doc.TxCountSent = snap.TxCountSent
@@ -1316,12 +1347,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	for _, did := range affectedDIDs {
 		doc, err := DB_OPs.GetAccount(accountsClient, did)
 		if err == nil {
-			originalState[did] = AccountSnapshot{
-				Balance:     doc.Balance,
-				TxNonce:     doc.TxNonce,
-				TxCountSent: doc.TxCountSent,
-				UpdatedAt:   doc.UpdatedAt,
-			}
+			originalState[did] = accountSnapshotOf(doc)
 		} else if DB_OPs.IsNotFound(err) {
 			originalState[did] = AccountSnapshot{Balance: "0", Absent: true}
 		} else {

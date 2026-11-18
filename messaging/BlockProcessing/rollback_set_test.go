@@ -167,3 +167,39 @@ func TestRefuseIncompleteRollback_HaltsApply(t *testing.T) {
 		t.Fatalf("a halted node must refuse every later block, got %v", err)
 	}
 }
+
+// The rollback restores the ART identity a failed block's tx adopted, and an
+// account that existed but is gone is rebuilt with its identity.
+func TestRollbackState_RestoresIdentity(t *testing.T) {
+	m := withMemAccounts(t, map[common.Address]store.Account{
+		acctA: {Address: acctA, Balance: "40", Nonce: 99, DIDAddress: "did:a"}, // nonce adopted by the failed block
+	})
+	before := map[common.Address]AccountSnapshot{
+		acctA: {Balance: "100", Nonce: 7, DIDAddress: "did:a", AccountType: "user", CreatedAt: 5},
+		acctZ: {Balance: "3", Nonce: 11, DIDAddress: "did:z", AccountType: "contract", CreatedAt: 6}, // existed, now gone
+	}
+	if err := rollbackState(context.Background(), before, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := m.accts[acctA]; a.Nonce != 7 || a.Balance != "100" {
+		t.Fatalf("existing account: nonce %d balance %s, want 7 and 100", a.Nonce, a.Balance)
+	}
+	z, ok := m.accts[acctZ]
+	if !ok || z.Nonce != 11 || z.DIDAddress != "did:z" || z.AccountType != "contract" || z.CreatedAt != 6 || z.Balance != "3" {
+		t.Fatalf("recreated account lost its identity: %+v (present=%v)", z, ok)
+	}
+}
+
+// The snapshot records the identity fields it must restore.
+func TestSnapshotAccount_CapturesIdentity(t *testing.T) {
+	withMemAccounts(t, map[common.Address]store.Account{
+		acctA: {Address: acctA, Balance: "1", Nonce: 42, DIDAddress: "did:a", AccountType: "user", CreatedAt: 9},
+	})
+	s, err := snapshotAccount(nil, acctA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Nonce != 42 || s.DIDAddress != "did:a" || s.AccountType != "user" || s.CreatedAt != 9 || s.Absent {
+		t.Fatalf("snapshot %+v", s)
+	}
+}
