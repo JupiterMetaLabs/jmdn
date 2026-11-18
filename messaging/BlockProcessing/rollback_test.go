@@ -26,9 +26,14 @@ type memAccounts struct {
 	created   []common.Address
 	deleted   []common.Address
 	syncKV    map[string][]byte
+	onRead    func() // called once, on the first account read
 }
 
 func (m *memAccounts) GetAccount(_ context.Context, address string) (*store.Account, error) {
+	if f := m.onRead; f != nil {
+		m.onRead = nil
+		f()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	addr := common.HexToAddress(address)
@@ -104,14 +109,19 @@ func resetApplyHaltForTest(t *testing.T) *string {
 	recordApplyHalt = func(r string) error { recorded = r; return nil }
 	recordedApplyHalt = func() (string, error) { return recorded, nil }
 	eraseApplyHalt = func() error { recorded = ""; return nil }
-	applyHaltReason.Store(nil)
-	applyHaltLoaded.Store(false)
+	simulateRestart()
 	t.Cleanup(func() {
 		recordApplyHalt, recordedApplyHalt, eraseApplyHalt = prevRec, prevRead, prevErase
-		applyHaltReason.Store(nil)
-		applyHaltLoaded.Store(false)
+		simulateRestart()
 	})
 	return &recorded
+}
+
+// simulateRestart drops the in-memory halt state, as a process restart does.
+func simulateRestart() {
+	haltState.Lock()
+	haltState.reason, haltState.recorded, haltState.loaded = "", false, false
+	haltState.Unlock()
 }
 
 // rollback runs a whole rollback (plan, then writes) as the apply path does
@@ -314,8 +324,7 @@ func TestApplyHalt_SurvivesRestartUntilCleared(t *testing.T) {
 	haltApply(context.Background(), "block 8 failed")
 
 	// Restart: the in-memory state is gone, the record is not.
-	applyHaltReason.Store(nil)
-	applyHaltLoaded.Store(false)
+	simulateRestart()
 	if got := haltReason(t); got != "block 8 failed" {
 		t.Fatalf("after a restart the halt reads %q, want the recorded reason", got)
 	}
@@ -326,7 +335,7 @@ func TestApplyHalt_SurvivesRestartUntilCleared(t *testing.T) {
 	if haltReason(t) != "" || *recorded != "" {
 		t.Fatalf("clear left halt=%q recorded=%q", haltReason(t), *recorded)
 	}
-	applyHaltLoaded.Store(false) // and after another restart
+	simulateRestart() // and after another restart
 	if haltReason(t) != "" {
 		t.Fatal("a cleared halt came back after a restart")
 	}
@@ -341,7 +350,10 @@ func TestApplyHalt_UnreadableRecordFailsClosed(t *testing.T) {
 	if err := ProcessBlockTransactions(context.Background(), blk, nil); err == nil || errors.Is(err, ErrApplyHalted) {
 		t.Fatalf("want a fail-closed read error, got %v", err)
 	}
-	if applyHaltLoaded.Load() {
+	haltState.Lock()
+	loaded := haltState.loaded
+	haltState.Unlock()
+	if loaded {
 		t.Fatal("a failed read must be retried, not cached as 'not halted'")
 	}
 }
@@ -379,5 +391,86 @@ func TestRollbackAbandoned_HaltsOnlyAfterPartialCommit(t *testing.T) {
 	err := rollbackAbandoned(ctx, common.HexToHash("0xe2"), 21, partial, readErr)
 	if !errors.Is(err, ErrApplyHalted) || haltReason(t) == "" {
 		t.Fatalf("after a partial commit an abandoned rollback must halt, got %v (halt %q)", err, haltReason(t))
+	}
+}
+
+// A halt whose record write fails is recorded by a later status check, and
+// then survives a restart.
+func TestApplyHalt_RecordRetriedUntilWritten(t *testing.T) {
+	recorded := resetApplyHaltForTest(t)
+	fail := true
+	recordApplyHalt = func(r string) error {
+		if fail {
+			return errors.New("kv write failed")
+		}
+		*recorded = r
+		return nil
+	}
+	haltApply(context.Background(), "block 8 failed")
+	if r, rec, err := ApplyHaltStatus(); err != nil || r == "" || rec {
+		t.Fatalf("while the write fails: reason=%q recorded=%v err=%v; want halted and not recorded", r, rec, err)
+	}
+	fail = false
+	if r, rec, err := ApplyHaltStatus(); err != nil || r == "" || !rec || *recorded != "block 8 failed" {
+		t.Fatalf("after the store recovers: reason=%q recorded=%v err=%v record=%q", r, rec, err, *recorded)
+	}
+	simulateRestart()
+	if haltReason(t) != "block 8 failed" {
+		t.Fatal("a halt recorded on retry was lifted by a restart")
+	}
+}
+
+// A clear and a halt cannot interleave: whichever runs second wins in both the
+// memory and the record.
+func TestApplyHalt_ClearAndHaltDoNotInterleave(t *testing.T) {
+	recorded := resetApplyHaltForTest(t)
+	haltApply(context.Background(), "old")
+	inErase, release := make(chan struct{}), make(chan struct{})
+	eraseApplyHalt = func() error {
+		close(inErase)
+		<-release
+		*recorded = ""
+		return nil
+	}
+	cleared := make(chan error)
+	go func() { cleared <- ClearApplyHalt() }()
+	<-inErase
+	halted := make(chan struct{})
+	go func() { haltApply(context.Background(), "new"); close(halted) }()
+	close(release)
+	if err := <-cleared; err != nil {
+		t.Fatal(err)
+	}
+	<-halted
+	if got := haltReason(t); got != "new" || *recorded != "new" {
+		t.Fatalf("memory %q and record %q disagree or lost the new halt", got, *recorded)
+	}
+}
+
+// A rollback revokes the failing tx's own marker only when its commit wrote
+// that marker before failing; otherwise the hash is left alone.
+func TestMarkersToRevoke(t *testing.T) {
+	applied := []string{"0xa", "0xb"}
+	if got := markersToRevoke(applied, "0xf", errors.New("stale nonce")); len(got) != 2 {
+		t.Fatalf("a failing tx that wrote no marker must not be revoked: %v", got)
+	}
+	cause := fmt.Errorf("atomic tx commit failed for 0xf: %w", fmt.Errorf("ApplyTxAtomic 0xf: %w: disk", DB_OPs.ErrApplyRedoNotCleared))
+	got := markersToRevoke(applied, "0xf", cause)
+	if len(got) != 3 || got[2] != "0xf" || len(applied) != 2 {
+		t.Fatalf("want the applied txs plus the failing one, input unchanged: got %v (applied %v)", got, applied)
+	}
+}
+
+// A block that was applying when another block halted the node is not stored.
+func TestHaltDuringApply_BlockNotStored(t *testing.T) {
+	resetApplyHaltForTest(t)
+	m := withMemAccounts(t, map[common.Address]store.Account{})
+	m.onRead = func() { haltApply(context.Background(), "another block failed") }
+	coinbase, zkvm := acctA, acctZ
+	blk := &config.ZKBlock{BlockNumber: 30, BlockHash: common.HexToHash("0xf30"), CoinbaseAddr: &coinbase, ZKVMAddr: &zkvm}
+	stored := false
+	err := ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error { stored = true; return nil })
+	if !errors.Is(err, ErrApplyHalted) || stored {
+		t.Fatalf("want ErrApplyHalted and nothing stored, got err=%v stored=%v", err, stored)
 	}
 }

@@ -168,3 +168,29 @@ func TestDiscardPendingTxApply(t *testing.T) {
 		t.Fatal("discarded apply was rolled forward")
 	}
 }
+
+// failRedoClear fails only the clearing of the redo record.
+type failRedoClear struct{ *redoHandle }
+
+func (f *failRedoClear) PutSyncKV(key string, value []byte) error {
+	if key == txApplyRedoKey && len(value) == 0 {
+		return errors.New("injected redo-clear failure")
+	}
+	return f.redoHandle.PutSyncKV(key, value)
+}
+
+// An apply that commits its documents and marker but cannot clear its redo
+// record reports ErrApplyRedoNotCleared, so the caller's rollback revokes the
+// marker along with the restored balances.
+func TestApplyTxAtomic_RedoNotClearedIsMarkedApplied(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	SetGlobalHandle(&failRedoClear{h})
+	err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xab", 1)
+	if !errors.Is(err, ErrApplyRedoNotCleared) || errors.Is(err, ErrPartialApply) {
+		t.Fatalf("want ErrApplyRedoNotCleared (and not ErrPartialApply), got %v", err)
+	}
+	applied, merr := IsMarkerApplied(nil, TxProcessedKey("0xab"))
+	if merr != nil || !applied {
+		t.Fatalf("precondition: the marker is written (applied=%v, %v)", applied, merr)
+	}
+}

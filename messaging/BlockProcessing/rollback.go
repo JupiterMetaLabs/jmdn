@@ -34,7 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync/atomic"
+	"sync"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -163,11 +163,14 @@ func rollbackAbandoned(ctx context.Context, blockHash common.Hash, blockNumber u
 // of it; the node must be resynced.
 var ErrApplyHalted = errors.New("block apply halted: state holds a partially applied block and must be resynced")
 
-var (
-	applyHaltReason atomic.Pointer[string]
-	// applyHaltLoaded: the halt record of an earlier run has been read.
-	applyHaltLoaded atomic.Bool
-)
+// haltState is the block-apply halt. Every transition happens under the
+// mutex, so a halt and a clear cannot interleave.
+var haltState struct {
+	sync.Mutex
+	reason   string // "" = not halted
+	loaded   bool   // the record of an earlier run has been read
+	recorded bool   // reason is in the record, so a restart keeps it
+}
 
 // The halt is recorded in the node's store so a restart does not lift it.
 // Seams for tests.
@@ -177,52 +180,86 @@ var (
 	eraseApplyHalt    = DB_OPs.ClearRecordedApplyHalt
 )
 
-// haltApply halts block apply on this node and records why.
+// haltApply halts block apply on this node and records why. A record write that
+// fails is retried by every later ApplyHaltStatus.
 func haltApply(ctx context.Context, reason string) {
-	if !applyHaltReason.CompareAndSwap(nil, &reason) {
+	haltState.Lock()
+	defer haltState.Unlock()
+	if haltState.reason != "" {
 		return
 	}
+	haltState.reason, haltState.recorded = reason, false
 	logger().Error(ctx, "BLOCK APPLY HALTED — this node holds a partially applied block and must be resynced",
 		ErrApplyHalted, ion.String("reason", reason),
 		ion.String("function", "BlockProcessing.haltApply"))
 	if err := recordApplyHalt(reason); err != nil {
-		logger().Error(ctx, "Block apply halt could not be recorded; a restart would lift it",
+		logger().Error(ctx, "Block apply halt could not be recorded yet; retried on every block, a restart before it succeeds would lift it",
 			err, ion.String("reason", reason),
 			ion.String("function", "BlockProcessing.haltApply"))
+		return
 	}
+	haltState.recorded = true
+}
+
+// ApplyHaltStatus reports why block apply is halted on this node ("" when it is
+// not) and whether that halt is recorded, so that a restart keeps it. A halt
+// recorded before a restart is loaded on first use, and an unrecorded halt is
+// recorded again here. An error reading the record is returned; callers fail
+// closed on it.
+func ApplyHaltStatus() (reason string, recorded bool, err error) {
+	haltState.Lock()
+	defer haltState.Unlock()
+	if !haltState.loaded {
+		r, rerr := recordedApplyHalt()
+		if rerr != nil {
+			return "", false, fmt.Errorf("read the block-apply halt record: %w", rerr)
+		}
+		haltState.loaded = true
+		if r != "" && haltState.reason == "" {
+			haltState.reason, haltState.recorded = r, true
+		}
+	}
+	if haltState.reason != "" && !haltState.recorded {
+		if recordApplyHalt(haltState.reason) == nil {
+			haltState.recorded = true
+			logger().Warn(context.Background(), "Block apply halt recorded on retry; a restart now keeps it",
+				ion.String("reason", haltState.reason),
+				ion.String("function", "BlockProcessing.ApplyHaltStatus"))
+		}
+	}
+	return haltState.reason, haltState.recorded, nil
 }
 
 // ApplyHaltReason reports why block apply is halted on this node, or "" when
-// it is not. A halt recorded before a restart is loaded on first use; an error
-// reading that record is returned, and callers fail closed on it.
+// it is not (see ApplyHaltStatus).
 func ApplyHaltReason() (string, error) {
-	if r := applyHaltReason.Load(); r != nil {
-		return *r, nil
-	}
-	if applyHaltLoaded.Load() {
-		return "", nil
-	}
-	r, err := recordedApplyHalt()
-	if err != nil {
-		return "", fmt.Errorf("read the block-apply halt record: %w", err)
-	}
-	applyHaltLoaded.Store(true)
-	if r == "" {
-		return "", nil
-	}
-	applyHaltReason.CompareAndSwap(nil, &r)
-	return *applyHaltReason.Load(), nil
+	reason, _, err := ApplyHaltStatus()
+	return reason, err
 }
 
 // ClearApplyHalt lifts the halt and erases its record. Only for an operator
 // whose node's state is again the canonical chain's (after a resync).
 func ClearApplyHalt() error {
+	haltState.Lock()
+	defer haltState.Unlock()
 	if err := eraseApplyHalt(); err != nil {
 		return err
 	}
-	applyHaltReason.Store(nil)
-	applyHaltLoaded.Store(true)
+	haltState.reason, haltState.recorded, haltState.loaded = "", false, true
 	return nil
+}
+
+// markersToRevoke lists the tx markers a rollback of an in-loop failure must
+// revoke: every tx the block applied before the failing one, plus the failing
+// tx itself when its commit wrote its marker before failing
+// (DB_OPs.ErrApplyRedoNotCleared). Any other failing tx wrote no marker of its
+// own, and its hash is left alone: a marker under it may belong to another
+// block's apply.
+func markersToRevoke(applied []string, failingTx string, cause error) []string {
+	if !errors.Is(cause, DB_OPs.ErrApplyRedoNotCleared) {
+		return applied
+	}
+	return append(append(make([]string, 0, len(applied)+1), applied...), failingTx)
 }
 
 // refuseIncompleteRollback decides a rollback for a block that may have

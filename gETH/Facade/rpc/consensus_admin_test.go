@@ -116,7 +116,7 @@ func TestApplyHaltEndpoints_StatusAndClear(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"halted":true`) || !strings.Contains(w.Body.String(), "block 8 failed") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"halted":true`) || !strings.Contains(w.Body.String(), "block 8 failed") || !strings.Contains(w.Body.String(), `"recorded":true`) {
 		t.Fatalf("status: %d %s", w.Code, w.Body.String())
 	}
 

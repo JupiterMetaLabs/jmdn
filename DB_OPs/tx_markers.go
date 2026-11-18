@@ -227,6 +227,12 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 // rollback of the block makes that state consistent again.
 var ErrPartialApply = errors.New("apply failed part-way; some of its writes may be committed")
 
+// ErrApplyRedoNotCleared marks an apply that committed every account document
+// AND every tx marker, but whose redo record could not be cleared. Its txs are
+// applied: a rollback of the block must revoke their markers along with the
+// rest, or a replay would skip them over restored balances.
+var ErrApplyRedoNotCleared = errors.New("applied and marked, but the apply record could not be cleared")
+
 // ApplyTxAtomic commits one transaction's complete effect: every touched
 // account document, then the tx_processed marker LAST, bracketed by a redo
 // record so a crash between the commits is rolled forward at boot
@@ -305,8 +311,8 @@ func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []
 	if err := clearTxApplyRedo(h); err != nil {
 		// Effects and markers are committed. A stale record is harmless to
 		// recovery (it rewrites identical docs) but blocks the next apply, so
-		// surface it.
-		return fmt.Errorf("ApplyTxAtomic %s: applied, but %w", label, err)
+		// surface it, marked so a rollback also revokes these txs' markers.
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrApplyRedoNotCleared, err)
 	}
 	return nil
 }

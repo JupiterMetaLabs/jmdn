@@ -11,7 +11,7 @@ A block that fails during apply is rolled back to the state before the block. Tw
 
 Either way, the node's state is neither the state before the block nor the state after it. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
 
-The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a restart does not lift it.
+The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a restart does not lift it. If that write fails, the node retries it on every block; the status endpoint below shows whether it has succeeded.
 
 ## How to see it
 
@@ -24,7 +24,7 @@ The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a 
   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://<node>:8545/consensus/apply-halt
   ```
 
-  It returns `{"halted": true, "reason": "..."}`.
+  It returns `{"halted": true, "reason": "...", "recorded": true}`. `recorded: false` means the halt is not yet in the node's store (the store was failing when it happened); the node retries on every block, and until it succeeds a restart would lift the halt. Do not restart a halted node in that state.
 
 The reason gives the block number, the block hash and the error that failed it.
 
@@ -64,4 +64,4 @@ If the sequencer's failed rounds left a height stuck at the vote-period cap, use
 
 ## What the halt does not stop
 
-The halt stops block apply and, on the sequencer, starting consensus rounds. FastSync, account sync and reconciliation keep running: they are how the node's state is rebuilt. Committee voting is not stopped either.
+The halt stops block apply, the storing of any block that was still applying when it happened, and, on the sequencer, starting consensus rounds. It does not stop FastSync, account sync or reconciliation: before the wipe in step 3 they keep writing on top of the partial state, which is one more reason the wipe is needed; after it they rebuild the node. Committee voting is not stopped either.

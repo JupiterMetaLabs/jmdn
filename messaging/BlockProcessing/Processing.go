@@ -767,7 +767,7 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w (pending apply record could not be dropped: %v — rollback skipped)",
 					i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, discardErr)
 			}
-			if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
+			if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, markersToRevoke(successfullyProcessedTxs, tx.Hash.Hex(), Process_err)); revokeErr != nil {
 				DB_OPs.UnlockStateApply()
 				span.RecordError(revokeErr)
 				span.SetAttributes(attribute.String("status", "marker_revocation_failed"))
@@ -1008,6 +1008,15 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// the block-858 fix: a second duplicate-height candidate whose txs applied and
 	// then failed StoreZKBlock (uq_txn_block_index 23505) is now fully reverted
 	// instead of leaving the sequencer's account state advanced past the fleet.
+	// Blocks with different hashes apply in parallel, so another block may
+	// have halted apply while this one ran. Nothing is stored or marked on top
+	// of a halted node's state; the node is rebuilt anyway.
+	if reason, herr := ApplyHaltReason(); herr != nil {
+		return fmt.Errorf("block %d: %w (fail closed, not stored)", block.BlockNumber, herr)
+	} else if reason != "" {
+		return fmt.Errorf("block %d: %w (%s); not stored", block.BlockNumber, ErrApplyHalted, reason)
+	}
+
 	if store != nil {
 		// NOTE (review S1): an earlier version sampled OutboxMaxID() here and
 		// PurgeOutboxAfter() on failure to drop the projection the failed store

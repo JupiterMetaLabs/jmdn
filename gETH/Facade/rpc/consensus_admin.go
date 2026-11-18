@@ -46,13 +46,15 @@ func RegisterConsensusAdminRoutes(router gin.IRouter) {
 	router.POST("/consensus/apply-halt/clear", gatekeeper.AdminHTTPMiddleware(secCfg), handleClearApplyHalt)
 }
 
+// handleApplyHaltStatus reports the halt. recorded=false while halted means
+// the halt is not yet in the node's store, so a restart now would lift it.
 func handleApplyHaltStatus(c *gin.Context) {
-	reason, err := BlockProcessing.ApplyHaltReason()
+	reason, recorded, err := BlockProcessing.ApplyHaltStatus()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"halted": reason != "", "reason": reason})
+	c.JSON(http.StatusOK, gin.H{"halted": reason != "", "reason": reason, "recorded": recorded})
 }
 
 func handleClearApplyHalt(c *gin.Context) {
