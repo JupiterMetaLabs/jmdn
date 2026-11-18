@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gossipnode/config/settings"
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/internal/roundlock"
 	"gossipnode/pkg/gatekeeper"
 )
@@ -61,6 +62,17 @@ func handleClearRoundLedger(c *gin.Context) {
 		return
 	}
 	h := *req.Height
+	// A certified block at this height is still being committed: clearing the
+	// signing records would reopen rounds while a valid certificate exists.
+	// Fail closed when the pending record cannot be read.
+	if pending, perr := pendingcommit.Default.PendingAt(h); pending {
+		msg := fmt.Sprintf("height %d has a certified block that is still being committed; repair the cause and let it commit instead", h)
+		if perr != nil {
+			msg = fmt.Sprintf("cannot read the pending-commit record (%v); refusing to clear height %d", perr, h)
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": msg, "reason": "height_pending_commit"})
+		return
+	}
 	votes, err := roundlock.Votes.ClearHeight(h)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})

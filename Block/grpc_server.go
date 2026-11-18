@@ -20,6 +20,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	"gossipnode/config/settings"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/internal/proposalguard"
 	"gossipnode/pkg/gatekeeper"
 
@@ -119,6 +120,19 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 				ion.Uint64("block_number", block.BlockNumber), ion.Uint64("committed_tip", tip))
 		}
 		return nil, status.Errorf(codes.AlreadyExists, "height %d already committed (tip %d): height_already_committed", block.BlockNumber, tip)
+	} else if blocked, rec, perr := pendingcommit.Default.BlocksProposal(block.BlockNumber, tip); blocked {
+		// A certified block at or below this height is still being committed;
+		// see the HTTP twin in processZKBlock. Fail closed on a store read error.
+		pendingHeight := block.BlockNumber
+		if rec != nil {
+			pendingHeight = rec.Height
+		}
+		if s.logger != nil {
+			s.logger.Warn(ctx, "gRPC: rejecting proposal: a certified block is still being committed",
+				ion.Uint64("block_number", block.BlockNumber), ion.Uint64("pending_height", pendingHeight),
+				ion.Bool("store_error", perr != nil))
+		}
+		return nil, status.Errorf(codes.AlreadyExists, "certified block %d is still being committed: height_pending_commit", pendingHeight)
 	}
 	if !proposalguard.Default.Claim(block.BlockNumber) {
 		if s.logger != nil {
