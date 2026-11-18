@@ -31,6 +31,40 @@ func messageForVote(vote int8) ([]byte, error) {
 // could never catch a forged ConsensusHash, no matter how the hash-bearing
 // format was built.
 func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings, consensusHash string, vote int8) error {
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, consensusHash, vote)
+	if err != nil {
+		return fmt.Errorf("build block-bound vote message: %w", err)
+	}
+	if err := verifyCanonical(resp, msg); err != nil {
+		return fmt.Errorf("bls verify (block-bound) failed for peer %s: %w", resp.PeerID, err)
+	}
+	return nil
+}
+
+// VerifyBallotForBlock checks a gossiped ballot. It accepts the ballot domain
+// (BLS_Signer.CanonicalBallotMessageV1) and, until every node signs ballots
+// in that domain, the vote-result format ballots were signed in before
+// (CanonicalVoteMessageV3). Accepting the old format here only counts a vote;
+// it never lets a ballot count as a certificate signature, because
+// certificate checks use VerifyForBlock, which rejects the ballot domain.
+// Use this only where a ballot is checked, never for a certificate.
+func VerifyBallotForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings, consensusHash string, vote int8) error {
+	msg, err := BLS_Signer.CanonicalBallotMessageV1(chainID, height, bindings, consensusHash, vote)
+	if err != nil {
+		return fmt.Errorf("build ballot message: %w", err)
+	}
+	if verifyCanonical(resp, msg) == nil {
+		return nil
+	}
+	// Ballots from nodes that still sign the old format.
+	if err := VerifyForBlock(resp, chainID, height, bindings, consensusHash, vote); err != nil {
+		return fmt.Errorf("bls verify (ballot) failed for peer %s", resp.PeerID)
+	}
+	return nil
+}
+
+// verifyCanonical checks resp's signature over msg with resp's public key.
+func verifyCanonical(resp BLS_Signer.BLSresponse, msg []byte) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
@@ -39,15 +73,7 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 	if err != nil {
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
-
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, consensusHash, vote)
-	if err != nil {
-		return fmt.Errorf("build block-bound vote message: %w", err)
-	}
-	if blssign.BLSVerify(pubBytes, msg, sigBytes) != nil {
-		return fmt.Errorf("bls verify (block-bound) failed for peer %s", resp.PeerID)
-	}
-	return nil
+	return blssign.BLSVerify(pubBytes, msg, sigBytes)
 }
 
 // Verify checks a single BLS response against the provided vote value.
