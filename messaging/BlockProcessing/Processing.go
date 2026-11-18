@@ -40,6 +40,9 @@ type AccountSnapshot struct {
 	TxNonce     uint64
 	TxCountSent uint64
 	UpdatedAt   int64
+	// Absent: no account existed before the block. The rollback deletes the
+	// account rather than writing a zero balance.
+	Absent bool
 }
 
 // contractStateCommitted tracks, per block hash, whether applyContractTx durably
@@ -84,8 +87,8 @@ func clearContractStateCommitted(blockHash common.Hash) {
 // Extracted from ProcessBlockTransactionsAndStore so the decision is unit-testable
 // without a live DB (review B8). The bool is whether a rollback was performed.
 func decideStoreFailure(blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func()) (error, bool) {
-	if didCommitContractState(blockHash) {
-		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", blockNumber, serr), false
+	if rerr := refuseIncompleteRollback(blockHash, blockNumber, serr); rerr != nil {
+		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", blockNumber, rerr), false
 	}
 	rollbackApplied()
 	return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", blockNumber, serr), true
@@ -373,6 +376,11 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		return fmt.Errorf("apply: block %d (%s) has transactions but no coinbase or zkVM address",
 			block.BlockNumber, block.BlockHash.Hex())
 	}
+	// A node that refused an incomplete rollback holds a block's partial
+	// effects; applying anything on top would build on state no other node has.
+	if reason := ApplyHaltReason(); reason != "" {
+		return fmt.Errorf("apply block %d: %w (%s)", block.BlockNumber, ErrApplyHalted, reason)
+	}
 	// Serialize concurrent applies of the SAME block so it is applied exactly
 	// once no matter how many copies arrive (multi-transport delivery, re-flood,
 	// or live delivery racing catch-up). Held across the already-processed check
@@ -460,30 +468,23 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	span.SetAttributes(attribute.Int("affected_accounts", len(affectedAccounts)))
 
-	// Fetch and store original state BEFORE any processing.
+	// Fetch and store original state BEFORE any processing. An account that
+	// does not exist yet is Absent: the rollback deletes it.
 	for addr := range affectedAccounts {
-		doc, err := DB_OPs.GetAccount(accountsClient, addr)
-		switch {
-		case err == nil:
-			originalState[addr] = AccountSnapshot{
-				Balance:     doc.Balance,
-				TxNonce:     doc.TxNonce,
-				TxCountSent: doc.TxCountSent,
-				UpdatedAt:   doc.UpdatedAt,
-			}
-		case DB_OPs.IsNotFound(err):
-			// Genuinely new account — zero-value snapshot; rollback restores to 0.
-			originalState[addr] = AccountSnapshot{Balance: "0"}
-		default:
+		snap, err := snapshotAccount(accountsClient, addr)
+		if err != nil {
 			// FAIL CLOSED: a transient/real read error (timeout, connection) is NOT
-			// proof the account is absent. Snapshotting Balance:"0" here would make a
-			// later rollback ZERO a real, funded account — silent corruption. Nothing
-			// has been applied yet at this point, so abort cleanly and let the block
-			// be retried against a readable store.
+			// proof the account is absent. Recording it Absent would make a later
+			// rollback DELETE a real, funded account. Nothing has been applied yet
+			// at this point, so abort cleanly and let the block be retried.
 			return fmt.Errorf("block %d: rollback-snapshot capture failed for %s: %w (fail closed — not assuming the account is absent)",
 				block.BlockNumber, addr.Hex(), err)
 		}
+		originalState[addr] = snap
 	}
+	// Contract transactions add the accounts only their execution touches
+	// (recordRollbackTargets), through the context, before they commit.
+	span_ctx = withRollbackSet(span_ctx, &rollbackSet{snaps: originalState})
 
 	span.SetAttributes(attribute.Int("sorted_transactions", len(block.Transactions)))
 
@@ -638,6 +639,23 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					ion.String("topic", TOPIC),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 				)
+			}
+
+			// A contract transaction of this block already committed storage,
+			// which no rollback can undo: refuse, halt apply, resync.
+			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, Process_err); rerr != nil {
+				span.RecordError(rerr)
+				span.SetAttributes(attribute.String("status", "rollback_refused_contract_state"))
+				logger().Error(span_ctx, "Transaction failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
+					rerr,
+					ion.String("tx_hash", tx.Hash.Hex()),
+					ion.Int("tx_index", i),
+					ion.Int64("block_number", int64(block.BlockNumber)),
+					ion.String("topic", TOPIC),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+				return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w", i+1, len(block.Transactions), tx.Hash.Hex(), rerr)
 			}
 
 			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
@@ -815,6 +833,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	if ferr := flushGroup(); ferr != nil {
 		span.RecordError(ferr)
 		span.SetAttributes(attribute.String("status", "group_commit_failed"))
+		if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, ferr); rerr != nil {
+			logger().Error(span_ctx, "Group commit failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
+				rerr, ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
+			return fmt.Errorf("block %d: %w", block.BlockNumber, rerr)
+		}
 		rollbackApplied()
 		return fmt.Errorf("block %d: %w", block.BlockNumber, ferr)
 	}
@@ -822,6 +846,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	if execbridge.Enabled() {
 		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
 		if fperr != nil {
+			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, fperr); rerr != nil {
+				logger().Error(span_ctx, "State fingerprint failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
+					rerr, ion.Int64("block_number", int64(block.BlockNumber)),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
+				return fmt.Errorf("block %d: %w", block.BlockNumber, rerr)
+			}
 			rollbackApplied()
 			return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w", block.BlockNumber, fperr)
 		}
@@ -870,6 +900,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 						ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 					)
 				}
+			}
+			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, fmt.Errorf("state fingerprint mismatch")); rerr != nil {
+				logger().Error(span_ctx, "State divergence in a block that committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
+					rerr, ion.Int64("block_number", int64(block.BlockNumber)),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
+				return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s: %w", block.BlockNumber, fp, block.StateFingerprint, rerr)
 			}
 			rollbackApplied()
 			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
@@ -1045,8 +1081,25 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 	rollbackCount := 0
 	for addr, snap := range snapshots {
 		doc, err := DB_OPs.GetAccount(accountsClient, addr)
-		if err != nil {
-			// If it doesn't exist yet, we create an empty placeholder to zero it out
+		missing := err != nil && DB_OPs.IsNotFound(err)
+		if err != nil && !missing {
+			rollbackSpan.RecordError(err)
+			return fmt.Errorf("rollback: read %s: %w", addr.Hex(), err)
+		}
+		if snap.Absent {
+			// The block created this account: remove it, never leave a
+			// zero-balance row behind.
+			if !missing && doc != nil {
+				if derr := DB_OPs.DeleteAccount(addr); derr != nil {
+					rollbackSpan.RecordError(derr)
+					return fmt.Errorf("rollback: delete %s created by the failed block: %w", addr.Hex(), derr)
+				}
+			}
+			rollbackCount++
+			continue
+		}
+		if missing || doc == nil {
+			// Existed before the block but is gone now: recreate it.
 			doc = &DB_OPs.Account{Address: addr}
 		}
 
@@ -1270,7 +1323,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 				UpdatedAt:   doc.UpdatedAt,
 			}
 		} else if DB_OPs.IsNotFound(err) {
-			originalState[did] = AccountSnapshot{Balance: "0"}
+			originalState[did] = AccountSnapshot{Balance: "0", Absent: true}
 		} else {
 			txSpan.RecordError(err)
 			txSpan.SetAttributes(attribute.String("status", "balance_retrieval_failed"), attribute.String("failed_account", did.Hex()))

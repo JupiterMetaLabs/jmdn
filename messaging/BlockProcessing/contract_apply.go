@@ -309,6 +309,14 @@ func applyContractTx(
 	}
 	adoptCarriedNonce(span_ctx, stage, &sender, accountNonces)
 
+	// 7.4 Before anything of this tx is committed, add every account it writes
+	//     to the block's rollback snapshot (internal payment targets, deployed
+	//     contracts and other execution-touched accounts are not named by the
+	//     block). A read error fails the tx: nothing is committed yet.
+	if rerr := recordRollbackTargets(span_ctx, accountsClient, stage.order); rerr != nil {
+		return fail("contract tx %s: %w", tx.Hash.Hex(), rerr)
+	}
+
 	// 7.5 Commit contract state AFTER the fold + all deterministic checks (fold
 	//     conservation/solvency, block-carried ART identity, stale nonce) have
 	//     passed, but BEFORE the account atomic apply (NEW-2: commit-after-fold).

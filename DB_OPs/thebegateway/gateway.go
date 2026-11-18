@@ -148,6 +148,29 @@ func (g *thebeGateway) WriteAccount(ctx context.Context, account *AccountRecord)
 		AccountKey(account.Address), TTLAccount)
 }
 
+// DeleteAccount appends a delete record for address (projected as DELETE FROM
+// accounts) and drops its cache entry. Unlike write(), a failed append is
+// returned and NOT enqueued to the outbox: a delete replayed later could remove
+// an account that a later block legitimately created.
+func (g *thebeGateway) DeleteAccount(ctx context.Context, address string) error {
+	payload, err := json.Marshal(&AccountRecord{Address: address, Deleted: true})
+	if err != nil {
+		return fmt.Errorf("thebeGateway.DeleteAccount: marshal: %w", err)
+	}
+	if _, err := g.appender.Append(ctx, &core.CanonicalRecord{
+		Namespace: string(NamespaceAccount),
+		Type:      "DeleteAccount",
+		Value:     payload,
+		Timestamp: uint64(time.Now().UnixNano()),
+	}); err != nil {
+		return fmt.Errorf("thebeGateway.DeleteAccount(%s): append: %w", address, err)
+	}
+	if g.cache != nil {
+		_ = g.cache.Delete(ctx, AccountKey(address))
+	}
+	return nil
+}
+
 // WriteTransaction appends a transaction record to ThebeDB and populates the cache.
 // Time: O(1) amortized
 func (g *thebeGateway) WriteTransaction(ctx context.Context, tx *TransactionRecord) error {

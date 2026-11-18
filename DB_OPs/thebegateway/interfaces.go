@@ -47,6 +47,10 @@ type ThebeKVStore interface {
 type ThebeGateway interface {
 	WriteBlock(ctx context.Context, block *BlockRecord) error
 	WriteAccount(ctx context.Context, account *AccountRecord) error
+	// DeleteAccount removes the account row (rollback of a failed block that
+	// created it). Never deferred to the outbox: a late delete could remove an
+	// account a later block created, so a failed append is returned.
+	DeleteAccount(ctx context.Context, address string) error
 	WriteTransaction(ctx context.Context, tx *TransactionRecord) error
 	WriteSnapshot(ctx context.Context, snapshot *SnapshotRecord) error
 	WriteZKProof(ctx context.Context, proof *ZKProofRecord) error

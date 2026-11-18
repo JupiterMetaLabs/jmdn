@@ -15,6 +15,7 @@ import (
 )
 
 func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
+	resetApplyHaltForTest(t)
 	bh := common.HexToHash("0xC0FFEE")
 	markContractStateCommitted(bh)
 	defer clearContractStateCommitted(bh)
@@ -39,6 +40,7 @@ func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
 }
 
 func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {
+	resetApplyHaltForTest(t)
 	bh := common.HexToHash("0xBEEF") // never marked as committing contract state
 
 	rolledBackCalled := false
@@ -63,6 +65,7 @@ func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {
 // The flag registry is per-block-hash and isolated: a mark on one hash does not leak
 // into the decision for another (two blocks applying concurrently must not cross).
 func TestDecideStoreFailure_FlagIsolationPerBlock(t *testing.T) {
+	resetApplyHaltForTest(t)
 	contract := common.HexToHash("0x1111")
 	plain := common.HexToHash("0x2222")
 	markContractStateCommitted(contract)

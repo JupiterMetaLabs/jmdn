@@ -61,6 +61,7 @@ type setCacheCall struct {
 
 type spyCache struct {
 	mu       sync.Mutex
+	deleted  []string
 	setCalls []setCacheCall
 	setErr   error
 	data     map[string][]byte
@@ -91,7 +92,12 @@ func (m *spyCache) Get(_ context.Context, key string) ([]byte, error) {
 	return v, nil
 }
 
-func (m *spyCache) Delete(_ context.Context, _ ...string) error      { return nil }
+func (m *spyCache) Delete(_ context.Context, keys ...string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleted = append(m.deleted, keys...)
+	return nil
+}
 func (m *spyCache) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
 func (m *spyCache) Keys(_ context.Context, _ string, _ int64) ([]string, error) {
 	return nil, nil
@@ -299,6 +305,9 @@ func (m *spyGateway) WriteBlock(_ context.Context, b *thebegateway.BlockRecord) 
 }
 func (m *spyGateway) WriteAccount(_ context.Context, a *thebegateway.AccountRecord) error {
 	return m.rec("WriteAccount", a)
+}
+func (m *spyGateway) DeleteAccount(_ context.Context, address string) error {
+	return m.rec("DeleteAccount", address)
 }
 func (m *spyGateway) WriteTransaction(_ context.Context, t *thebegateway.TransactionRecord) error {
 	return m.rec("WriteTransaction", t)

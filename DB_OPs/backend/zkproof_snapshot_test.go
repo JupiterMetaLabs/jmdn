@@ -50,6 +50,7 @@ func (g *countingGateway) WriteTransaction(_ context.Context, _ *thebegateway.Tr
 func (g *countingGateway) WriteAccount(_ context.Context, _ *thebegateway.AccountRecord) error {
 	return nil
 }
+func (g *countingGateway) DeleteAccount(_ context.Context, _ string) error { return nil }
 func (g *countingGateway) WriteL1Finality(_ context.Context, _ *thebegateway.L1FinalityRecord) error {
 	return nil
 }

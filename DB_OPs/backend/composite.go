@@ -105,6 +105,11 @@ func (h *compositeHandle) CreateAccount(ctx context.Context, account *store.Acco
 	return h.accounts.CreateAccount(ctx, account)
 }
 
+// DeleteAccount delegates to the cache-decorated AccountStore.
+func (h *compositeHandle) DeleteAccount(ctx context.Context, address string) error {
+	return h.accounts.DeleteAccount(ctx, address)
+}
+
 // UpdateAccountBalance delegates to the cache-decorated AccountStore.
 func (h *compositeHandle) UpdateAccountBalance(ctx context.Context, address, balance string) error {
 	return h.accounts.UpdateAccountBalance(ctx, address, balance)

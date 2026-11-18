@@ -57,6 +57,23 @@ func (s *cachedAccountStore) CreateAccount(ctx context.Context, account *store.A
 	return nil
 }
 
+// DeleteAccount delegates to inner, then drops both cache keys of the account
+// (by address and by DID), so neither can serve a deleted account.
+func (s *cachedAccountStore) DeleteAccount(ctx context.Context, address string) error {
+	var did string
+	if acc, err := s.inner.GetAccount(ctx, address); err == nil && acc != nil {
+		did = acc.DIDAddress
+	}
+	if err := s.inner.DeleteAccount(ctx, address); err != nil {
+		return err
+	}
+	_ = s.c.Delete(ctx, Account(address))
+	if did != "" {
+		_ = s.c.Delete(ctx, AccountDID(did))
+	}
+	return nil
+}
+
 // UpdateAccountBalance delegates to inner, then invalidates the address cache key on success.
 // Balance changed — must not serve stale balance from cache.
 // Time: O(1) inner write; cache invalidation is best-effort.

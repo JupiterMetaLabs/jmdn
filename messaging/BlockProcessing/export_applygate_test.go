@@ -14,3 +14,7 @@ func SetGroupedApplyForTest(on bool, budget int) func() {
 		groupedApplyEnabled, groupedApplyOpBudget = prevEnabled, prevBudget
 	}
 }
+
+// ResetApplyHaltForTest clears the process-wide block-apply halt, as a restart
+// with a fresh store would.
+func ResetApplyHaltForTest() { applyHaltReason.Store(nil) }
