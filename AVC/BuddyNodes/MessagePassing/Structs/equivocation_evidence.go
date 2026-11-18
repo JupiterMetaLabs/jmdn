@@ -26,7 +26,7 @@ func SignedEquivocation(c *avctypes.Controller, height uint64, blockHash, peerID
 		return false
 	}
 
-	// VerifyForBlock requires a non-empty ConsensusHash: an equivocation
+	// VerifyBallotForBlock requires a non-empty ConsensusHash: an equivocation
 	// charge is itself a vote-signature check, held to the same bar as a
 	// tally. Only the block-hash string is available here, not the block
 	// itself, so the hash is sourced from this node's own consensus-message
@@ -45,7 +45,7 @@ func SignedEquivocation(c *avctypes.Controller, height uint64, blockHash, peerID
 	tasks := make([]tallySigTask, 0, len(values))
 	for i, v := range values {
 		// An unsigned record never counts: its empty signature fails
-		// VerifyForBlock below.
+		// VerifyBallotForBlock below.
 		if i >= len(recs) {
 			continue
 		}

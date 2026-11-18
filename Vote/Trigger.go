@@ -353,7 +353,12 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// its own VoteCRDTLayer and ingest it into its own — see
 	// Structs.IngestValidatorVote. Signing is attempted unconditionally; only
 	// what happens with the result differs.
-	blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
+	//
+	// Signed in the ballot domain (zkballot:v1), not the vote-result format a
+	// certificate is built from, so ballots collected from gossip cannot be
+	// assembled into a certificate. The tally accepts both formats
+	// (BLS_Verifier.VerifyBallotForBlock).
+	blsResp, signed, blsErr := BLS_Signer.SignBallotForBlock(
 		vt.Vote.Vote,
 		BLS_Signer.DomainChainID(),
 		zkBlock.BlockNumber,

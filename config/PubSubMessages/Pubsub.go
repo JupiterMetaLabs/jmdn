@@ -99,7 +99,7 @@ type Vote struct {
 
 	// BLSSignature/BLSPubKeyHex carry the per-vote BLS signature Vote/Trigger.go
 	// already produces for its own avcvotes.VoteRecord (Vote/Trigger.go's
-	// SignMessageForBlock call), so a buddy receiving this vote over pubsub or
+	// SignBallotForBlock call), so a buddy receiving this vote over pubsub or
 	// direct-stream can build the identical signed VoteRecord and ingest it
 	// into VoteCRDTLayer — the only keyspace the tally reads. omitempty: a vote
 	// from a node that cannot sign (or predates this field) carries neither,
