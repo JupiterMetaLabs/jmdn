@@ -15,6 +15,9 @@ func SetGroupedApplyForTest(on bool, budget int) func() {
 	}
 }
 
-// ResetApplyHaltForTest clears the process-wide block-apply halt, as a restart
-// with a fresh store would.
-func ResetApplyHaltForTest() { applyHaltReason.Store(nil) }
+// ResetApplyHaltForTest clears the process-wide block-apply halt and forgets
+// that its record was read, as a restart with a fresh store would.
+func ResetApplyHaltForTest() {
+	applyHaltReason.Store(nil)
+	applyHaltLoaded.Store(false)
+}

@@ -98,22 +98,25 @@ func clearContractStateCommitted(blockHash common.Hash) {
 }
 
 // decideStoreFailure implements the D-858 B2 rule for a store failure that occurs
-// AFTER the block's transactions were applied. rollbackState / rollbackApplied can
-// only restore ACCOUNT docs; if the block committed contract STORAGE (applyContractTx
+// AFTER the block's transactions were applied. rollbackApplied can only restore
+// ACCOUNT docs; if the block committed contract STORAGE (applyContractTx
 // step 7.5 calls res.CommitState() durably, with no undo), an accounts-only rollback
 // would revert balances while leaving storage mutated — a silent divergence worse than
 // not rolling back. So:
 //   - contract-bearing block (didCommitContractState) → REFUSE the incomplete rollback
 //     and fail closed; rollbackApplied is NOT called. Returns (refusal error, false).
-//   - non-contract block → rollbackApplied() fully reverts it. Returns (rollback error, true).
+//   - non-contract block → rollbackApplied() reverts it. Returns (store error, plus
+//     the rollback's own error if it could not complete, true).
 //
 // Extracted from ProcessBlockTransactionsAndStore so the decision is unit-testable
-// without a live DB (review B8). The bool is whether a rollback was performed.
-func decideStoreFailure(blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func()) (error, bool) {
-	if rerr := refuseIncompleteRollback(blockHash, blockNumber, serr); rerr != nil {
+// without a live DB (review B8). The bool is whether a rollback was attempted.
+func decideStoreFailure(ctx context.Context, blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func() error) (error, bool) {
+	if rerr := refuseIncompleteRollback(ctx, blockHash, blockNumber, serr); rerr != nil {
 		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", blockNumber, rerr), false
 	}
-	rollbackApplied()
+	if rbErr := rollbackApplied(); rbErr != nil {
+		return fmt.Errorf("block %d: store failed after apply: %w; rollback: %w", blockNumber, serr, rbErr), true
+	}
 	return fmt.Errorf("block %d: store failed after apply, rolled back (fail closed): %w", blockNumber, serr), true
 }
 
@@ -399,9 +402,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		return fmt.Errorf("apply: block %d (%s) has transactions but no coinbase or zkVM address",
 			block.BlockNumber, block.BlockHash.Hex())
 	}
-	// A node that refused an incomplete rollback holds a block's partial
-	// effects; applying anything on top would build on state no other node has.
-	if reason := ApplyHaltReason(); reason != "" {
+	// A node that could not roll a block back holds its partial effects;
+	// applying anything on top would build on state no other node has. The
+	// halt survives a restart; an unreadable halt record fails closed.
+	if reason, herr := ApplyHaltReason(); herr != nil {
+		return fmt.Errorf("apply block %d: %w (fail closed)", block.BlockNumber, herr)
+	} else if reason != "" {
 		return fmt.Errorf("apply block %d: %w (%s)", block.BlockNumber, ErrApplyHalted, reason)
 	}
 	// Serialize concurrent applies of the SAME block so it is applied exactly
@@ -505,10 +511,6 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 		originalState[addr] = snap
 	}
-	// Contract transactions add the accounts only their execution touches
-	// (recordRollbackTargets), through the context, before they commit.
-	span_ctx = withRollbackSet(span_ctx, &rollbackSet{snaps: originalState})
-
 	span.SetAttributes(attribute.Int("sorted_transactions", len(block.Transactions)))
 
 	logger().Info(span_ctx, "Starting block processing",
@@ -666,7 +668,7 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 			// A contract transaction of this block already committed storage,
 			// which no rollback can undo: refuse, halt apply, resync.
-			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, Process_err); rerr != nil {
+			if rerr := refuseIncompleteRollback(span_ctx, block.BlockHash, block.BlockNumber, Process_err); rerr != nil {
 				span.RecordError(rerr)
 				span.SetAttributes(attribute.String("status", "rollback_refused_contract_state"))
 				logger().Error(span_ctx, "Transaction failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
@@ -710,7 +712,9 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			//
 			// If revocation itself fails, ABORT the rollback: applied+marked is a
 			// CONSISTENT state (replay skips the prefix, retries only the failed
-			// tx). Restoring balances under live markers would not be.
+			// tx). Restoring balances under live markers would not be. The one
+			// exception is a commit that failed part-way (DB_OPs.ErrPartialApply):
+			// its writes have no marker, so block apply halts (rollbackAbandoned).
 			//
 			// The revoke+restore pair runs under the state-apply lock: the
 			// reconciliation applier reads markers to decide what to apply, so
@@ -723,7 +727,31 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			// being undone. A crash after the drop leaves applied balances with
 			// applied markers (consistent); if the drop fails, nothing is
 			// revoked or restored and boot recovery completes the apply.
+			//
+			// The rollback's reads run FIRST, before anything is dropped or
+			// revoked: if one fails, nothing has changed and the applied+marked
+			// prefix stays consistent, exactly as for a failed revocation.
 			DB_OPs.LockStateApply()
+			plan, planErr := planRollback(originalState, accountsClient)
+			if planErr != nil {
+				DB_OPs.UnlockStateApply()
+				span.RecordError(planErr)
+				span.SetAttributes(attribute.String("status", "rollback_read_failed"))
+				if herr := rollbackAbandoned(span_ctx, block.BlockHash, block.BlockNumber, Process_err, planErr); herr != nil {
+					cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+					return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w; rollback: %w", i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, herr)
+				}
+				logger().Error(span_ctx, "Rollback could not read the accounts it restores — SKIPPING marker revocation and balance rollback (applied+marked prefix stays consistent)",
+					planErr,
+					ion.Int("prefix_txs", len(successfullyProcessedTxs)),
+					ion.String("failed_tx_hash", tx.Hash.Hex()),
+					ion.String("topic", TOPIC),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+				return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w (rollback reads failed: %v — prefix left applied+marked)",
+					i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, planErr)
+			}
 			if discardErr := DB_OPs.DiscardPendingTxApply(); discardErr != nil {
 				DB_OPs.UnlockStateApply()
 				span.RecordError(discardErr)
@@ -743,6 +771,10 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				DB_OPs.UnlockStateApply()
 				span.RecordError(revokeErr)
 				span.SetAttributes(attribute.String("status", "marker_revocation_failed"))
+				if herr := rollbackAbandoned(span_ctx, block.BlockHash, block.BlockNumber, Process_err, revokeErr); herr != nil {
+					cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+					return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w; rollback: %w", i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, herr)
+				}
 				logger().Error(span_ctx, "Marker revocation failed — SKIPPING balance rollback (applied+marked prefix stays consistent)",
 					revokeErr,
 					ion.Int("prefix_txs", len(successfullyProcessedTxs)),
@@ -758,21 +790,24 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, revokeErr)
 			}
 
-			// Rollback all account state to original snapshot
-			rollbackError := rollbackState(span_ctx, originalState, accountsClient)
+			// Restore every snapshotted account. A failed write here leaves
+			// revoked markers over a partial restore: block apply halts.
+			rollbackError := restoreAfterRevoke(span_ctx, plan, accountsClient, block.BlockHash, block.BlockNumber)
 			DB_OPs.UnlockStateApply()
 			if rollbackError != nil {
 				span.RecordError(rollbackError)
-				logger().Error(span_ctx, "Failed to rollback balances after transaction failure",
+				logger().Error(span_ctx, "Failed to roll back balances after transaction failure — block apply halted",
 					rollbackError,
 					ion.String("tx_hash", tx.Hash.Hex()),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 					ion.String("topic", TOPIC),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 				)
-				// Still return the original error as it's more critical. Markers
-				// are already revoked, so a partial restore fails toward
-				// re-apply-on-replay (bounded double-apply), never toward skip.
+				for _, txHash := range successfullyProcessedTxs {
+					cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
+				}
+				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
+				return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w; rollback: %w", i+1, len(block.Transactions), tx.Hash.Hex(), Process_err, rollbackError)
 			}
 
 			// Clean up processing markers for all transactions processed so far
@@ -809,8 +844,24 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// between them fails toward bounded double-apply (repairable) rather than a
 	// permanent silent skip. A revoke failure aborts the balance restore, leaving
 	// a consistent applied+marked prefix that replay retries.
-	rollbackApplied := func() {
+	rollbackApplied := func(cause error) error {
 		DB_OPs.LockStateApply()
+		// Read first, so a read error leaves nothing revoked (see the in-loop path).
+		plan, planErr := planRollback(originalState, accountsClient)
+		if planErr != nil {
+			DB_OPs.UnlockStateApply()
+			span.RecordError(planErr)
+			if herr := rollbackAbandoned(span_ctx, block.BlockHash, block.BlockNumber, cause, planErr); herr != nil {
+				return herr
+			}
+			logger().Error(span_ctx, "post-apply rollback: could not read the accounts it restores — rollback skipped, applied+marked prefix left consistent (replay retries)",
+				planErr,
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+			)
+			return fmt.Errorf("rollback skipped, prefix left applied+marked: %w", planErr)
+		}
 		// Drop the pending apply record before revoking (see the in-loop path).
 		if discardErr := DB_OPs.DiscardPendingTxApply(); discardErr != nil {
 			DB_OPs.UnlockStateApply()
@@ -821,11 +872,14 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
-			return
+			return fmt.Errorf("rollback skipped, pending apply record could not be dropped: %w", discardErr)
 		}
 		if revokeErr := DB_OPs.RevokeTxProcessedMarkers(accountsClient, successfullyProcessedTxs); revokeErr != nil {
 			DB_OPs.UnlockStateApply()
 			span.RecordError(revokeErr)
+			if herr := rollbackAbandoned(span_ctx, block.BlockHash, block.BlockNumber, cause, revokeErr); herr != nil {
+				return herr
+			}
 			logger().Error(span_ctx, "post-apply rollback: marker revocation failed — applied+marked prefix left consistent (replay retries)",
 				revokeErr,
 				ion.Int("prefix_txs", len(successfullyProcessedTxs)),
@@ -834,11 +888,13 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
-			return
+			return fmt.Errorf("rollback skipped, marker revocation failed: %w", revokeErr)
 		}
-		if rbErr := rollbackState(span_ctx, originalState, accountsClient); rbErr != nil {
+		rbErr := restoreAfterRevoke(span_ctx, plan, accountsClient, block.BlockHash, block.BlockNumber)
+		DB_OPs.UnlockStateApply()
+		if rbErr != nil {
 			span.RecordError(rbErr)
-			logger().Error(span_ctx, "post-apply rollback: balance restore failed after revoke (replay re-applies, bounded double-apply)",
+			logger().Error(span_ctx, "post-apply rollback: balance restore failed after revoke — block apply halted",
 				rbErr,
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -846,36 +902,40 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
 		}
-		DB_OPs.UnlockStateApply()
 		for _, txHash := range successfullyProcessedTxs {
 			cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
 		}
+		return rbErr
 	}
 
 	// Commit the last open group before the state is fingerprinted.
 	if ferr := flushGroup(); ferr != nil {
 		span.RecordError(ferr)
 		span.SetAttributes(attribute.String("status", "group_commit_failed"))
-		if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, ferr); rerr != nil {
+		if rerr := refuseIncompleteRollback(span_ctx, block.BlockHash, block.BlockNumber, ferr); rerr != nil {
 			logger().Error(span_ctx, "Group commit failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
 				rerr, ion.Int64("block_number", int64(block.BlockNumber)),
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
 			return fmt.Errorf("block %d: %w", block.BlockNumber, rerr)
 		}
-		rollbackApplied()
+		if rbErr := rollbackApplied(ferr); rbErr != nil {
+			return fmt.Errorf("block %d: %w; rollback: %w", block.BlockNumber, ferr, rbErr)
+		}
 		return fmt.Errorf("block %d: %w", block.BlockNumber, ferr)
 	}
 
 	if execbridge.Enabled() {
 		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
 		if fperr != nil {
-			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, fperr); rerr != nil {
+			if rerr := refuseIncompleteRollback(span_ctx, block.BlockHash, block.BlockNumber, fperr); rerr != nil {
 				logger().Error(span_ctx, "State fingerprint failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
 					rerr, ion.Int64("block_number", int64(block.BlockNumber)),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
 				return fmt.Errorf("block %d: %w", block.BlockNumber, rerr)
 			}
-			rollbackApplied()
+			if rbErr := rollbackApplied(fperr); rbErr != nil {
+				return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w; rollback: %w", block.BlockNumber, fperr, rbErr)
+			}
 			return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w", block.BlockNumber, fperr)
 		}
 		switch {
@@ -924,13 +984,15 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					)
 				}
 			}
-			if rerr := refuseIncompleteRollback(block.BlockHash, block.BlockNumber, fmt.Errorf("state fingerprint mismatch")); rerr != nil {
+			if rerr := refuseIncompleteRollback(span_ctx, block.BlockHash, block.BlockNumber, fmt.Errorf("state fingerprint mismatch")); rerr != nil {
 				logger().Error(span_ctx, "State divergence in a block that committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
 					rerr, ion.Int64("block_number", int64(block.BlockNumber)),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
 				return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s: %w", block.BlockNumber, fp, block.StateFingerprint, rerr)
 			}
-			rollbackApplied()
+			if rbErr := rollbackApplied(fmt.Errorf("state fingerprint mismatch")); rbErr != nil {
+				return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed); rollback: %w", block.BlockNumber, fp, block.StateFingerprint, rbErr)
+			}
 			return fmt.Errorf("block %d: state divergence — local fingerprint %s != block-carried %s (halting, fail closed)", block.BlockNumber, fp, block.StateFingerprint)
 		}
 	}
@@ -961,7 +1023,7 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			// (below) so it can be unit-tested without a live DB (review B8). It returns
 			// whether a rollback was actually performed so the two distinct operator
 			// signals below stay accurate.
-			err, rolledBack := decideStoreFailure(block.BlockHash, block.BlockNumber, serr, rollbackApplied)
+			err, rolledBack := decideStoreFailure(span_ctx, block.BlockHash, block.BlockNumber, serr, func() error { return rollbackApplied(serr) })
 			if !rolledBack {
 				span.SetAttributes(attribute.String("status", "store_failed_contract_no_rollback"))
 				logger().Error(span_ctx, "STORE FAILED after committing contract state — REFUSING incomplete rollback (contract storage has no undo); failing closed. This node may be diverged and MUST resync from the canonical chain.",
@@ -1083,99 +1145,6 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 
 	// Also clean up the transaction lock
 	cleanupTransactionLock(txHash)
-}
-
-// rollbackState restores all affected accounts to their pre-block snapshot atomically.
-// It restores balance, TxNonce, and TxCountSent in a single write per account.
-func rollbackState(span_ctx context.Context, snapshots map[common.Address]AccountSnapshot, accountsClient *config.PooledConnection) error {
-	rollbackSpanCtx, rollbackSpan := logger().Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackState")
-	defer rollbackSpan.End()
-
-	rollbackStartTime := time.Now().UTC()
-	rollbackSpan.SetAttributes(attribute.Int("accounts_to_rollback", len(snapshots)))
-
-	// Drop any in-flight apply record before restoring, so boot recovery can
-	// never roll the failed tx forward over the restored balances.
-	if err := DB_OPs.DiscardPendingTxApply(); err != nil {
-		rollbackSpan.RecordError(err)
-		return fmt.Errorf("rollback: %w", err)
-	}
-
-	rollbackCount := 0
-	for addr, snap := range snapshots {
-		doc, err := DB_OPs.GetAccount(accountsClient, addr)
-		missing := err != nil && DB_OPs.IsNotFound(err)
-		if err != nil && !missing {
-			rollbackSpan.RecordError(err)
-			return fmt.Errorf("rollback: read %s: %w", addr.Hex(), err)
-		}
-		if snap.Absent {
-			// The block created this account: remove it, never leave a
-			// zero-balance row behind.
-			if !missing && doc != nil {
-				if derr := DB_OPs.DeleteAccount(addr); derr != nil {
-					rollbackSpan.RecordError(derr)
-					return fmt.Errorf("rollback: delete %s created by the failed block: %w", addr.Hex(), derr)
-				}
-			}
-			rollbackCount++
-			continue
-		}
-		if missing || doc == nil {
-			// Existed before the block but is gone now: recreate it with the
-			// identity it had.
-			doc = &DB_OPs.Account{
-				Address:     addr,
-				DIDAddress:  snap.DIDAddress,
-				AccountType: snap.AccountType,
-				CreatedAt:   snap.CreatedAt,
-				Metadata:    snap.Metadata,
-			}
-		}
-
-		doc.Nonce = snap.Nonce
-		doc.Balance = snap.Balance
-		doc.TxNonce = snap.TxNonce
-		doc.TxCountSent = snap.TxCountSent
-		doc.UpdatedAt = snap.UpdatedAt
-
-		if err := DB_OPs.UpdateAccount(accountsClient, doc); err != nil {
-			rollbackSpan.RecordError(err)
-			rollbackSpan.SetAttributes(attribute.String("status", "partial_failure"), attribute.String("failed_account", addr.Hex()))
-			logger().Error(rollbackSpanCtx, "Failed to restore account state during rollback",
-				err,
-				ion.String("account", addr.Hex()),
-				ion.String("original_balance", snap.Balance),
-				ion.Uint64("original_tx_nonce", snap.TxNonce),
-				ion.Uint64("original_tx_count_sent", snap.TxCountSent),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.rollbackState"),
-			)
-			return fmt.Errorf("failed to restore state for %s: %w", addr, err)
-		}
-		rollbackCount++
-		logger().Debug(rollbackSpanCtx, "Rolled back account state to original snapshot",
-			ion.String("account", addr.Hex()),
-			ion.String("balance", snap.Balance),
-			ion.Uint64("tx_nonce", snap.TxNonce),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.rollbackState"),
-		)
-	}
-
-	duration := time.Since(rollbackStartTime).Seconds()
-	rollbackSpan.SetAttributes(
-		attribute.Float64("duration", duration),
-		attribute.String("status", "success"),
-		attribute.Int("rolled_back_accounts", rollbackCount),
-	)
-	logger().Info(rollbackSpanCtx, "Rollback completed successfully",
-		ion.Int("rolled_back_accounts", rollbackCount),
-		ion.Float64("duration", duration),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.rollbackState"),
-	)
-	return nil
 }
 
 // processTransaction handles a single transaction's balance updates.
@@ -1588,7 +1557,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// 2. Add amount to recipient
 	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), stage, blockTimestamp); err != nil {
-		// Remove nested rollback logic: parent loop will handle full block rollback via rollbackState
+		// Remove nested rollback logic: parent loop will handle full block rollback (planRollback / restoreAfterRevoke)
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "recipient_add_failed"), attribute.String("failed_step", "add_to_recipient"))
 
@@ -1669,7 +1638,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// weighted set when the block carries FeeRecipients), then the ZKVM.
 	for _, c := range coinbaseCredits {
 		if err := addToRecipient(txSpanCtx, c.Addr, c.Amount.String(), stage, blockTimestamp); err != nil {
-			// Parent loop handles full block rollback via rollbackState.
+			// Parent loop handles full block rollback (planRollback / restoreAfterRevoke).
 			txSpan.RecordError(err)
 			txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
 			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
@@ -1682,7 +1651,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
 
 	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), stage, blockTimestamp); err != nil {
-		// Remove nested rollback logic: parent loop will handle full block rollback via rollbackState
+		// Remove nested rollback logic: parent loop will handle full block rollback (planRollback / restoreAfterRevoke)
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "zkvm_gas_fee_failed"), attribute.String("failed_step", "add_to_zkvm"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())

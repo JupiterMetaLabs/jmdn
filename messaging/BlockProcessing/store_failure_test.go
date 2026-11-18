@@ -7,6 +7,7 @@ package BlockProcessing
 // verified here with a stubbed rollback func and no infrastructure.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -21,8 +22,9 @@ func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
 	defer clearContractStateCommitted(bh)
 
 	rolledBackCalled := false
-	err, rolledBack := decideStoreFailure(bh, 858, errors.New("uq_txn_block_index 23505"), func() {
+	err, rolledBack := decideStoreFailure(context.Background(), bh, 858, errors.New("uq_txn_block_index 23505"), func() error {
 		rolledBackCalled = true
+		return nil
 	})
 
 	if rolledBack || rolledBackCalled {
@@ -44,8 +46,9 @@ func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {
 	bh := common.HexToHash("0xBEEF") // never marked as committing contract state
 
 	rolledBackCalled := false
-	err, rolledBack := decideStoreFailure(bh, 844, errors.New("disk full"), func() {
+	err, rolledBack := decideStoreFailure(context.Background(), bh, 844, errors.New("disk full"), func() error {
 		rolledBackCalled = true
+		return nil
 	})
 
 	if !rolledBack || !rolledBackCalled {
@@ -71,10 +74,21 @@ func TestDecideStoreFailure_FlagIsolationPerBlock(t *testing.T) {
 	markContractStateCommitted(contract)
 	defer clearContractStateCommitted(contract)
 
-	if _, rolledBack := decideStoreFailure(plain, 10, errors.New("x"), func() {}); !rolledBack {
+	if _, rolledBack := decideStoreFailure(context.Background(), plain, 10, errors.New("x"), func() error { return nil }); !rolledBack {
 		t.Fatal("unmarked block must roll back even while another block is marked")
 	}
-	if _, rolledBack := decideStoreFailure(contract, 11, errors.New("x"), func() {}); rolledBack {
+	if _, rolledBack := decideStoreFailure(context.Background(), contract, 11, errors.New("x"), func() error { return nil }); rolledBack {
 		t.Fatal("marked block must refuse rollback")
+	}
+}
+
+// A store failure whose rollback could not complete reports both errors.
+func TestDecideStoreFailure_ReportsRollbackError(t *testing.T) {
+	resetApplyHaltForTest(t)
+	err, rolledBack := decideStoreFailure(context.Background(), common.HexToHash("0xFACE"), 845, errors.New("disk full"), func() error {
+		return ErrApplyHalted
+	})
+	if !rolledBack || !errors.Is(err, ErrApplyHalted) || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("want the store error and the rollback's halt, got rolledBack=%v err=%v", rolledBack, err)
 	}
 }

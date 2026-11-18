@@ -91,12 +91,49 @@ func TestRollback_ContractPrefixRefusesAndHalts(t *testing.T) {
 			t.Fatalf("attempt %d: Z = %+v, want exactly one payment of 10", attempt, v)
 		}
 	}
-	if BlockProcessing.ApplyHaltReason() == "" {
-		t.Fatal("no halt reason recorded")
+	if r, err := BlockProcessing.ApplyHaltReason(); err != nil || r == "" {
+		t.Fatalf("no halt reason recorded (%q, %v)", r, err)
 	}
 
 	clean := sequencerBlock(t, 2, b1.BlockHash, []config.Transaction{callTx(acctB, acctA, 0, nil, big.NewInt(1))}, false)
 	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), clean, nil); !errors.Is(err, BlockProcessing.ErrApplyHalted) {
 		t.Fatalf("a block on top of the partial state must be refused, got %v", err)
+	}
+}
+
+// With the revert height active the same block applies: the payout that would
+// create an account with no carried identity is applied as a status-0 revert,
+// and nothing halts.
+func TestRollback_ContractPrefixAppliesWithRevertHeight(t *testing.T) {
+	setRevertHeight(t, 1)
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+
+	fwd := contractAddr(acctA, 0)
+	z, fresh := freshAddr("rollback-z"), freshAddr("rollback-fresh")
+	b1 := sequencerBlock(t, 1, common.Hash{}, []config.Transaction{deployTx(acctA, 0, mustHex(t, binForward))}, true)
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b1, nil); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	b2 := sequencerBlock(t, 2, b1.BlockHash, []config.Transaction{
+		callTx(acctA, fwd, 1, calldata("pay(address)", z.Bytes()), big.NewInt(10)),
+		callTx(acctA, fwd, 2, nil, big.NewInt(100)),
+		callTx(acctA, fwd, 3, calldata("payout(address,uint256)", fresh.Bytes(), big.NewInt(40).Bytes()), big.NewInt(0)),
+	}, true)
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b2, nil); err != nil {
+		t.Fatalf("with the revert height active the block must apply, got %v", err)
+	}
+	if r, err := BlockProcessing.ApplyHaltReason(); err != nil || r != "" {
+		t.Fatalf("apply halted (%q, %v)", r, err)
+	}
+	if v := view(t, z); v.balance != "10" {
+		t.Fatalf("Z = %+v, want 10", v)
+	}
+	if v := view(t, fwd); v.balance != "100" {
+		t.Fatalf("Forward = %+v, want 100 (funded, payout reverted)", v)
+	}
+	if v := view(t, fresh); v.exists {
+		t.Fatal("the reverted payout created its recipient")
 	}
 }

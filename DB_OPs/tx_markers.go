@@ -33,6 +33,7 @@ package DB_OPs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -221,6 +222,11 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 	return nil
 }
 
+// ErrPartialApply marks an apply whose writes failed part-way: some account
+// documents, and possibly some tx markers, may already be written. Only a
+// rollback of the block makes that state consistent again.
+var ErrPartialApply = errors.New("apply failed part-way; some of its writes may be committed")
+
 // ApplyTxAtomic commits one transaction's complete effect: every touched
 // account document, then the tx_processed marker LAST, bracketed by a redo
 // record so a crash between the commits is rolled forward at boot
@@ -229,7 +235,7 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 // Caller must hold LockStateApply.
 //
 // On a returned error the redo record is cleared: the caller rolls the block
-// back (rollbackState), and a leftover record would otherwise re-apply the
+// back (BlockProcessing planRollback/restoreAfterRevoke), and a leftover record would otherwise re-apply the
 // failed tx after that rollback.
 func ApplyTxAtomic(c *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
 	return ApplyTxGroupAtomic(c, docs, []string{txHash}, appliedAt)
@@ -291,9 +297,9 @@ func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []
 
 	if err := writeTxEffects(h, docs, txHashes, appliedAt); err != nil {
 		if cerr := clearTxApplyRedo(h); cerr != nil {
-			return fmt.Errorf("ApplyTxAtomic %s: %w (and %v)", label, err, cerr)
+			return fmt.Errorf("ApplyTxAtomic %s: %w: %w (and %v)", label, ErrPartialApply, err, cerr)
 		}
-		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrPartialApply, err)
 	}
 
 	if err := clearTxApplyRedo(h); err != nil {

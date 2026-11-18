@@ -107,8 +107,14 @@ func TestRecover_RollsForwardInterruptedApply(t *testing.T) {
 func TestApplyTxAtomic_ErrorClearsRedo(t *testing.T) {
 	h := newRedoHandle(t, redoAddr, "100")
 	h.failMarkerPut = true
-	if err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xcc", 1); err == nil {
+	err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xcc", 1)
+	if err == nil {
 		t.Fatal("expected error")
+	}
+	// The account was written before the marker failed: the caller must know
+	// that only a rollback makes this consistent.
+	if !errors.Is(err, ErrPartialApply) {
+		t.Fatalf("a failure after writes started must be ErrPartialApply, got %v", err)
 	}
 	if len(h.kv[txApplyRedoKey]) != 0 {
 		t.Fatal("redo must be cleared on error so rollback is not undone at boot")
