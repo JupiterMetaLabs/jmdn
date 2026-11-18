@@ -36,6 +36,12 @@ var (
 // It automatically reads the configuration from Viper settings.
 // Alerts silently no-op if url or apiKey are empty.
 func Configure() {
+	// No config loaded yet (unit tests, tools, early init): stay disabled
+	// instead of panicking in settings.Get(), and leave once unused so a later
+	// call after settings.Load still configures the service.
+	if !settings.IsLoaded() {
+		return
+	}
 	once.Do(func() {
 		// Read directly from Centralized configuration
 		alertsConf := settings.Get().Alerts

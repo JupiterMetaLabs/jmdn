@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/internal/roundlock"
 	"gossipnode/internal/saferun"
 
@@ -1328,6 +1329,10 @@ func main() {
 		// The time each height was first proposed, so the period bound does
 		// not restart at a restart (roundlock.Pace).
 		roundlock.DefaultPace.SetStore(DB_OPs.ConsensusLockStore{}, "pacelock:")
+		// A certified block that was not stored yet survives a restart, so the
+		// sequencer resumes committing it instead of starting a new round at
+		// that height (Sequencer.ResumePendingCommit).
+		pendingcommit.Default.SetStore(DB_OPs.ConsensusLockStore{}, pendingcommit.DefaultKey)
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
 		// Finish any tx apply that was interrupted by the previous shutdown
@@ -2446,6 +2451,17 @@ func main() {
 		}); err != nil {
 			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.DIDThread))
 		}
+	}
+
+	// Sequencer: finish a certified block left uncommitted by the previous run.
+	// Proposals at or above its height are refused by the block servers until
+	// it is stored, so this runs in the background and the servers can start.
+	if cfg.Ports.BlockGen > 0 || cfg.Ports.BlockGRPC > 0 {
+		go func() {
+			if err := Sequencer.ResumePendingCommit(context.Background(), n.Host); err != nil {
+				mainLogger().Error(context.Background(), "Could not resume the pending certified block; its height stays halted", err)
+			}
+		}()
 	}
 
 	if cfg.Ports.BlockGen > 0 {

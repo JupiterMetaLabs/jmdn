@@ -447,25 +447,28 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// diverging its state from the fleet. Withholding the block from peers on
 		// local failure keeps producer and fleet consistent — the round is simply
 		// retried at the same height.
-		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
+		//
+		// The block holds a valid certificate, so it is committed or the height
+		// halts: commitCertifiedBlock retries the SAME block with the SAME
+		// certificate at the SAME period and never advances the period. Moving
+		// to a new period here would let a different block be certified at this
+		// height while this certificate still exists. A pending record refuses
+		// new proposals at the height until the block is stored.
+		if err := commitCertifiedBlock(ctx, block, blsResults); err != nil {
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).
 				Severity(Alerts.SeverityError).
-				Description("Failed to process block locally — block withheld from peers (not broadcast)").
+				Description("Certified block could not be stored — withheld from peers, height halted (period not advanced)").
 				Msg(err.Error()).
 				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 				Label("block_hash", block.BlockHash.Hex()).
 				Send()
-			// The certified block was never committed, so the retry at this
-			// height is a new round (R3). ProcessBlockLocally has already
-			// released the height's proposal claim.
-			// The orchestrator marked these transactions included when it
-			// submitted the block; tell it they did not land, as for a
-			// rejected round.
-			reportLocalApplyFailure(block, err)
-			consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, "local apply failed")
-			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
+			// No rejection report to the orchestrator here: the block is not
+			// dropped. It stays pending and is retried (after a restart if
+			// the height halted) until it is stored, so its transactions
+			// still land at this height.
+			return fmt.Errorf("certified block not stored; withheld from peers: %w", err)
 		}
 
 		// Local apply succeeded → propagate to peers. A broadcast failure here is
