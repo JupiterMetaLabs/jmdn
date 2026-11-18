@@ -13,7 +13,7 @@ func TestPeriodCapThresholds(t *testing.T) {
 		limit      uint64
 		at75, at90 uint64
 	}{
-		{config.LegacyMaxPeriod, 768, 921},
+		{1024, 768, 921},
 		{config.MaxPeriod, 786432, 943718},
 	}
 	for _, c := range cases {
@@ -27,9 +27,10 @@ func TestPeriodCapThresholds(t *testing.T) {
 }
 
 // Each level alerts once per height; a new height starts again; a jump past
-// both levels alerts only the higher one.
+// both levels alerts only the higher one. A small cap keeps the numbers short;
+// the rule does not depend on the cap.
 func TestPeriodCapWatchAlertsOncePerLevel(t *testing.T) {
-	const limit = config.LegacyMaxPeriod
+	const limit = 1024
 	var w periodCapWatch
 	type step struct {
 		height, period uint64
@@ -57,26 +58,25 @@ func TestPeriodCapWatchAlertsOncePerLevel(t *testing.T) {
 	}
 }
 
-// The cap used is the one for the height: after the raise, period 900 is far
-// from the cap and does not alert.
-func TestPeriodCapNearUsesHeightCap(t *testing.T) {
-	config.SetPeriodCapRaiseFrom(100)
-	t.Cleanup(func() { config.SetPeriodCapRaiseFrom(0) })
+// The alert uses the real cap: a period of 900, which was close to the old
+// cap of 1024, is far from MaxPeriod and does not alert.
+func TestPeriodCapNearUsesTheCap(t *testing.T) {
 	defaultPeriodCapWatch = periodCapWatch{}
 	t.Cleanup(func() { defaultPeriodCapWatch = periodCapWatch{} })
 
 	var sent []uint64
 	orig := sendPeriodCapNearAlert
-	sendPeriodCapNearAlert = func(_ context.Context, height, period, limit uint64, level int, _ string) {
-		sent = append(sent, height)
+	sendPeriodCapNearAlert = func(_ context.Context, _, period, _ uint64, _ int, _ string) {
+		sent = append(sent, period)
 	}
 	t.Cleanup(func() { sendPeriodCapNearAlert = orig })
 
 	ctx := context.Background()
-	notePeriodNearCap(ctx, 99, 900, config.MaxPeriodAt(99), "test")   // cap 1024: alerts
-	notePeriodNearCap(ctx, 100, 900, config.MaxPeriodAt(100), "test") // cap 2^20: no alert
-	if len(sent) != 1 || sent[0] != 99 {
-		t.Fatalf("alerts sent for heights %v, want [99]", sent)
+	at75 := periodCapThreshold(0, config.MaxPeriod)
+	notePeriodNearCap(ctx, 99, 900, config.MaxPeriodAt(99), "test")
+	notePeriodNearCap(ctx, 99, at75, config.MaxPeriodAt(99), "test")
+	if len(sent) != 1 || sent[0] != at75 {
+		t.Fatalf("alerts sent at periods %v, want [%d]", sent, at75)
 	}
 }
 
@@ -94,14 +94,15 @@ func TestFailedRoundAlertsNearCap(t *testing.T) {
 	t.Cleanup(func() { sendPeriodCapNearAlert = orig })
 
 	const h = 50
+	at75 := periodCapThreshold(0, config.MaxPeriodAt(h))
 	for _, id := range []string{"12D3KooWA", "12D3KooWB", "12D3KooWC"} {
-		messaging.DefaultProposerPeriods.NoteRefusal(h, id, 767)
+		messaging.DefaultProposerPeriods.NoteRefusal(h, id, at75-1)
 	}
 	c := consensusAtHeight(h)
-	c.advancePeriodAfterFailedRound(context.Background(), h, "test") // -> 768
-	c.advancePeriodAfterFailedRound(context.Background(), h, "test") // -> 769
-	if got := messaging.DefaultProposerPeriods.PeriodFor(h); got != 769 {
-		t.Fatalf("period %d, want 769", got)
+	c.advancePeriodAfterFailedRound(context.Background(), h, "test") // -> at75
+	c.advancePeriodAfterFailedRound(context.Background(), h, "test") // -> at75+1
+	if got := messaging.DefaultProposerPeriods.PeriodFor(h); got != at75+1 {
+		t.Fatalf("period %d, want %d", got, at75+1)
 	}
 	if len(levels) != 1 || levels[0] != 0 {
 		t.Fatalf("alerts %v, want one 75%% alert", levels)
