@@ -911,9 +911,6 @@ func main() {
 		fmt.Printf("Refusing to start: %v\n", err)
 		os.Exit(1)
 	}
-	if w := messaging.PeriodCapWarning(); w != "" {
-		fmt.Fprintf(os.Stderr, "WARNING: %s\n", w) //nolint:forbidigo // CLI output: boot warning printed before the logger is up, like the posture refusal above.
-	}
 	// W1: chain-anchored committee pool preconditions (committee_anchor.go).
 	if err := messaging.ValidateCommitteeAnchorConfig(); err != nil {
 		fmt.Printf("Refusing to start: %v\n", err)
@@ -958,7 +955,6 @@ func main() {
 		os.Exit(1)
 	}
 	Security.SetHeaderBinding(headerBinding)
-	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
 	config.SetNewRecipientGasFrom(cfg.Consensus.NewRecipientGasFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
