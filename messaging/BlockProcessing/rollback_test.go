@@ -338,8 +338,8 @@ func TestApplyHalt_SurvivesRestartUntilCleared(t *testing.T) {
 		t.Fatalf("after a restart the halt reads %q, want the recorded reason", got)
 	}
 
-	if err := ClearApplyHalt(); err != nil {
-		t.Fatal(err)
+	if prev, err := ClearApplyHalt(); err != nil || prev != "block 8 failed" {
+		t.Fatalf("clear returned %q, %v; want the cleared reason", prev, err)
 	}
 	if haltReason(t) != "" || *recorded != "" {
 		t.Fatalf("clear left halt=%q recorded=%q", haltReason(t), *recorded)
@@ -442,7 +442,7 @@ func TestApplyHalt_ClearAndHaltDoNotInterleave(t *testing.T) {
 		return nil
 	}
 	cleared := make(chan error)
-	go func() { cleared <- ClearApplyHalt() }()
+	go func() { _, err := ClearApplyHalt(); cleared <- err }()
 	<-inErase
 	halted := make(chan struct{})
 	go func() { haltApply(context.Background(), "new"); close(halted) }()
@@ -487,5 +487,32 @@ func TestHaltDuringApply_BlockNotStored(t *testing.T) {
 	err := ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error { stored = true; return nil })
 	if !errors.Is(err, ErrApplyHalted) || stored {
 		t.Fatalf("want ErrApplyHalted and nothing stored, got err=%v stored=%v", err, stored)
+	}
+}
+
+// A marker revocation that stopped after revoking some markers left those txs
+// applied with no marker: an abandoned rollback then halts, whatever the cause.
+func TestRollbackAbandoned_HaltsAfterPartialRevocation(t *testing.T) {
+	resetApplyHaltForTest(t)
+	partial := fmt.Errorf("revoke markers (1/2 revoked): %w: kv down", DB_OPs.ErrPartialRevoke)
+	err := rollbackAbandoned(context.Background(), common.HexToHash("0xe3"), 22, errors.New("stale nonce"), partial)
+	if !errors.Is(err, ErrApplyHalted) {
+		t.Fatalf("want ErrApplyHalted after a partial revocation, got %v", err)
+	}
+	if err := rollbackAbandoned(context.Background(), common.HexToHash("0xe4"), 23, errors.New("stale nonce"), errors.New("revoke markers (0/2 revoked): kv down")); err != nil {
+		t.Fatalf("a revocation that revoked nothing leaves a consistent prefix: %v", err)
+	}
+}
+
+// Clearing with nothing halted reports that, and a cleared node reads the
+// store again on the next check (another store's halt is seen).
+func TestClearApplyHalt_RereadsTheRecord(t *testing.T) {
+	recorded := resetApplyHaltForTest(t)
+	if prev, err := ClearApplyHalt(); err != nil || prev != "" {
+		t.Fatalf("clear with no halt: %q, %v", prev, err)
+	}
+	*recorded = "set by another store"
+	if got := haltReason(t); got != "set by another store" {
+		t.Fatalf("after a clear the record was not read again: %q", got)
 	}
 }

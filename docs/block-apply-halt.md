@@ -6,11 +6,13 @@ A node stops applying blocks when its state holds part of a block it could not r
 
 A block that fails during apply is rolled back to the state before the block. Three failures leave the node unable to do that:
 
-1. **A block fails after one of its contract transactions succeeded.** Contract storage cannot be rolled back, so the node refuses to roll the block back.
+1. **A block fails after one of its contract transactions succeeded**, while applying a later transaction, committing a group, or because its state fingerprint does not match. Contract storage cannot be rolled back, so the node refuses to roll the block back.
 2. **A rollback write fails** after the block's transaction markers were revoked.
 3. **A commit fails part-way and the rollback cannot run** (its reads, the drop of the pending-apply record, or the marker revocation fail). Some of the commit's writes may have landed without a marker.
 
-In each case, the node's state is neither the state before the block nor the state after it. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
+In each case, the node's state is neither the state before the block nor the state after it.
+
+Not a halt: when storing the block, or computing its fingerprint, fails after every transaction of a block with a successful contract transaction was applied, the node keeps the block applied and marked (its state is the complete post-block state) and returns an error. The block is completed when it arrives again. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
 
 The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a restart does not lift it. If that write fails, the node retries it on every block; the status endpoint below shows whether it has succeeded.
 
@@ -39,7 +41,7 @@ Setting the revert height makes that one transaction a status-0 revert instead: 
 - Choose a height the chain has not reached yet.
 - Restart every node with the new value before the chain reaches that height.
 
-A node still on the old value fails a block that contains such a transaction, and lags until it is restarted with the new value.
+A node still on the old value fails a block that contains such a transaction. If an earlier contract transaction in that block succeeded, it halts, and a restart does not lift that; otherwise it lags until it is restarted with the new value.
 
 Other failures after a successful contract transaction can still halt a node: a stale nonce, a fee the sender cannot pay, or a storage error. Those need their own investigation.
 
@@ -66,4 +68,4 @@ If the sequencer's failed rounds left a height stuck at the vote-period cap, use
 
 ## What the halt does not stop
 
-The halt stops block apply, the storing of any block that was still applying when it happened, and, on the sequencer, starting consensus rounds. It does not stop FastSync, account sync or reconciliation: before the wipe in step 3 they keep writing on top of the partial state, which is one more reason the wipe is needed; after it they rebuild the node. Committee voting is not stopped either.
+The halt stops block apply, the storing of any block that was still applying when it happened, and, on the sequencer, starting consensus rounds. Catch-up sync applies blocks, so it is stopped too. Account sync, reconciliation, the write outbox and boot recovery keep writing: before the wipe in step 3 they write on top of the partial state, which is one more reason the wipe is needed; after it they help rebuild the node. Committee voting is not stopped either.

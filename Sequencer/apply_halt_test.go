@@ -29,7 +29,7 @@ func TestStart_RefusesWhileApplyHalted(t *testing.T) {
 	// The halt is process-wide: lift it so no later test in this package is
 	// refused (cleanups run last-in first-out, so the store is still set).
 	t.Cleanup(func() {
-		if err := BlockProcessing.ClearApplyHalt(); err != nil {
+		if _, err := BlockProcessing.ClearApplyHalt(); err != nil {
 			t.Errorf("clear the halt: %v", err)
 		}
 	})

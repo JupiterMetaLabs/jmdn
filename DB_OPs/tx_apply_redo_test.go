@@ -194,3 +194,44 @@ func TestApplyTxAtomic_RedoNotClearedIsMarkedApplied(t *testing.T) {
 		t.Fatalf("precondition: the marker is written (applied=%v, %v)", applied, merr)
 	}
 }
+
+// A revocation that fails after revoking some markers says so; one that
+// revoked nothing does not.
+func TestRevokeTxProcessedMarkers_PartialIsMarked(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	SetGlobalHandle(&failSecondMarkerPut{redoHandle: h})
+	err := RevokeTxProcessedMarkers(nil, []string{"0x1", "0x2"})
+	if !errors.Is(err, ErrPartialRevoke) {
+		t.Fatalf("want ErrPartialRevoke after one revoked marker, got %v", err)
+	}
+	SetGlobalHandle(&failSecondMarkerPut{redoHandle: h, failFirst: true})
+	if err := RevokeTxProcessedMarkers(nil, []string{"0x1", "0x2"}); err == nil || errors.Is(err, ErrPartialRevoke) {
+		t.Fatalf("a revocation that revoked nothing is not partial: %v", err)
+	}
+}
+
+type failSecondMarkerPut struct {
+	*redoHandle
+	failFirst bool
+	puts      int
+}
+
+func (f *failSecondMarkerPut) PutSyncKV(key string, value []byte) error {
+	f.puts++
+	if f.failFirst || f.puts == 2 {
+		return errors.New("kv down")
+	}
+	return f.redoHandle.PutSyncKV(key, value)
+}
+
+// A pending-apply record that cannot be cleared is reported as a discard
+// failure, with the same prefix as the other discard failures.
+func TestDiscardPendingTxApply_ClearFailureIsPrefixed(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	h.kv[txApplyRedoKey] = []byte(`{"tx_hash":"0xab"}`)
+	SetGlobalHandle(&failRedoClear{h})
+	err := DiscardPendingTxApply()
+	if err == nil || !strings.HasPrefix(err.Error(), "discard apply: ") {
+		t.Fatalf("want a 'discard apply:' error, got %v", err)
+	}
+}

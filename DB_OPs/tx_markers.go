@@ -227,6 +227,10 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 // rollback of the block makes that state consistent again.
 var ErrPartialApply = errors.New("apply failed part-way; some of its writes may be committed")
 
+// ErrPartialRevoke marks a marker revocation that stopped after revoking some
+// markers: those txs are applied with no marker, which no replay handles.
+var ErrPartialRevoke = errors.New("marker revocation stopped part-way")
+
 // ErrApplyRedoNotCleared marks an apply that committed every account document
 // AND every tx marker, but whose redo record could not be cleared. Its txs are
 // applied: a rollback of the block must revoke their markers along with the
@@ -377,7 +381,10 @@ func DiscardPendingTxApply() error {
 	if len(raw) == 0 {
 		return nil
 	}
-	return clearTxApplyRedo(h)
+	if err := clearTxApplyRedo(h); err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	return nil
 }
 
 // WriteTxProcessedMarkers writes applied markers for a set of txs.
@@ -429,6 +436,9 @@ func RevokeTxProcessedMarkers(_ *config.PooledConnection, txHashes []string) err
 	for i, hash := range txHashes {
 		op := markerOp(TxProcessedKey(hash), MarkerRevoked)
 		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			if i > 0 {
+				return fmt.Errorf("revoke markers (%d/%d revoked): %w: %w", i, len(txHashes), ErrPartialRevoke, err)
+			}
 			return fmt.Errorf("revoke markers (%d/%d revoked): %w", i, len(txHashes), err)
 		}
 	}

@@ -58,13 +58,13 @@ func handleApplyHaltStatus(c *gin.Context) {
 }
 
 func handleClearApplyHalt(c *gin.Context) {
-	reason, err := BlockProcessing.ApplyHaltReason()
+	reason, err := BlockProcessing.ClearApplyHalt()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := BlockProcessing.ClearApplyHalt(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if reason == "" {
+		c.JSON(http.StatusOK, gin.H{"cleared": false, "previous_reason": ""})
 		return
 	}
 	if l := logger(); l != nil {

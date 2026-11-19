@@ -110,9 +110,13 @@ func clearContractStateCommitted(blockHash common.Hash) {
 //
 // Extracted from ProcessBlockTransactionsAndStore so the decision is unit-testable
 // without a live DB (review B8). The bool is whether a rollback was attempted.
-func decideStoreFailure(ctx context.Context, blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func() error) (error, bool) {
-	if rerr := refuseIncompleteRollback(ctx, blockHash, blockNumber, serr); rerr != nil {
-		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback, fail closed (resync required): %w", blockNumber, rerr), false
+func decideStoreFailure(_ context.Context, blockHash common.Hash, blockNumber uint64, serr error, rollbackApplied func() error) (error, bool) {
+	if didCommitContractState(blockHash) {
+		// Every tx is applied and marked: the state is the complete post-block
+		// state, and the idempotent store completes when the block arrives
+		// again. Contract storage has no undo, so do not roll back; nothing is
+		// partial, so do not halt either.
+		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback; block kept applied and marked, stored when it arrives again: %w", blockNumber, serr), false
 	}
 	if rbErr := rollbackApplied(); rbErr != nil {
 		return fmt.Errorf("block %d: store failed after apply: %w; rollback: %w", blockNumber, serr, rbErr), true
@@ -942,11 +946,14 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	if execbridge.Enabled() {
 		fp, fperr := DB_OPs.ComputeAccountStateFingerprintV1(span_ctx)
 		if fperr != nil {
-			if rerr := refuseIncompleteRollback(span_ctx, block.BlockHash, block.BlockNumber, fperr); rerr != nil {
-				logger().Error(span_ctx, "State fingerprint failed after this block committed contract state — REFUSING incomplete rollback and halting block apply; this node must be resynced",
-					rerr, ion.Int64("block_number", int64(block.BlockNumber)),
+			if didCommitContractState(block.BlockHash) {
+				// Every tx is applied and marked, so nothing is partial: keep the
+				// state (contract storage has no undo) and let the block's next
+				// arrival recompute the fingerprint and store it.
+				logger().Error(span_ctx, "State fingerprint could not be computed after this block committed contract state — block kept applied and marked, completed when it arrives again",
+					fperr, ion.Int64("block_number", int64(block.BlockNumber)),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
-				return fmt.Errorf("block %d: %w", block.BlockNumber, rerr)
+				return fmt.Errorf("block %d: state-fingerprint compute failed after contract-state commit; block kept applied: %w", block.BlockNumber, fperr)
 			}
 			if rbErr := rollbackApplied(fperr); rbErr != nil {
 				return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w; rollback: %w", block.BlockNumber, fperr, rbErr)

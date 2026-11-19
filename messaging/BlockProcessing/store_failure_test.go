@@ -39,6 +39,11 @@ func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
 	if !strings.Contains(err.Error(), "uq_txn_block_index") {
 		t.Fatalf("refusal error should wrap the underlying store error, got %v", err)
 	}
+	// Every tx is applied and marked: nothing is partial, so apply does not
+	// halt; the block is stored when it arrives again.
+	if r, herr := ApplyHaltReason(); herr != nil || r != "" {
+		t.Fatalf("a store failure on a fully applied contract block must not halt (halt %q, %v)", r, herr)
+	}
 }
 
 func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {

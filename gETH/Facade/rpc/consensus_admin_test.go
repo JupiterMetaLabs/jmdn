@@ -9,6 +9,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/store"
 	"gossipnode/internal/roundlock"
+	"gossipnode/messaging/BlockProcessing"
 
 	"github.com/gin-gonic/gin"
 )
@@ -109,6 +110,12 @@ func TestApplyHaltEndpoints_StatusAndClear(t *testing.T) {
 	st := &haltRecordStore{kv: map[string][]byte{"block_apply_halt": []byte("block 8 failed")}}
 	DB_OPs.SetGlobalHandle(st)
 	t.Cleanup(func() { DB_OPs.SetGlobalHandle(nil) })
+	// The halt is process-wide: leave it cleared, and re-read on the next run.
+	t.Cleanup(func() {
+		if _, err := BlockProcessing.ClearApplyHalt(); err != nil {
+			t.Errorf("clear the halt: %v", err)
+		}
+	})
 
 	r := gin.New()
 	r.GET("/s", handleApplyHaltStatus)

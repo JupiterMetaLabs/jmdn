@@ -153,7 +153,7 @@ func restoreAfterRevoke(ctx context.Context, plan *rollbackPlan, conn *config.Po
 // commit (DB_OPs.ErrPartialApply) some accounts hold effects that no marker
 // records, which a replay would apply again: block apply halts.
 func rollbackAbandoned(ctx context.Context, blockHash common.Hash, blockNumber uint64, cause, abandoned error) error {
-	if !errors.Is(cause, DB_OPs.ErrPartialApply) {
+	if !errors.Is(cause, DB_OPs.ErrPartialApply) && !errors.Is(abandoned, DB_OPs.ErrPartialRevoke) {
 		return nil
 	}
 	reason := fmt.Sprintf("block %d (%s): a commit failed part-way (%v) and the rollback could not run (%v)", blockNumber, blockHash.Hex(), cause, abandoned)
@@ -220,6 +220,9 @@ func ApplyHaltStatus() (reason string, recorded bool, err error) {
 		haltState.loaded = true
 		if r != "" && haltState.reason == "" {
 			haltState.reason, haltState.recorded = r, true
+			logger().Error(context.Background(), "BLOCK APPLY HALTED — loaded the halt recorded before this start; this node must be resynced",
+				ErrApplyHalted, ion.String("reason", r),
+				ion.String("function", "BlockProcessing.ApplyHaltStatus"))
 		}
 	}
 	if haltState.reason != "" && !haltState.recorded {
@@ -240,16 +243,24 @@ func ApplyHaltReason() (string, error) {
 	return reason, err
 }
 
-// ClearApplyHalt lifts the halt and erases its record. Only for an operator
-// whose node's state is again the canonical chain's (after a resync).
-func ClearApplyHalt() error {
+// ClearApplyHalt lifts the halt, erases its record and returns the reason it
+// cleared ("" when nothing was halted). Only for an operator whose node's
+// state is again the canonical chain's (after a resync). The record is read
+// again on the next status check.
+func ClearApplyHalt() (string, error) {
 	haltState.Lock()
 	defer haltState.Unlock()
-	if err := eraseApplyHalt(); err != nil {
-		return err
+	prev := haltState.reason
+	if prev == "" && !haltState.loaded {
+		if r, err := recordedApplyHalt(); err == nil {
+			prev = r
+		}
 	}
-	haltState.reason, haltState.recorded, haltState.loaded = "", false, true
-	return nil
+	if err := eraseApplyHalt(); err != nil {
+		return "", err
+	}
+	haltState.reason, haltState.recorded, haltState.loaded = "", false, false
+	return prev, nil
 }
 
 // markersToRevoke lists the tx markers a rollback of an in-loop failure must
