@@ -84,10 +84,27 @@ func NewThebeGateway(appender ThebeAppender, kv ThebeKVStore, c cache.Cache, out
 	return &thebeGateway{appender: appender, kv: kv, cache: c, outbox: outbox}
 }
 
+type noOutboxKey struct{}
+
+// WithoutOutbox marks ctx so that a write whose append fails returns the error
+// WITHOUT being enqueued for a later retry. It is for writers that roll back or
+// halt when a write fails (the block apply path and its rollback): an outbox
+// retry would land after that rollback and redo the write it undid. For an
+// account the failed block created there is no newer row to stop it.
+func WithoutOutbox(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noOutboxKey{}, true)
+}
+
+// OutboxAllowed reports whether a failed write under ctx may be enqueued.
+func OutboxAllowed(ctx context.Context) bool {
+	off, _ := ctx.Value(noOutboxKey{}).(bool)
+	return !off
+}
+
 // write is the shared write path for all ThebeGateway methods.
 // 1. Marshal record to JSON.
 // 2. Append to ThebeDB (2PC: KV log + SQL projection).
-// 3. On failure: enqueue to outbox WAL.
+// 3. On failure: enqueue to outbox WAL, unless ctx says WithoutOutbox.
 // 4. On success: populate cache (best-effort, errors ignored).
 // Time: O(1) amortized — single Append round trip + one cache SET
 func (g *thebeGateway) write(
@@ -110,7 +127,7 @@ func (g *thebeGateway) write(
 		Timestamp: uint64(time.Now().UnixNano()),
 	})
 	if err != nil {
-		if g.retrying || g.outbox == nil {
+		if g.retrying || g.outbox == nil || !OutboxAllowed(ctx) {
 			// Retry path (or no outbox configured): report the failure; the
 			// worker increments the existing row's attempts.
 			return fmt.Errorf("thebeGateway.%s: append: %w", method, err)
@@ -166,7 +183,9 @@ func (g *thebeGateway) DeleteAccount(ctx context.Context, address string) error 
 		return fmt.Errorf("thebeGateway.DeleteAccount(%s): append: %w", address, err)
 	}
 	if g.cache != nil {
-		_ = g.cache.Delete(ctx, AccountKey(address))
+		// Writes cache under the address as given, the reader under its
+		// lowercase form; drop both.
+		_ = g.cache.Delete(ctx, AccountKey(address), AccountKey(strings.ToLower(address)))
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/store"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 )
 
@@ -27,6 +28,8 @@ type memAccounts struct {
 	deleted   []common.Address
 	syncKV    map[string][]byte
 	onRead    func() // called once, on the first account read
+	// outboxWrites counts writes made with the outbox allowed.
+	outboxWrites int
 }
 
 func (m *memAccounts) GetAccount(_ context.Context, address string) (*store.Account, error) {
@@ -47,9 +50,12 @@ func (m *memAccounts) GetAccount(_ context.Context, address string) (*store.Acco
 	return &a, nil
 }
 
-func (m *memAccounts) CreateAccount(_ context.Context, a *store.Account) error {
+func (m *memAccounts) CreateAccount(ctx context.Context, a *store.Account) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if thebegateway.OutboxAllowed(ctx) {
+		m.outboxWrites++
+	}
 	if m.failWrite != (common.Address{}) && a.Address == m.failWrite {
 		return errors.New("write timeout")
 	}
@@ -183,6 +189,9 @@ func TestRollback_DeletesCreatedAccountsRestoresExisting(t *testing.T) {
 	}
 	if haltReason(t) != "" {
 		t.Fatal("a complete rollback must not halt apply")
+	}
+	if m.outboxWrites != 0 {
+		t.Fatalf("%d rollback writes may be retried through the outbox; none may", m.outboxWrites)
 	}
 }
 
@@ -451,13 +460,19 @@ func TestApplyHalt_ClearAndHaltDoNotInterleave(t *testing.T) {
 // that marker before failing; otherwise the hash is left alone.
 func TestMarkersToRevoke(t *testing.T) {
 	applied := []string{"0xa", "0xb"}
-	if got := markersToRevoke(applied, "0xf", errors.New("stale nonce")); len(got) != 2 {
+	if got := markersToRevoke(applied, "0xf", errors.New("stale nonce"), true); len(got) != 2 {
 		t.Fatalf("a failing tx that wrote no marker must not be revoked: %v", got)
 	}
 	cause := fmt.Errorf("atomic tx commit failed for 0xf: %w", fmt.Errorf("ApplyTxAtomic 0xf: %w: disk", DB_OPs.ErrApplyRedoNotCleared))
-	got := markersToRevoke(applied, "0xf", cause)
+	got := markersToRevoke(applied, "0xf", cause, true)
 	if len(got) != 3 || got[2] != "0xf" || len(applied) != 2 {
 		t.Fatalf("want the applied txs plus the failing one, input unchanged: got %v (applied %v)", got, applied)
+	}
+	// The same error from flushing the previous group: the current tx never
+	// ran, and the group's txs are already in applied.
+	flush := fmt.Errorf("group commit of 2 txs failed: %w", fmt.Errorf("ApplyTxAtomic group: %w: disk", DB_OPs.ErrApplyRedoNotCleared))
+	if got := markersToRevoke(applied, "0xf", flush, false); len(got) != 2 {
+		t.Fatalf("a tx that never ran must not be revoked: %v", got)
 	}
 }
 

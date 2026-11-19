@@ -349,14 +349,36 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 }
 
 // storeAccount stores a Key document in the accounts database via ThebeDB.
-func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
+// A write whose append fails is retried later through the outbox.
+func storeAccount(_ *config.PooledConnection, KeyDoc *Account) error {
+	return storeAccountCtx(context.Background(), KeyDoc)
+}
+
+// storeAccountNow stores a Key document like storeAccount, but a failed
+// append is returned and never retried through the outbox: the write lands now
+// or not at all. For the block apply path and its rollback, which undo or halt
+// on a failed write (thebegateway.WithoutOutbox).
+func storeAccountNow(KeyDoc *Account) error {
+	return storeAccountCtx(thebegateway.WithoutOutbox(context.Background()), KeyDoc)
+}
+
+// RestoreAccount writes a full account document for a rollback: like
+// UpdateAccount, but never retried through the outbox (storeAccountNow).
+func RestoreAccount(doc *Account) error {
+	if doc == nil || doc.Address == (common.Address{}) {
+		return fmt.Errorf("RestoreAccount: invalid account")
+	}
+	return storeAccountNow(doc)
+}
+
+func storeAccountCtx(parent context.Context, KeyDoc *Account) error {
 	if KeyDoc == nil {
 		return fmt.Errorf("key document cannot be nil")
 	}
 	if KeyDoc.Address == (common.Address{}) {
 		return fmt.Errorf("Address cannot be empty")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 7*time.Second)
 	defer cancel()
 	h, err := getHandle(nil)
 	if err != nil {

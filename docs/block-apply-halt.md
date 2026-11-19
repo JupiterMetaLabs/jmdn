@@ -4,12 +4,13 @@ A node stops applying blocks when its state holds part of a block it could not r
 
 ## What causes it
 
-A block that fails during apply is rolled back to the state before the block. Two failures leave the node unable to do that:
+A block that fails during apply is rolled back to the state before the block. Three failures leave the node unable to do that:
 
 1. **A block fails after one of its contract transactions succeeded.** Contract storage cannot be rolled back, so the node refuses to roll the block back.
 2. **A rollback write fails** after the block's transaction markers were revoked.
+3. **A commit fails part-way and the rollback cannot run** (its reads, the drop of the pending-apply record, or the marker revocation fail). Some of the commit's writes may have landed without a marker.
 
-Either way, the node's state is neither the state before the block nor the state after it. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
+In each case, the node's state is neither the state before the block nor the state after it. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
 
 The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a restart does not lift it. If that write fails, the node retries it on every block; the status endpoint below shows whether it has succeeded.
 
@@ -48,11 +49,12 @@ Other failures after a successful contract transaction can still halt a node: a 
 2. **Prevent a repeat first.** If the reason is the identity case above, activate the revert height fleet-wide before the sequencer produces blocks again. The transactions of the failed block may be proposed again, and on the old value they would halt it again.
 3. **Rebuild the node's state.** Treat it like any node whose state diverged:
    - stop the node;
-   - wipe its ThebeDB store (`thebe.kv_path` and its Postgres database in `thebe.sql_dsn`), along with its other storage directories;
+   - wipe its ThebeDB store (`thebe.kv_path`, which also holds the write outbox `outbox.db`, and its Postgres database in `thebe.sql_dsn`), along with its other storage directories;
    - sync it from a healthy node.
 
    The wipe also removes the halt record. A sequencer can be rebuilt from a validator: the validators never applied the failed block.
-4. **If the state was repaired another way**, first check that it matches a healthy node. With contracts enabled, the state fingerprint of the next certified block refuses a state that differs. Then lift the halt:
+4. **Cause 3 on a validator: a restart may be enough.** If the reason ends with `the rollback could not run (discard apply: ...)`, the pending-apply record could not be dropped: restart the node once its store is healthy. Boot recovery completes an interrupted apply whose record is still there, and logs `thebedb: completed tx apply interrupted by previous shutdown` with the transaction hash. If that hash is the one in the halt reason, the validator's state is consistent again: the failed block is certified, and when it arrives again the node applies the transactions after that one. Clear the halt (next step). If the line does not appear, or this is the sequencer (it will not see the withheld block again), rebuild as in step 3.
+5. **If the state was repaired another way**, first check that it matches a healthy node. With contracts enabled, the state fingerprint of the next certified block refuses a state that differs. Then lift the halt:
 
    ```
    curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" http://<node>:8545/consensus/apply-halt/clear

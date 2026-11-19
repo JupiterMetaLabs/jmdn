@@ -30,7 +30,11 @@ func TestDeleteAccount_AppendsDeleteAndDropsCache(t *testing.T) {
 	if c.setCallCount() != 0 {
 		t.Fatal("a delete must not populate the cache")
 	}
-	if len(c.deleted) != 1 || c.deleted[0] != thebegateway.AccountKey("0xdead") {
+	found := false
+	for _, k := range c.deleted {
+		found = found || k == thebegateway.AccountKey("0xdead")
+	}
+	if !found {
 		t.Fatalf("cache keys deleted: %v, want the account key", c.deleted)
 	}
 }
@@ -77,5 +81,42 @@ func TestDrainBatch_DeletedAccountIsDropped(t *testing.T) {
 	gw.mu.Unlock()
 	if n != 0 || store.ackCount() != 1 {
 		t.Fatalf("want the entry acked with no gateway write; writes=%d acks=%d", n, store.ackCount())
+	}
+}
+
+// A write under WithoutOutbox whose append fails is returned and never
+// enqueued; the same write without it is enqueued for retry, as before.
+func TestWrite_WithoutOutboxIsNeverEnqueued(t *testing.T) {
+	app := &spyAppender{err: errAppend}
+	out := &spyOutbox{}
+	gw := newGateway(app, &spyKV{}, newSpyCache(), out)
+	ctx := thebegateway.WithoutOutbox(context.Background())
+	if err := gw.WriteAccount(ctx, &thebegateway.AccountRecord{Address: "0xbeef"}); err == nil {
+		t.Fatal("want the append error")
+	}
+	if out.enqueueCount() != 0 {
+		t.Fatal("a write under WithoutOutbox was enqueued")
+	}
+	if err := gw.WriteAccount(context.Background(), &thebegateway.AccountRecord{Address: "0xbeef"}); err == nil {
+		t.Fatal("want the append error")
+	}
+	if out.enqueueCount() != 1 {
+		t.Fatal("an ordinary failed write must still be enqueued")
+	}
+}
+
+// DeleteAccount drops the account's cache entry under both address forms.
+func TestDeleteAccount_DropsBothCacheKeyForms(t *testing.T) {
+	c := newSpyCache()
+	gw := newGateway(&spyAppender{}, &spyKV{}, c, &spyOutbox{})
+	if err := gw.DeleteAccount(context.Background(), "0xAbC"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{thebegateway.AccountKey("0xAbC"): true, thebegateway.AccountKey("0xabc"): true}
+	for _, k := range c.deleted {
+		delete(want, k)
+	}
+	if len(want) != 0 {
+		t.Fatalf("cache keys not dropped: %v (dropped %v)", want, c.deleted)
 	}
 }

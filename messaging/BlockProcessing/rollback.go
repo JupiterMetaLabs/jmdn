@@ -110,15 +110,17 @@ func planRollback(snapshots map[common.Address]AccountSnapshot, conn *config.Poo
 	return plan, nil
 }
 
-// executeRollback performs the plan's writes.
-func executeRollback(plan *rollbackPlan, conn *config.PooledConnection) error {
+// executeRollback performs the plan's writes. None of them goes through the
+// outbox: a write that fails is reported (and halts apply), never replayed
+// later over whatever the node has done since.
+func executeRollback(plan *rollbackPlan, _ *config.PooledConnection) error {
 	for _, addr := range plan.deletes {
 		if err := DB_OPs.DeleteAccount(addr); err != nil {
 			return fmt.Errorf("rollback: delete %s created by the failed block: %w", addr.Hex(), err)
 		}
 	}
 	for _, doc := range plan.restores {
-		if err := DB_OPs.UpdateAccount(conn, doc); err != nil {
+		if err := DB_OPs.RestoreAccount(doc); err != nil {
 			return fmt.Errorf("rollback: restore %s: %w", doc.Address.Hex(), err)
 		}
 	}
@@ -143,8 +145,9 @@ func restoreAfterRevoke(ctx context.Context, plan *rollbackPlan, conn *config.Po
 	return nil
 }
 
-// rollbackAbandoned decides what an abandoned rollback leaves: one whose reads
-// or whose marker revocation failed, so nothing was restored. Unless the block
+// rollbackAbandoned decides what an abandoned rollback leaves: one whose reads,
+// whose pending-apply-record drop, or whose marker revocation failed, so nothing
+// was restored. Unless the block
 // had a commit that failed part-way, every tx it applied is applied AND marked:
 // consistent, and a replay continues from it (nil is returned). After a partial
 // commit (DB_OPs.ErrPartialApply) some accounts hold effects that no marker
@@ -251,12 +254,13 @@ func ClearApplyHalt() error {
 
 // markersToRevoke lists the tx markers a rollback of an in-loop failure must
 // revoke: every tx the block applied before the failing one, plus the failing
-// tx itself when its commit wrote its marker before failing
-// (DB_OPs.ErrApplyRedoNotCleared). Any other failing tx wrote no marker of its
-// own, and its hash is left alone: a marker under it may belong to another
-// block's apply.
-func markersToRevoke(applied []string, failingTx string, cause error) []string {
-	if !errors.Is(cause, DB_OPs.ErrApplyRedoNotCleared) {
+// tx itself when its OWN commit (ownCommit: the error came from its own
+// processTransaction, not from flushing an earlier group) wrote its marker
+// before failing (DB_OPs.ErrApplyRedoNotCleared). Any other failing tx wrote no
+// marker of its own, and its hash is left alone: a marker under it may belong
+// to another block's apply. A failed group flush lists its own txs in applied.
+func markersToRevoke(applied []string, failingTx string, cause error, ownCommit bool) []string {
+	if !ownCommit || !errors.Is(cause, DB_OPs.ErrApplyRedoNotCleared) {
 		return applied
 	}
 	return append(append(make([]string, 0, len(applied)+1), applied...), failingTx)
