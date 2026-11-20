@@ -24,6 +24,7 @@ type tipChainHandle struct {
 	blocks    map[uint64]*thebegateway.BlockRecord
 	txs       map[uint64][]*thebegateway.TransactionRecord
 	failPutKV map[string]bool
+	onGetKV   func(key string)
 }
 
 func newTipChainHandle() *tipChainHandle {
@@ -36,6 +37,9 @@ func newTipChainHandle() *tipChainHandle {
 }
 
 func (h *tipChainHandle) GetSyncKV(key string) ([]byte, error) {
+	if h.onGetKV != nil {
+		h.onGetKV(key)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.kv[key], nil
@@ -266,5 +270,57 @@ func TestDataCompleteTip_FreshNode(t *testing.T) {
 	}
 	if tip != 0 {
 		t.Fatalf("data-complete tip = %d, want 0", tip)
+	}
+}
+
+// While an apply of block N runs, its markers may still be revoked (the
+// outbox can complete the rows of an earlier failed attempt, then this attempt
+// fails its store and rolls back). The repair must not count N then.
+func TestDataCompleteTip_NotDuringAnApplyOfThatHeight(t *testing.T) {
+	h := installTipChain(t)
+	h.storeBlock(100, 3, true)
+	h.storeBlock(101, 2, true)
+	h.setMarker(100)
+
+	end := BeginBlockApply(101)
+	tip, err := GetLatestDataCompleteBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip != 100 || h.marker() != "100" {
+		t.Fatalf("during apply: tip %d, marker %q; want 100, 100", tip, h.marker())
+	}
+	end()
+	end() // idempotent
+
+	if tip, _ = GetLatestDataCompleteBlock(); tip != 101 {
+		t.Fatalf("after apply: tip %d, want 101", tip)
+	}
+}
+
+// An apply that starts while the repair is reading the markers, and ends
+// before it finishes, may have rolled the block back: not counted.
+func TestDataCompleteTip_NotWhenAnApplyStartedDuringTheCheck(t *testing.T) {
+	h := installTipChain(t)
+	h.storeBlock(100, 3, true)
+	h.storeBlock(101, 2, true)
+	h.setMarker(100)
+
+	fired := false
+	h.onGetKV = func(key string) {
+		if !fired && key == TxProcessedKey(txHashFor(101, 0).Hex()) {
+			fired = true
+			BeginBlockApply(101)()
+		}
+	}
+	tip, err := GetLatestDataCompleteBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatal("hook did not run")
+	}
+	if tip != 100 {
+		t.Fatalf("tip %d, want 100", tip)
 	}
 }

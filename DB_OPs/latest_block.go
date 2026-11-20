@@ -199,13 +199,55 @@ func GetLatestDataCompleteBlock() (uint64, error) {
 //     TxnsRoot, so it is not a header-only row or a partly written store;
 //   - every one of those transactions carries an applied tx_processed marker.
 //     Markers commit together with the balances, and a failed store revokes
-//     them, so they are present only when the block was applied and kept.
+//     them, so once no apply of the block is running they are present only
+//     when the block was applied and kept;
+//   - no apply of that height is running, or started while it was checked
+//     (BeginBlockApply).
 //
 // It then records the repaired height (best effort) and repeats, up to
 // tipRepairMaxSteps blocks. A block with no transactions is never repaired:
 // nothing on it proves it was applied rather than written by header sync.
 
 const tipRepairMaxSteps = 8
+
+// blockApplies tracks block applies by height. A transaction marker is written
+// as each transaction applies, before the block's store, and a failed store
+// revokes it again. While an apply of a height is running, or if one started
+// while the repair was reading, its markers prove nothing, so the repair does
+// not count that height.
+var blockApplies = struct {
+	sync.Mutex
+	running map[uint64]int
+	started map[uint64]uint64
+}{running: map[uint64]int{}, started: map[uint64]uint64{}}
+
+// BeginBlockApply registers an apply of the block at height n, before any of
+// its transactions are applied. Call the returned function when the apply
+// returns, whatever the outcome.
+func BeginBlockApply(n uint64) (end func()) {
+	blockApplies.Lock()
+	blockApplies.running[n]++
+	blockApplies.started[n]++
+	blockApplies.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			blockApplies.Lock()
+			if blockApplies.running[n]--; blockApplies.running[n] <= 0 {
+				delete(blockApplies.running, n)
+			}
+			blockApplies.Unlock()
+		})
+	}
+}
+
+// blockApplyState reports whether an apply of height n is running and how
+// many have started.
+func blockApplyState(n uint64) (running bool, started uint64) {
+	blockApplies.Lock()
+	defer blockApplies.Unlock()
+	return blockApplies.running[n] > 0, blockApplies.started[n]
+}
 
 var (
 	tipRepairHookMu sync.Mutex
@@ -295,6 +337,10 @@ func repairTipForward(tip uint64) uint64 {
 		if !strings.EqualFold(next.ParentHash, parent.BlockHash) || next.TxsRoot == "" {
 			break
 		}
+		running, startedBefore := blockApplyState(tip + 1)
+		if running {
+			break
+		}
 		recs, err := h.GetTransactionsByBlock(ctx, tip+1)
 		if err != nil || len(recs) == 0 {
 			break
@@ -322,6 +368,11 @@ func repairTipForward(tip uint64) uint64 {
 			}
 		}
 		if !all {
+			break
+		}
+		// An apply that started after the first check may have written these
+		// markers and be about to revoke them.
+		if running, startedAfter := blockApplyState(tip + 1); running || startedAfter != startedBefore {
 			break
 		}
 		tip++
