@@ -460,6 +460,10 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			// The certified block was never committed, so the retry at this
 			// height is a new round (R3). ProcessBlockLocally has already
 			// released the height's proposal claim.
+			// The orchestrator marked these transactions included when it
+			// submitted the block; tell it they did not land, as for a
+			// rejected round.
+			reportLocalApplyFailure(block, err)
 			consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, "local apply failed")
 			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
 		}
@@ -617,4 +621,22 @@ func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
+}
+
+// sendRejectionReport is RejectionReport.Send; a seam for tests.
+var sendRejectionReport = RejectionReport.Send
+
+// localApplyFailureReason is the reason reported to the orchestrator when a
+// certified block could not be applied or stored on the sequencer.
+const localApplyFailureReason = "certified, but the sequencer could not apply or store it; block withheld"
+
+// reportLocalApplyFailure reports a certified block that the sequencer could
+// not apply or store. The block is withheld from peers, so its transactions
+// did not land.
+func reportLocalApplyFailure(block *config.ZKBlock, err error) {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	sendRejectionReport(block, localApplyFailureReason, detail)
 }
