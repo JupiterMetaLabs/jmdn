@@ -4,8 +4,10 @@
 # verdict is PASS or PASS_WITH_NOTES. Make the "pushproof" job a required status
 # check to block merging until it passes.
 #
-# Read-only: the workflow token can read the repository and nothing else, and
-# pushproof itself never posts to GitHub. The report goes to the run's job summary.
+# The review job is read-only: its token can read the repository and nothing else,
+# and pushproof itself never posts to GitHub. A separate "comment" job, which runs
+# no AI and no pull-request code, posts the report as one PR comment and updates it
+# on later runs. The report also goes to the run's job summary.
 #
 # Setup:
 #   1. Add an ANTHROPIC_API_KEY secret (repository or organization level).
@@ -89,3 +91,64 @@ jobs:
         run: |
           set -o pipefail
           python3 "$PUSHPROOF" check | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the report for the comment job
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/pushproof-report"
+          if [ -f .pushproof/report.md ]; then
+            cp .pushproof/report.md "$RUNNER_TEMP/pushproof-report/report.md"
+          else
+            printf '%s\n' "# pushproof review: did not run" "" \
+              "The review didn't produce a report. See the workflow run log." \
+              > "$RUNNER_TEMP/pushproof-report/report.md"
+          fi
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: pushproof-report
+          path: ${{ runner.temp }}/pushproof-report/report.md
+          retention-days: 7
+
+  comment:
+    # Posts the report as a single PR comment and edits it on later runs.
+    # Separate job so the write token never meets the AI step or the PR's code.
+    needs: pushproof
+    if: always() && needs.pushproof.result != 'skipped' && needs.pushproof.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download the report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: pushproof-report
+          path: ${{ runner.temp }}/pushproof-report
+
+      - name: Post or update the pushproof comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          RESULT: ${{ needs.pushproof.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          marker='<!-- pushproof-report -->'
+          body="$RUNNER_TEMP/pushproof-comment.md"
+          {
+            echo "$marker"
+            cat "$RUNNER_TEMP/pushproof-report/report.md"
+            echo
+            echo "<sub>pushproof check: **$RESULT** · [workflow run]($RUN_URL)</sub>"
+          } > "$body"
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+                 --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+               | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F "body=@$body" > /dev/null
+            echo "Updated comment $id"
+          else
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          fi
