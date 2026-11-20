@@ -369,6 +369,9 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	if block == nil {
 		return fmt.Errorf("apply: nil block")
 	}
+	// The tip repair must not count this height while its markers may still
+	// be revoked (DB_OPs.repairTipForward).
+	defer DB_OPs.BeginBlockApply(block.BlockNumber)()
 	if len(block.Transactions) > 0 && (block.CoinbaseAddr == nil || block.ZKVMAddr == nil) {
 		return fmt.Errorf("apply: block %d (%s) has transactions but no coinbase or zkVM address",
 			block.BlockNumber, block.BlockHash.Hex())
