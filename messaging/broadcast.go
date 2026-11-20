@@ -1266,7 +1266,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			ion.Uint64("block_number", block.BlockNumber))
 	}
 	if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber); err != nil {
-		broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+		broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: the next data-complete tip read repairs it)",
 			ion.String("error", err.Error()),
 			ion.Uint64("block_number", block.BlockNumber))
 	}

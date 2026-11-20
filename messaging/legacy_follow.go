@@ -248,7 +248,7 @@ func handleLegacyBlockMessage(msg config.BlockMessage, remotePeer string) {
 			return fmt.Errorf("legacy block apply+store failed: %w", err)
 		}
 		if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(b.BlockNumber); err != nil {
-			broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+			broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: the next data-complete tip read repairs it)",
 				ion.String("error", err.Error()), ion.Uint64("block_number", b.BlockNumber))
 		}
 		NoteHeightCommitted(b.BlockNumber)
