@@ -1227,11 +1227,19 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 	}
 
 	// (Slot) A block's slot is its block number, whatever its Period
-	// (slot_store.go). Every block arriving live is stamped by the current
-	// proposer, so the rule has no exception here.
+	// (slot_store.go). A block stamped by the current proposer always has it.
+	// A legacy block (legacy follow mode) comes from the main-branch
+	// sequencer, which stamps no slot: it takes ThebeSync's rule instead
+	// (slot 0 only after a slot-0 parent), as it does when it arrives by
+	// catch-up.
 	if b.Slot != b.BlockNumber {
-		return reject("bad_slot",
-			"block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
+		if !IsLegacyBlock(b) {
+			return reject("bad_slot",
+				"block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
+		}
+		if err := CheckSyncedSlot(b, func() (uint64, error) { return parent.Slot, nil }); err != nil {
+			return reject("bad_slot", "%v", err)
+		}
 	}
 
 	// (State-root chain) The generator computes
