@@ -27,6 +27,7 @@ import (
 	"gossipnode/internal/reputation"
 	"gossipnode/internal/streamread"
 	"gossipnode/messaging"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 	"gossipnode/seednode"
 
@@ -100,6 +101,16 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
+	// A node whose block apply is halted (BlockProcessing.ErrApplyHalted)
+	// cannot apply what it would propose: a round would only have the
+	// committee certify a block this node then withholds. Refuse until the
+	// node is resynced and the halt cleared.
+	if reason, herr := BlockProcessing.ApplyHaltReason(); herr != nil {
+		return fmt.Errorf("CONSENSUSERROR.HALTED: cannot read the block-apply halt record, not proposing: %w", herr)
+	} else if reason != "" {
+		return fmt.Errorf("CONSENSUSERROR.HALTED: not proposing (%s): %w", reason, BlockProcessing.ErrApplyHalted)
+	}
+
 	// Create root context for the entire consensus process
 	rootCtx := context.Background()
 	tracer := logger().Tracer("Consensus")

@@ -187,6 +187,18 @@ func UpdateAccount(_ *config.PooledConnection, doc *Account) error {
 	return storeAccount(nil, doc)
 }
 
+// DeleteAccount removes addr's account row. Used only by the rollback of a
+// failed block, for an account that did not exist before the block.
+func DeleteAccount(addr common.Address) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("DeleteAccount: %w", err)
+	}
+	return h.DeleteAccount(ctx, addr.Hex())
+}
+
 // UpdateAccountBalance updates an account's balance (and optionally records
 // blockTimestamp as UpdatedAt).  addr is a common.Address; balance is a
 // decimal string (e.g. "1000000000000000000").

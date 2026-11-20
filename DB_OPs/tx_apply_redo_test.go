@@ -107,8 +107,14 @@ func TestRecover_RollsForwardInterruptedApply(t *testing.T) {
 func TestApplyTxAtomic_ErrorClearsRedo(t *testing.T) {
 	h := newRedoHandle(t, redoAddr, "100")
 	h.failMarkerPut = true
-	if err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xcc", 1); err == nil {
+	err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xcc", 1)
+	if err == nil {
 		t.Fatal("expected error")
+	}
+	// The account was written before the marker failed: the caller must know
+	// that only a rollback makes this consistent.
+	if !errors.Is(err, ErrPartialApply) {
+		t.Fatalf("a failure after writes started must be ErrPartialApply, got %v", err)
 	}
 	if len(h.kv[txApplyRedoKey]) != 0 {
 		t.Fatal("redo must be cleared on error so rollback is not undone at boot")
@@ -160,5 +166,72 @@ func TestDiscardPendingTxApply(t *testing.T) {
 	}
 	if h.accounts[redoAddr.Hex()].Balance != "100" {
 		t.Fatal("discarded apply was rolled forward")
+	}
+}
+
+// failRedoClear fails only the clearing of the redo record.
+type failRedoClear struct{ *redoHandle }
+
+func (f *failRedoClear) PutSyncKV(key string, value []byte) error {
+	if key == txApplyRedoKey && len(value) == 0 {
+		return errors.New("injected redo-clear failure")
+	}
+	return f.redoHandle.PutSyncKV(key, value)
+}
+
+// An apply that commits its documents and marker but cannot clear its redo
+// record reports ErrApplyRedoNotCleared, so the caller's rollback revokes the
+// marker along with the restored balances.
+func TestApplyTxAtomic_RedoNotClearedIsMarkedApplied(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	SetGlobalHandle(&failRedoClear{h})
+	err := ApplyTxAtomic(nil, []*Account{{Address: redoAddr, Balance: "90"}}, "0xab", 1)
+	if !errors.Is(err, ErrApplyRedoNotCleared) || errors.Is(err, ErrPartialApply) {
+		t.Fatalf("want ErrApplyRedoNotCleared (and not ErrPartialApply), got %v", err)
+	}
+	applied, merr := IsMarkerApplied(nil, TxProcessedKey("0xab"))
+	if merr != nil || !applied {
+		t.Fatalf("precondition: the marker is written (applied=%v, %v)", applied, merr)
+	}
+}
+
+// A revocation that fails after revoking some markers says so; one that
+// revoked nothing does not.
+func TestRevokeTxProcessedMarkers_PartialIsMarked(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	SetGlobalHandle(&failSecondMarkerPut{redoHandle: h})
+	err := RevokeTxProcessedMarkers(nil, []string{"0x1", "0x2"})
+	if !errors.Is(err, ErrPartialRevoke) {
+		t.Fatalf("want ErrPartialRevoke after one revoked marker, got %v", err)
+	}
+	SetGlobalHandle(&failSecondMarkerPut{redoHandle: h, failFirst: true})
+	if err := RevokeTxProcessedMarkers(nil, []string{"0x1", "0x2"}); err == nil || errors.Is(err, ErrPartialRevoke) {
+		t.Fatalf("a revocation that revoked nothing is not partial: %v", err)
+	}
+}
+
+type failSecondMarkerPut struct {
+	*redoHandle
+	failFirst bool
+	puts      int
+}
+
+func (f *failSecondMarkerPut) PutSyncKV(key string, value []byte) error {
+	f.puts++
+	if f.failFirst || f.puts == 2 {
+		return errors.New("kv down")
+	}
+	return f.redoHandle.PutSyncKV(key, value)
+}
+
+// A pending-apply record that cannot be cleared is reported as a discard
+// failure, with the same prefix as the other discard failures.
+func TestDiscardPendingTxApply_ClearFailureIsPrefixed(t *testing.T) {
+	h := newRedoHandle(t, redoAddr, "100")
+	h.kv[txApplyRedoKey] = []byte(`{"tx_hash":"0xab"}`)
+	SetGlobalHandle(&failRedoClear{h})
+	err := DiscardPendingTxApply()
+	if err == nil || !strings.HasPrefix(err.Error(), "discard apply: ") {
+		t.Fatalf("want a 'discard apply:' error, got %v", err)
 	}
 }

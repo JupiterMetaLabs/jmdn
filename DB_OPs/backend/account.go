@@ -33,6 +33,14 @@ func (b *thebeBackend) CreateAccount(ctx context.Context, account *store.Account
 	return nil
 }
 
+// DeleteAccount removes the account row through the gateway (no outbox).
+func (b *thebeBackend) DeleteAccount(ctx context.Context, address string) error {
+	if err := b.gw.DeleteAccount(ctx, address); err != nil {
+		return fmt.Errorf("backend.DeleteAccount(%s): %w", address, err)
+	}
+	return nil
+}
+
 // UpdateAccountBalance reads current account, updates balance, writes back.
 // Time: O(1) — one read + one write.
 func (b *thebeBackend) UpdateAccountBalance(ctx context.Context, address, balance string) error {

@@ -30,8 +30,10 @@ import (
 )
 
 // BatchPutAccountsAuthoritative writes absolute account documents WITHOUT the
-// LWW merge gate. Entries use the same shape as BatchRestoreAccounts so the
-// two authoritative call sites are drop-in. Caller MUST hold LockStateApply.
+// LWW merge gate, and without the outbox: a write that fails returns the error
+// and is never retried later. Entries use the same shape as
+// BatchRestoreAccounts so the two authoritative call sites are drop-in. Caller
+// MUST hold LockStateApply.
 func BatchPutAccountsAuthoritative(entries []struct {
 	Key   string
 	Value []byte
@@ -50,7 +52,9 @@ func BatchPutAccountsAuthoritative(entries []struct {
 		if doc.Address == (common.Address{}) {
 			continue // skip malformed entries (matches BatchRestoreAccounts)
 		}
-		if err := storeAccount(nil, &doc); err != nil {
+		// Never through the outbox: both callers roll back or halt when this
+		// fails, and a retry landing after that would redo the undone write.
+		if err := storeAccountNow(&doc); err != nil {
 			return fmt.Errorf("BatchPutAccountsAuthoritative[%d] key=%s: store: %w", i, e.Key, err)
 		}
 	}

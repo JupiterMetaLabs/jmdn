@@ -527,8 +527,8 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 
 			// Apply + store atomically (D-858): store runs after the fingerprint
 			// check and before the block-processed marker; a store failure rolls back
-			// the full applied prefix and drops the outbox projection, so a block that
-			// is not durably stored leaves no state change on this validator either.
+			// the full applied prefix (or, after a contract commit, keeps the block
+			// applied and marked), and the block is stored when it arrives again.
 			if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), msg.Block, nil, func() error {
 				return DB_OPs.StoreZKBlock(nil, msg.Block)
 			}); err != nil {

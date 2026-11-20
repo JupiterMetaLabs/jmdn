@@ -7,6 +7,7 @@ package BlockProcessing
 // verified here with a stubbed rollback func and no infrastructure.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,13 +16,15 @@ import (
 )
 
 func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
+	resetApplyHaltForTest(t)
 	bh := common.HexToHash("0xC0FFEE")
 	markContractStateCommitted(bh)
 	defer clearContractStateCommitted(bh)
 
 	rolledBackCalled := false
-	err, rolledBack := decideStoreFailure(bh, 858, errors.New("uq_txn_block_index 23505"), func() {
+	err, rolledBack := decideStoreFailure(context.Background(), bh, 858, errors.New("uq_txn_block_index 23505"), func() error {
 		rolledBackCalled = true
+		return nil
 	})
 
 	if rolledBack || rolledBackCalled {
@@ -36,14 +39,24 @@ func TestDecideStoreFailure_ContractRefusesRollback(t *testing.T) {
 	if !strings.Contains(err.Error(), "uq_txn_block_index") {
 		t.Fatalf("refusal error should wrap the underlying store error, got %v", err)
 	}
+	if !errors.Is(err, ErrBlockKeptApplied) {
+		t.Fatalf("refusal error must be ErrBlockKeptApplied so the producer completes or halts, got %v", err)
+	}
+	// Every tx is applied and marked: nothing is partial, so apply does not
+	// halt; the block is stored when it arrives again.
+	if r, herr := ApplyHaltReason(); herr != nil || r != "" {
+		t.Fatalf("a store failure on a fully applied contract block must not halt (halt %q, %v)", r, herr)
+	}
 }
 
 func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {
+	resetApplyHaltForTest(t)
 	bh := common.HexToHash("0xBEEF") // never marked as committing contract state
 
 	rolledBackCalled := false
-	err, rolledBack := decideStoreFailure(bh, 844, errors.New("disk full"), func() {
+	err, rolledBack := decideStoreFailure(context.Background(), bh, 844, errors.New("disk full"), func() error {
 		rolledBackCalled = true
+		return nil
 	})
 
 	if !rolledBack || !rolledBackCalled {
@@ -63,15 +76,27 @@ func TestDecideStoreFailure_NonContractRollsBack(t *testing.T) {
 // The flag registry is per-block-hash and isolated: a mark on one hash does not leak
 // into the decision for another (two blocks applying concurrently must not cross).
 func TestDecideStoreFailure_FlagIsolationPerBlock(t *testing.T) {
+	resetApplyHaltForTest(t)
 	contract := common.HexToHash("0x1111")
 	plain := common.HexToHash("0x2222")
 	markContractStateCommitted(contract)
 	defer clearContractStateCommitted(contract)
 
-	if _, rolledBack := decideStoreFailure(plain, 10, errors.New("x"), func() {}); !rolledBack {
+	if _, rolledBack := decideStoreFailure(context.Background(), plain, 10, errors.New("x"), func() error { return nil }); !rolledBack {
 		t.Fatal("unmarked block must roll back even while another block is marked")
 	}
-	if _, rolledBack := decideStoreFailure(contract, 11, errors.New("x"), func() {}); rolledBack {
+	if _, rolledBack := decideStoreFailure(context.Background(), contract, 11, errors.New("x"), func() error { return nil }); rolledBack {
 		t.Fatal("marked block must refuse rollback")
+	}
+}
+
+// A store failure whose rollback could not complete reports both errors.
+func TestDecideStoreFailure_ReportsRollbackError(t *testing.T) {
+	resetApplyHaltForTest(t)
+	err, rolledBack := decideStoreFailure(context.Background(), common.HexToHash("0xFACE"), 845, errors.New("disk full"), func() error {
+		return ErrApplyHalted
+	})
+	if !rolledBack || !errors.Is(err, ErrApplyHalted) || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("want the store error and the rollback's halt, got rolledBack=%v err=%v", rolledBack, err)
 	}
 }

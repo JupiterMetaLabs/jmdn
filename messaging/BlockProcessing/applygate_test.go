@@ -55,7 +55,12 @@ var (
 )
 
 // Thin wrappers over the shared harness (gossipnode/internal/applygate).
-func buildHandle(t *testing.T, dir string) func() { return applygate.BuildHandle(t, dir) }
+// buildHandle opens a fresh store for one test. A fresh store is a fresh node,
+// so a block-apply halt latched by an earlier test is cleared.
+func buildHandle(t *testing.T, dir string) func() {
+	BlockProcessing.ResetApplyHaltForTest()
+	return applygate.BuildHandle(t, dir)
+}
 
 func seedGenesis(t *testing.T) { applygate.SeedGenesis(t) }
 

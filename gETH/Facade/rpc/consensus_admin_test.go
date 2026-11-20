@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/store"
 	"gossipnode/internal/roundlock"
+	"gossipnode/messaging/BlockProcessing"
 
 	"github.com/gin-gonic/gin"
 )
@@ -68,5 +71,74 @@ func TestClearRoundLedger_SigningLedgerOnlyOnRequest(t *testing.T) {
 	}
 	if _, ok := roundlock.Default.Signed(roundlock.Round{Height: h, Period: 3}); ok {
 		t.Fatal("signing ledger kept with include_signing_ledger")
+	}
+}
+
+// haltRecordStore holds the node's block-apply halt record and nothing else.
+type haltRecordStore struct {
+	store.ThebeHandle
+	kv map[string][]byte
+}
+
+func (h *haltRecordStore) GetSyncKV(k string) ([]byte, error) { return h.kv[k], nil }
+func (h *haltRecordStore) PutSyncKV(k string, v []byte) error {
+	h.kv[k] = v
+	return nil
+}
+
+// Both apply-halt endpoints are admin-only and fail closed without config.
+func TestApplyHaltEndpoints_FailClosedWithoutConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterConsensusAdminRoutes(r)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/consensus/apply-halt", nil),
+		httptest.NewRequest(http.MethodPost, "/consensus/apply-halt/clear", nil),
+	} {
+		req.Header.Set("Authorization", "Bearer anything")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s: status %d", req.Method, req.URL.Path, w.Code)
+		}
+	}
+}
+
+// Status reports a recorded halt; clear lifts it and erases the record.
+func TestApplyHaltEndpoints_StatusAndClear(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	st := &haltRecordStore{kv: map[string][]byte{"block_apply_halt": []byte("block 8 failed")}}
+	DB_OPs.SetGlobalHandle(st)
+	t.Cleanup(func() { DB_OPs.SetGlobalHandle(nil) })
+	// The halt is process-wide: leave it cleared, and re-read on the next run.
+	t.Cleanup(func() {
+		if _, err := BlockProcessing.ClearApplyHalt(); err != nil {
+			t.Errorf("clear the halt: %v", err)
+		}
+	})
+
+	r := gin.New()
+	r.GET("/s", handleApplyHaltStatus)
+	r.POST("/c", handleClearApplyHalt)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"halted":true`) || !strings.Contains(w.Body.String(), "block 8 failed") || !strings.Contains(w.Body.String(), `"recorded":true`) {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/c", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "block 8 failed") {
+		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
+	}
+	if len(st.kv["block_apply_halt"]) != 0 {
+		t.Fatal("clear left the halt record in the store")
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
+	if !strings.Contains(w.Body.String(), `"halted":false`) {
+		t.Fatalf("after clear: %s", w.Body.String())
 	}
 }

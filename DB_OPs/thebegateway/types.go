@@ -59,6 +59,11 @@ type AccountRecord struct {
 	Metadata    map[string]any `json:"metadata"`      // JSONB
 	CreatedAt   time.Time      `json:"created_at"`    // TIMESTAMPTZ
 	UpdatedAt   time.Time      `json:"updated_at"`    // TIMESTAMPTZ
+	// Deleted marks a record that removes the account row (written only by
+	// DeleteAccount, when a failed block's rollback removes an account the
+	// block created). Omitted from every other record, so their bytes are
+	// unchanged.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // BlockRecord maps to the `blocks` SQL table.

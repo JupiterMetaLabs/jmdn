@@ -29,8 +29,12 @@ type Applier struct {
 
 // LocalTip returns the local applied tip (height + hex hash). On a fresh node this
 // is the locally-seeded genesis block.
+//
+// The data-complete tip, not MAX(block_number): a block whose store failed
+// after writing its row was rolled back and must be fetched again (D-858
+// review B1).
 func (Applier) LocalTip() (uint64, string, error) {
-	h, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
+	h, err := DB_OPs.GetLatestDataCompleteBlock()
 	if err != nil {
 		return 0, "", err
 	}

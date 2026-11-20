@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"gossipnode/DB_OPs/store"
+	"gossipnode/DB_OPs/thebegateway"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -96,5 +97,44 @@ func TestSyncRestore_StaysBehindLWW_OlderWriteDropped(t *testing.T) {
 	got := h.accounts[addr.Hex()]
 	if got == nil || got.Balance != "1000" {
 		t.Fatalf("LWW gate failed to protect stored balance: got %+v, want 1000", got)
+	}
+}
+
+// ctxRecordingHandle records whether each account write allowed the outbox.
+type ctxRecordingHandle struct {
+	memAccountsHandle
+	outboxAllowed []bool
+}
+
+func (h *ctxRecordingHandle) CreateAccount(ctx context.Context, a *store.Account) error {
+	h.outboxAllowed = append(h.outboxAllowed, thebegateway.OutboxAllowed(ctx))
+	return h.memAccountsHandle.CreateAccount(ctx, a)
+}
+
+// The authoritative writers (block apply, reconciliation) and the rollback
+// never let a failed account write be retried later through the outbox: a
+// retry would land after their rollback and redo what it undid.
+func TestAuthoritativeAndRollbackWritesBypassTheOutbox(t *testing.T) {
+	h := &ctxRecordingHandle{memAccountsHandle: memAccountsHandle{accounts: map[string]*store.Account{}}}
+	SetGlobalHandle(h)
+	t.Cleanup(func() { SetGlobalHandle(nil) })
+
+	addr := common.HexToAddress("0x00000000000000000000000000000000000000f5")
+	val, _ := json.Marshal(&Account{Address: addr, Balance: "5"})
+	if err := BatchPutAccountsAuthoritative([]struct {
+		Key   string
+		Value []byte
+	}{{Key: Prefix + addr.Hex(), Value: val}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreAccount(&Account{Address: addr, Balance: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateAccount(nil, &Account{Address: addr, Balance: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{false, false, true} // authoritative, rollback, ordinary
+	if len(h.outboxAllowed) != 3 || h.outboxAllowed[0] != want[0] || h.outboxAllowed[1] != want[1] || h.outboxAllowed[2] != want[2] {
+		t.Fatalf("outbox allowed per write = %v, want %v", h.outboxAllowed, want)
 	}
 }

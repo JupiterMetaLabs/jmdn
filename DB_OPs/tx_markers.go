@@ -33,6 +33,7 @@ package DB_OPs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -221,6 +222,21 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 	return nil
 }
 
+// ErrPartialApply marks an apply whose writes failed part-way: some account
+// documents, and possibly some tx markers, may already be written. Only a
+// rollback of the block makes that state consistent again.
+var ErrPartialApply = errors.New("apply failed part-way; some of its writes may be committed")
+
+// ErrPartialRevoke marks a marker revocation that stopped after revoking some
+// markers: those txs are applied with no marker, which no replay handles.
+var ErrPartialRevoke = errors.New("marker revocation stopped part-way")
+
+// ErrApplyRedoNotCleared marks an apply that committed every account document
+// AND every tx marker, but whose redo record could not be cleared. Its txs are
+// applied: a rollback of the block must revoke their markers along with the
+// rest, or a replay would skip them over restored balances.
+var ErrApplyRedoNotCleared = errors.New("applied and marked, but the apply record could not be cleared")
+
 // ApplyTxAtomic commits one transaction's complete effect: every touched
 // account document, then the tx_processed marker LAST, bracketed by a redo
 // record so a crash between the commits is rolled forward at boot
@@ -229,7 +245,7 @@ func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt i
 // Caller must hold LockStateApply.
 //
 // On a returned error the redo record is cleared: the caller rolls the block
-// back (rollbackState), and a leftover record would otherwise re-apply the
+// back (BlockProcessing planRollback/restoreAfterRevoke), and a leftover record would otherwise re-apply the
 // failed tx after that rollback.
 func ApplyTxAtomic(c *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
 	return ApplyTxGroupAtomic(c, docs, []string{txHash}, appliedAt)
@@ -291,16 +307,16 @@ func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []
 
 	if err := writeTxEffects(h, docs, txHashes, appliedAt); err != nil {
 		if cerr := clearTxApplyRedo(h); cerr != nil {
-			return fmt.Errorf("ApplyTxAtomic %s: %w (and %v)", label, err, cerr)
+			return fmt.Errorf("ApplyTxAtomic %s: %w: %w (and %v)", label, ErrPartialApply, err, cerr)
 		}
-		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrPartialApply, err)
 	}
 
 	if err := clearTxApplyRedo(h); err != nil {
 		// Effects and markers are committed. A stale record is harmless to
 		// recovery (it rewrites identical docs) but blocks the next apply, so
-		// surface it.
-		return fmt.Errorf("ApplyTxAtomic %s: applied, but %w", label, err)
+		// surface it, marked so a rollback also revokes these txs' markers.
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrApplyRedoNotCleared, err)
 	}
 	return nil
 }
@@ -365,7 +381,10 @@ func DiscardPendingTxApply() error {
 	if len(raw) == 0 {
 		return nil
 	}
-	return clearTxApplyRedo(h)
+	if err := clearTxApplyRedo(h); err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	return nil
 }
 
 // WriteTxProcessedMarkers writes applied markers for a set of txs.
@@ -417,6 +436,9 @@ func RevokeTxProcessedMarkers(_ *config.PooledConnection, txHashes []string) err
 	for i, hash := range txHashes {
 		op := markerOp(TxProcessedKey(hash), MarkerRevoked)
 		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			if i > 0 {
+				return fmt.Errorf("revoke markers (%d/%d revoked): %w: %w", i, len(txHashes), ErrPartialRevoke, err)
+			}
 			return fmt.Errorf("revoke markers (%d/%d revoked): %w", i, len(txHashes), err)
 		}
 	}
