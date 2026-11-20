@@ -10,9 +10,11 @@ A block that fails during apply is rolled back to the state before the block. Th
 2. **A rollback write fails** after the block's transaction markers were revoked.
 3. **A commit fails part-way and the rollback cannot run** (its reads, the drop of the pending-apply record, or the marker revocation fail). Some of the commit's writes may have landed without a marker.
 
-In each case, the node's state is neither the state before the block nor the state after it.
+In each case, the node's state is neither the state before the block nor the state after it. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
 
-Not a halt: when storing the block, or computing its fingerprint, fails after every transaction of a block with a successful contract transaction was applied, the node keeps the block applied and marked (its state is the complete post-block state) and returns an error. The block is completed when it arrives again. Applying another block on top would build on state no other node has. So the node stops applying blocks, and its state must be rebuilt.
+Not a halt on a validator: when storing the block, or computing its fingerprint, fails after every transaction of a block with a successful contract transaction was applied, the node keeps the block applied and marked (its state is the complete post-block state) and returns an error. The block is completed when it arrives again.
+
+On the sequencer the same failure is completed or halted at once. The sequencer withholds a block it could not store, so the block never arrives again: it applies the same certified block up to three more times, which skips the marked transactions and stores it. If that still fails, it halts with a reason that starts `producer: block N (...) is applied with its contract state but could not be stored`, and no new round starts on top of it.
 
 The halt is recorded in the node's store (sync KV key `block_apply_halt`), so a restart does not lift it. If that write fails, the node retries it on every block; the status endpoint below shows whether it has succeeded.
 

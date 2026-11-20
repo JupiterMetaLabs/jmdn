@@ -33,6 +33,15 @@ const (
 // ProcessBlockTransactions); catch-up re-applies it.
 var ErrStaleNonce = errors.New("stale nonce")
 
+// ErrBlockKeptApplied: every transaction of the block is applied and marked
+// and the block committed contract state, but storing the block, or computing
+// its state fingerprint, failed. Contract storage has no undo, so the block is
+// kept applied rather than rolled back. Applying the same block again skips
+// the marked transactions and completes it. A received block does that when it
+// arrives again; the producer must do it itself before it starts another
+// round, or halt (messaging.ProcessBlockLocally).
+var ErrBlockKeptApplied = errors.New("block kept applied: every transaction is applied and contract state committed, but the block is not stored; applying the same block again completes it")
+
 // AccountSnapshot captures the mutable state of an account before block processing begins.
 // All three fields must be restored atomically on rollback to prevent nonce/count corruption.
 type AccountSnapshot struct {
@@ -116,7 +125,7 @@ func decideStoreFailure(_ context.Context, blockHash common.Hash, blockNumber ui
 		// state, and the idempotent store completes when the block arrives
 		// again. Contract storage has no undo, so do not roll back; nothing is
 		// partial, so do not halt either.
-		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback; block kept applied and marked, stored when it arrives again: %w", blockNumber, serr), false
+		return fmt.Errorf("block %d: store failed after contract-state commit — refusing incomplete rollback: %w: %w", blockNumber, ErrBlockKeptApplied, serr), false
 	}
 	if rbErr := rollbackApplied(); rbErr != nil {
 		return fmt.Errorf("block %d: store failed after apply: %w; rollback: %w", blockNumber, serr, rbErr), true
@@ -948,12 +957,12 @@ func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		if fperr != nil {
 			if didCommitContractState(block.BlockHash) {
 				// Every tx is applied and marked, so nothing is partial: keep the
-				// state (contract storage has no undo) and let the block's next
-				// arrival recompute the fingerprint and store it.
-				logger().Error(span_ctx, "State fingerprint could not be computed after this block committed contract state — block kept applied and marked, completed when it arrives again",
+				// state (contract storage has no undo). Applying the same block
+				// again recomputes the fingerprint and stores it (ErrBlockKeptApplied).
+				logger().Error(span_ctx, "State fingerprint could not be computed after this block committed contract state — block kept applied and marked; applying it again completes it",
 					fperr, ion.Int64("block_number", int64(block.BlockNumber)),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"))
-				return fmt.Errorf("block %d: state-fingerprint compute failed after contract-state commit; block kept applied: %w", block.BlockNumber, fperr)
+				return fmt.Errorf("block %d: state-fingerprint compute failed after contract-state commit: %w: %w", block.BlockNumber, ErrBlockKeptApplied, fperr)
 			}
 			if rbErr := rollbackApplied(fperr); rbErr != nil {
 				return fmt.Errorf("block %d: state-fingerprint compute failed (fail closed): %w; rollback: %w", block.BlockNumber, fperr, rbErr)

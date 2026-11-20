@@ -1231,12 +1231,19 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// old code applied a second duplicate-height candidate's txs and then returned on
 	// a StoreZKBlock uq_txn_block_index failure WITHOUT rolling back, advancing the
 	// sequencer's account state past the fleet and forcing a validator re-seed.
+	//
+	// One exception: a block that committed contract state is kept applied when
+	// its store fails (BlockProcessing.ErrBlockKeptApplied). The producer withholds
+	// a failed block, so it never arrives again; applyProducedBlock completes it
+	// here or halts block apply.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
-		return DB_OPs.StoreZKBlock(nil, block)
-	}); err != nil {
-		broadcastLogger().Error(context.Background(), "Block apply+store failed - block not applied (rolled back, withheld from peers)", err,
+	if err := applyProducedBlock(ctx, block); err != nil {
+		msg := "Block apply+store failed - block not applied (rolled back, withheld from peers)"
+		if errors.Is(err, BlockProcessing.ErrApplyHalted) {
+			msg = "Block apply+store failed - block apply halted, block withheld from peers"
+		}
+		broadcastLogger().Error(context.Background(), msg, err,
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Uint64("block_number", block.BlockNumber))
 		// Explorer lifecycle: FAILED — either tx processing or the durable store failed.
@@ -1393,4 +1400,67 @@ func sendBlockMessageDirect(h host.Host, msg config.BlockMessage, peers []peer.I
 		ion.Int("total", len(peers)))
 
 	return nil
+}
+
+// Seams for tests of applyProducedBlock.
+var (
+	applyAndStoreBlock = func(ctx context.Context, block *config.ZKBlock) error {
+		return BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
+			return DB_OPs.StoreZKBlock(nil, block)
+		})
+	}
+	haltBlockApply = BlockProcessing.HaltApply
+)
+
+// keptBlockAttempts is how many more times the producer applies a block it
+// kept applied (BlockProcessing.ErrBlockKeptApplied) before halting, and
+// keptBlockRetryDelay the wait before the first of them (doubled each time).
+var (
+	keptBlockAttempts   = 3
+	keptBlockRetryDelay = 500 * time.Millisecond
+)
+
+// applyProducedBlock applies and stores a certified block on the producer.
+//
+// When the block committed contract state and then could not be stored (or its
+// fingerprint computed), it is kept applied (ErrBlockKeptApplied): this node's
+// state includes the block, but no peer has it, because the producer withholds
+// a failed block. A validator completes such a block when it arrives again; the
+// producer never receives it, so it applies the same block again here: the
+// marked transactions are skipped, the fingerprint is recomputed and the block
+// is stored. If that still fails, block apply halts, so the next round is not
+// built on state no other node holds.
+func applyProducedBlock(ctx context.Context, block *config.ZKBlock) error {
+	err := applyAndStoreBlock(ctx, block)
+	if err == nil || !errors.Is(err, BlockProcessing.ErrBlockKeptApplied) {
+		return err
+	}
+	delay := keptBlockRetryDelay
+retry:
+	for attempt := 1; attempt <= keptBlockAttempts; attempt++ {
+		broadcastLogger().Warn(ctx, "Certified block kept applied after its store failed; applying it again to complete it",
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int("attempt", attempt),
+			ion.String("error", err.Error()))
+		select {
+		case <-ctx.Done():
+			break retry
+		case <-time.After(delay):
+		}
+		delay *= 2
+		// Any error now leaves the state holding the block: its transactions
+		// stay marked, so a later failure no longer reports ErrBlockKeptApplied.
+		if err = applyAndStoreBlock(ctx, block); err == nil {
+			broadcastLogger().Info(ctx, "Certified block completed on the producer after its store failed",
+				ion.Uint64("block_number", block.BlockNumber),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int("attempt", attempt))
+			return nil
+		}
+	}
+	reason := fmt.Sprintf("producer: block %d (%s) is applied with its contract state but could not be stored after %d further attempts; this node holds state no peer has: %v",
+		block.BlockNumber, block.BlockHash.Hex(), keptBlockAttempts, err)
+	haltBlockApply(ctx, reason)
+	return fmt.Errorf("%w: %s", BlockProcessing.ErrApplyHalted, reason)
 }

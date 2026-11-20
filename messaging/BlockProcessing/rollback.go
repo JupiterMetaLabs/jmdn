@@ -204,6 +204,13 @@ func haltApply(ctx context.Context, reason string) {
 	haltState.recorded = true
 }
 
+// HaltApply halts block apply on this node for a reason found outside block
+// processing: the producer could not complete a block it kept applied
+// (ErrBlockKeptApplied). The halt is recorded, as for every other halt.
+func HaltApply(ctx context.Context, reason string) {
+	haltApply(ctx, reason)
+}
+
 // ApplyHaltStatus reports why block apply is halted on this node ("" when it is
 // not) and whether that halt is recorded, so that a restart keeps it. A halt
 // recorded before a restart is loaded on first use, and an unrecorded halt is
