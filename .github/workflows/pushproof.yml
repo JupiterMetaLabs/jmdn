@@ -11,12 +11,16 @@
 #   1. Add an ANTHROPIC_API_KEY secret (repository or organization level).
 #   2. After a few runs look right, require the status check "pushproof" in the
 #      repository ruleset next to "Quality Gate" and "Secrets (gitleaks)".
+#
+# Actions are pinned to EXACT versions, per the repository's pinning convention
+# (see the header of ci.yml on v3base). On branches with .github/workflows/actions.lock,
+# regenerate it with `gh actions-lock` in the same commit as any version change here.
 
 name: pushproof
 
 on:
   pull_request:
-    branches: ["main", "release/**"]
+    branches: ["main", "v3base", "release/**"]
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
@@ -44,13 +48,13 @@ jobs:
       PUSHPROOF: .pushproof-tool/skills/review/scripts/pushproof.py
     steps:
       - name: Check out the pull request (full history, for the merge base)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Check out pushproof
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           repository: JupiterMetaLabs/pushproof
           ref: ${{ env.PUSHPROOF_REF }}
@@ -58,7 +62,7 @@ jobs:
           persist-credentials: false
 
       - name: Review with Claude
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.284
         continue-on-error: true  # the next step decides pass or fail
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
