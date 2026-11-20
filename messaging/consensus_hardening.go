@@ -17,8 +17,6 @@ package messaging
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -814,35 +812,11 @@ func RecomputeBlockHashFromTxs(txs []config.Transaction) common.Hash {
 // Merkle tree over the per-tx 32-byte hashes). Returns the "0x"-prefixed hex
 // root, matching the generator's string form.
 func RecomputeTxnsRoot(txs []config.Transaction) string {
-	if len(txs) == 0 {
-		return "0x" + strings.Repeat("0", 64)
-	}
-	level := make([][]byte, len(txs))
+	hashes := make([]common.Hash, len(txs))
 	for i := range txs {
-		level[i] = txs[i].Hash.Bytes()
+		hashes[i] = txs[i].Hash
 	}
-	if len(level) == 1 {
-		combined := make([]byte, 0, 64)
-		combined = append(combined, level[0]...)
-		combined = append(combined, level[0]...)
-		s := sha256.Sum256(combined)
-		return "0x" + hex.EncodeToString(s[:])
-	}
-	for len(level) > 1 {
-		if len(level)%2 == 1 {
-			level = append(level, level[len(level)-1])
-		}
-		next := make([][]byte, 0, len(level)/2)
-		for i := 0; i < len(level); i += 2 {
-			combined := make([]byte, 0, 64)
-			combined = append(combined, level[i]...)
-			combined = append(combined, level[i+1]...)
-			s := sha256.Sum256(combined)
-			next = append(next, s[:])
-		}
-		level = next
-	}
-	return "0x" + hex.EncodeToString(level[0])
+	return DB_OPs.TxnsRootOfHashes(hashes)
 }
 
 // checkBodyBinding recomputes the canonical BlockHash and TxnsRoot from the
