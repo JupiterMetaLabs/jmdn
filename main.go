@@ -1754,6 +1754,21 @@ func main() {
 	// it (DB_OPs.SetLatestBlockAdvanceHook holds exactly one function).
 	voteCompactionHook := startVoteCRDTCompactionHook(ctx)
 	DB_OPs.SetLatestBlockAdvanceHook(voteCompactionHook)
+	// A tip read that found a stored, applied block above the recorded tip
+	// (its latest_block and applied-anchor writes both failed) reports here.
+	DB_OPs.SetTipRepairHook(func(from, to uint64, recordErr error) {
+		logger := mainLogger()
+		if logger == nil {
+			return
+		}
+		if recordErr != nil {
+			logger.Error(context.Background(), "data-complete tip repaired, but the latest_block marker could not be written", recordErr,
+				ion.Uint64("recorded_tip", from), ion.Uint64("repaired_tip", to))
+			return
+		}
+		logger.Warn(context.Background(), "data-complete tip repaired over stored, applied blocks",
+			ion.Uint64("recorded_tip", from), ion.Uint64("repaired_tip", to))
+	})
 
 	// Phase A4.2 (docs/A4-REPUTATION-WEIGHTING-PLAN.md): push observed
 	// reputation to the seed as peer.Weights, independently of FastSync/the

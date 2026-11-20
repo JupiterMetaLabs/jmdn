@@ -544,7 +544,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			// Monotonic: a replayed/out-of-order block can never regress it.
 			// StoreZKBlock no longer writes the marker itself (skeleton safety).
 			if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(msg.Block.BlockNumber); err != nil {
-				broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+				broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: the next data-complete tip read repairs it)",
 					ion.String("error", err.Error()),
 					ion.Uint64("block_number", msg.Block.BlockNumber))
 			}

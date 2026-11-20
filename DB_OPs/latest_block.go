@@ -17,10 +17,20 @@
 package DB_OPs
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"gossipnode/DB_OPs/thebegateway"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 var latestBlockMu sync.Mutex
@@ -169,5 +179,157 @@ func GetLatestDataCompleteBlock() (uint64, error) {
 	if anchor, ok, aerr := GetAppliedAnchor(nil); aerr == nil && ok && anchor > tip {
 		tip = anchor
 	}
-	return tip, nil
+	// Both writes can fail after a block was stored and applied; count such
+	// blocks too (repairTipForward, below).
+	return repairTipForward(tip), nil
+}
+
+// Tip repair: the latest_block marker and the applied anchor are written after
+// a block is stored, and both writes only log on failure. When both fail, the
+// block is stored and applied but the data-complete tip still reads the height
+// below it. A sequencer then proposes that height again, every validator
+// refuses it as already committed, and the chain stops until the marker is
+// set by hand.
+//
+// GetLatestDataCompleteBlock therefore looks one block past the recorded tip.
+// It counts block tip+1 as committed only when all of these hold:
+//
+//   - its parent hash is the recorded tip's block hash;
+//   - it has at least one transaction, and its stored transactions hash to its
+//     TxnsRoot, so it is not a header-only row or a partly written store;
+//   - every one of those transactions carries an applied tx_processed marker.
+//     Markers commit together with the balances, and a failed store revokes
+//     them, so they are present only when the block was applied and kept.
+//
+// It then records the repaired height (best effort) and repeats, up to
+// tipRepairMaxSteps blocks. A block with no transactions is never repaired:
+// nothing on it proves it was applied rather than written by header sync.
+
+const tipRepairMaxSteps = 8
+
+var (
+	tipRepairHookMu sync.Mutex
+	tipRepairHook   func(from, to uint64, recordErr error)
+)
+
+// SetTipRepairHook installs a callback that runs when the data-complete tip
+// was found behind a stored, applied block. recordErr is non-nil when the
+// repaired height could not be written back (the repair still applies to the
+// returned tip). The hook must not block or call back into DB_OPs.
+func SetTipRepairHook(fn func(from, to uint64, recordErr error)) {
+	tipRepairHookMu.Lock()
+	defer tipRepairHookMu.Unlock()
+	tipRepairHook = fn
+}
+
+func fireTipRepairHook(from, to uint64, recordErr error) {
+	tipRepairHookMu.Lock()
+	fn := tipRepairHook
+	tipRepairHookMu.Unlock()
+	if fn != nil {
+		fn(from, to, recordErr)
+	}
+}
+
+// TxnsRootOfHashes is the block TxnsRoot: a SHA-256 binary Merkle tree over
+// the transaction hashes in block order, an odd level duplicating its last
+// node, "0x"-prefixed hex. It matches the block generator.
+func TxnsRootOfHashes(hashes []common.Hash) string {
+	if len(hashes) == 0 {
+		return "0x" + strings.Repeat("0", 64)
+	}
+	level := make([][]byte, len(hashes))
+	for i := range hashes {
+		level[i] = hashes[i].Bytes()
+	}
+	if len(level) == 1 {
+		combined := make([]byte, 0, 64)
+		combined = append(combined, level[0]...)
+		combined = append(combined, level[0]...)
+		s := sha256.Sum256(combined)
+		return "0x" + hex.EncodeToString(s[:])
+	}
+	for len(level) > 1 {
+		if len(level)%2 == 1 {
+			level = append(level, level[len(level)-1])
+		}
+		next := make([][]byte, 0, len(level)/2)
+		for i := 0; i < len(level); i += 2 {
+			combined := make([]byte, 0, 64)
+			combined = append(combined, level[i]...)
+			combined = append(combined, level[i+1]...)
+			s := sha256.Sum256(combined)
+			next = append(next, s[:])
+		}
+		level = next
+	}
+	return "0x" + hex.EncodeToString(level[0])
+}
+
+// repairTipForward returns the highest block at or above tip that is stored
+// and applied, walking at most tipRepairMaxSteps blocks past tip. Any read
+// error or failed check stops the walk at the last proven height.
+func repairTipForward(tip uint64) uint64 {
+	if tip == 0 {
+		return 0
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return tip
+	}
+	start := tip
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var parent *thebegateway.BlockRecord
+	for i := 0; i < tipRepairMaxSteps; i++ {
+		next, err := h.GetBlock(ctx, tip+1)
+		if err != nil || next == nil {
+			break // the usual case: nothing stored above the tip
+		}
+		if parent == nil {
+			if parent, err = h.GetBlock(ctx, tip); err != nil || parent == nil {
+				break
+			}
+		}
+		if !strings.EqualFold(next.ParentHash, parent.BlockHash) || next.TxsRoot == "" {
+			break
+		}
+		recs, err := h.GetTransactionsByBlock(ctx, tip+1)
+		if err != nil || len(recs) == 0 {
+			break
+		}
+		sort.SliceStable(recs, func(a, b int) bool { return recs[a].TxIndex < recs[b].TxIndex })
+		hashes := make([]common.Hash, 0, len(recs))
+		hexes := make([]string, 0, len(recs))
+		for _, r := range recs {
+			hh := common.HexToHash(r.TxHash)
+			hashes = append(hashes, hh)
+			hexes = append(hexes, hh.Hex())
+		}
+		if !strings.EqualFold(TxnsRootOfHashes(hashes), next.TxsRoot) {
+			break
+		}
+		applied, err := FilterProcessedTxMarkers(hexes)
+		if err != nil {
+			break
+		}
+		all := true
+		for _, x := range hexes {
+			if !applied[x] {
+				all = false
+				break
+			}
+		}
+		if !all {
+			break
+		}
+		tip++
+		parent = next
+	}
+	if tip > start {
+		_, _, werr := UpdateLatestBlockMonotonic(tip)
+		fireTipRepairHook(start, tip, werr)
+	}
+	return tip
 }
