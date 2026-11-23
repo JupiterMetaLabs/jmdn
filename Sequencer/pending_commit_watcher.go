@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,9 +16,52 @@ import (
 	"gossipnode/internal/pendingcommit"
 )
 
-// certifiedCommitMu serializes commit attempts of a certified block between
+// certifiedCommitMu serializes commit series of a certified block between
 // the live consensus path and the background watcher.
 var certifiedCommitMu sync.Mutex
+
+// certifiedAttemptMu is held for one commit attempt (drop check, apply,
+// clear). An operator drop takes it too, so it waits for at most one attempt,
+// and no attempt starts after the drop.
+var certifiedAttemptMu sync.Mutex
+
+// ErrCertifiedBlockDropped reports that an operator dropped the pending
+// record of the block being committed, so it is not applied.
+var ErrCertifiedBlockDropped = errors.New("certified block dropped by operator")
+
+// droppedPending is the last block an operator dropped; guarded by
+// certifiedAttemptMu.
+var droppedPending struct {
+	height uint64
+	hash   string
+}
+
+// pendingDropped reports whether block is the one an operator dropped. The
+// caller holds certifiedAttemptMu.
+func pendingDropped(block *config.ZKBlock) bool {
+	return droppedPending.hash != "" && droppedPending.height == block.BlockNumber &&
+		strings.EqualFold(droppedPending.hash, block.BlockHash.Hex())
+}
+
+// DropPendingCommit removes the pending record when height and block hash
+// both match it (operator last resort, consensus admin pending-commit drop).
+// It waits for an attempt in progress, marks the block dropped so no later
+// attempt applies it, and reports its transactions to the orchestrator as not
+// landed. Errors: pendingcommit.ErrNoPending, pendingcommit.ErrRecordMismatch
+// (with the current record), or a store error.
+func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, error) {
+	certifiedAttemptMu.Lock()
+	rec, err := pendingCommits.DropMatching(height, blockHash)
+	if err == nil {
+		droppedPending.height, droppedPending.hash = rec.Height, rec.BlockHash
+	}
+	certifiedAttemptMu.Unlock()
+	if err != nil {
+		return rec, err
+	}
+	ReportDroppedPendingBlock(*rec)
+	return rec, nil
+}
 
 // certifiedNow is the clock for halt-alert pacing; a seam for tests.
 var certifiedNow = time.Now

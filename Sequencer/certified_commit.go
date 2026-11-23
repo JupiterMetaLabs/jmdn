@@ -248,54 +248,28 @@ func recordPendingCertified(ctx context.Context, block *config.ZKBlock, bls []BL
 // ErrCertifiedBlockHalted when the height must halt. It never advances the
 // period.
 func commitCertifiedBlock(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) error {
-	// One commit attempt at a time: the live path and the background watcher
+	// One commit series at a time: the live path and the background watcher
 	// must not apply the same block concurrently.
 	certifiedCommitMu.Lock()
 	defer certifiedCommitMu.Unlock()
+	// Normally already saved by ProcessVoteCollection when quorum was
+	// verified; saving the same block again just rewrites the record. Only
+	// the live path saves it: the resume path never re-creates a record, so
+	// an operator drop cannot be undone.
+	_ = recordPendingCertified(ctx, block, bls)
 	return commitCertifiedBlockLocked(ctx, block, bls)
 }
 
-// commitCertifiedBlockLocked is commitCertifiedBlock; the caller holds
-// certifiedCommitMu.
+// commitCertifiedBlockLocked runs the retry series; the caller holds
+// certifiedCommitMu. Each attempt runs under certifiedAttemptMu and first
+// checks that an operator has not dropped the block, so a drop waits for at
+// most one attempt and no attempt starts after it.
 func commitCertifiedBlockLocked(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) error {
-	// Normally already saved by ProcessVoteCollection when quorum was
-	// verified; saving the same block again just rewrites the record.
-	_ = recordPendingCertified(ctx, block, bls)
-
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		state, serr := storedBlockStateAt(block)
-		switch {
-		case serr != nil:
-			// Cannot tell what is stored. The apply below is still safe: it
-			// re-checks the block-processed marker and fails closed on a read error.
-			logger().Warn(ctx, "Stored-block check failed before applying a certified block",
-				ion.String("error", serr.Error()),
-				ion.Uint64("block_number", block.BlockNumber),
-				ion.String("function", "commitCertifiedBlock"))
-		case state == storedDifferent:
-			return haltCertifiedHeight(ctx, block, attempt,
-				errors.New("a different block is already stored at this height"))
-		case state == storedSamePartial:
-			// Some transactions are applied and some are not: applying again
-			// could not tell which, and skipping would leave state behind the
-			// chain. An operator must repair it.
-			return haltCertifiedHeight(ctx, block, attempt,
-				errors.New("the block is stored but only some of its transactions are applied"))
-		case state == storedSameUnapplied:
-			// Typically a store that reported an error was rolled back and the
-			// queued write landed later. Nothing of the block is applied, and
-			// storing it again is an idempotent upsert, so apply it again.
-			logger().Warn(ctx, "Certified block is stored but none of its transactions are applied; applying it again",
-				ion.Uint64("block_number", block.BlockNumber),
-				ion.String("block_hash", block.BlockHash.Hex()),
-				ion.Int("attempt", attempt+1),
-				ion.String("function", "commitCertifiedBlock"))
-		}
-
-		err := applyCertifiedBlock(block, bls)
-		if err == nil {
-			break
+		done, err := commitAttempt(ctx, block, bls, attempt)
+		if done {
+			return err
 		}
 		lastErr = err
 		if errors.Is(err, BlockProcessing.ErrApplyHalted) {
@@ -320,6 +294,53 @@ func commitCertifiedBlockLocked(ctx context.Context, block *config.ZKBlock, bls 
 				ErrCertifiedBlockHalted, block.BlockNumber, ctx.Err(), lastErr)
 		}
 	}
+}
+
+// commitAttempt makes one attempt under certifiedAttemptMu. done reports
+// that the series is over (committed, dropped or halted); otherwise err is
+// the apply error to retry on.
+func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse, attempt int) (done bool, err error) {
+	certifiedAttemptMu.Lock()
+	defer certifiedAttemptMu.Unlock()
+	if pendingDropped(block) {
+		logger().Warn(ctx, "Certified block was dropped by an operator; not applying it",
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.String("function", "commitCertifiedBlock"))
+		return true, fmt.Errorf("%w: block %d (%s)", ErrCertifiedBlockDropped, block.BlockNumber, block.BlockHash.Hex())
+	}
+	state, serr := storedBlockStateAt(block)
+	switch {
+	case serr != nil:
+		// Cannot tell what is stored. The apply below is still safe: it
+		// re-checks the block-processed marker and fails closed on a read error.
+		logger().Warn(ctx, "Stored-block check failed before applying a certified block",
+			ion.String("error", serr.Error()),
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("function", "commitCertifiedBlock"))
+	case state == storedDifferent:
+		return true, haltCertifiedHeight(ctx, block, attempt,
+			errors.New("a different block is already stored at this height"))
+	case state == storedSamePartial:
+		// Some transactions are applied and some are not: applying again
+		// could not tell which, and skipping would leave state behind the
+		// chain. An operator must repair it.
+		return true, haltCertifiedHeight(ctx, block, attempt,
+			errors.New("the block is stored but only some of its transactions are applied"))
+	case state == storedSameUnapplied:
+		// Typically a store that reported an error was rolled back and the
+		// queued write landed later. Nothing of the block is applied, and
+		// storing it again is an idempotent upsert, so apply it again.
+		logger().Warn(ctx, "Certified block is stored but none of its transactions are applied; applying it again",
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int("attempt", attempt+1),
+			ion.String("function", "commitCertifiedBlock"))
+	}
+
+	if aerr := applyCertifiedBlock(block, bls); aerr != nil {
+		return false, aerr
+	}
 
 	// Stored. Only now may the certificate feed the next block (it used to be
 	// recorded before the commit attempt).
@@ -333,7 +354,7 @@ func commitCertifiedBlockLocked(ctx context.Context, block *config.ZKBlock, bls 
 			ion.Uint64("block_number", block.BlockNumber),
 			ion.String("function", "commitCertifiedBlock"))
 	}
-	return nil
+	return true, nil
 }
 
 func haltCertifiedHeight(ctx context.Context, block *config.ZKBlock, attempts int, cause error) error {

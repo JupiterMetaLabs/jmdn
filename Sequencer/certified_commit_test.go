@@ -41,6 +41,9 @@ func installFakeCommit(t *testing.T, f *fakeCommit) {
 		committedTip, broadcastCommitted, pendingCommits = savedTip, savedBroadcast, savedPending
 		certifiedCommitDelays, certifiedCommitSleep = savedDelays, savedSleep
 		messaging.DefaultProposerPeriods = savedPeriods
+		certifiedAttemptMu.Lock()
+		droppedPending.height, droppedPending.hash = 0, ""
+		certifiedAttemptMu.Unlock()
 	})
 
 	messaging.DefaultProposerPeriods = messaging.NewProposerPeriods()

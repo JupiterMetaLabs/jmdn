@@ -174,9 +174,17 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Wired dropper (the sequencer wires Sequencer.DropPendingCommit): record
+	// each successful drop and delegate to the tracker.
 	var dropped []pendingcommit.Record
-	SetPendingCommitDropHook(func(rec pendingcommit.Record) { dropped = append(dropped, rec) })
-	t.Cleanup(func() { SetPendingCommitDropHook(nil) })
+	SetPendingCommitDropper(func(h uint64, hash string) (*pendingcommit.Record, error) {
+		rec, err := pendingcommit.Default.DropMatching(h, hash)
+		if err == nil {
+			dropped = append(dropped, *rec)
+		}
+		return rec, err
+	})
+	t.Cleanup(func() { SetPendingCommitDropper(nil) })
 
 	r := gin.New()
 	r.GET("/s", handlePendingCommitStatus)
@@ -206,7 +214,7 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 		t.Fatal("a refused drop must keep the record")
 	}
 	if len(dropped) != 0 {
-		t.Fatalf("a refused drop must not run the hook, got %d calls", len(dropped))
+		t.Fatalf("a refused drop must not drop anything, got %d drops", len(dropped))
 	}
 
 	if w := post(`{"height":90,"block_hash":"` + strings.ToUpper(hash[2:]) + `"}`); w.Code != http.StatusConflict {
@@ -219,9 +227,38 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 		t.Fatal("proposals at the height must be accepted after the drop")
 	}
 	if len(dropped) != 1 || dropped[0].Height != 90 || dropped[0].BlockHash != hash {
-		t.Fatalf("the drop hook must run once with the dropped record, got %+v", dropped)
+		t.Fatalf("the dropper must drop the record once, got %+v", dropped)
 	}
 	if w := post(`{"height":90,"block_hash":"` + hash + `"}`); w.Code != http.StatusNotFound {
 		t.Fatalf("second drop: status %d", w.Code)
+	}
+}
+
+// Without a wired dropper (no sequencer in this process) the record is
+// dropped directly, with the same matching rules.
+func TestPendingCommitDrop_UnwiredDropsDirectly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := pendingcommit.Default
+	pendingcommit.Default = pendingcommit.New()
+	t.Cleanup(func() { pendingcommit.Default = prev })
+	SetPendingCommitDropper(nil)
+	const hash = "0x00000000000000000000000000000000000000000000000000000000000000cc"
+	if err := pendingcommit.Default.Save(pendingcommit.Record{Height: 91, BlockHash: hash, Block: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	r := gin.New()
+	r.POST("/d", handleDropPendingCommit)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(`{"height":91,"block_hash":"0xdd"}`)))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), hash) {
+		t.Fatalf("mismatch: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(`{"height":91,"block_hash":"`+hash+`"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("drop: %d %s", w.Code, w.Body.String())
+	}
+	if rec, _ := pendingcommit.Default.Current(); rec != nil {
+		t.Fatal("the record must be gone")
 	}
 }

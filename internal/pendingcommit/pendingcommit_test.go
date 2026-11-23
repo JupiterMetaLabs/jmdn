@@ -209,3 +209,26 @@ func TestClearOtherBlockIsNoop(t *testing.T) {
 		t.Fatal("clearing the recorded block (any hex case) must remove it")
 	}
 }
+
+// DropMatching removes the record only for a matching height and hash, and
+// reports a mismatch with the current record.
+func TestDropMatching(t *testing.T) {
+	s := newMemStore()
+	a := New()
+	a.SetStore(s, "")
+	if _, err := a.DropMatching(10, "0xaa"); !errors.Is(err, ErrNoPending) {
+		t.Fatalf("want ErrNoPending, got %v", err)
+	}
+	_ = a.Save(rec(10, "0xaa"))
+	if got, err := a.DropMatching(10, "0xbb"); !errors.Is(err, ErrRecordMismatch) || got == nil || got.BlockHash != "0xaa" {
+		t.Fatalf("want ErrRecordMismatch with the current record, got %+v %v", got, err)
+	}
+	if got, err := a.DropMatching(10, "0xAA"); err != nil || got.Height != 10 {
+		t.Fatalf("drop: %+v %v", got, err)
+	}
+	b := New()
+	b.SetStore(s, "")
+	if got, _ := b.Current(); got != nil {
+		t.Fatal("a dropped record must not come back after a restart")
+	}
+}

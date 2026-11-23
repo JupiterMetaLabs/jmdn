@@ -41,4 +41,4 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://<sequencer>:8545/consensus/pending-commit/drop
 ```
 
-Height and block hash must both match the record, or the call is refused with 409. The drop is logged with the record identity, and the block's transactions are reported to the orchestrator as not landed.
+Height and block hash must both match the record, or the call is refused with 409. The drop waits for a commit attempt in progress (at most one attempt, not a whole retry series); no attempt to store the block starts after it, and the background retry never re-creates the record. The drop is logged with the record identity, and the block's transactions are reported to the orchestrator as not landed.

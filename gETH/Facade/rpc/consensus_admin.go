@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -82,19 +83,19 @@ func handlePendingCommitStatus(c *gin.Context) {
 	})
 }
 
-// pendingCommitDropHook runs after an operator drops a pending record, with
-// the dropped record. The sequencer wires it to report the block's
-// transactions to the orchestrator as not landed.
+// pendingCommitDropper drops the pending record. The sequencer wires
+// Sequencer.DropPendingCommit, which coordinates with an in-flight commit
+// attempt and reports the dropped block to the orchestrator. Unwired (no
+// sequencer in this process), the record is dropped directly.
 var (
-	pendingCommitDropMu   sync.Mutex
-	pendingCommitDropHook func(pendingcommit.Record)
+	pendingCommitDropMu  sync.Mutex
+	pendingCommitDropper func(height uint64, blockHash string) (*pendingcommit.Record, error)
 )
 
-// SetPendingCommitDropHook wires the function called with each dropped
-// pending record. Call once at startup.
-func SetPendingCommitDropHook(fn func(pendingcommit.Record)) {
+// SetPendingCommitDropper wires the drop function. Call once at startup.
+func SetPendingCommitDropper(fn func(height uint64, blockHash string) (*pendingcommit.Record, error)) {
 	pendingCommitDropMu.Lock()
-	pendingCommitDropHook = fn
+	pendingCommitDropper = fn
 	pendingCommitDropMu.Unlock()
 }
 
@@ -111,24 +112,26 @@ func handleDropPendingCommit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": `body must be {"height": <block number>, "block_hash": "<hash of the pending block>"}`})
 		return
 	}
-	rec, err := pendingcommit.Default.Current()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	pendingCommitDropMu.Lock()
+	drop := pendingCommitDropper
+	pendingCommitDropMu.Unlock()
+	if drop == nil {
+		drop = pendingcommit.Default.DropMatching
 	}
-	if rec == nil {
+	rec, err := drop(*req.Height, strings.TrimSpace(req.BlockHash))
+	switch {
+	case errors.Is(err, pendingcommit.ErrNoPending):
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending certified block"})
 		return
-	}
-	if rec.Height != *req.Height || !strings.EqualFold(rec.BlockHash, strings.TrimSpace(req.BlockHash)) {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":              "height and block_hash must match the pending record",
-			"pending_height":     rec.Height,
-			"pending_block_hash": rec.BlockHash,
-		})
+	case errors.Is(err, pendingcommit.ErrRecordMismatch):
+		resp := gin.H{"error": "height and block_hash must match the pending record"}
+		if rec != nil {
+			resp["pending_height"] = rec.Height
+			resp["pending_block_hash"] = rec.BlockHash
+		}
+		c.JSON(http.StatusConflict, resp)
 		return
-	}
-	if err := pendingcommit.Default.Clear(rec.Height, rec.BlockHash); err != nil {
+	case err != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -137,12 +140,6 @@ func handleDropPendingCommit(c *gin.Context) {
 			ion.Uint64("height", rec.Height),
 			ion.String("block_hash", rec.BlockHash),
 			ion.Int64("created_at", rec.CreatedAt))
-	}
-	pendingCommitDropMu.Lock()
-	hook := pendingCommitDropHook
-	pendingCommitDropMu.Unlock()
-	if hook != nil {
-		hook(*rec)
 	}
 	c.JSON(http.StatusOK, gin.H{"dropped": true, "height": rec.Height, "block_hash": rec.BlockHash})
 }

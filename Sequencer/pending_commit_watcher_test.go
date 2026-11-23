@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gossipnode/config"
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/messaging"
 )
 
@@ -138,5 +139,98 @@ func TestReportDroppedPendingBlock(t *testing.T) {
 	ReportDroppedPendingBlock(rec)
 	if len(got) != 1 {
 		t.Fatal("an undecodable record must not be reported")
+	}
+}
+
+// An operator drop during a retry series stops it: no further apply, nothing
+// broadcast or recorded, the record stays gone and the dropped block is
+// reported to the orchestrator once.
+func TestDropDuringRetryStopsTheSeries(t *testing.T) {
+	f := &fakeCommit{tip: 99, applyErrs: []error{errors.New("store timeout"), errors.New("store timeout")}}
+	installFakeCommit(t, f)
+	var reports int
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) { reports++ }
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	block := certifiedTestBlock(100, 3)
+	dropped := false
+	certifiedCommitSleep = func(context.Context, time.Duration) bool {
+		if !dropped {
+			dropped = true
+			if _, err := DropPendingCommit(100, block.BlockHash.Hex()); err != nil {
+				t.Errorf("drop: %v", err)
+			}
+		}
+		return true
+	}
+
+	err := commitCertifiedBlock(context.Background(), block, testCert)
+	if !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	if len(f.applied) != 1 {
+		t.Fatalf("no apply may start after the drop, got %d applies", len(f.applied))
+	}
+	if f.recorded != 0 || f.broadcasted != 0 {
+		t.Fatalf("a dropped block must not be recorded or broadcast, got %d and %d", f.recorded, f.broadcasted)
+	}
+	if rec, _ := pendingCommits.Current(); rec != nil {
+		t.Fatalf("the record must stay dropped, got %+v", rec)
+	}
+	if reports != 1 {
+		t.Fatalf("want one orchestrator report for the dropped block, got %d", reports)
+	}
+}
+
+// A resume that read the record before an operator dropped it does not
+// re-create the record or apply the block.
+func TestResumeAfterDropDoesNotRecreateRecord(t *testing.T) {
+	f := &fakeCommit{tip: 109}
+	installFakeCommit(t, f)
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	block := certifiedTestBlock(110, 1)
+	rec, err := pendingRecordFor(block, testCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingCommits.Save(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DropPendingCommit(110, block.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	// What the resume does after it has read the record.
+	certifiedCommitMu.Lock()
+	err = commitCertifiedBlockLocked(context.Background(), block, testCert)
+	certifiedCommitMu.Unlock()
+	if !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	if len(f.applied) != 0 {
+		t.Fatalf("a dropped block must not be applied, got %d", len(f.applied))
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("the resume path must not re-create the record, got %+v", got)
+	}
+}
+
+// DropPendingCommit refuses a wrong height or hash and an empty tracker.
+func TestDropPendingCommitRefusesMismatch(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{})
+	if _, err := DropPendingCommit(1, "0x1"); !errors.Is(err, pendingcommit.ErrNoPending) {
+		t.Fatalf("want ErrNoPending, got %v", err)
+	}
+	block := certifiedTestBlock(120, 1)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(121, block.BlockHash.Hex()); !errors.Is(err, pendingcommit.ErrRecordMismatch) {
+		t.Fatalf("want ErrRecordMismatch, got %v", err)
+	}
+	if got, _ := pendingCommits.Current(); got == nil {
+		t.Fatal("a refused drop must keep the record")
 	}
 }

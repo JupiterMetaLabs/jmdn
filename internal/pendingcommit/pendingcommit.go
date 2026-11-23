@@ -174,6 +174,40 @@ func (t *Tracker) Clear(height uint64, blockHash string) error {
 	return nil
 }
 
+// ErrNoPending is returned by DropMatching when no record is pending.
+var ErrNoPending = errors.New("pendingcommit: no pending certified block")
+
+// ErrRecordMismatch is returned by DropMatching when height or block hash
+// does not match the pending record.
+var ErrRecordMismatch = errors.New("pendingcommit: height and block hash do not match the pending record")
+
+// DropMatching removes the pending record if, and only if, its height and
+// block hash match, and returns the removed record. The check and the removal
+// happen under one lock. On a mismatch the current record is returned with
+// ErrRecordMismatch.
+func (t *Tracker) DropMatching(height uint64, blockHash string) (*Record, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.loadLocked(); err != nil {
+		return nil, err
+	}
+	if t.rec == nil {
+		return nil, ErrNoPending
+	}
+	if t.rec.Height != height || !strings.EqualFold(t.rec.BlockHash, strings.TrimSpace(blockHash)) {
+		r := *t.rec
+		return &r, ErrRecordMismatch
+	}
+	if t.store != nil {
+		if err := t.store.Put(t.key, []byte{}); err != nil {
+			return nil, fmt.Errorf("pendingcommit: drop %s: %w", t.key, err)
+		}
+	}
+	r := *t.rec
+	t.rec = nil
+	return &r, nil
+}
+
 // ClearStale drops a record at or below committedTip: its block is already
 // stored, but an earlier Clear failed. Without this the stale record would make
 // Save refuse the next certified height, leaving that height unprotected. The
