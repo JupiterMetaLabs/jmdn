@@ -16,7 +16,8 @@
 #   sudo bash jmdn_v3base_node_bootstrap.sh
 # It asks for the node alias, the canary's BLS key (hex), an optional reward
 # address and the canary yaml path, then the GitHub token. Answers are saved
-# (0600) for re-runs; NODE_ALIAS etc. can also be set in the environment.
+# (0600) for re-runs; NODE_ALIAS, CANARY_BLS_PUB, REWARD_ADDRESS and CANARY_YAML
+# set in the environment override the saved answers.
 #
 # Re-runnable: each finished phase leaves a marker in /var/lib/jmdn-bootstrap and is
 # skipped next time. Any failed check stops the run with the reason.
@@ -37,6 +38,7 @@ CANARY_PEER_ID="12D3KooWFci5zowS2aWhTPxY89HxqzAZ6gGtr4BEo9dzrCJfPuD2"
 NODE_ALIAS="${NODE_ALIAS:-}"
 CANARY_BLS_PUB="${CANARY_BLS_PUB:-}"
 REWARD_ADDRESS="${REWARD_ADDRESS:-}"
+CANARY_YAML_SET="${CANARY_YAML:-}"
 CANARY_YAML="${CANARY_YAML:-/root/canary-jmdn.yaml}"
 SRC="/root/src"
 REPO="/root/jmdn"
@@ -64,7 +66,15 @@ mark() { mkdir -p "$MARK"; touch "$MARK/$1.done"; }
 INPUTS="$MARK/inputs"
 mkdir -p "$MARK"; chmod 700 "$MARK"
 # shellcheck disable=SC1090
-[ -f "$INPUTS" ] && . "$INPUTS"
+if [ -f "$INPUTS" ]; then
+  env_alias="$NODE_ALIAS" env_bls="$CANARY_BLS_PUB" env_reward="$REWARD_ADDRESS" env_yaml="${CANARY_YAML_SET:-}"
+  . "$INPUTS"
+  [ -n "$env_alias" ] && NODE_ALIAS="$env_alias"
+  [ -n "$env_bls" ] && CANARY_BLS_PUB="$env_bls"
+  [ -n "$env_reward" ] && REWARD_ADDRESS="$env_reward"
+  [ -n "$env_yaml" ] && CANARY_YAML="$env_yaml"
+  info "saved answers loaded from $INPUTS (values set in the environment take precedence)"
+fi
 ask() {
   local var="$1" prompt="$2" re="$3" optional="${4:-}" val
   val="${!var:-}"
@@ -148,14 +158,19 @@ if ! done_phase 02-src; then
   printf '    GitHub token (hidden): '; read -rs GH_TOKEN; echo
   [ -n "$GH_TOKEN" ] || die "empty token"
   export GH_TOKEN
-  code=$(printf 'Authorization: Bearer %s\n' "$GH_TOKEN" | curl -s -o /dev/null -w '%{http_code}' -H @- https://api.github.com/repos/JupiterMetaLabs/avc)
-  [ "$code" = "200" ] || die "GitHub token check returned $code for avc (401 bad token, 404 no access, 403 needs org approval/SSO)"
-  gclone() { git -c credential.helper= -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' clone -q "https://github.com/JupiterMetaLabs/$1.git" "$2"; }
-  [ -d "$REPO/.git" ] || gclone jmdn "$REPO"
+  for r in jmdn $SISTERS; do
+    code=$(printf 'Authorization: Bearer %s\n' "$GH_TOKEN" | curl -s -o /dev/null -w '%{http_code}' -H @- "https://api.github.com/repos/JupiterMetaLabs/$r")
+    [ "$code" = "200" ] || die "GitHub token check returned $code for $r (401 bad token, 404 no access to this repo, 403 needs org approval/SSO)"
+  done
+  ok "token can read jmdn and $SISTERS"
+  export GIT_TERMINAL_PROMPT=0
+  gitauth() { git -c credential.helper= -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' "$@"; }
+  if [ -d "$REPO/.git" ]; then gitauth -C "$REPO" fetch -q origin; else gitauth clone -q https://github.com/JupiterMetaLabs/jmdn.git "$REPO"; fi
   mkdir -p "$SRC"
-  for r in $SISTERS; do [ -d "$SRC/$r/.git" ] || gclone "$r" "$SRC/$r"; done
+  for r in $SISTERS; do
+    if [ -d "$SRC/$r/.git" ]; then gitauth -C "$SRC/$r" fetch -q --tags origin; else gitauth clone -q "https://github.com/JupiterMetaLabs/$r.git" "$SRC/$r"; fi
+  done
   unset GH_TOKEN
-  git -C "$REPO" fetch -q origin || true
   git -C "$REPO" checkout -q "$JMDN_REF"
   for r in $SISTERS; do git config --global url."file://$SRC/$r".insteadOf "https://github.com/JupiterMetaLabs/$r"; done
   mark 02-src; ok "jmdn at $(git -C "$REPO" rev-parse --short HEAD); sister repos in $SRC"
@@ -176,7 +191,7 @@ PY
   PG_APP_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); export PG_APP_PASSWORD
   ( umask 077; printf '%s' "$PG_APP_PASSWORD" > "$MARK/pgpass" )
   apt_wait
-  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" ./Scripts/setup_dependencies.sh --all --storage-local </dev/null )
+  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null )
   command -v go >/dev/null || die "Go not on PATH after setup_dependencies"
   go env -w GOPRIVATE=github.com/JupiterMetaLabs GONOSUMDB=github.com/JupiterMetaLabs
   mark 03-deps; ok "$(go version)"
@@ -214,10 +229,13 @@ PGPORT=$(cat "$MARK/pgport")
 # ---- 5. build -------------------------------------------------------------------
 if ! done_phase 05-build; then
   step "5/10 Build jmdn"
+  rm -f "$REPO/jmdn"
   ( cd "$REPO" && ./Scripts/build.sh )
   git -C "$REPO" checkout -q -- go.mod go.sum 2>/dev/null || true
-  /usr/local/bin/jmdn --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "installed jmdn is not $JMDN_REF: $(/usr/local/bin/jmdn --version 2>&1 | head -1)"
-  mark 05-build; ok "$(/usr/local/bin/jmdn --version 2>&1 | head -1)"
+  [ -x "$REPO/jmdn" ] || die "build.sh did not produce $REPO/jmdn"
+  "$REPO/jmdn" --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "built jmdn is not $JMDN_REF: $("$REPO/jmdn" --version 2>&1 | head -1)"
+  install -m 0755 "$REPO/jmdn" /usr/local/bin/jmdn
+  mark 05-build; ok "built and installed: $(/usr/local/bin/jmdn --version 2>&1 | head -1)"
 fi
 
 # ---- 6. certs + service --------------------------------------------------------
@@ -227,6 +245,7 @@ if ! done_phase 06-service; then
   ( cd "$REPO" && printf 'n\n' | ./Scripts/install_services.sh --mode local )
   systemctl stop jmdn 2>/dev/null || true
   [ -n "$(ls -A "$JMDN_DATA/certs" 2>/dev/null)" ] || die "no certs in $JMDN_DATA/certs"
+  /usr/local/bin/jmdn --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
   mark 06-service; ok "service installed and stopped; certs in $JMDN_DATA/certs"
 fi
 
@@ -294,7 +313,12 @@ fi
 step "10/10 Start and check"
 since=$(date -u '+%Y-%m-%d %H:%M:%S')
 systemctl reset-failed jmdn 2>/dev/null || true
-systemctl start jmdn
+if [ "$(systemctl is-active jmdn 2>/dev/null || true)" = "active" ]; then
+  info "jmdn already running; restarting to re-check the boot"
+  systemctl restart jmdn
+else
+  systemctl start jmdn
+fi
 result=""
 for _ in $(seq 1 36); do
   sleep 5
