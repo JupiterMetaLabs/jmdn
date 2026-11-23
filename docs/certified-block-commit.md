@@ -24,7 +24,7 @@ Before each attempt the sequencer checks what is stored at the height. A differe
   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://<sequencer>:8545/consensus/pending-commit
   ```
 
-  returns `{"pending": true, "height": N, "block_hash": "0x...", "created_at": ...}` or `{"pending": false}`.
+  returns `{"pending": true, "height": N, "block_hash": "0x...", "created_at": ...}` or `{"pending": false}`. If the stored record cannot be decoded it returns `{"pending": true, "unreadable": true, "error": "..."}`; proposals stay refused until it is dropped (below).
 
 ## Recovery
 
@@ -42,3 +42,5 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 ```
 
 Height and block hash must both match the record, or the call is refused with 409. The drop waits for a commit attempt in progress (at most one attempt, not a whole retry series); no attempt to store the block starts after it, and the background retry never re-creates the record. The drop is logged with the record identity, and the block's transactions are reported to the orchestrator as not landed.
+
+If the status reports `"unreadable": true`, the record cannot be matched by height and hash. Remove it with `{"unreadable": true}` instead; this is refused while the stored record is readable. Its transactions cannot be reported to the orchestrator, because the block cannot be read.

@@ -90,9 +90,49 @@ func (t *Tracker) loadLocked() error {
 	}
 	var r Record
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return fmt.Errorf("pendingcommit: decode %s: %w", t.key, err)
+		return fmt.Errorf("%w: decode %s: %v", ErrUnreadable, t.key, err)
 	}
 	t.rec = &r
+	t.loaded = true
+	return nil
+}
+
+// ErrUnreadable is returned (wrapped) while the stored record cannot be
+// decoded. Proposals stay refused (fail closed) until an operator removes it
+// with DropUnreadable.
+var ErrUnreadable = errors.New("pendingcommit: stored record cannot be decoded")
+
+// ErrReadable is returned by DropUnreadable when the stored record decodes:
+// a readable record is dropped only with DropMatching.
+var ErrReadable = errors.New("pendingcommit: stored record is readable; drop it by height and block hash")
+
+// DropUnreadable removes the stored record only when it cannot be decoded
+// (operator last resort). A readable record is refused with ErrReadable, and
+// an empty store with ErrNoPending.
+func (t *Tracker) DropUnreadable() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.store == nil {
+		if t.rec == nil {
+			return ErrNoPending
+		}
+		return ErrReadable
+	}
+	raw, err := t.store.Get(t.key)
+	if err != nil {
+		return fmt.Errorf("pendingcommit: read %s: %w", t.key, err)
+	}
+	if len(raw) == 0 {
+		return ErrNoPending
+	}
+	var r Record
+	if json.Unmarshal(raw, &r) == nil {
+		return ErrReadable
+	}
+	if err := t.store.Put(t.key, []byte{}); err != nil {
+		return fmt.Errorf("pendingcommit: drop %s: %w", t.key, err)
+	}
+	t.rec = nil
 	t.loaded = true
 	return nil
 }

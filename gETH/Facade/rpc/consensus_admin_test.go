@@ -183,8 +183,8 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 			dropped = append(dropped, *rec)
 		}
 		return rec, err
-	})
-	t.Cleanup(func() { SetPendingCommitDropper(nil) })
+	}, nil)
+	t.Cleanup(func() { SetPendingCommitDropper(nil, nil) })
 
 	r := gin.New()
 	r.GET("/s", handlePendingCommitStatus)
@@ -241,7 +241,7 @@ func TestPendingCommitDrop_UnwiredDropsDirectly(t *testing.T) {
 	prev := pendingcommit.Default
 	pendingcommit.Default = pendingcommit.New()
 	t.Cleanup(func() { pendingcommit.Default = prev })
-	SetPendingCommitDropper(nil)
+	SetPendingCommitDropper(nil, nil)
 	const hash = "0x00000000000000000000000000000000000000000000000000000000000000cc"
 	if err := pendingcommit.Default.Save(pendingcommit.Record{Height: 91, BlockHash: hash, Block: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
@@ -260,5 +260,53 @@ func TestPendingCommitDrop_UnwiredDropsDirectly(t *testing.T) {
 	}
 	if rec, _ := pendingcommit.Default.Current(); rec != nil {
 		t.Fatal("the record must be gone")
+	}
+}
+
+// kvStore is a minimal pendingcommit.Store.
+type kvStore struct{ kv map[string][]byte }
+
+func (s *kvStore) Get(k string) ([]byte, error) { return s.kv[k], nil }
+func (s *kvStore) Put(k string, v []byte) error {
+	s.kv[k] = v
+	return nil
+}
+
+// An undecodable record is reported by the status endpoint and removed by
+// {"unreadable": true}; that body is refused for a readable record.
+func TestPendingCommitEndpoints_UnreadableRecord(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := pendingcommit.Default
+	t.Cleanup(func() { pendingcommit.Default = prev })
+	SetPendingCommitDropper(nil, nil)
+	st := &kvStore{kv: map[string][]byte{pendingcommit.DefaultKey: []byte("{corrupt")}}
+	pendingcommit.Default = pendingcommit.New()
+	pendingcommit.Default.SetStore(st, "")
+
+	r := gin.New()
+	r.GET("/s", handlePendingCommitStatus)
+	r.POST("/d", handleDropPendingCommit)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"unreadable":true`) {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(`{"unreadable":true}`)))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"dropped":true`) {
+		t.Fatalf("drop unreadable: %d %s", w.Code, w.Body.String())
+	}
+	if blocked, _, _ := pendingcommit.Default.BlocksProposal(5, 4); blocked {
+		t.Fatal("proposals must be accepted after the drop")
+	}
+
+	pendingcommit.Default = pendingcommit.New()
+	pendingcommit.Default.SetStore(&kvStore{kv: map[string][]byte{}}, "")
+	_ = pendingcommit.Default.Save(pendingcommit.Record{Height: 7, BlockHash: "0x7", Block: []byte(`{}`)})
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(`{"unreadable":true}`)))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("a readable record must be refused: %d %s", w.Code, w.Body.String())
 	}
 }

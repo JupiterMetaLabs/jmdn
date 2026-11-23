@@ -2461,7 +2461,7 @@ func main() {
 		// An operator drop of a pending record waits for a commit attempt in
 		// progress, stops later attempts, and reports the block's
 		// transactions to the orchestrator as not landed.
-		rpc.SetPendingCommitDropper(Sequencer.DropPendingCommit)
+		rpc.SetPendingCommitDropper(Sequencer.DropPendingCommit, Sequencer.DropUnreadablePendingCommit)
 		// Tracked, so shutdown cancels ctx and ends the retry wait. The
 		// watcher also retries a height that halts later in this run.
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SequencerResumeCommitThread, func(ctx context.Context) error {

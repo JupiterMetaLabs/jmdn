@@ -297,3 +297,20 @@ func TestDroppedAttemptRemovesRecreatedRecord(t *testing.T) {
 		t.Fatalf("the re-created record must be removed, got %+v", got)
 	}
 }
+
+// DropUnreadablePendingCommit refuses a readable record.
+func TestDropUnreadablePendingCommitRefusesReadable(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{})
+	if err := DropUnreadablePendingCommit(); !errors.Is(err, pendingcommit.ErrNoPending) {
+		t.Fatalf("want ErrNoPending, got %v", err)
+	}
+	block := certifiedTestBlock(150, 1)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if err := DropUnreadablePendingCommit(); !errors.Is(err, pendingcommit.ErrReadable) {
+		t.Fatalf("want ErrReadable, got %v", err)
+	}
+	if got, _ := pendingCommits.Current(); got == nil {
+		t.Fatal("a readable record must be kept")
+	}
+}

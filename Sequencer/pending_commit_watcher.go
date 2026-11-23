@@ -43,6 +43,16 @@ func pendingDropped(block *config.ZKBlock) bool {
 		strings.EqualFold(droppedPending.hash, block.BlockHash.Hex())
 }
 
+// DropUnreadablePendingCommit removes the stored pending record only when it
+// cannot be decoded (operator last resort; its block cannot be reported to
+// the orchestrator because it cannot be read). Taken under
+// certifiedAttemptMu like DropPendingCommit.
+func DropUnreadablePendingCommit() error {
+	certifiedAttemptMu.Lock()
+	defer certifiedAttemptMu.Unlock()
+	return pendingCommits.DropUnreadable()
+}
+
 // DropPendingCommit removes the pending record when height and block hash
 // both match it (operator last resort, consensus admin pending-commit drop).
 // It waits for an attempt in progress, marks the block dropped so no later

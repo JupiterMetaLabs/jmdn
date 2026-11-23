@@ -232,3 +232,43 @@ func TestDropMatching(t *testing.T) {
 		t.Fatal("a dropped record must not come back after a restart")
 	}
 }
+
+// A stored record that cannot be decoded refuses proposals (fail closed) and
+// can be removed only with DropUnreadable; a readable one is refused there.
+func TestDropUnreadable(t *testing.T) {
+	s := newMemStore()
+	s.kv[DefaultKey] = []byte("{not json")
+	a := New()
+	a.SetStore(s, "")
+	if _, err := a.Current(); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("want ErrUnreadable, got %v", err)
+	}
+	if blocked, _, _ := a.BlocksProposal(5, 4); !blocked {
+		t.Fatal("an unreadable record must refuse proposals")
+	}
+	if _, err := a.DropMatching(5, "0xaa"); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("DropMatching cannot read it: want ErrUnreadable, got %v", err)
+	}
+	if err := a.DropUnreadable(); err != nil {
+		t.Fatalf("DropUnreadable: %v", err)
+	}
+	if blocked, _, _ := a.BlocksProposal(5, 4); blocked {
+		t.Fatal("proposals must be accepted after the unreadable record is dropped")
+	}
+	if len(s.kv[DefaultKey]) != 0 {
+		t.Fatal("the store key must be empty")
+	}
+	if err := a.DropUnreadable(); !errors.Is(err, ErrNoPending) {
+		t.Fatalf("want ErrNoPending, got %v", err)
+	}
+
+	b := New()
+	b.SetStore(newMemStore(), "")
+	_ = b.Save(rec(10, "0xaa"))
+	if err := b.DropUnreadable(); !errors.Is(err, ErrReadable) {
+		t.Fatalf("a readable record must be refused, got %v", err)
+	}
+	if got, _ := b.Current(); got == nil {
+		t.Fatal("a refused DropUnreadable must keep the record")
+	}
+}
