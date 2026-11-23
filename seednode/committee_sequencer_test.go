@@ -99,3 +99,52 @@ func TestCommitteeSource_RefreshBypassesTTL(t *testing.T) {
 		t.Fatal("a failed refresh must keep the cached snapshot and its timestamp")
 	}
 }
+
+// A refresh whose seed fetch hangs does not block eligible: it keeps serving
+// the cached snapshot without waiting for the fetch.
+func TestCommitteeSource_RefreshDoesNotBlockEligible(t *testing.T) {
+	priv, pubHex := makeAuthority(t, "authority-slow")
+	snap := signSnapshot(t, priv, pubHex, curEpoch(), twoEntries())
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	slow := false
+	s := &committeeSource{
+		fetch: func(ctx context.Context, _ uint64) (*committee.CommitteeSnapshot, error) {
+			if slow {
+				started <- struct{}{}
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return nil, errors.New("seed unreachable")
+			}
+			return snap, nil
+		},
+		configPin:    pubHex,
+		epochSeconds: testEpochSeconds,
+		ttl:          time.Hour,
+	}
+	if _, err := s.eligible(0, false); err != nil {
+		t.Fatalf("eligible: %v", err)
+	}
+	slow = true
+	done := make(chan struct{})
+	go func() { s.refreshCurrent(); close(done) }()
+	<-started
+
+	got := make(chan error, 1)
+	go func() { _, err := s.eligible(0, false); got <- err }()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("eligible during a slow refresh: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("eligible waited for the refresh's seed fetch")
+	}
+	close(release)
+	<-done
+	if s.cachedSnap != snap {
+		t.Fatal("a failed refresh must keep the cached snapshot")
+	}
+}

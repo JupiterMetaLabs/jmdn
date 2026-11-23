@@ -269,19 +269,41 @@ func (c *Client) CommitteeSourcesAutoWithRefresh(configPin string, epochSeconds 
 }
 
 // refreshCurrent fetches and verifies the current snapshot now, ignoring the
-// TTL. On success the cache and the recorded sequencer are updated, as for a
-// normal fetch. On failure (seed unreachable, bad signature, stale epoch) the
-// previous cache and its timestamp are kept.
+// TTL. The network fetch and verification run without holding s.mu, so a slow
+// or unreachable seed never blocks eligible (which serves the cached snapshot
+// meanwhile); s.mu is taken only to read the authority and to install the
+// result. On success the cache and the recorded sequencer are updated, as for
+// a normal fetch. On failure (seed unreachable, bad signature, stale epoch),
+// or before the authority key is resolved, nothing changes.
 func (s *committeeSource) refreshCurrent() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	authority := s.authority
+	s.mu.Unlock()
+	if authority == "" {
+		return // not resolved yet: the next eligible call fetches and resolves it
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	prevAt := s.cachedAt
-	s.cachedAt = time.Time{} // skip the TTL fast path
-	if _, err := s.currentSnapshot(ctx); err != nil || s.cachedAt.IsZero() {
-		s.cachedAt = prevAt
+	snap, err := s.fetch(ctx, 0)
+	if err != nil {
+		return
 	}
+	if err := committee.VerifyCommitteeSnapshot(snap, authority); err != nil {
+		return
+	}
+	if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), s.epochSeconds); err != nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cachedSnap != nil && snap.Epoch < s.cachedSnap.Epoch {
+		return // an older epoch than what is cached: keep the cache
+	}
+	s.cachedSnap = snap
+	s.cachedAt = time.Now()
+	sequencerid.SetFromSeed(snap.SequencerPeerID, snap.Epoch)
 }
 
 // resolveAuthority resolves the authority pubkey once (config pin, else persisted

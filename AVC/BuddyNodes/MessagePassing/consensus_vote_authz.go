@@ -42,9 +42,11 @@ import (
 // Without a config pin the sequencer comes from the seed snapshot, which is
 // refreshed as a side effect of other reads (for example ballot ingest). Those
 // reads may not have run yet (a freshly started node) or may not reach the
-// seed (committee anchoring takes the voter pool from the chain). So when the
-// requester does not match, refresh the snapshot once and check again. The
-// refresh only updates the known sequencer; it never authorizes on its own.
+// seed (committee anchoring takes the voter pool from the chain). So when no
+// valid sequencer is known yet, refresh the snapshot once and check again. A
+// requester that only fails to match a known sequencer triggers no refresh,
+// so other peers cannot make this node query the seed. The refresh only
+// updates the known sequencer; it never authorizes on its own.
 func voteRequesterAuthorized(remote peer.ID) bool {
 	if remote == "" {
 		return false
@@ -52,7 +54,7 @@ func voteRequesterAuthorized(remote peer.ID) bool {
 	if requesterIsSequencer(remote) {
 		return true
 	}
-	if sequencerid.ConfigPinned() || !refreshSequencerAllowed() {
+	if sequencerid.ConfigPinned() || noUsableSequencerReason() == "" || !refreshSequencerAllowed() {
 		noteNoUsableSequencer()
 		return false
 	}

@@ -111,19 +111,25 @@ func TestVoteRequesterRefreshesUnknownSequencer(t *testing.T) {
 	}
 }
 
-// After the seed switches sequencers, the new sequencer is authorized once the
-// refresh records it, and the previous one is refused.
-func TestVoteRequesterRefreshFollowsSequencerChange(t *testing.T) {
-	oldSeq := newTestPeerID(t)
-	newSeq := newTestPeerID(t)
-	sequencerid.SetFromSeed(oldSeq.String(), nextSeedEpoch())
-	installSequencerRefresh(t, func() { sequencerid.SetFromSeed(newSeq.String(), nextSeedEpoch()) })
+// With a valid sequencer known, a requester that does not match it is refused
+// without a refresh, so other peers cannot make this node query the seed.
+func TestVoteRequesterNoRefreshWhenSequencerKnown(t *testing.T) {
+	seq := newTestPeerID(t)
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed(seq.String(), nextSeedEpoch())
+	refreshes := 0
+	installSequencerRefresh(t, func() { refreshes++ })
 
-	if !voteRequesterAuthorized(newSeq) {
-		t.Fatal("the new sequencer must be authorized after the refresh")
+	for range 3 {
+		if voteRequesterAuthorized(stranger) {
+			t.Fatal("a non-sequencer must be refused")
+		}
 	}
-	if voteRequesterAuthorized(oldSeq) {
-		t.Fatal("the previous sequencer must be refused once the new one is recorded")
+	if refreshes != 0 {
+		t.Fatalf("want no refresh while a valid sequencer is known, got %d", refreshes)
+	}
+	if !voteRequesterAuthorized(seq) {
+		t.Fatal("the known sequencer must be authorized")
 	}
 }
 
