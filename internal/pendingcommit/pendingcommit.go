@@ -154,6 +154,18 @@ func (t *Tracker) DropUnreadable() error {
 // restart. Saving a record for a different height while one is pending is
 // refused.
 func (t *Tracker) Save(rec Record) error {
+	return t.save(rec, 0)
+}
+
+// SaveOver is Save, except that a pending record at or below committedTip
+// (a height the chain has already reached, whose record could not be
+// settled) is replaced instead of refusing rec. That old record no longer
+// blocks proposals, so refusing rec would leave rec's height unprotected.
+func (t *Tracker) SaveOver(rec Record, committedTip uint64) error {
+	return t.save(rec, committedTip)
+}
+
+func (t *Tracker) save(rec Record, committedTip uint64) error {
 	if rec.Height == 0 || rec.BlockHash == "" || len(rec.Block) == 0 {
 		return errors.New("pendingcommit: record needs a height, a block hash and a block")
 	}
@@ -169,7 +181,8 @@ func (t *Tracker) Save(rec Record) error {
 		t.loaded = true
 		return err
 	}
-	if t.rec != nil && (t.rec.Height != rec.Height || t.rec.BlockHash != rec.BlockHash) {
+	replaceable := t.rec != nil && t.rec.Height <= committedTip && rec.Height > committedTip
+	if t.rec != nil && (t.rec.Height != rec.Height || t.rec.BlockHash != rec.BlockHash) && !replaceable {
 		return fmt.Errorf("pendingcommit: height %d (%s) is already pending; refusing to record height %d (%s)",
 			t.rec.Height, t.rec.BlockHash, rec.Height, rec.BlockHash)
 	}

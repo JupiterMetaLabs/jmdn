@@ -537,21 +537,34 @@ func TestCommittedRecordBelowTipIsClearedSilently(t *testing.T) {
 	}
 }
 
-// When the stored state at the record's height cannot be read, the record is
-// kept (fail closed) and nothing is reported.
-func TestRecordBelowTipKeptWhenStateUnknown(t *testing.T) {
-	installFakeCommit(t, &fakeCommit{tip: 220})
+// When the stored state at an old record's height (at or below the tip)
+// cannot be read, nothing is reported for it, but the next certified height is
+// still recorded, replacing it, so proposals at that height stay refused.
+func TestUnsettledRecordBelowTipDoesNotLeaveNextHeightUnprotected(t *testing.T) {
+	f := &fakeCommit{tip: 220, applyErrs: []error{errors.New("store timeout"), errors.New("store timeout"), errors.New("store timeout"), errors.New("store timeout")}}
+	installFakeCommit(t, f)
 	reports := captureReports(t)
 	rec, _ := pendingRecordFor(certifiedTestBlock(220, 1), testCert)
 	_ = pendingCommits.Save(rec)
 	stateByHeight(nil, map[uint64]error{220: errors.New("read failed")})
 
-	_ = recordPendingCertified(context.Background(), certifiedTestBlock(221, 1), testCert)
+	next := certifiedTestBlock(221, 1)
+	_ = recordPendingCertified(context.Background(), next, testCert)
 	if len(*reports) != 0 {
-		t.Fatalf("nothing may be reported, got %d", len(*reports))
+		t.Fatalf("nothing may be reported for a record whose state is unknown, got %d", len(*reports))
 	}
-	if got, _ := pendingCommits.Current(); got == nil || got.Height != 220 {
-		t.Fatalf("the unsettled record must be kept, got %+v", got)
+	if got, _ := pendingCommits.Current(); got == nil || got.Height != 221 {
+		t.Fatalf("height 221 must be recorded, got %+v", got)
+	}
+	if blocked, _, _ := pendingCommits.BlocksProposal(221, 220); !blocked {
+		t.Fatal("proposals at height 221 must be refused")
+	}
+	// After 221's commit series halts, proposals at 221 are still refused.
+	if err := commitCertifiedBlock(context.Background(), next, testCert); !errors.Is(err, ErrCertifiedBlockHalted) {
+		t.Fatalf("want a halt, got %v", err)
+	}
+	if blocked, _, _ := pendingCommits.BlocksProposal(221, 220); !blocked {
+		t.Fatal("proposals at height 221 must stay refused after the halt")
 	}
 }
 

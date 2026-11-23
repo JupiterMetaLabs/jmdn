@@ -241,3 +241,26 @@ func TestClearOtherRoundIsNoop(t *testing.T) {
 		t.Fatal("clearing the recorded round must remove it")
 	}
 }
+
+// SaveOver replaces a record at or below the committed tip; Save refuses it,
+// and SaveOver still refuses a record above the tip.
+func TestSaveOverReplacesRecordBelowTip(t *testing.T) {
+	s := newMemStore()
+	a := New()
+	a.SetStore(s, "")
+	_ = a.Save(rec(10, "0xaa"))
+	if err := a.Save(rec(11, "0xbb")); err == nil {
+		t.Fatal("Save must refuse while another height is pending")
+	}
+	if err := a.SaveOver(rec(11, "0xbb"), 9); err == nil {
+		t.Fatal("SaveOver must refuse a pending record above the tip")
+	}
+	if err := a.SaveOver(rec(11, "0xbb"), 10); err != nil {
+		t.Fatalf("SaveOver must replace a record at the tip: %v", err)
+	}
+	b := New()
+	b.SetStore(s, "")
+	if got, _ := b.Current(); got == nil || got.Height != 11 {
+		t.Fatalf("the replacement must be durable, got %+v", got)
+	}
+}

@@ -280,18 +280,37 @@ func recordPendingCertified(ctx context.Context, block *config.ZKBlock, bls []BL
 	// A record at or below the committed tip would make Save refuse this
 	// height. Settle it first (see settleRecordBelowTip). If the tip cannot be
 	// read the record is kept: it may belong to a block that is not stored.
-	if tip, terr := committedTip(); terr != nil {
+	var tip uint64
+	tipKnown := false
+	if t, terr := committedTip(); terr != nil {
 		logger().Warn(ctx, "Could not read the committed tip before recording a certified block",
 			ion.String("error", terr.Error()),
 			ion.Uint64("block_number", block.BlockNumber),
 			ion.String("function", "recordPendingCertified"))
-	} else if old, cerr := pendingCommits.Current(); cerr == nil && old != nil && old.Height <= tip {
-		settleRecordBelowTip(ctx, old)
+	} else {
+		tip, tipKnown = t, true
+		if old, cerr := pendingCommits.Current(); cerr == nil && old != nil && old.Height <= tip && !settleRecordBelowTip(ctx, old) {
+			// The old record could not be settled, but it no longer blocks
+			// proposals (the chain reached its height). This block's height
+			// must still be protected, so its record replaces the old one
+			// below (SaveOver); the old one is logged here for the operator.
+			logger().Error(ctx, "A pending record at or below the committed tip could not be settled; replacing it so the new certified height stays protected",
+				errors.New("unsettled pending record"),
+				ion.Uint64("old_block_number", old.Height),
+				ion.String("old_block_hash", old.BlockHash),
+				ion.Uint64("committed_tip", tip),
+				ion.Uint64("block_number", block.BlockNumber),
+				ion.String("function", "recordPendingCertified"))
+		}
 	}
 
 	rec, err := pendingRecordFor(block, bls)
 	if err == nil {
-		err = pendingCommits.Save(rec)
+		if tipKnown && block.BlockNumber > tip {
+			err = pendingCommits.SaveOver(rec, tip)
+		} else {
+			err = pendingCommits.Save(rec)
+		}
 	}
 	if err != nil {
 		// Either the store write failed (the record still blocks proposals in
