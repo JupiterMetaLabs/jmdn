@@ -1,144 +1,238 @@
 package MessagePassing
 
 import (
+	"crypto/rand"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"gossipnode/internal/sequencerid"
 )
 
-// D-26(d) / CON-03, AVC-CONSENSUS-HANDOVER.md rev 7: the gate is now
-// permanently enforced, with no disabled state and no fail-open branch.
-// These tests replace the pre-rev-7 suite, which asserted a default-off
-// master switch and two distinct fail-open cases (empty buddy set, gate
-// disabled) — both deliberately inverted or removed below, matching the
-// same rev-7 change these tests exist to pin.
+func newTestPeerID(t *testing.T) peer.ID {
+	t.Helper()
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
 
-// Only the pinned sequencer may request this node's signed vote; committee
-// members and everyone else are rejected.
-func TestVoteRequesterAuthorized_SourceResolvesMembershipDecides(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
+// Only the sequencer may request this node's signed vote result. With no
+// sequencer known, or an invalid one, nobody may. No config is loaded here, so
+// there is no config pin and sequencerid uses the seed-snapshot value.
+func TestVoteRequesterAuthorized(t *testing.T) {
+	t.Cleanup(func() { sequencerid.SetFromSeed("", nextSeedEpoch()) })
+	seq := newTestPeerID(t)
+	member := newTestPeerID(t)
 
-	seq := peer.ID("pinned-sequencer")
-	member := peer.ID("committee-1")
-	stranger := peer.ID("stranger")
+	cases := []struct {
+		name      string
+		sequencer string
+		allowed   []peer.ID
+		refused   []peer.ID
+	}{
+		{"no sequencer known", "", nil, []peer.ID{seq, member}},
+		{"invalid sequencer value", "not-a-peer-id", nil, []peer.ID{seq, member}},
+		{"known sequencer", seq.String(), []peer.ID{seq}, []peer.ID{member, ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sequencerid.SetFromSeed(tc.sequencer, nextSeedEpoch())
+			for _, p := range tc.allowed {
+				if !voteRequesterAuthorized(p) {
+					t.Fatalf("%s must be authorized", p)
+				}
+			}
+			for _, p := range tc.refused {
+				if voteRequesterAuthorized(p) {
+					t.Fatalf("%q must be refused", p)
+				}
+			}
+		})
+	}
+}
 
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return AuthorizedRequesterSet([]peer.ID{member}, seq), true
+// sequencerid ignores an epoch lower than the last one recorded, so every
+// SetFromSeed in these tests uses a fresh, higher epoch.
+var seedEpochCounter uint64 = 1 << 63
+
+func nextSeedEpoch() uint64 { seedEpochCounter++; return seedEpochCounter }
+
+// installSequencerRefresh wires fn as the seed refresh, with a controllable
+// clock, and restores the previous state afterwards.
+func installSequencerRefresh(t *testing.T, fn func()) *time.Time {
+	t.Helper()
+	sequencerRefreshMu.Lock()
+	savedFn, savedLast, savedNow := sequencerRefreshFn, sequencerRefreshLast, sequencerRefreshNow
+	sequencerRefreshMu.Unlock()
+	now := time.Unix(1_000_000, 0)
+	sequencerRefreshNow = func() time.Time { return now }
+	sequencerRefreshLast = time.Time{}
+	SetSequencerRefresh(fn)
+	t.Cleanup(func() {
+		sequencerRefreshMu.Lock()
+		sequencerRefreshFn, sequencerRefreshLast, sequencerRefreshNow = savedFn, savedLast, savedNow
+		sequencerRefreshMu.Unlock()
+		sequencerid.SetFromSeed("", nextSeedEpoch())
+	})
+	return &now
+}
+
+// A node that has not read the seed snapshot yet learns the sequencer on the
+// first request and authorizes it; a non-sequencer is still refused after the
+// refresh.
+func TestVoteRequesterRefreshesUnknownSequencer(t *testing.T) {
+	seq := newTestPeerID(t)
+	member := newTestPeerID(t)
+	sequencerid.SetFromSeed("", nextSeedEpoch())
+	refreshes := 0
+	now := installSequencerRefresh(t, func() {
+		refreshes++
+		sequencerid.SetFromSeed(seq.String(), nextSeedEpoch())
 	})
 
 	if !voteRequesterAuthorized(seq) {
-		t.Fatalf("pinned sequencer must be authorized even though it is not a committee member")
+		t.Fatal("the sequencer must be authorized after the refresh")
 	}
+	if refreshes != 1 {
+		t.Fatalf("want 1 refresh, got %d", refreshes)
+	}
+	*now = now.Add(time.Minute)
 	if voteRequesterAuthorized(member) {
-		t.Fatalf("with a pinned sequencer, a committee member must not be able to request a vote result")
-	}
-	if voteRequesterAuthorized(stranger) {
-		t.Fatalf("non-member must be rejected when the authoritative source resolves")
+		t.Fatal("a non-sequencer must be refused after the refresh")
 	}
 }
 
-// Inverted from the pre-rev-7 suite: an empty resolved set must reject
-// everyone, not fail open. A deployment with no sequencer pin and no
-// committee members resolved has nobody to authorize — that is a
-// misconfiguration to surface as rejected requests, not a reason to accept
-// an arbitrary caller's signature request.
-func TestVoteRequesterAuthorized_EmptyResolvedSetRejectsEveryone(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
+// With a valid sequencer known, a requester that does not match it is refused
+// without a refresh, so other peers cannot make this node query the seed.
+func TestVoteRequesterNoRefreshWhenSequencerKnown(t *testing.T) {
+	seq := newTestPeerID(t)
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed(seq.String(), nextSeedEpoch())
+	refreshes := 0
+	installSequencerRefresh(t, func() { refreshes++ })
 
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return map[peer.ID]struct{}{}, true
-	})
-
-	if voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("an empty authoritative set must reject every requester (no more fail-open)")
-	}
-}
-
-// Inverted from TestVoteRequesterAuthorized_SourceIndeterminateFallsBack: a
-// momentarily unresolvable source (ok==false) now fails CLOSED. There is no
-// more legacy buddy-set fallback to fall back to.
-func TestVoteRequesterAuthorized_SourceIndeterminateFailsClosed(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
-
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) { return nil, false })
-
-	if voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("an indeterminate source must reject the requester (fail closed), not fall back to an unauthenticated legacy path")
-	}
-}
-
-// New: the source not being wired at all (nil) — the state of this node's
-// own boot window before main.go's startup wiring runs — also fails closed.
-func TestVoteRequesterAuthorized_SourceNotWiredFailsClosed(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
-	SetAuthorizedRequesterSource(nil)
-
-	if voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("an unwired source must reject the requester (fail closed)")
-	}
-}
-
-// An injected authorizer (startup/test override) has final say and is
-// consulted before the authoritative source at all.
-func TestVoteRequesterAuthorized_InjectedAuthorizerWins(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
-
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return map[peer.ID]struct{}{}, true // would reject everyone if consulted
-	})
-	setVoteRequesterAuthorizerForTest(func(p peer.ID) bool { return p == peer.ID("x") })
-
-	if !voteRequesterAuthorized(peer.ID("x")) {
-		t.Fatalf("injected authorizer must allow x")
-	}
-	if voteRequesterAuthorized(peer.ID("someone-else")) {
-		t.Fatalf("injected authorizer must override the authoritative-source path")
-	}
-}
-
-// An empty remote peer ID (should not occur — the stream layer authenticates
-// the remote peer — but defense in depth) is always rejected, regardless of
-// the source.
-func TestVoteRequesterAuthorized_EmptyRemotePeerRejected(t *testing.T) {
-	defer setVoteRequesterAuthorizerForTest(nil)
-	defer SetAuthorizedRequesterSource(nil)
-
-	SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		return AuthorizedRequesterSet([]peer.ID{peer.ID("")}, ""), true
-	})
-
-	if voteRequesterAuthorized(peer.ID("")) {
-		t.Fatalf("an empty remote peer id must never be authorized")
-	}
-}
-
-// AuthorizedRequesterSet: the pinned sequencer alone when pinned; the
-// committee (empties dropped) when not.
-func TestAuthorizedRequesterSet_Composition(t *testing.T) {
-	seq := peer.ID("sequencer-peer")
-	set := AuthorizedRequesterSet([]peer.ID{peer.ID("c1"), "", peer.ID("c2")}, seq)
-	if _, ok := set[seq]; !ok || len(set) != 1 {
-		t.Fatalf("pinned: want only the sequencer, got %v", set)
-	}
-	noSeq := AuthorizedRequesterSet([]peer.ID{peer.ID("c1"), "", peer.ID("c2")}, "")
-	for _, want := range []peer.ID{"c1", "c2"} {
-		if _, ok := noSeq[want]; !ok {
-			t.Fatalf("unpinned: expected %q in the authorized set", want)
+	for range 3 {
+		if voteRequesterAuthorized(stranger) {
+			t.Fatal("a non-sequencer must be refused")
 		}
 	}
-	if _, ok := noSeq[peer.ID("")]; ok || len(noSeq) != 2 {
-		t.Fatalf("unpinned: want 2 committee members, got %v", noSeq)
+	if refreshes != 0 {
+		t.Fatalf("want no refresh while a valid sequencer is known, got %d", refreshes)
+	}
+	if !voteRequesterAuthorized(seq) {
+		t.Fatal("the known sequencer must be authorized")
 	}
 }
 
-// Moved from consensus_vote_authz.go (test-only helper; golangci-lint runs with tests: false,
-// so it was flagged unused in non-test code).
-// setVoteRequesterAuthorizerForTest overrides the built-in committee-
-// membership check. Test-only -- see voteRequesterAuthorizer's comment for
-// why this is unexported rather than merely documented as test-only.
-func setVoteRequesterAuthorizerForTest(fn func(peer.ID) bool) { voteRequesterAuthorizer = fn }
+// Unmatched requests refresh at most once per sequencerRefreshMinInterval, and
+// a refresh that learns nothing still refuses.
+func TestVoteRequesterRefreshIsRateLimited(t *testing.T) {
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed("", nextSeedEpoch())
+	refreshes := 0
+	now := installSequencerRefresh(t, func() { refreshes++ })
+
+	for range 10 {
+		if voteRequesterAuthorized(stranger) {
+			t.Fatal("must refuse when no sequencer is known")
+		}
+	}
+	if refreshes != 1 {
+		t.Fatalf("want 1 refresh within the interval, got %d", refreshes)
+	}
+	*now = now.Add(sequencerRefreshMinInterval)
+	_ = voteRequesterAuthorized(stranger)
+	if refreshes != 2 {
+		t.Fatalf("want a second refresh after the interval, got %d", refreshes)
+	}
+}
+
+// With no refresh wired, an unmatched requester is refused at once.
+func TestVoteRequesterNoRefreshWired(t *testing.T) {
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed("", nextSeedEpoch())
+	installSequencerRefresh(t, nil)
+	if voteRequesterAuthorized(stranger) {
+		t.Fatal("must refuse with no sequencer and no refresh")
+	}
+}
+
+// captureNoSequencerLog replaces the "no usable sequencer" log and resets its
+// rate limit; it returns the logged reasons.
+func captureNoSequencerLog(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	noUsableSequencerMu.Lock()
+	savedLog, savedLast := noUsableSequencerLog, noUsableSequencerLast
+	noUsableSequencerLog = func(reason string) { got = append(got, reason) }
+	noUsableSequencerLast = time.Time{}
+	noUsableSequencerMu.Unlock()
+	t.Cleanup(func() {
+		noUsableSequencerMu.Lock()
+		noUsableSequencerLog, noUsableSequencerLast = savedLog, savedLast
+		noUsableSequencerMu.Unlock()
+	})
+	return &got
+}
+
+// With no sequencer known, refusals are reported, at most once per minute.
+func TestVoteRequesterLogsNoSequencerOncePerInterval(t *testing.T) {
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed("", nextSeedEpoch())
+	now := installSequencerRefresh(t, func() {})
+	logged := captureNoSequencerLog(t)
+
+	for range 5 {
+		_ = voteRequesterAuthorized(stranger)
+	}
+	if len(*logged) != 1 {
+		t.Fatalf("want 1 log within the interval, got %d: %v", len(*logged), *logged)
+	}
+	if !strings.Contains((*logged)[0], "no sequencer known") {
+		t.Fatalf("unexpected reason: %q", (*logged)[0])
+	}
+	*now = now.Add(noUsableSequencerLogInterval)
+	_ = voteRequesterAuthorized(stranger)
+	if len(*logged) != 2 {
+		t.Fatalf("want a second log after the interval, got %d", len(*logged))
+	}
+}
+
+// A requester that simply is not the known sequencer is not reported as a
+// missing sequencer.
+func TestVoteRequesterNoLogWhenSequencerKnown(t *testing.T) {
+	seq := newTestPeerID(t)
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed(seq.String(), nextSeedEpoch())
+	installSequencerRefresh(t, func() {})
+	logged := captureNoSequencerLog(t)
+
+	if voteRequesterAuthorized(stranger) {
+		t.Fatal("a non-sequencer must be refused")
+	}
+	if len(*logged) != 0 {
+		t.Fatalf("want no missing-sequencer log, got %v", *logged)
+	}
+}
+
+// An invalid sequencer value is reported with its own reason.
+func TestVoteRequesterLogsInvalidSequencer(t *testing.T) {
+	stranger := newTestPeerID(t)
+	sequencerid.SetFromSeed("not-a-peer-id", nextSeedEpoch())
+	installSequencerRefresh(t, func() {})
+	logged := captureNoSequencerLog(t)
+
+	_ = voteRequesterAuthorized(stranger)
+	if len(*logged) != 1 || !strings.Contains((*logged)[0], "not valid") {
+		t.Fatalf("want one invalid-sequencer log, got %v", *logged)
+	}
+}

@@ -459,20 +459,18 @@ type ConsensusSettings struct {
 	// anywhere in this codebase, so a config-level pin, not a discovered
 	// value, is the correct source of truth.
 	//
-	// It is consumed as the authoritative UNION member alongside the
-	// authenticated committee snapshot for the vote-result-requester gate
+	// It is the only peer the vote-result-requester gate authorizes
 	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go:
-	// AuthorizedRequesterSet) — the set of peers a buddy node will BLS-sign a
-	// vote result for on request. Before this pin existed, that gate had no
+	// voteRequesterAuthorized) — the peer a buddy node will BLS-sign a vote
+	// result for on request. Before this pin existed, that gate had no
 	// reliable authenticated source for "who is the sequencer" (the only
 	// available signals were self-declared and unauthenticated: a
 	// broadcast buddy list, or msg.SequencerID in a consensus message), so
 	// the gate could only fail open or risk rejecting the legitimate
 	// sequencer — this pin closes that gap.
 	//
-	// Empty => the requester gate's authorized set is committee-only, which
-	// risks rejecting the legitimate sequencer if it is not itself a
-	// resolvable committee member. production_posture.go's
+	// Empty and no sequencer in the seed snapshot => the requester gate
+	// authorizes nobody, so this node signs no vote result. production_posture.go's
 	// ValidateProductionConsensusPosture warns/fails on this being unset in
 	// a production posture — see that file.
 	//

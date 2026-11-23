@@ -166,7 +166,46 @@ func SignMessageForBlock(vote int8, chainID, height uint64, bindings, consensusH
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
+	return signCanonical(msg, vote)
+}
 
+// BallotDomainV1 prefixes the bytes of a gossiped ballot. A ballot is one
+// member's own judgement of a block and is sent to everyone; a vote-result
+// signature (SignMessageForBlock) is what a certificate is built from and goes
+// only to the sequencer that asked for it. With the same bytes, ballots
+// collected from gossip would verify as certificate signatures, so a
+// certificate could be assembled without asking the committee. The prefix
+// keeps the two apart: VerifyForBlock never accepts a ballot.
+const BallotDomainV1 = "zkballot:v1:"
+
+// CanonicalBallotMessageV1 builds the exact bytes signed and verified for a
+// ballot: BallotDomainV1 followed by the CanonicalVoteMessageV3 bytes for the
+// same chain, height, block, consensus hash and vote.
+func CanonicalBallotMessageV1(chainID, height uint64, bindings, consensusHash string, vote int8) ([]byte, error) {
+	base, err := CanonicalVoteMessageV3(chainID, height, bindings, consensusHash, vote)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(BallotDomainV1), base...), nil
+}
+
+// SignBallotForBlock signs a ballot in the ballot domain
+// (CanonicalBallotMessageV1). The arguments are the same as
+// SignMessageForBlock's.
+//
+// Nodes on the previous release do not accept ballots in this domain, so the
+// release that signs with it is deployed to every node together (see
+// BLS_Verifier.VerifyBallotForBlock).
+func SignBallotForBlock(vote int8, chainID, height uint64, bindings, consensusHash string) (BLSresponse, bool, error) {
+	msg, err := CanonicalBallotMessageV1(chainID, height, bindings, consensusHash, vote)
+	if err != nil {
+		return *NewBLSresponseBuilder(nil), false, err
+	}
+	return signCanonical(msg, vote)
+}
+
+// signCanonical signs msg with this node's committee BLS key.
+func signCanonical(msg []byte, vote int8) (BLSresponse, bool, error) {
 	priv, pub, err := getBLSKeypair()
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err

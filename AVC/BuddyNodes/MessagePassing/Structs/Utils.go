@@ -389,7 +389,7 @@ type tallySigTask struct {
 }
 
 // verifyTallySignaturesWorkers bounds the worker pool used by
-// verifyTallySigTasksConcurrently. BLS verification (BLS_Verifier.VerifyForBlock)
+// verifyTallySigTasksConcurrently. BLS verification (BLS_Verifier.VerifyBallotForBlock)
 // is pure CPU-bound work with no I/O to overlap, so GOMAXPROCS is the natural
 // default — more workers than cores cannot do more work per wall-clock
 // second, only add scheduling overhead. Var (not const) so tests and
@@ -440,7 +440,8 @@ func verifyTallySigTasksConcurrently(tasks []tallySigTask, chainID, height uint6
 			for idx := range jobs {
 				task := tasks[idx]
 				resp := BLS_Signer.BLSresponse{PeerID: task.peerID, PubKey: task.rec.BLSPubKeyHex, Signature: task.rec.BLSSignature}
-				results[idx] = BLS_Verifier.VerifyForBlock(resp, chainID, height, blockHash, consensusHash, task.vote) == nil
+				// Ballots, not certificate signatures: accepts the ballot domain.
+				results[idx] = BLS_Verifier.VerifyBallotForBlock(resp, chainID, height, blockHash, consensusHash, task.vote) == nil
 			}
 		}()
 	}

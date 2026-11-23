@@ -17,9 +17,9 @@ package messaging
 // A fourth setting is checked alongside them for the same reason though it
 // is not a flag: consensus.sequencer_pinned_peer_id (D-26(d)/CON-03). It has
 // no on/off state — the vote-result-requester gate it feeds is always
-// enforced — but leaving it unset degrades that gate's authorized set to
-// committee-only, which can reject the fleet's own sequencer. See
-// AuthorizedRequesterSet's doc comment (AVC/BuddyNodes/MessagePassing/
+// enforced — but with it unset and no sequencer in the seed snapshot that
+// gate authorizes nobody, so the node signs no vote result. See
+// voteRequesterAuthorized's doc comment (AVC/BuddyNodes/MessagePassing/
 // consensus_vote_authz.go).
 //
 // It lives in the messaging package (not config/settings) on purpose: the flags
@@ -29,6 +29,8 @@ package messaging
 import (
 	"fmt"
 	"strings"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"gossipnode/config/settings"
 )
@@ -93,13 +95,11 @@ func ValidateProductionConsensusPosture(production bool) error {
 	// D-26(d)/CON-03: the vote-result-requester gate
 	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) is always
 	// enforced now — there is no flag to be "off" for it. What CAN still be
-	// missing is the sequencer pin it needs to authorize the sequencer
-	// without degrading to a committee-only set (see config.go's doc
-	// comment on SequencerPinnedPeerID). Not fail-open in the same sense as
-	// the three flags above, but it can reject the fleet's own legitimate
-	// sequencer's vote-result requests whenever the sequencer is not
-	// independently a resolvable committee member — a liveness failure
-	// worth catching at boot rather than at incident time.
+	// missing is the sequencer identity it needs (see config.go's doc
+	// comment on SequencerPinnedPeerID). Without one the gate authorizes
+	// nobody: not fail-open like the three flags above, but the node signs
+	// no vote result for the sequencer either — a liveness failure worth
+	// catching at boot rather than at incident time.
 	// The sequencer identity may come from the config pin or from the
 	// seed-signed committee snapshot; the latter needs the seed authority key
 	// pinned. With neither, nothing can identify the sequencer. (At runtime an
@@ -114,6 +114,13 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" &&
 		strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) or SeedAuthorityBLSPub (consensus.seed_authority_bls_pub)")
+	}
+	// A pin that is not a valid peer ID matches no requester, and it wins over
+	// the seed snapshot, so the node would sign no vote result at all.
+	if pin := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID); pin != "" {
+		if _, err := peer.Decode(pin); err != nil {
+			off = append(off, fmt.Sprintf("SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) is not a valid peer ID: %v", err))
+		}
 	}
 	// Catch-up sync needs a durable height from which every block must carry a
 	// committee certificate; without it a fresh node can be served a

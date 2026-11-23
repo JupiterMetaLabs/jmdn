@@ -239,6 +239,20 @@ func (c *Client) CommitteeSourcesAuto(configPin string, epochSeconds int64, pinF
 	eligibility func(uint64, bool) (map[string]string, error),
 	rewardAddresses func() (map[string]string, error),
 ) {
+	eligibility, rewardAddresses, _ = c.CommitteeSourcesAutoWithRefresh(configPin, epochSeconds, pinFile, seedURL, ttl, strictBoundary)
+	return eligibility, rewardAddresses
+}
+
+// CommitteeSourcesAutoWithRefresh is CommitteeSourcesAuto plus refresh, which
+// re-reads the current snapshot from the seed now, bypassing the TTL cache,
+// so the sequencer it names (sequencerid.SetFromSeed) is current. The fetched
+// snapshot is verified exactly as eligibility does; on failure the cache is
+// left as it was. Callers rate-limit refresh.
+func (c *Client) CommitteeSourcesAutoWithRefresh(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration, strictBoundary bool) (
+	eligibility func(uint64, bool) (map[string]string, error),
+	rewardAddresses func() (map[string]string, error),
+	refresh func(),
+) {
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
@@ -251,7 +265,50 @@ func (c *Client) CommitteeSourcesAuto(configPin string, epochSeconds int64, pinF
 		ttl:            ttl,
 		strictBoundary: strictBoundary,
 	}
-	return s.eligible, s.rewardAddresses
+	return s.eligible, s.rewardAddresses, s.refreshCurrent
+}
+
+// refreshCurrent fetches and verifies the current snapshot now, ignoring the
+// TTL. The network fetch and verification run without holding s.mu, so a slow
+// or unreachable seed never blocks eligible (which serves the cached snapshot
+// meanwhile); s.mu is taken only to read the authority and to install the
+// result. On success the cache and the recorded sequencer are updated, as for
+// a normal fetch. On failure (seed unreachable, bad signature, stale epoch)
+// nothing changes.
+//
+// Before the authority key is resolved there is nothing cached to serve, so
+// the refresh takes the normal eligible path, which resolves the authority
+// (config pin, persisted pin or TOFU) and records the sequencer.
+func (s *committeeSource) refreshCurrent() {
+	s.mu.Lock()
+	authority := s.authority
+	s.mu.Unlock()
+	if authority == "" {
+		_, _ = s.eligible(0, false)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	snap, err := s.fetch(ctx, 0)
+	if err != nil {
+		return
+	}
+	if err := committee.VerifyCommitteeSnapshot(snap, authority); err != nil {
+		return
+	}
+	if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), s.epochSeconds); err != nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cachedSnap != nil && snap.Epoch < s.cachedSnap.Epoch {
+		return // an older epoch than what is cached: keep the cache
+	}
+	s.cachedSnap = snap
+	s.cachedAt = time.Now()
+	sequencerid.SetFromSeed(snap.SequencerPeerID, snap.Epoch)
 }
 
 // resolveAuthority resolves the authority pubkey once (config pin, else persisted

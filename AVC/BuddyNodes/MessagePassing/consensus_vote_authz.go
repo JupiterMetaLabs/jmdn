@@ -1,122 +1,176 @@
 package MessagePassing
 
 import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"gossipnode/internal/sequencerid"
 )
 
 // Vote-result requester authorization (D-26(d) / THEBE-AUDIT-HLD.md CON-03).
 //
-// A vote-result request is the sequencer asking a committee member to return —
-// and BLS-sign — this node's aggregated vote for a specific block. This gate
-// restricts WHO may request that signature so the node does not BLS-sign a
-// caller-supplied block hash for an arbitrary peer.
+// A vote-result request is the sequencer asking a committee member to return,
+// and BLS-sign, this node's aggregated vote for a specific block. Only the
+// sequencer collects vote results (Sequencer CollectVoteResultsFromBuddies),
+// so only the sequencer may ask. A committee member that could ask would
+// obtain this node's signature over a block it chose from the proposal cache,
+// and such signatures, pooled from a round that missed quorum, would certify a
+// block the network never committed.
 //
-// The libp2p stream's remote peer ID is cryptographically authenticated by the
-// transport handshake, so restricting WHO may request a signature is sound.
-// The authorized set is the authenticated committee snapshot UNION the
-// PINNED sequencer peer_id (config.Consensus.SequencerPinnedPeerID — the pin
-// CON-03 introduces; see config/settings/config.go's doc comment on that
-// field for why a config-level pin, not a discovered value, is the correct
-// source: the sequencer is a single, static, per-fleet identity with no
-// rotation mechanism anywhere in this codebase).
+// The libp2p stream's remote peer ID is authenticated by the transport
+// handshake, so comparing it with the sequencer's peer ID is sound. The
+// sequencer is resolved on every call by internal/sequencerid: the config pin
+// (consensus.sequencer_pinned_peer_id) if set, otherwise the sequencer peer ID
+// in the seed-signed committee snapshot.
 //
-// AVC-CONSENSUS-HANDOVER.md rev 7: this gate is now permanently enforced —
-// no env-gated master switch, no fail-open branch. It shipped for a long
-// time default-off (JMDN_ENFORCE_VOTE_REQUESTER_AUTH, default false) because
-// there was no reliable authenticated source for "who is the sequencer": the
-// only signals available to a buddy were self-declared and unauthenticated
-// (a broadcast buddy list, or msg.SequencerID in a consensus message), so
-// fail-closing against them risked rejecting the legitimate sequencer and
-// stalling the chain. SetAuthorizedRequesterSource + the sequencer pin close
-// that gap, so the flag and its fail-open branches no longer serve a
-// purpose — and per the user's standing instruction, this ships as one
-// coordinated fleet-wide restart, not a flag flip some nodes might miss
-// (which is exactly the failure mode a leftover two-state flag invites; see
-// audit RC-2, "no observe/shadow rung on two-state rollout flags" — the
-// fix here is to not have the second state at all).
-//
-// This restricts signing requests to the pinned sequencer, or to committee
-// members when no sequencer is pinned (see AuthorizedRequesterSet).
+// The gate is always enforced: no flag, no fail-open branch. With no valid
+// sequencer known the node signs nothing until it learns one. A refused
+// request costs the requester one missed signature for one round, which BFT
+// quorum already tolerates. The legacy buddy-to-buddy request path
+// (TriggerForBFTFromSequencer) runs only with features.use_legacy_bft on and
+// is refused by this gate.
 
-// voteRequesterAuthorizer, when non-nil, fully decides whether a requester peer
-// is authorized. Tests inject this to force allow/deny without a live source.
+// voteRequesterAuthorized reports whether remote, the authenticated stream
+// peer, may request this node's signed vote result. With no valid sequencer
+// known, nobody may: the node signs nothing until it learns the sequencer.
 //
-// Deliberately unexported (D-26(d) review follow-up): this fully overrides
-// the fail-closed committee-membership check below it, so it must not be
-// reachable from outside this package. There is no production wiring for it
-// anywhere in the repo -- only consensus_vote_authz_test.go (same package)
-// ever calls the setter -- and unexporting is a compiler-enforced guarantee
-// of that, not just a naming convention or a comment.
-var voteRequesterAuthorizer func(peer.ID) bool
-
-// authorizedRequesterSource supplies the AUTHORITATIVE set of peers allowed
-// to request this node's signed vote, plus an `ok` flag telling whether that
-// set could be resolved right now. Wired unconditionally at startup from two
-// call sites in main.go (the seed-client / non-sequencer branch, and the
-// sequencer's own WireCommitteeSources branch) using AuthorizedRequesterSet
-// (committee snapshot ∪ SequencerPinnedPeerID). There is no other path to
-// authorization any more — see voteRequesterAuthorized below.
-var authorizedRequesterSource func() (set map[peer.ID]struct{}, ok bool)
-
-// SetAuthorizedRequesterSource wires the authoritative requester set
-// (committee snapshot ∪ pinned sequencer). Call once at startup — both
-// main.go call sites do this unconditionally, not gated by any flag.
-func SetAuthorizedRequesterSource(fn func() (map[peer.ID]struct{}, bool)) {
-	authorizedRequesterSource = fn
-}
-
-// AuthorizedRequesterSet returns the peers allowed to request this node's
-// signed vote result.
-//
-// With a pinned sequencer, that peer alone: only the sequencer collects vote
-// results (Sequencer CollectVoteResultsFromBuddies), so a committee member has
-// no reason to ask, and allowing it let any member obtain this node's
-// signature over a block it chose from the proposal cache. Without a pin
-// (config.Consensus.SequencerPinnedPeerID == "") the sequencer cannot be
-// identified, so the set falls back to the committee members, as before; see
-// production_posture.go for the boot-time warning on unpinned deployments.
-func AuthorizedRequesterSet(committee []peer.ID, pinnedSequencer peer.ID) map[peer.ID]struct{} {
-	if pinnedSequencer != "" {
-		return map[peer.ID]struct{}{pinnedSequencer: {}}
-	}
-	set := make(map[peer.ID]struct{}, len(committee))
-	for _, p := range committee {
-		if p != "" {
-			set[p] = struct{}{}
-		}
-	}
-	return set
-}
-
-// voteRequesterAuthorized is the fail-closed gate applied in
-// handleVoteResultRequest. It returns true only when the authenticated
-// stream peer is authorized to request this node's signed vote:
-//   - an injected authorizer (test/startup override) has final say; otherwise
-//   - the requester must be a member of the authoritative set (committee ∪
-//     pinned sequencer), resolved fresh on every call.
-//
-// It fails closed in every other case: the source not being wired yet
-// (expected only transiently during this node's own boot window — see
-// package doc comment), the source being momentarily unresolvable, or the
-// requester simply not being a member. There is no more empty-set or
-// disabled-gate fail-open: a rejected request costs the requester one
-// missed signature contribution for one round, the same cost as that
-// responding node being briefly offline, which BFT quorum already
-// tolerates — it does not stall the fleet.
+// Without a config pin the sequencer comes from the seed snapshot, which is
+// refreshed as a side effect of other reads (for example ballot ingest). Those
+// reads may not have run yet (a freshly started node) or may not reach the
+// seed (committee anchoring takes the voter pool from the chain). So when no
+// valid sequencer is known yet, refresh the snapshot once and check again. A
+// requester that only fails to match a known sequencer triggers no refresh,
+// so other peers cannot make this node query the seed. The refresh only
+// updates the known sequencer; it never authorizes on its own.
 func voteRequesterAuthorized(remote peer.ID) bool {
-	if voteRequesterAuthorizer != nil {
-		return voteRequesterAuthorizer(remote)
-	}
 	if remote == "" {
 		return false
 	}
-	if authorizedRequesterSource == nil {
+	if requesterIsSequencer(remote) {
+		return true
+	}
+	if sequencerid.ConfigPinned() || noUsableSequencerReason() == "" || !refreshSequencerAllowed() {
+		noteNoUsableSequencer()
 		return false
 	}
-	set, ok := authorizedRequesterSource()
-	if !ok {
+	refreshSequencer()
+	if requesterIsSequencer(remote) {
+		return true
+	}
+	noteNoUsableSequencer()
+	return false
+}
+
+func requesterIsSequencer(remote peer.ID) bool {
+	raw := sequencerid.Get() // config pin if set, else the seed-signed snapshot
+	if raw == "" || raw == sequencerid.Unknown {
 		return false
 	}
-	_, member := set[remote]
-	return member
+	seq, err := peer.Decode(raw)
+	return err == nil && remote == seq
+}
+
+// sequencerRefreshMinInterval bounds how often unmatched requests may refresh
+// the seed snapshot, so peers that open request streams cannot make this node
+// query the seed on every stream.
+const sequencerRefreshMinInterval = 5 * time.Second
+
+var (
+	sequencerRefreshMu   sync.Mutex
+	sequencerRefreshFn   func()
+	sequencerRefreshLast time.Time
+	sequencerRefreshNow  = time.Now
+)
+
+// SetSequencerRefresh wires the function that re-reads the seed committee
+// snapshot (which records the sequencer via sequencerid.SetFromSeed). Call
+// once at startup. Without it, an unmatched requester is refused at once.
+func SetSequencerRefresh(fn func()) {
+	sequencerRefreshMu.Lock()
+	sequencerRefreshFn = fn
+	sequencerRefreshMu.Unlock()
+}
+
+// refreshSequencerAllowed reports whether a refresh is wired and the last one
+// was at least sequencerRefreshMinInterval ago, and if so claims this slot.
+func refreshSequencerAllowed() bool {
+	sequencerRefreshMu.Lock()
+	defer sequencerRefreshMu.Unlock()
+	if sequencerRefreshFn == nil {
+		return false
+	}
+	now := sequencerRefreshNow()
+	if !sequencerRefreshLast.IsZero() && now.Sub(sequencerRefreshLast) < sequencerRefreshMinInterval {
+		return false
+	}
+	sequencerRefreshLast = now
+	return true
+}
+
+func refreshSequencer() {
+	sequencerRefreshMu.Lock()
+	fn := sequencerRefreshFn
+	sequencerRefreshMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// noUsableSequencerReason returns why no requester can be authorized right
+// now, or "" when a valid sequencer is known (the requester simply did not
+// match it, which the request handler already logs).
+func noUsableSequencerReason() string {
+	raw := sequencerid.Get()
+	switch {
+	case raw == "" || raw == sequencerid.Unknown:
+		return "no sequencer known: consensus.sequencer_pinned_peer_id is empty and the seed committee snapshot carries no sequencer peer ID"
+	default:
+		if _, err := peer.Decode(raw); err != nil {
+			if sequencerid.ConfigPinned() {
+				return "consensus.sequencer_pinned_peer_id is not a valid peer ID: " + err.Error()
+			}
+			return "the seed committee snapshot's sequencer peer ID is not valid: " + err.Error()
+		}
+	}
+	return ""
+}
+
+// noUsableSequencerLogInterval bounds the "no usable sequencer" error log.
+const noUsableSequencerLogInterval = time.Minute
+
+var (
+	noUsableSequencerMu   sync.Mutex
+	noUsableSequencerLast time.Time
+	noUsableSequencerLog  = func(reason string) {
+		if l := logger(); l != nil {
+			l.Error(context.Background(), "Vote-result requests are refused: this node cannot identify the sequencer and signs no vote result until it can",
+				errors.New(reason),
+				ion.String("function", "MessagePassing.voteRequesterAuthorized"))
+		}
+	}
+)
+
+// noteNoUsableSequencer logs, at most once per noUsableSequencerLogInterval,
+// when requests are refused because no valid sequencer is known. Without it
+// a node that can identify no sequencer refuses every request with only the
+// per-request "not authorized" warning.
+func noteNoUsableSequencer() {
+	reason := noUsableSequencerReason()
+	if reason == "" {
+		return
+	}
+	noUsableSequencerMu.Lock()
+	now := sequencerRefreshNow()
+	if !noUsableSequencerLast.IsZero() && now.Sub(noUsableSequencerLast) < noUsableSequencerLogInterval {
+		noUsableSequencerMu.Unlock()
+		return
+	}
+	noUsableSequencerLast = now
+	noUsableSequencerMu.Unlock()
+	noUsableSequencerLog(reason)
 }

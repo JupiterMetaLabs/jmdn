@@ -68,9 +68,9 @@ func ingestWireVote(t *testing.T, vote int8, height uint64, blockHash string, si
 	v := PubSubMessages.Vote{Vote: vote, BlockHash: blockHash, Height: height}
 	if sign {
 		t.Setenv("JMDN_BLS_AUTOGEN", "1")
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, ingestChainID, height, blockHash, ingestConsensusHash)
+		blsResp, signed, err := BLS_Signer.SignBallotForBlock(vote, ingestChainID, height, blockHash, ingestConsensusHash)
 		if err != nil || !signed {
-			t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
+			t.Fatalf("SignBallotForBlock: signed=%v err=%v", signed, err)
 		}
 		v.BLSSignature = blsResp.Signature
 		v.BLSPubKeyHex = blsResp.PubKey

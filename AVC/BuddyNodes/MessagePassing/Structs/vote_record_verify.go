@@ -60,7 +60,7 @@ func verifyVoteRecord(rec avcvotes.VoteRecord, height uint64, blockHash, consens
 		return false
 	}
 	resp := BLS_Signer.BLSresponse{PeerID: rec.PeerID, PubKey: rec.BLSPubKeyHex, Signature: rec.BLSSignature}
-	return BLS_Verifier.VerifyForBlock(resp, BLS_Signer.DomainChainID(), height, blockHash, consensusHash, rec.Vote) == nil
+	return BLS_Verifier.VerifyBallotForBlock(resp, BLS_Signer.DomainChainID(), height, blockHash, consensusHash, rec.Vote) == nil
 }
 
 // rescueShadowedVotes adds back every (peer, vote) pair that has a vote

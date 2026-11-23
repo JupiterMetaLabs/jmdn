@@ -82,6 +82,10 @@ func Get() string {
 	return ""
 }
 
+// ConfigPinned reports whether consensus.sequencer_pinned_peer_id is set, in
+// which case the seed snapshot never changes the result of Get.
+func ConfigPinned() bool { return configPin() != "" }
+
 func configPin() string {
 	if !settings.IsLoaded() {
 		return ""

@@ -33,7 +33,6 @@ import (
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/libp2p/go-libp2p/core/peer"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
@@ -2082,46 +2081,6 @@ func main() {
 	// with Sequencer/consensus_statemachine.go's NewConsensus wiring — same pinned,
 	// authenticated snapshot. The `|| EnableCatchup` arm preserves the prior
 	// empty-pin TOFU read path for catchup nodes (CommitteeSourcesAuto pin-or-TOFU).
-	// D-26(d)/CON-03: wire the vote-result-requester gate's authoritative
-	// source (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) here,
-	// unconditionally, for every node role (sequencer or buddy) and before
-	// branching on role below — the closure itself reads config and the
-	// committee-eligibility source LAZILY on each call, not at wiring time,
-	// so it does not need WireCommitteeSources or the seed client below to
-	// have run first; it only needs to be wired before this node's stream
-	// handler can plausibly receive a request (node.NewNode(), earlier in
-	// startup than this point), which one unconditional call site here
-	// guarantees regardless of which role branch below actually executes.
-	MessagePassing.SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
-		var committee []peer.ID
-		if members, err := messaging.EligibleCommitteePeerIDs(); err == nil {
-			committee = make([]peer.ID, 0, len(members))
-			for pid := range members {
-				if p, decErr := peer.Decode(pid); decErr == nil {
-					committee = append(committee, p)
-				}
-			}
-		}
-		// Committee resolution failing does not make the whole source
-		// indeterminate: the pinned sequencer is a static config value that
-		// never depends on live committee resolution, so it is still
-		// authorized on its own even during a committee-source hiccup —
-		// this is the liveness property the pin exists to provide. ok is
-		// always true: an unresolved committee degrades the set (possibly
-		// to pin-only, or empty if unpinned too), it never makes the
-		// decision indeterminate.
-		var pinned peer.ID
-		if raw := sequencerid.Get(); raw != "" && raw != sequencerid.Unknown {
-			if p, decErr := peer.Decode(raw); decErr == nil {
-				pinned = p
-			} else {
-				log.Error().Err(decErr).Str("configured_value", raw).
-					Msg("[D-26d] consensus.sequencer_pinned_peer_id is not a valid peer ID — sequencer will not be authorized via the pin until this is corrected")
-			}
-		}
-		return MessagePassing.AuthorizedRequesterSet(committee, pinned), true
-	})
-
 	if cfg.Network.SeedNode != "" && (cfg.Consensus.SeedAuthorityBLSPub != "" || cfg.FastSync.EnableCatchup) {
 		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
 			log.Error().Err(err).
@@ -2133,7 +2092,7 @@ func main() {
 			// as vote eligibility. The reward source is a no-op unless
 			// consensus.reward_split_enabled is on; when it is, R5's recompute needs
 			// this map, and leaving it unset would (correctly) fail closed.
-			elFn, rewardFn := elCli.CommitteeSourcesAuto(
+			elFn, rewardFn, refreshSeedFn := elCli.CommitteeSourcesAutoWithRefresh(
 				cfg.Consensus.SeedAuthorityBLSPub,
 				cfg.Consensus.CommitteeEpochSeconds,
 				seednode.SeedAuthPinPath(),
@@ -2143,6 +2102,37 @@ func main() {
 			)
 			messaging.SetCommitteeEligibilitySource(elFn)
 			messaging.SetRewardAddressSource(rewardFn)
+			// The vote-result requester gate re-reads the seed snapshot when a
+			// requester does not match the known sequencer (a fresh node, or
+			// committee anchoring, may not have read it yet). refreshSeedFn
+			// fetches the current snapshot now, bypassing the TTL cache,
+			// verifies it as elFn does and records its sequencer
+			// (sequencerid.SetFromSeed).
+			MessagePassing.SetSequencerRefresh(refreshSeedFn)
+			// Without a config pin, the sequencer must come from the seed
+			// snapshot. Check once at startup that it does, so a seed that
+			// does not sign the sequencer is reported now, not at the first
+			// refused vote-result request.
+			if strings.TrimSpace(cfg.Consensus.SequencerPinnedPeerID) == "" {
+				go func() {
+					ctx := context.Background()
+					_, err := elFn(0, false) // always read: it also records the sequencer
+					l := mainLogger()
+					if l == nil {
+						return
+					}
+					if err != nil {
+						l.Error(ctx, "sequencer identity check: could not read the seed committee snapshot; vote-result requests are refused until a sequencer is known", err)
+						return
+					}
+					if seq := sequencerid.FromSeed(); seq == "" {
+						l.Error(ctx, "sequencer identity check: the seed committee snapshot carries no sequencer peer ID and consensus.sequencer_pinned_peer_id is empty; this node will refuse every vote-result request. Set the pin or upgrade the seed to sign the sequencer",
+							errors.New("no sequencer peer ID in the seed committee snapshot"))
+					} else {
+						l.Info(ctx, "sequencer identity check: sequencer learned from the seed committee snapshot", ion.String("sequencer", seq))
+					}
+				}()
+			}
 			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
 
 			// W1 (committee anchor): the seed's current signed snapshot, for the

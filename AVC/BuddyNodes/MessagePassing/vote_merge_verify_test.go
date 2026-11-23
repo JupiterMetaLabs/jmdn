@@ -52,7 +52,7 @@ func TestMergeVoteCRDTElement_JunkCannotFillTheCap(t *testing.T) {
 
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
 	victim, relay := mergeTestPeer(t), mergeTestPeer(t)
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, BLS_Signer.DomainChainID(), height, hash, consensusHash)
+	resp, ok, err := BLS_Signer.SignBallotForBlock(1, BLS_Signer.DomainChainID(), height, hash, consensusHash)
 	if err != nil || !ok {
 		t.Fatalf("sign: ok=%v err=%v", ok, err)
 	}
