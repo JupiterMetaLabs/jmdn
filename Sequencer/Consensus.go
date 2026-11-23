@@ -1649,7 +1649,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		// saved, the block servers refuse new proposals at the height and
 		// startup resumes this block (Sequencer.ResumePendingCommit).
 		if block := consensus.ZKBlockData.GetZKBlock(); consensusReached && block != nil {
-			_ = recordPendingCertified(processCtx, block, blsResults)
+			recordPendingUnlessDropped(processCtx, block, blsResults)
 		}
 
 		// B1 (Architecture §4.2a, §10 decision 10): the commit certificate is

@@ -234,3 +234,66 @@ func TestDropPendingCommitRefusesMismatch(t *testing.T) {
 		t.Fatal("a refused drop must keep the record")
 	}
 }
+
+// The live path does not re-save a block an operator already dropped: the
+// record stays gone and proposals at the height are no longer refused.
+func TestLiveCommitAfterDropDoesNotRecreateRecord(t *testing.T) {
+	f := &fakeCommit{tip: 129}
+	installFakeCommit(t, f)
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	block := certifiedTestBlock(130, 2)
+	rec, err := pendingRecordFor(block, testCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingCommits.Save(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DropPendingCommit(130, block.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := commitCertifiedBlock(context.Background(), block, testCert); !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("the live path must not re-create a dropped record, got %+v", got)
+	}
+	if blocked, _, _ := pendingCommits.BlocksProposal(130, 129); blocked {
+		t.Fatal("proposals at the height must not be refused after the drop")
+	}
+	if len(f.applied) != 0 || f.broadcasted != 0 {
+		t.Fatalf("a dropped block must not be applied or broadcast, got %d and %d", len(f.applied), f.broadcasted)
+	}
+}
+
+// A record re-created for a dropped block (for example by a race) is removed
+// when an attempt sees the drop.
+func TestDroppedAttemptRemovesRecreatedRecord(t *testing.T) {
+	f := &fakeCommit{tip: 139}
+	installFakeCommit(t, f)
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	block := certifiedTestBlock(140, 1)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(140, block.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	_ = pendingCommits.Save(rec) // re-created behind the drop's back
+
+	certifiedCommitMu.Lock()
+	err := commitCertifiedBlockLocked(context.Background(), block, testCert)
+	certifiedCommitMu.Unlock()
+	if !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("the re-created record must be removed, got %+v", got)
+	}
+}

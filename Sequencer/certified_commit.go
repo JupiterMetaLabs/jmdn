@@ -254,9 +254,15 @@ func commitCertifiedBlock(ctx context.Context, block *config.ZKBlock, bls []BLS_
 	defer certifiedCommitMu.Unlock()
 	// Normally already saved by ProcessVoteCollection when quorum was
 	// verified; saving the same block again just rewrites the record. Only
-	// the live path saves it: the resume path never re-creates a record, so
-	// an operator drop cannot be undone.
-	_ = recordPendingCertified(ctx, block, bls)
+	// the live path saves it, and never for a block an operator dropped (the
+	// check and the save run under certifiedAttemptMu, which the drop takes),
+	// so a drop cannot be undone.
+	if !recordPendingUnlessDropped(ctx, block, bls) {
+		certifiedAttemptMu.Lock()
+		err := droppedError(ctx, block)
+		certifiedAttemptMu.Unlock()
+		return err
+	}
 	return commitCertifiedBlockLocked(ctx, block, bls)
 }
 
@@ -303,11 +309,7 @@ func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.
 	certifiedAttemptMu.Lock()
 	defer certifiedAttemptMu.Unlock()
 	if pendingDropped(block) {
-		logger().Warn(ctx, "Certified block was dropped by an operator; not applying it",
-			ion.Uint64("block_number", block.BlockNumber),
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.String("function", "commitCertifiedBlock"))
-		return true, fmt.Errorf("%w: block %d (%s)", ErrCertifiedBlockDropped, block.BlockNumber, block.BlockHash.Hex())
+		return true, droppedError(ctx, block)
 	}
 	state, serr := storedBlockStateAt(block)
 	switch {
@@ -355,6 +357,38 @@ func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.
 			ion.String("function", "commitCertifiedBlock"))
 	}
 	return true, nil
+}
+
+// recordPendingUnlessDropped saves the pending record for block unless an
+// operator dropped that block, and reports whether it was saved (or at least
+// attempted). The check and the save run under certifiedAttemptMu, which the
+// drop takes, so a drop is never undone by a later save.
+func recordPendingUnlessDropped(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) bool {
+	certifiedAttemptMu.Lock()
+	defer certifiedAttemptMu.Unlock()
+	if pendingDropped(block) {
+		return false
+	}
+	_ = recordPendingCertified(ctx, block, bls)
+	return true
+}
+
+// droppedError logs that block was dropped by an operator, removes any
+// record still held for it (one a race may have re-created must not keep
+// refusing proposals), and returns ErrCertifiedBlockDropped. The caller holds
+// certifiedAttemptMu.
+func droppedError(ctx context.Context, block *config.ZKBlock) error {
+	logger().Warn(ctx, "Certified block was dropped by an operator; not applying it",
+		ion.Uint64("block_number", block.BlockNumber),
+		ion.String("block_hash", block.BlockHash.Hex()),
+		ion.String("function", "commitCertifiedBlock"))
+	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex()); err != nil {
+		logger().Warn(ctx, "Could not remove the pending record of a dropped block",
+			ion.String("error", err.Error()),
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("function", "commitCertifiedBlock"))
+	}
+	return fmt.Errorf("%w: block %d (%s)", ErrCertifiedBlockDropped, block.BlockNumber, block.BlockHash.Hex())
 }
 
 func haltCertifiedHeight(ctx context.Context, block *config.ZKBlock, attempts int, cause error) error {
