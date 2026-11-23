@@ -7,6 +7,59 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-23
+
+Consensus liveness and serving fixes. A single offline committee member no
+longer halts block production, `eth_getCode` is served, and sync serving no
+longer exhausts the accounts database. Adds read-only block serving for nodes
+migrating to v3base. No protocol, consensus-rule or configuration changes —
+nodes can be upgraded one at a time (see _Upgrade notes_).
+
+### Added
+
+- **Read-only `/fastsync/v4` serving for the v3base migration.** With
+  `fastsync.serve_v4` enabled, a node registers `/fastsync/v4/head` and
+  `/fastsync/v4/getblocks`, so v3base nodes following this network can
+  fetch blocks they missed. Serve-only — it never writes — with per-peer and
+  global serve limits and stream deadlines. Off by default, intended for the
+  sequencer, and removed once the migration completes (#275).
+- **Accounts-pool controls.** `JMDN_ACCOUNTSYNC_DB_SLOTS` (1–16, default 4)
+  bounds concurrent account-sync scans; `JMDN_ACCOUNTS_POOL_MAX` raises the
+  accounts connection-pool cap (raise-only, up to 256; default 30) (#185).
+
+### Fixed
+
+- **Consensus rounds form at quorum.** The sequencer starts a round once a
+  Byzantine quorum (`ceil(2n/3)`) of the committee is connected, rather than
+  requiring every member — previously a single absent or restarting member
+  halted block production network-wide. The committee and certificate
+  verification are unchanged; an unpinned or unavailable committee source falls
+  back to the previous full-strength gate (#111).
+- **`eth_getCode` is served.** The method was not dispatched and returned
+  `-32601 Method not found`. The block tag is now optional and defaults to
+  `latest`. Every address returns `0x`; no contract code is stored on this
+  network (#132).
+- **Account-sync serving no longer exhausts the accounts connection pool.**
+  Overlapping sync sessions could hold every pooled connection, so
+  `eth_getBalance`, `eth_getTransactionCount`, block commit and the sync pages
+  themselves failed immediately. Scans now run behind a process-wide bulkhead
+  with bounded backoff on exhaustion (#185).
+- A goroutine leaked for each database call made with a background context
+  (#185).
+- A main-database connection was held permanently when block processing could
+  not acquire an accounts connection (#185).
+
+### Upgrade notes
+
+No configuration changes are required — the shipped defaults are the intended
+ones. `2.0.1` and `2.0.2` nodes interoperate, so the network can be upgraded one
+node at a time.
+
+- **The quorum-formation fix takes effect on the sequencer.** Upgrade it first;
+  validators can follow at any pace.
+- **Leave `fastsync.serve_v4` off** except on the sequencer that v3base nodes
+  catch up from.
+
 ## [2.0.1] - 2026-07-31
 
 Account lifecycle and state-application. Accounts now come into existence
