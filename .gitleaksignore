@@ -1,0 +1,5 @@
+# gitleaks findings reviewed and accepted as non-secrets. One fingerprint per line:
+# <commit>:<file>:<rule>:<line>. Add an entry only for a reviewed false positive.
+
+# Test-only HMAC key used to sign JWTs in token_audience_test.go (#218); not a credential.
+fa373e94ff2c9125d7145a17829704491d9413fb:pkg/gatekeeper/token_audience_test.go:generic-api-key:15
