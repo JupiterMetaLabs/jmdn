@@ -192,6 +192,10 @@ func CanonicalBallotMessageV1(chainID, height uint64, bindings, consensusHash st
 // SignBallotForBlock signs a ballot in the ballot domain
 // (CanonicalBallotMessageV1). The arguments are the same as
 // SignMessageForBlock's.
+//
+// Nodes on the previous release do not accept ballots in this domain, so the
+// release that signs with it is deployed to every node together (see
+// BLS_Verifier.VerifyBallotForBlock).
 func SignBallotForBlock(vote int8, chainID, height uint64, bindings, consensusHash string) (BLSresponse, bool, error) {
 	msg, err := CanonicalBallotMessageV1(chainID, height, bindings, consensusHash, vote)
 	if err != nil {

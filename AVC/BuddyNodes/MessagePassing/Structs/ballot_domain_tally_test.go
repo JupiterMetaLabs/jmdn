@@ -9,7 +9,7 @@ import (
 )
 
 // The tally counts ballots in the new domain and in the old format alike, so
-// votes keep counting while nodes switch over.
+// the order of restarts within the coordinated upgrade does not matter.
 func TestVerifyTallySignatures_CountsBothBallotFormats(t *testing.T) {
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
 	peerOld := stage5TestPeer(t)

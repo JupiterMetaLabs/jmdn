@@ -42,9 +42,15 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 }
 
 // VerifyBallotForBlock checks a gossiped ballot. It accepts the ballot domain
-// (BLS_Signer.CanonicalBallotMessageV1) and, until every node signs ballots
-// in that domain, the vote-result format ballots were signed in before
-// (CanonicalVoteMessageV3). Accepting the old format here only counts a vote;
+// (BLS_Signer.CanonicalBallotMessageV1) and the vote-result format ballots
+// were signed in before (CanonicalVoteMessageV3).
+//
+// Rollout: this release must be deployed to every node together (a
+// coordinated fleet-wide upgrade). A node on the previous release verifies
+// ballots only in the old format and drops ballots signed in the ballot
+// domain, so a rolling upgrade is not supported. Accepting the old format
+// here only makes the order of restarts within that upgrade irrelevant; it is
+// removed in a later release. Accepting the old format only counts a vote;
 // it never lets a ballot count as a certificate signature, because
 // certificate checks use VerifyForBlock, which rejects the ballot domain.
 // Use this only where a ballot is checked, never for a certificate.

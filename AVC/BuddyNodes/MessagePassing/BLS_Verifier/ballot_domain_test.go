@@ -28,8 +28,8 @@ func TestBallotDomain_BallotIsNotACertificateSignature(t *testing.T) {
 	}
 }
 
-// Ballots signed in the old format, by nodes that have not switched yet, still
-// count as ballots.
+// Ballots signed in the old format still count as ballots, so the order of
+// restarts within the coordinated upgrade does not matter.
 func TestBallotDomain_OldFormatBallotStillCounts(t *testing.T) {
 	old, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash, consHash)
 	if err != nil || !ok {
