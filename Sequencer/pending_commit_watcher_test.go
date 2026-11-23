@@ -605,3 +605,25 @@ func TestLivePathSkipsBlockTheWatcherCommitted(t *testing.T) {
 		t.Fatalf("no record may be left behind, got %+v", got)
 	}
 }
+
+// A drop raises the height above the dropped period directly, in one step,
+// even on a fresh (restarted) period counter.
+func TestDropRaisesAboveHighPeriod(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 249})
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+	prevRelease := releaseProposalClaim
+	releaseProposalClaim = func(uint64) {}
+	t.Cleanup(func() { releaseProposalClaim = prevRelease })
+
+	dropped := certifiedTestBlock(250, 1000)
+	rec, _ := pendingRecordFor(dropped, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(250, dropped.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	if got := messaging.DefaultProposerPeriods.PeriodFor(250); got <= 1000 {
+		t.Fatalf("the height must move above period 1000, got %d", got)
+	}
+}

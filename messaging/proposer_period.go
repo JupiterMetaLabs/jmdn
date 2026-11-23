@@ -115,6 +115,26 @@ func hintFloor(reports map[string]uint64, committeeSize int) (uint64, bool) {
 	return vals[f], true
 }
 
+// RaiseAbove sets height's period to above (at least the current period),
+// plus one, capped at config.MaxPeriodAt, and returns the new period. Used
+// after an operator drops a certified round at period above, so the next
+// proposal is a new round whatever this process remembered.
+func (p *ProposerPeriods) RaiseAbove(height, above uint64) uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	floor := p.period[height]
+	if above > floor {
+		floor = above
+	}
+	next := floor + 1
+	if limit := config.MaxPeriodAt(height); floor >= limit {
+		next = limit
+	}
+	p.period[height] = next
+	delete(p.hints, height)
+	return next
+}
+
 // ForgetThrough drops the counter and hints of every height at or below
 // height, which is committed: no proposal at it can be made again.
 func (p *ProposerPeriods) ForgetThrough(height uint64) {

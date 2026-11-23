@@ -116,3 +116,18 @@ func TestProposerPeriods_HintsAreCapped(t *testing.T) {
 		}
 	}
 }
+
+// RaiseAbove sets the period above the given one (or the current one) and
+// never past the cap.
+func TestProposerPeriodsRaiseAbove(t *testing.T) {
+	p := NewProposerPeriods()
+	if got := p.RaiseAbove(7, 500); got != 501 {
+		t.Fatalf("want 501, got %d", got)
+	}
+	if got := p.RaiseAbove(7, 10); got != 502 {
+		t.Fatalf("a lower period must still advance past the current one, got %d", got)
+	}
+	if got := p.RaiseAbove(8, config.MaxPeriodAt(8)+5); got != config.MaxPeriodAt(8) {
+		t.Fatalf("the period must stop at the cap, got %d", got)
+	}
+}

@@ -103,13 +103,7 @@ func startNewRoundAfterDrop(rec *pendingcommit.Record) {
 	if err := json.Unmarshal(rec.Block, &block); err == nil {
 		droppedPeriod = block.Period
 	}
-	// Bounded: each step raises the period by at least one, up to the cap.
-	for i := 0; i < 1024; i++ {
-		next, capped := advanceDroppedHeight(rec.Height)
-		if capped || next > droppedPeriod {
-			break
-		}
-	}
+	raiseDroppedHeight(rec.Height, droppedPeriod)
 	releaseProposalClaim(rec.Height)
 }
 
@@ -176,10 +170,10 @@ func RunPendingCommitWatcher(ctx context.Context, h host.Host) {
 	}
 }
 
-// advanceDroppedHeight and releaseProposalClaim are seams for tests.
+// raiseDroppedHeight and releaseProposalClaim are seams for tests.
 var (
-	advanceDroppedHeight = func(height uint64) (uint64, bool) {
-		return messaging.DefaultProposerPeriods.AdvanceAfterFailure(height, config.MaxMainPeers)
+	raiseDroppedHeight = func(height, above uint64) uint64 {
+		return messaging.DefaultProposerPeriods.RaiseAbove(height, above)
 	}
 	releaseProposalClaim = proposalguard.Default.Release
 )
