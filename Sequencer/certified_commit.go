@@ -243,23 +243,26 @@ func settleRecordBelowTip(ctx context.Context, rec *pendingcommit.Record) bool {
 	if serr != nil {
 		return false
 	}
-	switch state {
-	case storedSameApplied:
-	case storedDifferent:
-		logger().Warn(ctx, "A different block is stored at the pending height; its certified block did not land and is reported to the orchestrator",
-			ion.Uint64("block_number", rec.Height),
-			ion.String("block_hash", rec.BlockHash),
-			ion.String("function", "settleRecordBelowTip"))
-		sendRejectionReport(&block, supersededPendingReason, "")
-	default:
+	if state != storedSameApplied && state != storedDifferent {
 		return false
 	}
+	// Remove the record first and report only once that succeeded, so a
+	// record that cannot be cleared (retried every minute) is not reported to
+	// the orchestrator again on every try. The report is best effort, as all
+	// rejection reports are.
 	if err := pendingCommits.Clear(rec.Height, rec.BlockHash, rec.RoundID); err != nil {
 		logger().Warn(ctx, "Could not remove a settled pending record",
 			ion.String("error", err.Error()),
 			ion.Uint64("block_number", rec.Height),
 			ion.String("function", "settleRecordBelowTip"))
 		return false
+	}
+	if state == storedDifferent {
+		logger().Warn(ctx, "A different block is stored at the pending height; its certified block did not land and is reported to the orchestrator",
+			ion.Uint64("block_number", rec.Height),
+			ion.String("block_hash", rec.BlockHash),
+			ion.String("function", "settleRecordBelowTip"))
+		sendRejectionReport(&block, supersededPendingReason, "")
 	}
 	return true
 }
@@ -420,13 +423,13 @@ func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.
 			ion.Uint64("block_number", block.BlockNumber),
 			ion.String("function", "commitCertifiedBlock"))
 	case state == storedDifferent:
-		return true, haltCertifiedHeight(ctx, block, attempt,
+		return true, haltCertifiedHeight(ctx, block, attempt+1,
 			errors.New("a different block is already stored at this height"))
 	case state == storedSamePartial:
 		// Some transactions are applied and some are not: applying again
 		// could not tell which, and skipping would leave state behind the
 		// chain. An operator must repair it.
-		return true, haltCertifiedHeight(ctx, block, attempt,
+		return true, haltCertifiedHeight(ctx, block, attempt+1,
 			errors.New("the block is stored but only some of its transactions are applied"))
 	case state == storedSameUnapplied:
 		// Typically a store that reported an error was rolled back and the

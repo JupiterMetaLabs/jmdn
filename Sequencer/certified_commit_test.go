@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,6 +171,9 @@ func TestCertifiedBlockDifferentStoredBlockHalts(t *testing.T) {
 	if !errors.Is(err, ErrCertifiedBlockHalted) || len(f.applied) != 0 {
 		t.Fatalf("want an immediate halt with no apply, got err=%v applies=%d", err, len(f.applied))
 	}
+	if !strings.Contains(err.Error(), "after 1 attempt(s)") {
+		t.Fatalf("the halt must count the first attempt, got %v", err)
+	}
 }
 
 // The block landed but only some of its transactions are applied: halt, never
@@ -180,6 +184,9 @@ func TestCertifiedBlockStoredPartlyAppliedHalts(t *testing.T) {
 	err := commitCertifiedBlock(context.Background(), certifiedTestBlock(53, 0), testCert)
 	if !errors.Is(err, ErrCertifiedBlockHalted) || len(f.applied) != 0 {
 		t.Fatalf("want an immediate halt with no apply, got err=%v applies=%d", err, len(f.applied))
+	}
+	if !strings.Contains(err.Error(), "after 1 attempt(s)") {
+		t.Fatalf("the halt must count the first attempt, got %v", err)
 	}
 }
 

@@ -777,3 +777,58 @@ func TestDropRefusedAtPeriodCap(t *testing.T) {
 		t.Fatalf("a refused drop must not raise, release or report, got %d calls", calls)
 	}
 }
+
+// flakyStore is a pendingcommit.Store whose writes can be made to fail.
+type flakyStore struct {
+	mu      sync.Mutex
+	kv      map[string][]byte
+	failPut bool
+}
+
+func (s *flakyStore) Get(k string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kv[k], nil
+}
+
+func (s *flakyStore) Put(k string, v []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failPut {
+		return errors.New("store write failed")
+	}
+	s.kv[k] = append([]byte(nil), v...)
+	return nil
+}
+
+// A superseded record whose removal keeps failing is reported to the
+// orchestrator only once, after it is finally removed.
+func TestSupersededRecordReportedOnceAfterClear(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 300})
+	reports := captureReports(t)
+	st := &flakyStore{kv: map[string][]byte{}}
+	pendingCommits = pendingcommit.New()
+	pendingCommits.SetStore(st, "")
+	rec, _ := pendingRecordFor(certifiedTestBlock(300, 1), testCert)
+	if err := pendingCommits.Save(rec); err != nil {
+		t.Fatal(err)
+	}
+	stateByHeight(map[uint64]storedState{300: storedDifferent}, nil)
+
+	st.failPut = true
+	for range 3 { // e.g. three watcher ticks while the store write fails
+		if settleRecordBelowTip(context.Background(), &rec) {
+			t.Fatal("the record must not count as settled while it cannot be removed")
+		}
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("nothing may be reported before the record is removed, got %d", len(*reports))
+	}
+	st.failPut = false
+	if !settleRecordBelowTip(context.Background(), &rec) {
+		t.Fatal("the record must settle once it can be removed")
+	}
+	if len(*reports) != 1 {
+		t.Fatalf("want exactly one report, got %d", len(*reports))
+	}
+}
