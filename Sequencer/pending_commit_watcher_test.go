@@ -3,11 +3,14 @@ package Sequencer
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/internal/pendingcommit"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -429,5 +432,46 @@ func TestDropStartsNewRound(t *testing.T) {
 	}
 	if len(f.applied) != 1 || f.applied[0].Period != next {
 		t.Fatalf("want the new round applied once, got %+v", f.applied)
+	}
+}
+
+// When the live series stops on a drop, it does not release the proposal
+// claim again: a new round admitted after the drop keeps its claim.
+func TestLiveStopOnDropKeepsNewRoundClaim(t *testing.T) {
+	f := &fakeCommit{tip: 189, applyErrs: []error{errors.New("store timeout"), errors.New("store timeout")}}
+	installFakeCommit(t, f)
+	prevReport := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prevReport })
+	prevGuard := proposalguard.Default
+	proposalguard.Default = proposalguard.New(proposalguard.DefaultTTL)
+	prevRelease := releaseProposalClaim
+	releaseProposalClaim = proposalguard.Default.Release
+	t.Cleanup(func() { proposalguard.Default, releaseProposalClaim = prevGuard, prevRelease })
+
+	const h = 190
+	block := certifiedTestBlock(h, 1)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	dropped := false
+	certifiedCommitSleep = func(context.Context, time.Duration) bool {
+		if !dropped {
+			dropped = true
+			if _, err := DropPendingCommit(h, block.BlockHash.Hex()); err != nil {
+				t.Errorf("drop: %v", err)
+			}
+			if !proposalguard.Default.Claim(h) { // the new round's proposal
+				t.Error("setup: the new round must be able to claim the height after the drop")
+			}
+		}
+		return true
+	}
+
+	c := &Consensus{ZKBlockData: PubSubMessages.NewConsensusMessageBuilder(nil).SetZKBlock(block), mu: &sync.RWMutex{}}
+	if err := c.BroadcastAndProcessBlock(context.Background(), testCert, true); !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	if !proposalguard.Default.InFlight(h) {
+		t.Fatal("the new round's claim must survive the stopped live series")
 	}
 }

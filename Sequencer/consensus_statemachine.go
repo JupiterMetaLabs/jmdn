@@ -457,10 +457,11 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// new proposals at the height until the block is stored.
 		if err := commitCertifiedBlock(ctx, block, blsResults); err != nil {
 			if errors.Is(err, ErrCertifiedBlockDropped) {
-				// An operator dropped this round: ProcessBlockLocally never ran,
-				// so release the height's proposal claim for the next round
-				// (the drop already moved the height to a new period).
-				releaseProposalClaim(block.BlockNumber)
+				// An operator dropped this round. The drop already released
+				// the height's proposal claim and moved it to a new period.
+				// Do not release again: claims carry no owner, so a late
+				// release here could free the claim of a new round admitted
+				// at this height after the drop.
 				return fmt.Errorf("certified block dropped by operator; not stored: %w", err)
 			}
 			Alerts.NewAlertBuilder(alert_ctx).
