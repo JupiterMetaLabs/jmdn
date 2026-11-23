@@ -9,9 +9,10 @@ name: Nightly
 # HOW THIS TRIGGERS
 #   * schedule — GitHub evaluates `schedule` ONLY against the workflow file on
 #       the repository's DEFAULT branch (main). Until this file is on main the
-#       cron never fires. Once it is, the run checks out and tests v3base (the
-#       `gate` job resolves the ref), not main.
-#   * push to v3base — every merge into the release line gets the full suite.
+#       cron never fires. Once it is, the run checks out and tests main (the
+#       `gate` job resolves the ref).
+#   * push to main (and v3base until it is retired) — every merge into the
+#       trunk gets the full suite.
 #   * workflow_dispatch — Actions -> Nightly -> "Run workflow": pick the branch
 #       that CONTAINS this file, type the ref to test. Always runs, even if the
 #       ref was already tested.
@@ -33,16 +34,16 @@ on:
     # 18:00 UTC = 23:30 IST, after the working day.
     - cron: "0 18 * * *"
   push:
-    branches: ["v3base"]
+    branches: ["main", "v3base"]
   workflow_dispatch:
     inputs:
       ref:
         description: "Branch or SHA to check"
         required: false
-        default: "v3base"
+        default: "main"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name || 'v3base' }}
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name || 'main' }}
   cancel-in-progress: true
 
 env:
@@ -91,9 +92,9 @@ jobs:
           PUSH_REF: ${{ github.ref_name }}
         run: |
           case "$EVENT" in
-            workflow_dispatch) ref="${INPUT_REF:-v3base}" ;;
+            workflow_dispatch) ref="${INPUT_REF:-main}" ;;
             push)              ref="$PUSH_REF" ;;
-            *)                 ref="v3base" ;;   # schedule: always the release line
+            *)                 ref="main" ;;     # schedule: always the trunk
           esac
           # Resolve to a commit without a checkout. Works for branch names and
           # full/short SHAs that exist on origin.
