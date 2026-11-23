@@ -1,6 +1,9 @@
 package MessagePassing
 
 import (
+	"sync"
+	"time"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"gossipnode/internal/sequencerid"
@@ -32,14 +35,78 @@ import (
 // voteRequesterAuthorized reports whether remote, the authenticated stream
 // peer, may request this node's signed vote result. With no valid sequencer
 // known, nobody may: the node signs nothing until it learns the sequencer.
+//
+// Without a config pin the sequencer comes from the seed snapshot, which is
+// refreshed as a side effect of other reads (for example ballot ingest). Those
+// reads may not have run yet (a freshly started node) or may not reach the
+// seed (committee anchoring takes the voter pool from the chain). So when the
+// requester does not match, refresh the snapshot once and check again. The
+// refresh only updates the known sequencer; it never authorizes on its own.
 func voteRequesterAuthorized(remote peer.ID) bool {
 	if remote == "" {
 		return false
 	}
+	if requesterIsSequencer(remote) {
+		return true
+	}
+	if sequencerid.ConfigPinned() || !refreshSequencerAllowed() {
+		return false
+	}
+	refreshSequencer()
+	return requesterIsSequencer(remote)
+}
+
+func requesterIsSequencer(remote peer.ID) bool {
 	raw := sequencerid.Get() // config pin if set, else the seed-signed snapshot
 	if raw == "" || raw == sequencerid.Unknown {
 		return false
 	}
 	seq, err := peer.Decode(raw)
 	return err == nil && remote == seq
+}
+
+// sequencerRefreshMinInterval bounds how often unmatched requests may refresh
+// the seed snapshot, so peers that open request streams cannot make this node
+// query the seed on every stream.
+const sequencerRefreshMinInterval = 5 * time.Second
+
+var (
+	sequencerRefreshMu   sync.Mutex
+	sequencerRefreshFn   func()
+	sequencerRefreshLast time.Time
+	sequencerRefreshNow  = time.Now
+)
+
+// SetSequencerRefresh wires the function that re-reads the seed committee
+// snapshot (which records the sequencer via sequencerid.SetFromSeed). Call
+// once at startup. Without it, an unmatched requester is refused at once.
+func SetSequencerRefresh(fn func()) {
+	sequencerRefreshMu.Lock()
+	sequencerRefreshFn = fn
+	sequencerRefreshMu.Unlock()
+}
+
+// refreshSequencerAllowed reports whether a refresh is wired and the last one
+// was at least sequencerRefreshMinInterval ago, and if so claims this slot.
+func refreshSequencerAllowed() bool {
+	sequencerRefreshMu.Lock()
+	defer sequencerRefreshMu.Unlock()
+	if sequencerRefreshFn == nil {
+		return false
+	}
+	now := sequencerRefreshNow()
+	if !sequencerRefreshLast.IsZero() && now.Sub(sequencerRefreshLast) < sequencerRefreshMinInterval {
+		return false
+	}
+	sequencerRefreshLast = now
+	return true
+}
+
+func refreshSequencer() {
+	sequencerRefreshMu.Lock()
+	fn := sequencerRefreshFn
+	sequencerRefreshMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }

@@ -2101,6 +2101,11 @@ func main() {
 			)
 			messaging.SetCommitteeEligibilitySource(elFn)
 			messaging.SetRewardAddressSource(rewardFn)
+			// The vote-result requester gate re-reads the seed snapshot when a
+			// requester does not match the known sequencer (a fresh node, or
+			// committee anchoring, may not have read it yet). elFn verifies the
+			// snapshot and records its sequencer (sequencerid.SetFromSeed).
+			MessagePassing.SetSequencerRefresh(func() { _, _ = elFn(0, false) })
 			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
 
 			// W1 (committee anchor): the seed's current signed snapshot, for the
