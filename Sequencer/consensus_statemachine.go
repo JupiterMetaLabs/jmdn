@@ -590,6 +590,7 @@ func (consensus *Consensus) advancePeriodAfterFailedRound(ctx context.Context, h
 		ion.Uint64("next_period", next),
 		ion.String("reason", reason),
 		ion.String("function", "Consensus.advancePeriodAfterFailedRound"))
+	noteStuckHeight(ctx, height, next, reason)
 }
 
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
