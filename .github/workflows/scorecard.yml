@@ -30,7 +30,7 @@ on:
     # same shape: 40 runs, all `push`, zero `schedule`.
     - cron: "0 5 * * 1"
   push:
-    branches: ["v3base"]
+    branches: ["main", "v3base"]
   workflow_dispatch:
 
 permissions: read-all

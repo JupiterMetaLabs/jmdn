@@ -280,7 +280,7 @@ jobs:
   # exactly that, from go.mod and the call graph, with no image to build.
   #
   # The image scan lives where the image lives: nightly.yml builds and scans it
-  # on every push to v3base (advisory, Security job), and docker.yml scans each
+  # on every push to main (advisory, Security job), and docker.yml scans each
   # architecture by digest BEFORE the manifest is tagged (blocking) — see the
   # scan-digests job there.
   deps:
