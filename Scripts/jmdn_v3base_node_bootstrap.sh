@@ -13,8 +13,10 @@
 #      written to disk or put on a command line.
 #
 # Run:
-#   NODE_ALIAS=my-node CANARY_BLS_PUB=<canary bls_pub hex> [REWARD_ADDRESS=0x...] \
-#     bash jmdn_v3base_node_bootstrap.sh
+#   sudo bash jmdn_v3base_node_bootstrap.sh
+# It asks for the node alias, the canary's BLS key (hex), an optional reward
+# address and the canary yaml path, then the GitHub token. Answers are saved
+# (0600) for re-runs; NODE_ALIAS etc. can also be set in the environment.
 #
 # Re-runnable: each finished phase leaves a marker in /var/lib/jmdn-bootstrap and is
 # skipped next time. Any failed check stops the run with the reason.
@@ -57,10 +59,38 @@ done_phase() { [ -f "$MARK/$1.done" ]; }
 mark() { mkdir -p "$MARK"; touch "$MARK/$1.done"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
-[ -n "$NODE_ALIAS" ] || die "set NODE_ALIAS"
-[[ "$CANARY_BLS_PUB" =~ ^[0-9a-fA-F]{64,}$ ]] || die "set CANARY_BLS_PUB to the canary's bls_pub in HEX (see the header; base64 is refused)"
-[ -z "$REWARD_ADDRESS" ] || [[ "$REWARD_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "REWARD_ADDRESS must be 0x + 40 hex"
+
+# Inputs: taken from the environment if set, otherwise asked for (saved for re-runs).
+INPUTS="$MARK/inputs"
+mkdir -p "$MARK"; chmod 700 "$MARK"
+# shellcheck disable=SC1090
+[ -f "$INPUTS" ] && . "$INPUTS"
+ask() {
+  local var="$1" prompt="$2" re="$3" optional="${4:-}" val
+  val="${!var:-}"
+  while :; do
+    if [ -z "$val" ]; then
+      if [ ! -t 0 ]; then [ -n "$optional" ] && break; die "$var not set and no terminal to ask on"; fi
+      read -r -p "    $prompt: " val
+    fi
+    if [ -z "$val" ] && [ -n "$optional" ]; then break; fi
+    if [[ "$val" =~ $re ]]; then break; fi
+    printf '    "%s" is not valid, try again\n' "$val"; val=""
+  done
+  printf -v "$var" '%s' "$val"
+}
+step "Inputs"
+ask NODE_ALIAS "Node alias (e.g. jmdn-aws-us-west-1-v3base-2)" '^[A-Za-z0-9._-]+$'
+ask CANARY_BLS_PUB "Canary BLS public key, HEX (see script header for the command)" '^[0-9a-fA-F]{64,}$'
+ask REWARD_ADDRESS "Reward address 0x... (validators only; Enter to skip)" '^0x[0-9a-fA-F]{40}$' optional
+ask CANARY_YAML "Path to the canary's jmdn.yaml copy" '^/.+'
 [ -f "$CANARY_YAML" ] || die "$CANARY_YAML not found (copy the canary's /etc/jmdn/jmdn.yaml here)"
+( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\nCANARY_YAML=%q\n' \
+    "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" "$CANARY_YAML" > "$INPUTS" )
+ok "alias $NODE_ALIAS; reward address ${REWARD_ADDRESS:-none}; canary yaml $CANARY_YAML"
+if [ -t 0 ]; then
+  read -r -p "    Proceed? [y/N]: " go; [[ "$go" =~ ^[Yy]$ ]] || die "stopped at your request"
+fi
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/go/bin:$PATH"
 
