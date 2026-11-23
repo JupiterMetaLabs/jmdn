@@ -258,32 +258,6 @@ func (t *Tracker) DropMatching(height uint64, blockHash string) (*Record, error)
 	return &r, nil
 }
 
-// ClearStale drops a record at or below committedTip: its block is already
-// stored, but an earlier Clear failed. Without this the stale record would make
-// Save refuse the next certified height, leaving that height unprotected. The
-// record is dropped from memory even when the store delete fails (the error is
-// returned); the next Save overwrites the single store key anyway, and a stale
-// record left in the store never blocks proposals. A record above
-// committedTip is kept.
-func (t *Tracker) ClearStale(committedTip uint64) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if err := t.loadLocked(); err != nil {
-		return err
-	}
-	if t.rec == nil || t.rec.Height > committedTip {
-		return nil
-	}
-	stale := t.rec.Height
-	t.rec = nil
-	if t.store != nil {
-		if err := t.store.Put(t.key, []byte{}); err != nil {
-			return fmt.Errorf("pendingcommit: clear stale record for height %d: %w", stale, err)
-		}
-	}
-	return nil
-}
-
 // BlocksProposal reports whether a proposal at height must be refused because
 // a certified block below or at it is still uncommitted. committedTip is the
 // node's committed tip: a record at or below it is stale (the block was

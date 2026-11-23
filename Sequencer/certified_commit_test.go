@@ -274,6 +274,13 @@ func TestCertifiedBlockReplacesStaleRecord(t *testing.T) {
 	if err := pendingCommits.Save(stale); err != nil {
 		t.Fatal(err)
 	}
+	// Height 10 is stored and applied (its Clear failed); 11 is not stored.
+	storedBlockStateAt = func(b *config.ZKBlock) (storedState, error) {
+		if b.BlockNumber == 10 {
+			return storedSameApplied, nil
+		}
+		return storedNone, nil
+	}
 	block := certifiedTestBlock(11, 0)
 
 	if err := commitCertifiedBlock(context.Background(), block, testCert); !errors.Is(err, ErrCertifiedBlockHalted) {

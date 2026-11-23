@@ -475,3 +475,103 @@ func TestLiveStopOnDropKeepsNewRoundClaim(t *testing.T) {
 		t.Fatal("the new round's claim must survive the stopped live series")
 	}
 }
+
+// stateByHeight makes storedBlockStateAt return a per-height state.
+func stateByHeight(states map[uint64]storedState, errAt map[uint64]error) {
+	storedBlockStateAt = func(b *config.ZKBlock) (storedState, error) {
+		if err := errAt[b.BlockNumber]; err != nil {
+			return storedNone, err
+		}
+		return states[b.BlockNumber], nil
+	}
+}
+
+// captureReports replaces the orchestrator report and returns the reported
+// blocks.
+func captureReports(t *testing.T) *[]*config.ZKBlock {
+	t.Helper()
+	var got []*config.ZKBlock
+	prev := sendRejectionReport
+	sendRejectionReport = func(b *config.ZKBlock, _, _ string) { got = append(got, b) }
+	t.Cleanup(func() { sendRejectionReport = prev })
+	return &got
+}
+
+// A pending record at a height where a different block is stored (the chain
+// moved on without it) is reported to the orchestrator and removed when the
+// next height is recorded.
+func TestSupersededRecordIsReportedAndCleared(t *testing.T) {
+	f := &fakeCommit{tip: 200}
+	installFakeCommit(t, f)
+	reports := captureReports(t)
+	old := certifiedTestBlock(200, 1)
+	rec, _ := pendingRecordFor(old, testCert)
+	_ = pendingCommits.Save(rec)
+	stateByHeight(map[uint64]storedState{200: storedDifferent}, nil)
+
+	next := certifiedTestBlock(201, 1)
+	_ = recordPendingCertified(context.Background(), next, testCert)
+	if len(*reports) != 1 || (*reports)[0].BlockNumber != 200 {
+		t.Fatalf("want the superseded block reported once, got %+v", *reports)
+	}
+	got, _ := pendingCommits.Current()
+	if got == nil || got.Height != 201 {
+		t.Fatalf("height 201 must now be recorded, got %+v", got)
+	}
+}
+
+// A record whose block is stored and applied is removed without a report.
+func TestCommittedRecordBelowTipIsClearedSilently(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 210})
+	reports := captureReports(t)
+	rec, _ := pendingRecordFor(certifiedTestBlock(210, 1), testCert)
+	_ = pendingCommits.Save(rec)
+	stateByHeight(map[uint64]storedState{210: storedSameApplied}, nil)
+
+	_ = recordPendingCertified(context.Background(), certifiedTestBlock(211, 1), testCert)
+	if len(*reports) != 0 {
+		t.Fatalf("a committed block must not be reported, got %d", len(*reports))
+	}
+	if got, _ := pendingCommits.Current(); got == nil || got.Height != 211 {
+		t.Fatalf("height 211 must now be recorded, got %+v", got)
+	}
+}
+
+// When the stored state at the record's height cannot be read, the record is
+// kept (fail closed) and nothing is reported.
+func TestRecordBelowTipKeptWhenStateUnknown(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 220})
+	reports := captureReports(t)
+	rec, _ := pendingRecordFor(certifiedTestBlock(220, 1), testCert)
+	_ = pendingCommits.Save(rec)
+	stateByHeight(nil, map[uint64]error{220: errors.New("read failed")})
+
+	_ = recordPendingCertified(context.Background(), certifiedTestBlock(221, 1), testCert)
+	if len(*reports) != 0 {
+		t.Fatalf("nothing may be reported, got %d", len(*reports))
+	}
+	if got, _ := pendingCommits.Current(); got == nil || got.Height != 220 {
+		t.Fatalf("the unsettled record must be kept, got %+v", got)
+	}
+}
+
+// The watcher settles a superseded record instead of retrying it: reported
+// once, removed, never applied.
+func TestResumeSettlesSupersededRecord(t *testing.T) {
+	f := &fakeCommit{tip: 231}
+	installFakeCommit(t, f)
+	reports := captureReports(t)
+	rec, _ := pendingRecordFor(certifiedTestBlock(230, 1), testCert)
+	_ = pendingCommits.Save(rec)
+	stateByHeight(map[uint64]storedState{230: storedDifferent}, nil)
+
+	if err := ResumePendingCommit(context.Background(), fakeHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*reports) != 1 || len(f.applied) != 0 || f.broadcasted != 0 {
+		t.Fatalf("want one report and no apply or broadcast, got %d, %d, %d", len(*reports), len(f.applied), f.broadcasted)
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("the superseded record must be removed, got %+v", got)
+	}
+}

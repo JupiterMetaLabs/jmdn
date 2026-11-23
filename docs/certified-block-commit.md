@@ -12,6 +12,8 @@ A block with a valid committee certificate is stored, or its height waits. The s
 
 While a record exists, the block servers refuse proposals at that height and above (HTTP 409 / gRPC `AlreadyExists`, reason `height_pending_commit`), and the round-ledger clear endpoint refuses that height.
 
+If the chain fills the pending height with a different block (for example via sync from peers), the record is removed and the certified block's transactions are reported to the orchestrator as not landed; the height continues with the chain's block.
+
 Before each attempt the sequencer checks what is stored at the height. A different block stored there, a block with only some of its transactions applied, or a halted block apply on this node (see [block-apply-halt.md](block-apply-halt.md)) cannot heal on its own; the height stays halted until an operator repairs it.
 
 ## What operators see

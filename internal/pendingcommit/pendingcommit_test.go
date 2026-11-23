@@ -145,55 +145,6 @@ func TestReadFailureFailsClosed(t *testing.T) {
 	}
 }
 
-// A Clear that fails after the block was stored must not stop the next height
-// from being recorded: ClearStale drops the leftover record first.
-func TestClearStaleAfterFailedClearLetsNextHeightBeRecorded(t *testing.T) {
-	s := newMemStore()
-	a := New()
-	a.SetStore(s, "")
-	if err := a.Save(rec(10, "0xaa")); err != nil {
-		t.Fatal(err)
-	}
-	s.failPut = true
-	if err := a.Clear(10, "0xaa", ""); err == nil {
-		t.Fatal("the failed clear must be reported")
-	}
-	if err := a.ClearStale(10); err == nil {
-		t.Fatal("the failed store delete must be reported")
-	}
-	if got, _ := a.Current(); got != nil {
-		t.Fatalf("the stale record must be dropped from memory even when the store delete fails, got %+v", got)
-	}
-	s.failPut = false
-	if err := a.Save(rec(11, "0xbb")); err != nil {
-		t.Fatalf("height 11 must be recorded after the stale record is dropped: %v", err)
-	}
-	if blocked, _, _ := a.BlocksProposal(11, 10); !blocked {
-		t.Fatal("height 11 must block proposals")
-	}
-	b := New()
-	b.SetStore(s, "")
-	if got, _ := b.Current(); got == nil || got.Height != 11 {
-		t.Fatalf("height 11 must survive a restart, got %+v", got)
-	}
-}
-
-// A record above the committed tip belongs to an uncommitted block: keep it,
-// and keep refusing other heights.
-func TestClearStaleKeepsUncommittedRecord(t *testing.T) {
-	a := New()
-	_ = a.Save(rec(10, "0xaa"))
-	if err := a.ClearStale(9); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := a.Current(); got == nil || got.Height != 10 {
-		t.Fatalf("an uncommitted record must be kept, got %+v", got)
-	}
-	if err := a.Save(rec(11, "0xbb")); err == nil {
-		t.Fatal("another height must still be refused while 10 is uncommitted")
-	}
-}
-
 // A clear for another block at the same height keeps the record.
 func TestClearOtherBlockIsNoop(t *testing.T) {
 	a := New()

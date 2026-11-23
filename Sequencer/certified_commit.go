@@ -207,6 +207,50 @@ func certifiedRoundID(block *config.ZKBlock) string {
 	return fmt.Sprintf("%s/p%d", block.BlockHash.Hex(), block.Period)
 }
 
+// settleRecordBelowTip handles a pending record whose height the committed
+// tip has reached, and reports whether the record was removed:
+//
+//   - the stored block at that height is this block, applied: it was
+//     committed before its record was cleared; remove the record.
+//   - a different block is stored at that height: the chain moved on without
+//     this block, so its transactions did not land. Report them to the
+//     orchestrator, then remove the record.
+//   - anything else (unreadable, not yet applied, partly applied): keep the
+//     record; proposals stay refused and the operator is alerted elsewhere.
+func settleRecordBelowTip(ctx context.Context, rec *pendingcommit.Record) bool {
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err != nil {
+		return false
+	}
+	state, serr := storedBlockStateAt(&block)
+	if serr != nil {
+		return false
+	}
+	switch state {
+	case storedSameApplied:
+	case storedDifferent:
+		logger().Warn(ctx, "A different block is stored at the pending height; its certified block did not land and is reported to the orchestrator",
+			ion.Uint64("block_number", rec.Height),
+			ion.String("block_hash", rec.BlockHash),
+			ion.String("function", "settleRecordBelowTip"))
+		sendRejectionReport(&block, supersededPendingReason, "")
+	default:
+		return false
+	}
+	if err := pendingCommits.Clear(rec.Height, rec.BlockHash, rec.RoundID); err != nil {
+		logger().Warn(ctx, "Could not remove a settled pending record",
+			ion.String("error", err.Error()),
+			ion.Uint64("block_number", rec.Height),
+			ion.String("function", "settleRecordBelowTip"))
+		return false
+	}
+	return true
+}
+
+// supersededPendingReason is reported for the transactions of a certified
+// block whose height the chain filled with a different block.
+const supersededPendingReason = "certified, but a different block is stored at this height; its transactions did not land"
+
 // recordPendingCertified saves block and its certificate as the pending
 // commit, first dropping a stale record left by an already-stored block. Call
 // it as soon as the certificate is known (ProcessVoteCollection, right after
@@ -216,19 +260,16 @@ func certifiedRoundID(block *config.ZKBlock) string {
 // commitCertifiedBlock calls it too. A failure is logged and alerted; the
 // returned error is informational (the record may still be held in memory).
 func recordPendingCertified(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) error {
-	// A record left over from an already-stored block (its Clear failed) would
-	// make Save refuse this height. Drop it first. If the tip cannot be read the
-	// record is kept: it may belong to a block that is not stored.
+	// A record at or below the committed tip would make Save refuse this
+	// height. Settle it first (see settleRecordBelowTip). If the tip cannot be
+	// read the record is kept: it may belong to a block that is not stored.
 	if tip, terr := committedTip(); terr != nil {
 		logger().Warn(ctx, "Could not read the committed tip before recording a certified block",
 			ion.String("error", terr.Error()),
 			ion.Uint64("block_number", block.BlockNumber),
 			ion.String("function", "recordPendingCertified"))
-	} else if cerr := pendingCommits.ClearStale(tip); cerr != nil {
-		logger().Warn(ctx, "Could not delete a stale pending record from the store; it no longer blocks proposals and will be overwritten",
-			ion.String("error", cerr.Error()),
-			ion.Uint64("committed_tip", tip),
-			ion.String("function", "recordPendingCertified"))
+	} else if old, cerr := pendingCommits.Current(); cerr == nil && old != nil && old.Height <= tip {
+		settleRecordBelowTip(ctx, old)
 	}
 
 	rec, err := pendingRecordFor(block, bls)
@@ -364,7 +405,7 @@ func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.
 	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex(), certifiedRoundID(block)); err != nil {
 		// The record is now at or below the committed tip, so it no longer
 		// blocks proposals. It would make Save refuse the next height, so the
-		// next commitCertifiedBlock drops it first (ClearStale).
+		// next recordPendingCertified settles it first (settleRecordBelowTip).
 		logger().Warn(ctx, "Committed a certified block but could not clear its pending record",
 			ion.String("error", err.Error()),
 			ion.Uint64("block_number", block.BlockNumber),
@@ -480,10 +521,12 @@ func resumeUnderLock(ctx context.Context) (*config.ZKBlock, []BLS_Signer.BLSresp
 			rec.Height, rec.BlockHash, block.BlockNumber, block.BlockHash.Hex())
 	}
 
-	// Committed before the record was cleared: just clear it.
+	// The tip already reached this height: settle the record instead of
+	// retrying (committed before the record was cleared, or a different
+	// block is stored here).
 	if tip, terr := committedTip(); terr == nil && tip >= rec.Height {
-		if state, serr := storedBlockStateAt(&block); serr == nil && state == storedSameApplied {
-			return nil, nil, pendingCommits.Clear(rec.Height, rec.BlockHash, rec.RoundID)
+		if settleRecordBelowTip(ctx, rec) {
+			return nil, nil, nil
 		}
 	}
 
