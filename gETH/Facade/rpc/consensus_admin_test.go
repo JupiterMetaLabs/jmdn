@@ -174,6 +174,10 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var dropped []pendingcommit.Record
+	SetPendingCommitDropHook(func(rec pendingcommit.Record) { dropped = append(dropped, rec) })
+	t.Cleanup(func() { SetPendingCommitDropHook(nil) })
+
 	r := gin.New()
 	r.GET("/s", handlePendingCommitStatus)
 	r.POST("/d", handleDropPendingCommit)
@@ -201,6 +205,9 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 	if blocked, _, _ := pendingcommit.Default.BlocksProposal(90, 89); !blocked {
 		t.Fatal("a refused drop must keep the record")
 	}
+	if len(dropped) != 0 {
+		t.Fatalf("a refused drop must not run the hook, got %d calls", len(dropped))
+	}
 
 	if w := post(`{"height":90,"block_hash":"` + strings.ToUpper(hash[2:]) + `"}`); w.Code != http.StatusConflict {
 		t.Fatalf("hash without 0x prefix: status %d", w.Code)
@@ -210,6 +217,9 @@ func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
 	}
 	if blocked, _, _ := pendingcommit.Default.BlocksProposal(90, 89); blocked {
 		t.Fatal("proposals at the height must be accepted after the drop")
+	}
+	if len(dropped) != 1 || dropped[0].Height != 90 || dropped[0].BlockHash != hash {
+		t.Fatalf("the drop hook must run once with the dropped record, got %+v", dropped)
 	}
 	if w := post(`{"height":90,"block_hash":"` + hash + `"}`); w.Code != http.StatusNotFound {
 		t.Fatalf("second drop: status %d", w.Code)

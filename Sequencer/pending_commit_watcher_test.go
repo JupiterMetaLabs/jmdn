@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"gossipnode/config"
 	"gossipnode/messaging"
 )
 
@@ -105,5 +106,37 @@ func TestHaltAlertPacing(t *testing.T) {
 	}
 	if !p.due(6, t0.Add(2*time.Minute+haltAlertInterval)) {
 		t.Fatal("the same height must alert again after the interval")
+	}
+}
+
+// A dropped pending block's transactions are reported to the orchestrator as
+// not landed, with the dropped block itself.
+func TestReportDroppedPendingBlock(t *testing.T) {
+	var got []*config.ZKBlock
+	var reasons []string
+	prev := sendRejectionReport
+	sendRejectionReport = func(b *config.ZKBlock, reason, _ string) {
+		got = append(got, b)
+		reasons = append(reasons, reason)
+	}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	block := certifiedTestBlock(95, 2)
+	rec, err := pendingRecordFor(block, testCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ReportDroppedPendingBlock(rec)
+	if len(got) != 1 || got[0].BlockNumber != 95 || got[0].BlockHash != block.BlockHash {
+		t.Fatalf("want one report for the dropped block, got %+v", got)
+	}
+	if reasons[0] != droppedPendingReason {
+		t.Fatalf("unexpected reason %q", reasons[0])
+	}
+
+	rec.Block = []byte("not json")
+	ReportDroppedPendingBlock(rec)
+	if len(got) != 1 {
+		t.Fatal("an undecodable record must not be reported")
 	}
 }

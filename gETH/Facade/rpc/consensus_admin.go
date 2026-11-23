@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
@@ -81,6 +82,22 @@ func handlePendingCommitStatus(c *gin.Context) {
 	})
 }
 
+// pendingCommitDropHook runs after an operator drops a pending record, with
+// the dropped record. The sequencer wires it to report the block's
+// transactions to the orchestrator as not landed.
+var (
+	pendingCommitDropMu   sync.Mutex
+	pendingCommitDropHook func(pendingcommit.Record)
+)
+
+// SetPendingCommitDropHook wires the function called with each dropped
+// pending record. Call once at startup.
+func SetPendingCommitDropHook(fn func(pendingcommit.Record)) {
+	pendingCommitDropMu.Lock()
+	pendingCommitDropHook = fn
+	pendingCommitDropMu.Unlock()
+}
+
 type dropPendingCommitRequest struct {
 	Height    *uint64 `json:"height"`
 	BlockHash string  `json:"block_hash"`
@@ -111,7 +128,7 @@ func handleDropPendingCommit(c *gin.Context) {
 		})
 		return
 	}
-	if err := pendingcommit.Default.Clear(rec.Height); err != nil {
+	if err := pendingcommit.Default.Clear(rec.Height, rec.BlockHash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -120,6 +137,12 @@ func handleDropPendingCommit(c *gin.Context) {
 			ion.Uint64("height", rec.Height),
 			ion.String("block_hash", rec.BlockHash),
 			ion.Int64("created_at", rec.CreatedAt))
+	}
+	pendingCommitDropMu.Lock()
+	hook := pendingCommitDropHook
+	pendingCommitDropMu.Unlock()
+	if hook != nil {
+		hook(*rec)
 	}
 	c.JSON(http.StatusOK, gin.H{"dropped": true, "height": rec.Height, "block_hash": rec.BlockHash})
 }

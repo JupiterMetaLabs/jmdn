@@ -2458,6 +2458,9 @@ func main() {
 	// height are refused by the block servers until it is stored, so this runs
 	// in the background and the servers can start.
 	if cfg.Ports.BlockGen > 0 || cfg.Ports.BlockGRPC > 0 {
+		// An operator drop of a pending record reports its block's
+		// transactions to the orchestrator as not landed.
+		rpc.SetPendingCommitDropHook(Sequencer.ReportDroppedPendingBlock)
 		// Tracked, so shutdown cancels ctx and ends the retry wait. The
 		// watcher also retries a height that halts later in this run.
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SequencerResumeCommitThread, func(ctx context.Context) error {

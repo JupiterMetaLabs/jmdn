@@ -324,7 +324,7 @@ func commitCertifiedBlockLocked(ctx context.Context, block *config.ZKBlock, bls 
 	// Stored. Only now may the certificate feed the next block (it used to be
 	// recorded before the commit attempt).
 	recordCommitCert(block.BlockNumber, bls)
-	if err := pendingCommits.Clear(block.BlockNumber); err != nil {
+	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex()); err != nil {
 		// The record is now at or below the committed tip, so it no longer
 		// blocks proposals. It would make Save refuse the next height, so the
 		// next commitCertifiedBlock drops it first (ClearStale).
@@ -414,7 +414,7 @@ func resumeUnderLock(ctx context.Context) (*config.ZKBlock, []BLS_Signer.BLSresp
 	// Committed before the record was cleared: just clear it.
 	if tip, terr := committedTip(); terr == nil && tip >= rec.Height {
 		if state, serr := storedBlockStateAt(&block); serr == nil && state == storedSameApplied {
-			return nil, nil, pendingCommits.Clear(rec.Height)
+			return nil, nil, pendingCommits.Clear(rec.Height, rec.BlockHash)
 		}
 	}
 

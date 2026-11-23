@@ -2,12 +2,17 @@ package Sequencer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
+
+	"gossipnode/Sequencer/RejectionReport"
+	"gossipnode/config"
+	"gossipnode/internal/pendingcommit"
 )
 
 // certifiedCommitMu serializes commit attempts of a certified block between
@@ -75,4 +80,28 @@ func RunPendingCommitWatcher(ctx context.Context, h host.Host) {
 		case <-time.After(pendingRetryInterval):
 		}
 	}
+}
+
+// sendRejectionReport is RejectionReport.Send; a seam for tests.
+var sendRejectionReport = RejectionReport.Send
+
+// droppedPendingReason is the reason reported to the orchestrator for the
+// transactions of a certified block an operator dropped.
+const droppedPendingReason = "certified block dropped by operator; never stored, its transactions did not land"
+
+// ReportDroppedPendingBlock reports the transactions of a pending certified
+// block that an operator dropped (consensus admin pending-commit drop): the
+// block will never be stored, so the orchestrator, which marked them included
+// when it submitted the block, must learn they did not land.
+func ReportDroppedPendingBlock(rec pendingcommit.Record) {
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err != nil {
+		logger().Warn(context.Background(), "Could not decode a dropped pending block; its transactions are not reported to the orchestrator",
+			ion.String("error", err.Error()),
+			ion.Uint64("height", rec.Height),
+			ion.String("block_hash", rec.BlockHash),
+			ion.String("function", "ReportDroppedPendingBlock"))
+		return
+	}
+	sendRejectionReport(&block, droppedPendingReason, "")
 }

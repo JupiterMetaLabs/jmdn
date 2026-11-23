@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -151,15 +152,17 @@ func (t *Tracker) Current() (*Record, error) {
 	return &r, nil
 }
 
-// Clear removes the record for height after the block was stored. Clearing a
-// different height, or when nothing is pending, is a no-op.
-func (t *Tracker) Clear(height uint64) error {
+// Clear removes the record for height and blockHash after the block was
+// stored (or an operator dropped it). Clearing a different height or block,
+// or when nothing is pending, is a no-op: a commit of one block can never
+// remove a record saved for another block at the same height.
+func (t *Tracker) Clear(height uint64, blockHash string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.loadLocked(); err != nil {
 		return err
 	}
-	if t.rec == nil || t.rec.Height != height {
+	if t.rec == nil || t.rec.Height != height || !strings.EqualFold(t.rec.BlockHash, blockHash) {
 		return nil
 	}
 	if t.store != nil {
