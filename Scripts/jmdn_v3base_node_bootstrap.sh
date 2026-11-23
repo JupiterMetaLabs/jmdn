@@ -191,7 +191,7 @@ PY
   PG_APP_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); export PG_APP_PASSWORD
   ( umask 077; printf '%s' "$PG_APP_PASSWORD" > "$MARK/pgpass" )
   apt_wait
-  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null )
+  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" bash ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null )
   command -v go >/dev/null || die "Go not on PATH after setup_dependencies"
   go env -w GOPRIVATE=github.com/JupiterMetaLabs GONOSUMDB=github.com/JupiterMetaLabs
   mark 03-deps; ok "$(go version)"
@@ -230,7 +230,7 @@ PGPORT=$(cat "$MARK/pgport")
 if ! done_phase 05-build; then
   step "5/10 Build jmdn"
   rm -f "$REPO/jmdn"
-  ( cd "$REPO" && ./Scripts/build.sh )
+  ( cd "$REPO" && bash ./Scripts/build.sh )
   git -C "$REPO" checkout -q -- go.mod go.sum 2>/dev/null || true
   [ -x "$REPO/jmdn" ] || die "build.sh did not produce $REPO/jmdn"
   "$REPO/jmdn" --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "built jmdn is not $JMDN_REF: $("$REPO/jmdn" --version 2>&1 | head -1)"
@@ -241,8 +241,8 @@ fi
 # ---- 6. certs + service --------------------------------------------------------
 if ! done_phase 06-service; then
   step "6/10 TLS certs and service"
-  ( cd "$REPO" && ./Scripts/setup_certs.sh "$JMDN_DATA/certs" )
-  ( cd "$REPO" && printf 'n\n' | ./Scripts/install_services.sh --mode local )
+  ( cd "$REPO" && bash ./Scripts/setup_certs.sh "$JMDN_DATA/certs" )
+  ( cd "$REPO" && printf 'n\n' | bash ./Scripts/install_services.sh --mode local )
   systemctl stop jmdn 2>/dev/null || true
   [ -n "$(ls -A "$JMDN_DATA/certs" 2>/dev/null)" ] || die "no certs in $JMDN_DATA/certs"
   /usr/local/bin/jmdn --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
