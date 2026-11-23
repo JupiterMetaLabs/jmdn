@@ -2113,14 +2113,20 @@ func main() {
 			// refused vote-result request.
 			if strings.TrimSpace(cfg.Consensus.SequencerPinnedPeerID) == "" {
 				go func() {
-					if _, err := elFn(0, false); err != nil {
-						log.Error().Err(err).Msg("sequencer identity check: could not read the seed committee snapshot; vote-result requests are refused until a sequencer is known")
+					ctx := context.Background()
+					l := mainLogger()
+					if l == nil {
 						return
 					}
-					if sequencerid.FromSeed() == "" {
-						log.Error().Msg("sequencer identity check: the seed committee snapshot carries no sequencer peer ID and consensus.sequencer_pinned_peer_id is empty; this node will refuse every vote-result request. Set the pin or upgrade the seed to sign the sequencer")
+					if _, err := elFn(0, false); err != nil {
+						l.Error(ctx, "sequencer identity check: could not read the seed committee snapshot; vote-result requests are refused until a sequencer is known", err)
+						return
+					}
+					if seq := sequencerid.FromSeed(); seq == "" {
+						l.Error(ctx, "sequencer identity check: the seed committee snapshot carries no sequencer peer ID and consensus.sequencer_pinned_peer_id is empty; this node will refuse every vote-result request. Set the pin or upgrade the seed to sign the sequencer",
+							errors.New("no sequencer peer ID in the seed committee snapshot"))
 					} else {
-						log.Info().Str("sequencer", sequencerid.FromSeed()).Msg("sequencer identity check: sequencer learned from the seed committee snapshot")
+						l.Info(ctx, "sequencer identity check: sequencer learned from the seed committee snapshot", ion.String("sequencer", seq))
 					}
 				}()
 			}
