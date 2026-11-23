@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"gossipnode/config/settings"
 )
 
@@ -112,6 +114,13 @@ func ValidateProductionConsensusPosture(production bool) error {
 	if strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID) == "" &&
 		strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) == "" {
 		off = append(off, "SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) or SeedAuthorityBLSPub (consensus.seed_authority_bls_pub)")
+	}
+	// A pin that is not a valid peer ID matches no requester, and it wins over
+	// the seed snapshot, so the node would sign no vote result at all.
+	if pin := strings.TrimSpace(settings.Get().Consensus.SequencerPinnedPeerID); pin != "" {
+		if _, err := peer.Decode(pin); err != nil {
+			off = append(off, fmt.Sprintf("SequencerPinnedPeerID (consensus.sequencer_pinned_peer_id) is not a valid peer ID: %v", err))
+		}
 	}
 	// Catch-up sync needs a durable height from which every block must carry a
 	// committee certificate; without it a fresh node can be served a

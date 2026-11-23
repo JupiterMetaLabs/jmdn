@@ -1,9 +1,12 @@
 package MessagePassing
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"gossipnode/internal/sequencerid"
@@ -50,10 +53,15 @@ func voteRequesterAuthorized(remote peer.ID) bool {
 		return true
 	}
 	if sequencerid.ConfigPinned() || !refreshSequencerAllowed() {
+		noteNoUsableSequencer()
 		return false
 	}
 	refreshSequencer()
-	return requesterIsSequencer(remote)
+	if requesterIsSequencer(remote) {
+		return true
+	}
+	noteNoUsableSequencer()
+	return false
 }
 
 func requesterIsSequencer(remote peer.ID) bool {
@@ -109,4 +117,58 @@ func refreshSequencer() {
 	if fn != nil {
 		fn()
 	}
+}
+
+// noUsableSequencerReason returns why no requester can be authorized right
+// now, or "" when a valid sequencer is known (the requester simply did not
+// match it, which the request handler already logs).
+func noUsableSequencerReason() string {
+	raw := sequencerid.Get()
+	switch {
+	case raw == "" || raw == sequencerid.Unknown:
+		return "no sequencer known: consensus.sequencer_pinned_peer_id is empty and the seed committee snapshot carries no sequencer peer ID"
+	default:
+		if _, err := peer.Decode(raw); err != nil {
+			if sequencerid.ConfigPinned() {
+				return "consensus.sequencer_pinned_peer_id is not a valid peer ID: " + err.Error()
+			}
+			return "the seed committee snapshot's sequencer peer ID is not valid: " + err.Error()
+		}
+	}
+	return ""
+}
+
+// noUsableSequencerLogInterval bounds the "no usable sequencer" error log.
+const noUsableSequencerLogInterval = time.Minute
+
+var (
+	noUsableSequencerMu   sync.Mutex
+	noUsableSequencerLast time.Time
+	noUsableSequencerLog  = func(reason string) {
+		if l := logger(); l != nil {
+			l.Error(context.Background(), "Vote-result requests are refused: this node cannot identify the sequencer and signs no vote result until it can",
+				errors.New(reason),
+				ion.String("function", "MessagePassing.voteRequesterAuthorized"))
+		}
+	}
+)
+
+// noteNoUsableSequencer logs, at most once per noUsableSequencerLogInterval,
+// when requests are refused because no valid sequencer is known. Without it
+// a node that can identify no sequencer refuses every request with only the
+// per-request "not authorized" warning.
+func noteNoUsableSequencer() {
+	reason := noUsableSequencerReason()
+	if reason == "" {
+		return
+	}
+	noUsableSequencerMu.Lock()
+	now := sequencerRefreshNow()
+	if !noUsableSequencerLast.IsZero() && now.Sub(noUsableSequencerLast) < noUsableSequencerLogInterval {
+		noUsableSequencerMu.Unlock()
+		return
+	}
+	noUsableSequencerLast = now
+	noUsableSequencerMu.Unlock()
+	noUsableSequencerLog(reason)
 }

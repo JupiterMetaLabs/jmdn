@@ -1,11 +1,28 @@
 package messaging
 
 import (
+	"crypto/rand"
 	"strings"
 	"testing"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"gossipnode/config/settings"
 )
+
+func validPinForPosture(t *testing.T) string {
+	t.Helper()
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.String()
+}
 
 // withPassingPosture sets every OTHER posture input to its safe value and
 // restores the originals on cleanup, so a test can flip exactly one input
@@ -24,7 +41,7 @@ func withPassingPosture(t *testing.T) {
 	// the whole package test run.
 	cfg := settings.Get()
 	prevPin := cfg.Consensus.SequencerPinnedPeerID
-	cfg.Consensus.SequencerPinnedPeerID = "pinned-peer"
+	cfg.Consensus.SequencerPinnedPeerID = validPinForPosture(t)
 	prevCertFrom := cfg.Consensus.SyncCertificateRequiredFrom
 	cfg.Consensus.SyncCertificateRequiredFrom = 1
 	prevCapRaise := cfg.Consensus.PeriodCapRaiseFromHeight
@@ -158,5 +175,16 @@ func TestValidateProductionConsensusPosture_RequiresPeriodCapRaise(t *testing.T)
 	cfg.Consensus.PeriodCapRaiseFromHeight = 1
 	if ValidateProductionConsensusPosture(true) != nil || PeriodCapWarning() != "" {
 		t.Fatal("raise set: still refused or warned")
+	}
+}
+
+// A pin that is not a valid peer ID refuses to boot in production: it would
+// match no requester and override the seed snapshot.
+func TestValidateProductionConsensusPosture_RefusesInvalidSequencerPin(t *testing.T) {
+	withPassingPosture(t)
+	settings.Get().Consensus.SequencerPinnedPeerID = "not-a-peer-id"
+	err := ValidateProductionConsensusPosture(true)
+	if err == nil || !strings.Contains(err.Error(), "not a valid peer ID") {
+		t.Fatalf("want an invalid-pin refusal, got %v", err)
 	}
 }

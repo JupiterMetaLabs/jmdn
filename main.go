@@ -66,6 +66,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -2106,6 +2107,23 @@ func main() {
 			// committee anchoring, may not have read it yet). elFn verifies the
 			// snapshot and records its sequencer (sequencerid.SetFromSeed).
 			MessagePassing.SetSequencerRefresh(func() { _, _ = elFn(0, false) })
+			// Without a config pin, the sequencer must come from the seed
+			// snapshot. Check once at startup that it does, so a seed that
+			// does not sign the sequencer is reported now, not at the first
+			// refused vote-result request.
+			if strings.TrimSpace(cfg.Consensus.SequencerPinnedPeerID) == "" {
+				go func() {
+					if _, err := elFn(0, false); err != nil {
+						log.Error().Err(err).Msg("sequencer identity check: could not read the seed committee snapshot; vote-result requests are refused until a sequencer is known")
+						return
+					}
+					if sequencerid.FromSeed() == "" {
+						log.Error().Msg("sequencer identity check: the seed committee snapshot carries no sequencer peer ID and consensus.sequencer_pinned_peer_id is empty; this node will refuse every vote-result request. Set the pin or upgrade the seed to sign the sequencer")
+					} else {
+						log.Info().Str("sequencer", sequencerid.FromSeed()).Msg("sequencer identity check: sequencer learned from the seed committee snapshot")
+					}
+				}()
+			}
 			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
 
 			// W1 (committee anchor): the seed's current signed snapshot, for the
