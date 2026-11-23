@@ -2092,7 +2092,7 @@ func main() {
 			// as vote eligibility. The reward source is a no-op unless
 			// consensus.reward_split_enabled is on; when it is, R5's recompute needs
 			// this map, and leaving it unset would (correctly) fail closed.
-			elFn, rewardFn := elCli.CommitteeSourcesAuto(
+			elFn, rewardFn, refreshSeedFn := elCli.CommitteeSourcesAutoWithRefresh(
 				cfg.Consensus.SeedAuthorityBLSPub,
 				cfg.Consensus.CommitteeEpochSeconds,
 				seednode.SeedAuthPinPath(),
@@ -2104,9 +2104,11 @@ func main() {
 			messaging.SetRewardAddressSource(rewardFn)
 			// The vote-result requester gate re-reads the seed snapshot when a
 			// requester does not match the known sequencer (a fresh node, or
-			// committee anchoring, may not have read it yet). elFn verifies the
-			// snapshot and records its sequencer (sequencerid.SetFromSeed).
-			MessagePassing.SetSequencerRefresh(func() { _, _ = elFn(0, false) })
+			// committee anchoring, may not have read it yet). refreshSeedFn
+			// fetches the current snapshot now, bypassing the TTL cache,
+			// verifies it as elFn does and records its sequencer
+			// (sequencerid.SetFromSeed).
+			MessagePassing.SetSequencerRefresh(refreshSeedFn)
 			// Without a config pin, the sequencer must come from the seed
 			// snapshot. Check once at startup that it does, so a seed that
 			// does not sign the sequencer is reported now, not at the first

@@ -11,7 +11,7 @@ package Vote
 //
 // What IS tested directly, without needing SubmitVote's surrounding
 // machinery: the exact sign-then-write-then-verify sequence the v2 write
-// block performs (BLS_Signer.SignMessageForBlock ->
+// block performs (BLS_Signer.SignBallotForBlock ->
 // avcvotes.AddVote -> independent BLS_Verifier check against what was
 // written). That covers exit criterion 4 for real. Criteria 2 and 3 (full
 // behavior through SubmitVote) are NOT verified here —
@@ -54,12 +54,12 @@ func TestBLSSignThenAddVote_SignatureVerifiesIndependently(t *testing.T) {
 		vote          = int8(1)
 	)
 
-	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, height, blockHash, consensusHash)
+	blsResp, signed, err := BLS_Signer.SignBallotForBlock(vote, chainID, height, blockHash, consensusHash)
 	if err != nil {
-		t.Fatalf("SignMessageForBlock: %v", err)
+		t.Fatalf("SignBallotForBlock: %v", err)
 	}
 	if !signed {
-		t.Fatal("SignMessageForBlock reported signed=false with no error")
+		t.Fatal("SignBallotForBlock reported signed=false with no error")
 	}
 	if blsResp.Signature == "" || blsResp.PubKey == "" {
 		t.Fatal("a real signature must never be written as an empty string — see the LLD's non-negotiable rules")
@@ -87,11 +87,11 @@ func TestBLSSignThenAddVote_SignatureVerifiesIndependently(t *testing.T) {
 		t.Fatalf("tally did not authorize the written vote: %+v", tally.SingleVotePeers())
 	}
 
-	// Independent re-verification: rebuild the canonical v3 message
-	// (bound to chainID/height/blockHash, matching what SignMessageForBlock
-	// actually signed) and check it against BLS_Verifier directly — VerifyForBlock,
-	// not the unbound Verify, is SignMessageForBlock's real counterpart.
-	if err := BLS_Verifier.VerifyForBlock(BLS_Signer.BLSresponse{
+	// Independent re-verification: rebuild the ballot-domain message
+	// (bound to chainID/height/blockHash, matching what SignBallotForBlock
+	// actually signed) and check it against BLS_Verifier directly —
+	// VerifyBallotForBlock is SignBallotForBlock's counterpart, as in the tally.
+	if err := BLS_Verifier.VerifyBallotForBlock(BLS_Signer.BLSresponse{
 		Signature: blsResp.Signature,
 		PubKey:    blsResp.PubKey,
 	}, chainID, height, blockHash, consensusHash, vote); err != nil {

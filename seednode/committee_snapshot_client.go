@@ -239,6 +239,20 @@ func (c *Client) CommitteeSourcesAuto(configPin string, epochSeconds int64, pinF
 	eligibility func(uint64, bool) (map[string]string, error),
 	rewardAddresses func() (map[string]string, error),
 ) {
+	eligibility, rewardAddresses, _ = c.CommitteeSourcesAutoWithRefresh(configPin, epochSeconds, pinFile, seedURL, ttl, strictBoundary)
+	return eligibility, rewardAddresses
+}
+
+// CommitteeSourcesAutoWithRefresh is CommitteeSourcesAuto plus refresh, which
+// re-reads the current snapshot from the seed now, bypassing the TTL cache,
+// so the sequencer it names (sequencerid.SetFromSeed) is current. The fetched
+// snapshot is verified exactly as eligibility does; on failure the cache is
+// left as it was. Callers rate-limit refresh.
+func (c *Client) CommitteeSourcesAutoWithRefresh(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration, strictBoundary bool) (
+	eligibility func(uint64, bool) (map[string]string, error),
+	rewardAddresses func() (map[string]string, error),
+	refresh func(),
+) {
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
@@ -251,7 +265,23 @@ func (c *Client) CommitteeSourcesAuto(configPin string, epochSeconds int64, pinF
 		ttl:            ttl,
 		strictBoundary: strictBoundary,
 	}
-	return s.eligible, s.rewardAddresses
+	return s.eligible, s.rewardAddresses, s.refreshCurrent
+}
+
+// refreshCurrent fetches and verifies the current snapshot now, ignoring the
+// TTL. On success the cache and the recorded sequencer are updated, as for a
+// normal fetch. On failure (seed unreachable, bad signature, stale epoch) the
+// previous cache and its timestamp are kept.
+func (s *committeeSource) refreshCurrent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prevAt := s.cachedAt
+	s.cachedAt = time.Time{} // skip the TTL fast path
+	if _, err := s.currentSnapshot(ctx); err != nil || s.cachedAt.IsZero() {
+		s.cachedAt = prevAt
+	}
 }
 
 // resolveAuthority resolves the authority pubkey once (config pin, else persisted
