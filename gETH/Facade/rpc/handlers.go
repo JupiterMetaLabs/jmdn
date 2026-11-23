@@ -562,17 +562,23 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, nil
 
 	case "eth_getCode":
-		if len(req.Params) < 2 {
-			resp, _ := invalidParams(req, "missing address and block tag")
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing address")
 			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
-		if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+		// The block tag is optional: some clients call eth_getCode(address) with
+		// no second param. parseBlockTag maps "" to "latest" (ported from main #132).
+		blockTag := ""
+		if len(req.Params) >= 2 {
+			blockTag = mustString(req.Params[1])
+		}
+		if ferr := refuseFinalityTag(req.Method, blockTag); ferr != nil {
 			resp, _ := invalidParams(req, ferr.Error())
 			return resp, nil
 		}
-		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		num, err := parseBlockTag(ctx, handler.service, blockTag)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			logRPCResponse(ctx, req.Method, resp)
