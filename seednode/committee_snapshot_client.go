@@ -273,14 +273,19 @@ func (c *Client) CommitteeSourcesAutoWithRefresh(configPin string, epochSeconds 
 // or unreachable seed never blocks eligible (which serves the cached snapshot
 // meanwhile); s.mu is taken only to read the authority and to install the
 // result. On success the cache and the recorded sequencer are updated, as for
-// a normal fetch. On failure (seed unreachable, bad signature, stale epoch),
-// or before the authority key is resolved, nothing changes.
+// a normal fetch. On failure (seed unreachable, bad signature, stale epoch)
+// nothing changes.
+//
+// Before the authority key is resolved there is nothing cached to serve, so
+// the refresh takes the normal eligible path, which resolves the authority
+// (config pin, persisted pin or TOFU) and records the sequencer.
 func (s *committeeSource) refreshCurrent() {
 	s.mu.Lock()
 	authority := s.authority
 	s.mu.Unlock()
 	if authority == "" {
-		return // not resolved yet: the next eligible call fetches and resolves it
+		_, _ = s.eligible(0, false)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

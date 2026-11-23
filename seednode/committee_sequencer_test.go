@@ -148,3 +148,34 @@ func TestCommitteeSource_RefreshDoesNotBlockEligible(t *testing.T) {
 		t.Fatal("a failed refresh must keep the cached snapshot")
 	}
 }
+
+// On a node that has not resolved the seed authority yet (TOFU, no pin), the
+// refresh resolves it and records the snapshot's sequencer.
+func TestCommitteeSource_RefreshResolvesAuthorityFirst(t *testing.T) {
+	const seq = "12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp"
+	priv, pubHex := makeAuthority(t, "authority-tofu-refresh")
+	ep := curEpoch()
+	entries := twoEntries()
+	sig, err := blssign.BLSSign(priv, committee.CanonicalCommitteeBytesWithSequencer(ep, "", seq, entries))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := &committee.CommitteeSnapshot{
+		Epoch: ep, Entries: entries, SequencerPeerID: seq,
+		AuthorityPubHex: pubHex, Signature: hex.EncodeToString(sig),
+	}
+	sequencerid.SetFromSeed("", ep)
+	s := &committeeSource{
+		fetch:        func(context.Context, uint64) (*committee.CommitteeSnapshot, error) { return snap, nil },
+		epochSeconds: testEpochSeconds,
+		pinFile:      filepath.Join(t.TempDir(), "seedAuth.json"),
+		ttl:          time.Minute,
+	}
+	s.refreshCurrent()
+	if s.authority == "" {
+		t.Fatal("the refresh must resolve the authority")
+	}
+	if got := sequencerid.FromSeed(); got != seq {
+		t.Fatalf("the refresh must record the sequencer, got %q", got)
+	}
+}

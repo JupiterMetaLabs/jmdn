@@ -2116,11 +2116,12 @@ func main() {
 			if strings.TrimSpace(cfg.Consensus.SequencerPinnedPeerID) == "" {
 				go func() {
 					ctx := context.Background()
+					_, err := elFn(0, false) // always read: it also records the sequencer
 					l := mainLogger()
 					if l == nil {
 						return
 					}
-					if _, err := elFn(0, false); err != nil {
+					if err != nil {
 						l.Error(ctx, "sequencer identity check: could not read the seed committee snapshot; vote-result requests are refused until a sequencer is known", err)
 						return
 					}
