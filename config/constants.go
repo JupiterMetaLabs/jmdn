@@ -45,6 +45,14 @@ const (
 // (consensus.period_cap_raise_from_height). It now applies at every height:
 // every stored block already has a period of at most 1024, so the higher cap
 // accepts the same history.
+//
+// Rollout: the cap is a validity rule every node enforces (the voter, the
+// buddy signer, the linkage gate and the synced-period binding), so the
+// release that raises it is deployed to every node together (a coordinated
+// fleet-wide upgrade). A rolling upgrade is not supported: an upgraded
+// sequencer may propose a period above 1024 (for example after period-poison
+// recovery at 1024), which a node still on the previous release refuses. See
+// docs/period-cap.md.
 const MaxPeriod uint64 = 1 << 20
 
 // MaxPeriodAt is the period cap at height. It is MaxPeriod at every height;
