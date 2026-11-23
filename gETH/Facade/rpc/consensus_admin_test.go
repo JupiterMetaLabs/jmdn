@@ -310,3 +310,19 @@ func TestPendingCommitEndpoints_UnreadableRecord(t *testing.T) {
 		t.Fatalf("a readable record must be refused: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// A drop refused at the period cap returns 409 with reason period_cap.
+func TestPendingCommitDrop_RefusedAtPeriodCap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	SetPendingCommitDropper(func(uint64, string) (*pendingcommit.Record, error) {
+		return nil, pendingcommit.ErrDropAtPeriodCap
+	}, nil)
+	t.Cleanup(func() { SetPendingCommitDropper(nil, nil) })
+	r := gin.New()
+	r.POST("/d", handleDropPendingCommit)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(`{"height":5,"block_hash":"0x5"}`)))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"reason":"period_cap"`) {
+		t.Fatalf("want 409 period_cap, got %d %s", w.Code, w.Body.String())
+	}
+}

@@ -736,3 +736,31 @@ func TestWithCancelOf(t *testing.T) {
 		t.Fatalf("want context.Canceled, got %v", c.Err())
 	}
 }
+
+// A block already at the period cap cannot be dropped: no new round could
+// start at its height. The record stays and nothing changes.
+func TestDropRefusedAtPeriodCap(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 289})
+	prevRaise, prevRelease, prevReport := raiseDroppedHeight, releaseProposalClaim, sendRejectionReport
+	t.Cleanup(func() {
+		raiseDroppedHeight, releaseProposalClaim, sendRejectionReport = prevRaise, prevRelease, prevReport
+	})
+	calls := 0
+	raiseDroppedHeight = func(uint64, uint64) uint64 { calls++; return 0 }
+	releaseProposalClaim = func(uint64) { calls++ }
+	sendRejectionReport = func(*config.ZKBlock, string, string) { calls++ }
+
+	const h = 290
+	block := certifiedTestBlock(h, config.MaxPeriodAt(h))
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(h, block.BlockHash.Hex()); !errors.Is(err, pendingcommit.ErrDropAtPeriodCap) {
+		t.Fatalf("want ErrDropAtPeriodCap, got %v", err)
+	}
+	if got, _ := pendingCommits.Current(); got == nil {
+		t.Fatal("the record must be kept")
+	}
+	if calls != 0 {
+		t.Fatalf("a refused drop must not raise, release or report, got %d calls", calls)
+	}
+}

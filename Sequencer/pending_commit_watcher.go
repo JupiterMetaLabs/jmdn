@@ -95,6 +95,11 @@ func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, 
 	case cur.Height != height || !strings.EqualFold(cur.BlockHash, strings.TrimSpace(blockHash)):
 		certifiedAttemptMu.Unlock()
 		return cur, pendingcommit.ErrRecordMismatch
+	case recordPeriod(cur) >= config.MaxPeriodAt(cur.Height):
+		// No period above the dropped one exists, so the next proposal would
+		// rebuild the dropped round and be refused: refuse the drop instead.
+		certifiedAttemptMu.Unlock()
+		return cur, pendingcommit.ErrDropAtPeriodCap
 	}
 	startNewRoundAfterDrop(cur)
 	rec, err := pendingCommits.DropMatching(height, blockHash)
@@ -115,13 +120,18 @@ func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, 
 // would rebuild the identical round (same period, same ConsensusHash), which
 // the drop marker refuses, and the height could never commit.
 func startNewRoundAfterDrop(rec *pendingcommit.Record) {
-	var droppedPeriod uint64
-	var block config.ZKBlock
-	if err := json.Unmarshal(rec.Block, &block); err == nil {
-		droppedPeriod = block.Period
-	}
-	raiseDroppedHeight(rec.Height, droppedPeriod)
+	raiseDroppedHeight(rec.Height, recordPeriod(rec))
 	releaseProposalClaim(rec.Height)
+}
+
+// recordPeriod is the period of a pending record's block (0 if it cannot be
+// decoded).
+func recordPeriod(rec *pendingcommit.Record) uint64 {
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err != nil {
+		return 0
+	}
+	return block.Period
 }
 
 // certifiedNow is the clock for halt-alert pacing; a seam for tests.

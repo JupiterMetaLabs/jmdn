@@ -102,6 +102,12 @@ func (t *Tracker) loadLocked() error {
 	return nil
 }
 
+// ErrDropAtPeriodCap is returned when a pending record cannot be dropped
+// because its block is already at the period cap: no new round could start
+// at the height, so the same transactions proposed again would rebuild the
+// dropped round.
+var ErrDropAtPeriodCap = errors.New("pendingcommit: the pending block is at the period cap; dropping it could not start a new round at its height")
+
 // ErrUnreadable is returned (wrapped) while the stored record cannot be
 // decoded. Proposals stay refused (fail closed) until an operator removes it
 // with DropUnreadable.

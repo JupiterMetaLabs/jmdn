@@ -143,6 +143,9 @@ func handleDropPendingCommit(c *gin.Context) {
 	case errors.Is(err, pendingcommit.ErrNoPending):
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending certified block"})
 		return
+	case errors.Is(err, pendingcommit.ErrDropAtPeriodCap):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "reason": "period_cap"})
+		return
 	case errors.Is(err, pendingcommit.ErrRecordMismatch):
 		resp := gin.H{"error": "height and block_hash must match the pending record"}
 		if rec != nil {
