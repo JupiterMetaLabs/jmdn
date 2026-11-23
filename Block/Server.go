@@ -25,6 +25,7 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
 	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/internal/proposalguard"
 	"gossipnode/l1finality"
 	"gossipnode/metrics"
@@ -643,6 +644,25 @@ func processZKBlock(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":  fmt.Sprintf("height %d already committed (tip %d)", block.BlockNumber, tip),
 			"reason": "height_already_committed",
+		})
+		return
+	} else if blocked, rec, perr := pendingcommit.Default.BlocksProposal(block.BlockNumber, tip); blocked {
+		// A certified block at or below this height is still being committed.
+		// Admitting a new proposal would start a new round at that height and
+		// could certify a different block. Fail closed on a store read error.
+		span.SetAttributes(attribute.String("status", "height_pending_commit"))
+		pendingHeight := block.BlockNumber
+		if rec != nil {
+			pendingHeight = rec.Height
+		}
+		logger().Warn(spanCtx, "Rejecting proposal: a certified block is still being committed",
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Uint64("pending_height", pendingHeight),
+			ion.Bool("store_error", perr != nil),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  fmt.Sprintf("certified block %d is still being committed", pendingHeight),
+			"reason": "height_pending_commit",
 		})
 		return
 	}

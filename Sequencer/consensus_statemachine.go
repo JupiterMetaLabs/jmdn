@@ -2,6 +2,7 @@ package Sequencer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -447,25 +448,44 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// diverging its state from the fleet. Withholding the block from peers on
 		// local failure keeps producer and fleet consistent — the round is simply
 		// retried at the same height.
-		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
+		//
+		// The block holds a valid certificate, so it is committed or the height
+		// halts: commitCertifiedBlock retries the SAME block with the SAME
+		// certificate at the SAME period and never advances the period. Moving
+		// to a new period here would let a different block be certified at this
+		// height while this certificate still exists. A pending record refuses
+		// new proposals at the height until the block is stored.
+		if err := commitCertifiedBlock(ctx, block, blsResults); err != nil {
+			if errors.Is(err, errCertifiedBlockAlreadyCommitted) {
+				// The background watcher committed and broadcast it already.
+				logger().Info(ctx, "Certified block was already committed by the background retry; nothing more to do",
+					ion.Uint64("block_number", block.BlockNumber),
+					ion.String("block_hash", block.BlockHash.Hex()),
+					ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+				return nil
+			}
+			if errors.Is(err, ErrCertifiedBlockDropped) {
+				// An operator dropped this round. The drop already released
+				// the height's proposal claim and moved it to a new period.
+				// Do not release again: claims carry no owner, so a late
+				// release here could free the claim of a new round admitted
+				// at this height after the drop.
+				return fmt.Errorf("certified block dropped by operator; not stored: %w", err)
+			}
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).
 				Severity(Alerts.SeverityError).
-				Description("Failed to process block locally — block withheld from peers (not broadcast)").
+				Description("Certified block could not be stored — withheld from peers, height halted (period not advanced)").
 				Msg(err.Error()).
 				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 				Label("block_hash", block.BlockHash.Hex()).
 				Send()
-			// The certified block was never committed, so the retry at this
-			// height is a new round (R3). ProcessBlockLocally has already
-			// released the height's proposal claim.
-			// The orchestrator marked these transactions included when it
-			// submitted the block; tell it they did not land, as for a
-			// rejected round.
-			reportLocalApplyFailure(block, err)
-			consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, "local apply failed")
-			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
+			// No rejection report to the orchestrator here: the block is not
+			// dropped. It stays pending and is retried (after a restart if
+			// the height halted) until it is stored, so its transactions
+			// still land at this height.
+			return fmt.Errorf("certified block not stored; withheld from peers: %w", err)
 		}
 
 		// Local apply succeeded → propagate to peers. A broadcast failure here is
@@ -621,22 +641,4 @@ func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
-}
-
-// sendRejectionReport is RejectionReport.Send; a seam for tests.
-var sendRejectionReport = RejectionReport.Send
-
-// localApplyFailureReason is the reason reported to the orchestrator when a
-// certified block could not be applied or stored on the sequencer.
-const localApplyFailureReason = "certified, but the sequencer could not apply or store it; block withheld"
-
-// reportLocalApplyFailure reports a certified block that the sequencer could
-// not apply or store. The block is withheld from peers, so its transactions
-// did not land.
-func reportLocalApplyFailure(block *config.ZKBlock, err error) {
-	detail := ""
-	if err != nil {
-		detail = err.Error()
-	}
-	sendRejectionReport(block, localApplyFailureReason, detail)
 }

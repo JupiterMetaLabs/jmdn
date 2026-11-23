@@ -1598,7 +1598,10 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 	// Process vote collection asynchronously
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
-		processCtx, processSpan := tracer.Start(trace_ctx, "Consensus.ProcessVoteCollection.process")
+		// Parent the span on this call's trace, but take cancellation from the
+		// GRO goroutine's ctx, so shutdown ends a certified block's retry wait
+		// (the pending record makes stopping safe).
+		processCtx, processSpan := tracer.Start(withCancelOf(trace_ctx, ctx), "Consensus.ProcessVoteCollection.process")
 		defer processSpan.End()
 
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
@@ -1642,20 +1645,23 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
 		verifySpan.End()
 
-		// B1 (Architecture §4.2a, §10 decision 10) — stash the certificate that
-
-		// Only on a reached consensus: a failed round produces no certificate,
-		// and recording a partial one would let a rejected block's signatures
-		// feed the fallback fold. The certificate has to be carried by the next
-		// block rather than this one because the buddies sign THIS block's hash
-		// — see messaging/entropy_aggsig.go for the full reasoning.
-		//
-		// Read-only with respect to the consensus decision: it copies already-
-		// verified responses and cannot change consensusReached. No-op unless
-		// JMDN_AVC_AGG_CERT=1.
-		if consensusReached && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
-			messaging.RecordCommitCertificate(consensus.ZKBlockData.GetZKBlock().BlockNumber, blsResults)
+		// Record the certified block before anything else runs. From here on a
+		// certificate exists for this block: if the sequencer crashed before the
+		// commit attempt with nothing on disk, it would restart, move to a higher
+		// period and certify a different block at this height. With the record
+		// saved, the block servers refuse new proposals at the height and
+		// startup resumes this block (Sequencer.ResumePendingCommit).
+		if block := consensus.ZKBlockData.GetZKBlock(); consensusReached && block != nil {
+			recordPendingUnlessDropped(processCtx, block, blsResults)
 		}
+
+		// B1 (Architecture §4.2a, §10 decision 10): the commit certificate is
+		// carried by the next block, so it is stashed only on a reached
+		// consensus (a failed round produces none) and only after this block is
+		// stored: commitCertifiedBlock calls RecordCommitCertificate on success,
+		// so a certificate for a block that never committed cannot ride on the
+		// next block. See messaging/entropy_aggsig.go. No-op unless
+		// JMDN_AVC_AGG_CERT=1.
 
 		// (Reputation) Classify each committee member's behavior this round and
 		// log the score deltas. This is a future-SELECTION signal: it never
@@ -2052,6 +2058,12 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	return result
 }
 
+// voteResultReadTimeout bounds the wait for one committee member's vote result.
+// A result that arrives later is dropped: the read gives up, the request
+// returns nil, and the round is decided on the results already in hand.
+// Replaced in tests.
+var voteResultReadTimeout = 45 * time.Second
+
 // readVoteResultResponse reads vote result response from stream with timeout
 func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID peer.ID) string {
 	logger_ctx := context.Background()
@@ -2079,7 +2091,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 		// Bounded size, and a read deadline matching the wait below so this
 		// goroutine ends when the wait does instead of blocking on a silent peer.
-		raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, 45*time.Second)
+		raw, err := streamread.Frame(stream, config.Delimiter, streamread.DefaultMaxBytes, voteResultReadTimeout)
 		response := string(raw)
 		if err != nil {
 			errCh <- err
@@ -2117,7 +2129,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.readVoteResultResponse"))
 		return ""
-	case <-time.After(45 * time.Second):
+	case <-time.After(voteResultReadTimeout):
 		err := fmt.Errorf("timeout waiting for response")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "timeout"))
@@ -2125,7 +2137,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 		span.SetAttributes(attribute.Float64("duration", duration))
 		logger().Warn(trace_ctx, "Timeout waiting for response from peer",
 			ion.String("peer_id", peerID.String()),
-			ion.Float64("timeout_seconds", 45.0),
+			ion.Float64("timeout_seconds", voteResultReadTimeout.Seconds()),
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.readVoteResultResponse"))
 		return ""

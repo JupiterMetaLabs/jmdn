@@ -77,6 +77,7 @@ const (
 
 	// SequencerTriggerThread   = "thread:sequencer:trigger"
 	SequencerConsensusThread              = "thread:sequencer:consensus"
+	SequencerResumeCommitThread           = "thread:sequencer:resume:commit"
 	SequencerVoteCollectionThread         = "thread:sequencer:vote:collection"
 	SequencerRequestEventDrivenFlowThread = "thread:sequencer:request:event:driven:flow"
 	// SeedThread               = "thread:seed:maintenance"
