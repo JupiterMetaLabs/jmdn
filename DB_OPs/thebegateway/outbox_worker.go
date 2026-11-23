@@ -189,6 +189,11 @@ func (w *OutboxWorker) dispatch(ctx context.Context, entry OutboxEntry) error {
 		if err := json.Unmarshal(entry.Payload, &r); err != nil {
 			return fmt.Errorf("dispatch account: unmarshal: %w", err)
 		}
+		if r.Deleted {
+			// DeleteAccount never enqueues; a delete here is not one of ours.
+			// Replaying it late could remove a newer account, so drop it.
+			return nil
+		}
 		return w.gateway.WriteAccount(ctx, &r)
 
 	case NamespaceBlock:

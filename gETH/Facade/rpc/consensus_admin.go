@@ -11,6 +11,7 @@ import (
 
 	"gossipnode/config/settings"
 	"gossipnode/internal/roundlock"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/pkg/gatekeeper"
 )
 
@@ -27,12 +28,50 @@ import (
 // certificate anywhere, including one a sequencer may be withholding. Every
 // cleared round is logged with its block identity. With no config loaded
 // nothing is authorized.
+//
+//	GET  /consensus/apply-halt
+//	POST /consensus/apply-halt/clear
+//
+// report and lift this node's block-apply halt (BlockProcessing.ErrApplyHalted):
+// set when the node holds a block it could not roll back, recorded so a
+// restart does not lift it. Clear it only once the node's state is again the
+// canonical chain's, after a resync (docs/block-apply-halt.md).
 func RegisterConsensusAdminRoutes(router gin.IRouter) {
 	var secCfg *settings.SecurityConfig
 	if settings.IsLoaded() {
 		secCfg = &settings.Get().Security
 	}
 	router.POST("/consensus/round-ledger/clear", gatekeeper.AdminHTTPMiddleware(secCfg), handleClearRoundLedger)
+	router.GET("/consensus/apply-halt", gatekeeper.AdminHTTPMiddleware(secCfg), handleApplyHaltStatus)
+	router.POST("/consensus/apply-halt/clear", gatekeeper.AdminHTTPMiddleware(secCfg), handleClearApplyHalt)
+}
+
+// handleApplyHaltStatus reports the halt. recorded=false while halted means
+// the halt is not yet in the node's store, so a restart now would lift it.
+func handleApplyHaltStatus(c *gin.Context) {
+	reason, recorded, err := BlockProcessing.ApplyHaltStatus()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"halted": reason != "", "reason": reason, "recorded": recorded})
+}
+
+func handleClearApplyHalt(c *gin.Context) {
+	reason, err := BlockProcessing.ClearApplyHalt()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if reason == "" {
+		c.JSON(http.StatusOK, gin.H{"cleared": false, "previous_reason": ""})
+		return
+	}
+	if l := logger(); l != nil {
+		l.Warn(c.Request.Context(), "Operator cleared the block-apply halt",
+			ion.String("previous_reason", reason))
+	}
+	c.JSON(http.StatusOK, gin.H{"cleared": true, "previous_reason": reason})
 }
 
 type clearRoundLedgerRequest struct {

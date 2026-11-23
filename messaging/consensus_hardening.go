@@ -1126,7 +1126,10 @@ func (DBEquivocationStore) RecordFirstSeen(height uint64, hashHex string) error 
 // authenticated local tip and the stored parent through these so the pure
 // linkage policy can be exercised in tests without a live DB.
 var (
-	readLocalTip      = func(ctx context.Context) (uint64, error) { return DB_OPs.GetLatestBlockNumber(ctx, nil) }
+	// The data-complete tip, not MAX(block_number): a store that failed after
+	// writing the block row leaves a row whose block was rolled back (D-858
+	// review B1). That block must be accepted again, not refused as stale.
+	readLocalTip      = func(context.Context) (uint64, error) { return DB_OPs.GetLatestDataCompleteBlock() }
 	readBlockByNumber = func(n uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, n) }
 )
 

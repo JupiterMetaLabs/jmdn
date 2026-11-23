@@ -57,6 +57,9 @@ type BlockStore interface {
 // AccountStore covers account lifecycle and nonce management.
 type AccountStore interface {
 	CreateAccount(ctx context.Context, account *Account) error
+	// DeleteAccount removes the account (rollback of a failed block that
+	// created it). Absent is not an error.
+	DeleteAccount(ctx context.Context, address string) error
 	UpdateAccountBalance(ctx context.Context, address, balance string) error
 	GetAccount(ctx context.Context, address string) (*Account, error)
 	GetAccountByDID(ctx context.Context, did string) (*Account, error)

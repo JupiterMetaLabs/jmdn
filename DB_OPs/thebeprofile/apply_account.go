@@ -55,10 +55,21 @@ ON CONFLICT (address) DO UPDATE SET
 -- fn_accounts_set_updated_at safety-net trigger in schema.go).
 WHERE accounts.updated_at <= EXCLUDED.updated_at`
 
+// sqlDeleteAccount removes an account row: the rollback of a failed block
+// that created it (thebegateway.DeleteAccount). The address is written by the
+// same Hex() form as every upsert, so it matches the primary key exactly.
+const sqlDeleteAccount = `DELETE FROM accounts WHERE address = $1`
+
 func applyAccount(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
 	var r thebegateway.AccountRecord
 	if err := json.Unmarshal(record.Value, &r); err != nil {
 		return fmt.Errorf("applyAccount: unmarshal: %w", err)
+	}
+	if r.Deleted {
+		if _, err := tx.Exec(sqlDeleteAccount, r.Address); err != nil {
+			return fmt.Errorf("applyAccount: delete: %w", err)
+		}
+		return nil
 	}
 	metaJSON, err := json.Marshal(r.Metadata)
 	if err != nil {

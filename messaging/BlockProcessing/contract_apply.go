@@ -317,11 +317,6 @@ func applyContractTx(
 	//     ExecuteTx, so any later failure orphaned a rejected block's contract
 	//     state). A commit I/O failure is non-deterministic → fail the block; no
 	//     account state has been committed yet, so nothing is left inconsistent.
-	if res.Success && res.CommitState != nil {
-		if _, cErr := res.CommitState(); cErr != nil {
-			return fail("contract tx %s: commit contract state: %w", tx.Hash.Hex(), cErr)
-		}
-	}
 	// D-858 review B2 + B2-a: flag the block whenever a contract tx SUCCEEDED, not
 	// only when CommitState ran. A successful tx credits res.BalanceChanges (arbitrary
 	// third parties) and, on deploy, res.ContractAddress (above) — both gated on
@@ -331,8 +326,16 @@ func applyContractTx(
 	// closes the "Success with nil CommitState" hole that would otherwise let the
 	// original B2 defect return silently. A reverted tx (res.Success == false) moves no
 	// value and pays gas only — fully covered by affectedAccountsForBlock — so no flag.
+	//
+	// The flag is set BEFORE CommitState: the storage commit writes key by key, so
+	// one that fails part-way has already changed storage that no rollback undoes.
 	if res.Success {
 		markContractStateCommitted(blockHash)
+	}
+	if res.Success && res.CommitState != nil {
+		if _, cErr := res.CommitState(); cErr != nil {
+			return fail("contract tx %s: commit contract state: %w", tx.Hash.Hex(), cErr)
+		}
 	}
 
 	// 8. Commit: accounts + tx_processed marker via the atomic primitive.

@@ -187,9 +187,10 @@ security:
   #   JMDN_SECURITY_JWT_SECRET=<value>
   explorer_api_key: ""     # REQUIRED — token for Explorer API access (see explorer_api below)
   jwt_secret: ""           # REQUIRED — JWT signing secret
-  # Bearer token for admin-only operations: POST /sync/reconcile, and
-  # solc_compile / debug_traceTransaction when enabled under features.
-  # Empty = those operations are refused.
+  # Bearer token for admin-only operations: POST /sync/reconcile, the
+  # /consensus/* recovery endpoints (round-ledger clear, block-apply halt
+  # status and clear), and solc_compile / debug_traceTransaction when enabled
+  # under features. Empty = those operations are refused.
   admin_token: ""
 
   # ── Rate Limiting ────────────────────────────────────────────────────────
@@ -231,3 +232,17 @@ security:
     # Mempool — TLS-only, no auth required.
     mempool_service:
       tls: false
+
+# ── 10. Consensus ────────────────────────────────────────────────────────────
+# This node applies every block, so it must carry the same fleet-agreed
+# consensus heights as the validators. Keys not listed keep their defaults.
+consensus:
+  # From this height on, a contract transaction whose execution creates an
+  # account that carries no block-stamped identity is applied as a status-0
+  # revert (gas charged, no other effect) instead of failing its whole block.
+  # While 0, such a block fails after its earlier transactions have committed,
+  # and the node stops applying blocks until it is resynced
+  # (docs/block-apply-halt.md). Fleet-agreed: the same value on every node that
+  # applies blocks (sequencer, validators, RPC and exchange nodes), a height
+  # not yet reached, set in one coordinated restart. 0 = off.
+  evm_unstamped_account_revert_height: 0

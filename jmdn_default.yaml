@@ -236,6 +236,15 @@ consensus:
   # exempt. Submission and estimation only; block validation does not check
   # it. Set the same value on every RPC node. 0 = off.
   new_recipient_gas_from_height: 0
+  # From this height on, a contract transaction whose execution creates an
+  # account that carries no block-stamped identity is applied as a status-0
+  # revert (gas charged, no other effect) instead of failing its whole block.
+  # While 0, such a block fails after its earlier transactions have committed,
+  # and the node stops applying blocks until it is resynced
+  # (docs/block-apply-halt.md). Fleet-agreed: the same value on every node that
+  # applies blocks (sequencer, validators, RPC and exchange nodes), a height
+  # not yet reached, set in one coordinated restart. 0 = off.
+  evm_unstamped_account_revert_height: 0
   # Migration only: follow the mainnet sequencer that still runs the main
   # branch. Legacy blocks (<= until_height; all while 0) are accepted only from
   # main_sequencer (full multiaddr with /p2p/<id>); missed blocks are fetched
@@ -303,9 +312,10 @@ security:
   # Legacy Secrets (Moved here for unification)
   explorer_api_key: ""
   jwt_secret: ""
-  # Bearer token for admin-only operations: POST /sync/reconcile, and
-  # solc_compile / debug_traceTransaction when enabled under features.
-  # Empty = those operations are refused.
+  # Bearer token for admin-only operations: POST /sync/reconcile, the
+  # /consensus/* recovery endpoints (round-ledger clear, block-apply halt
+  # status and clear), and solc_compile / debug_traceTransaction when enabled
+  # under features. Empty = those operations are refused.
   admin_token: ""
 
   # Service Policies (Granular Control)
