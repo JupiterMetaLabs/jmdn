@@ -584,13 +584,7 @@ type ConsensusSettings struct {
 	// leave every honest retry at the height refused. Local voting rule, not a
 	// fleet-agreed parameter. 0 for VotePeriodMinRoundSeconds turns the bound off.
 	VotePeriodMinRoundSeconds uint64 `mapstructure:"vote_period_min_round_seconds" yaml:"vote_period_min_round_seconds"`
-	// PeriodCapRaiseFromHeight: from this block height on, a block's Period
-	// may go up to config.MaxPeriod (2^20) instead of config.LegacyMaxPeriod
-	// (1024), so the cap is never a dead end after a high period is recorded
-	// at a height. A FLEET-AGREED parameter: every node must carry the same
-	// value, set to a height the chain has not reached yet. 0 = off.
-	PeriodCapRaiseFromHeight uint64 `mapstructure:"period_cap_raise_from_height" yaml:"period_cap_raise_from_height"`
-	VotePeriodSlack          uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
+	VotePeriodSlack           uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
 	// NewRecipientGasFromHeight: from this block height on, this node's RPC
 	// rejects a plain transfer to a new recipient (no account, or one that has
 	// never held value or sent a transaction, e.g. DID-registered only) whose

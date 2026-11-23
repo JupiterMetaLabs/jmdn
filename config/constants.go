@@ -3,7 +3,6 @@ package config
 import (
 	"math/big"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -29,39 +28,37 @@ const (
 	ConsensusTimeout = 90 * time.Second
 )
 
-// LegacyMaxPeriod and MaxPeriod are the highest Period a block may carry,
-// before and from consensus.period_cap_raise_from_height (MaxPeriodAt). The
-// proposer chooses a height's Period (one more after each failed round, or
-// above the highest period buddies report) and every other node takes it from
-// the block. Enforced by the proposer (ProposerPeriods), the voter and buddy
-// signer, the live receive path (linkageDecision) and ThebeSync
-// (CheckSyncedPeriodBinding).
+// MaxPeriod is the highest Period a block may carry. The proposer chooses a
+// height's Period (one more after each failed round, or above the highest
+// period buddies report) and every other node takes it from the block.
+// Enforced by the proposer (ProposerPeriods), the voter and buddy signer, the
+// live receive path (linkageDecision) and ThebeSync (CheckSyncedPeriodBinding).
 //
-// MaxPeriod is set far above any period an honest height reaches so that it is
-// never a dead end: the ledgers refuse any period below the highest one
-// recorded at a height, and a proposer stuck at the cap could never get above
-// a period recorded there. What bounds how high a proposal's period can be in
-// practice is the time bound (roundlock.Pace, consensus.vote_period_*): at
-// the default one period per second, reaching it takes about 12 days at one
-// height. The raise is a fleet-wide rule change, hence the activation height.
-const (
-	LegacyMaxPeriod uint64 = 1024
-	MaxPeriod       uint64 = 1 << 20
-)
+// It is set far above any period an honest height reaches so that it is never
+// a dead end: the ledgers refuse any period below the highest one recorded at
+// a height, and a proposer stuck at the cap could never get above a period
+// recorded there. What bounds how high a proposal's period can be in practice
+// is the time bound (roundlock.Pace, consensus.vote_period_*): at the default
+// one period per second, reaching it takes about 12 days at one height.
+//
+// The cap used to be 1024 until a fleet-agreed activation height
+// (consensus.period_cap_raise_from_height). It now applies at every height:
+// every stored block already has a period of at most 1024, so the higher cap
+// accepts the same history.
+//
+// Rollout: the cap is a validity rule every node enforces (the voter, the
+// buddy signer, the linkage gate and the synced-period binding), so the
+// release that raises it is deployed to every node together (a coordinated
+// fleet-wide upgrade). A rolling upgrade is not supported: an upgraded
+// sequencer may propose a period above 1024 (for example after period-poison
+// recovery at 1024), which a node still on the previous release refuses. See
+// docs/period-cap.md.
+const MaxPeriod uint64 = 1 << 20
 
-var periodCapRaiseFrom atomic.Uint64
-
-// SetPeriodCapRaiseFrom sets consensus.period_cap_raise_from_height; 0 keeps
-// LegacyMaxPeriod at every height. Called once by main after settings load.
-func SetPeriodCapRaiseFrom(height uint64) { periodCapRaiseFrom.Store(height) }
-
-// MaxPeriodAt is the period cap at height: MaxPeriod from
-// consensus.period_cap_raise_from_height on, LegacyMaxPeriod before it.
-func MaxPeriodAt(height uint64) uint64 {
-	if from := periodCapRaiseFrom.Load(); from > 0 && height >= from {
-		return MaxPeriod
-	}
-	return LegacyMaxPeriod
+// MaxPeriodAt is the period cap at height. It is MaxPeriod at every height;
+// the height parameter keeps callers unchanged.
+func MaxPeriodAt(uint64) uint64 {
+	return MaxPeriod
 }
 
 // MaxBlockMessageBytes is the single source of truth for the maximum size of a

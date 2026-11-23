@@ -7,6 +7,31 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The period cap is 2^20 at every height.** A height whose highest recorded
+  period reached the old cap of 1024 could not commit without an operator
+  clearing the round ledgers on a quorum of nodes. The
+  `consensus.period_cap_raise_from_height` setting is removed; a config that
+  still sets it loads unchanged and the key is ignored. Every stored block has
+  a period of at most 1024, so the existing chain still verifies
+  (`docs/period-cap.md`).
+
+### Added
+
+- **"Consensus: Height Stuck" alert.** A warning when one height reaches
+  period 20 and an error at period 100, once per level per height, so a
+  height that keeps failing rounds is reported long before the cap.
+
+### Upgrade notes
+
+- **Upgrade every node together (stop all nodes, upgrade, start them). A
+  rolling upgrade is not supported.** The period cap is a validity rule every
+  node enforces. An upgraded sequencer may propose a block with a period
+  above 1024 (for example after period-poison recovery), which a node still
+  on the previous release refuses, so a mixed network can stall the height or
+  disagree about it.
+
 ## [2.0.2] - 2026-11-23
 
 Consensus liveness and serving fixes. A single offline committee member no
