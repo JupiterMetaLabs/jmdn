@@ -26,9 +26,12 @@ import (
 // different block at the same height while the first certificate still
 // existed. Now the sequencer records the block and its certificate, retries
 // the same block with the same certificate at the same period, and halts the
-// height (alert, record kept) when the failure keeps repeating. The fix for a
-// halted height is to repair the cause and apply the same block, never to skip
-// it.
+// height (alert, record kept) when the failure keeps repeating. A halted
+// height keeps being retried in the background (RunPendingCommitWatcher), so a
+// store outage that heals commits the block without a restart. A state that
+// cannot heal on its own (a different or partly applied block stored, or block
+// apply halted on this node) needs an operator; the operator may, as a last
+// resort, drop the record (consensus admin pending-commit drop).
 
 // ErrCertifiedBlockHalted reports that a certified block could not be stored
 // and the height is halted until an operator repairs the cause. The pending
@@ -245,6 +248,16 @@ func recordPendingCertified(ctx context.Context, block *config.ZKBlock, bls []BL
 // ErrCertifiedBlockHalted when the height must halt. It never advances the
 // period.
 func commitCertifiedBlock(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) error {
+	// One commit attempt at a time: the live path and the background watcher
+	// must not apply the same block concurrently.
+	certifiedCommitMu.Lock()
+	defer certifiedCommitMu.Unlock()
+	return commitCertifiedBlockLocked(ctx, block, bls)
+}
+
+// commitCertifiedBlockLocked is commitCertifiedBlock; the caller holds
+// certifiedCommitMu.
+func commitCertifiedBlockLocked(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.BLSresponse) error {
 	// Normally already saved by ProcessVoteCollection when quorum was
 	// verified; saving the same block again just rewrites the record.
 	_ = recordPendingCertified(ctx, block, bls)
@@ -324,22 +337,24 @@ func commitCertifiedBlock(ctx context.Context, block *config.ZKBlock, bls []BLS_
 }
 
 func haltCertifiedHeight(ctx context.Context, block *config.ZKBlock, attempts int, cause error) error {
-	logger().Error(ctx, "Certified block could not be committed; height halted until the cause is repaired", cause,
+	logger().Error(ctx, "Certified block could not be committed; height halted, retried in the background until the cause is repaired", cause,
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Uint64("period", block.Period),
 		ion.Int("attempts", attempts),
 		ion.String("function", "haltCertifiedHeight"))
-	Alerts.NewAlertBuilder(ctx).
-		AlertName("Consensus: Certified Block Halted").
-		Status(Alerts.AlertStatusError).
-		Severity(Alerts.SeverityError).
-		Description(fmt.Sprintf("Block %d has a valid certificate but could not be stored; the height is halted. Repair the cause and restart: the same block is retried, never skipped.", block.BlockNumber)).
-		Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
-		Label("block_hash", block.BlockHash.Hex()).
-		Label("attempts", fmt.Sprintf("%d", attempts)).
-		Label("cause", cause.Error()).
-		Send()
+	if haltAlerts.due(block.BlockNumber, certifiedNow()) {
+		Alerts.NewAlertBuilder(ctx).
+			AlertName("Consensus: Certified Block Halted").
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(fmt.Sprintf("Block %d has a valid certificate but could not be stored; the height is halted and the same block is retried in the background, never skipped. Repair the cause (see the cause label). If the block can never be stored, see the runbook for dropping the pending record.", block.BlockNumber)).
+			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+			Label("block_hash", block.BlockHash.Hex()).
+			Label("attempts", fmt.Sprintf("%d", attempts)).
+			Label("cause", cause.Error()).
+			Send()
+	}
 	return fmt.Errorf("%w: block %d after %d attempt(s): %v", ErrCertifiedBlockHalted, block.BlockNumber, attempts, cause)
 }
 
@@ -347,49 +362,18 @@ func broadcastCommittedBlock(h host.Host, block *config.ZKBlock, bls []BLS_Signe
 	return messaging.BroadcastBlockToEveryNodeWithExtraData(h, block, true, map[string]string{"status": "accepted"}, bls)
 }
 
-// ResumePendingCommit finishes a certified block recorded before the last
-// shutdown. Call once on the sequencer at startup, after the database is
-// ready. It returns nil when nothing is pending or the block is committed; an
-// error leaves the record in place, so new proposals at the height stay
-// refused.
+// ResumePendingCommit commits the pending certified block, if any: one left
+// by the last run, or one whose height halted. RunPendingCommitWatcher calls
+// it at startup and then periodically. It returns nil when nothing is pending
+// or the block is committed; an error leaves the record in place, so new
+// proposals at the height stay refused.
 func ResumePendingCommit(ctx context.Context, h host.Host) error {
-	rec, err := pendingCommits.Current()
-	if err != nil {
-		return fmt.Errorf("resume pending commit: %w", err)
-	}
-	if rec == nil {
-		return nil
-	}
-	var block config.ZKBlock
-	if err := json.Unmarshal(rec.Block, &block); err != nil {
-		return fmt.Errorf("resume pending commit: decode block %d: %w", rec.Height, err)
-	}
-	var bls []BLS_Signer.BLSresponse
-	if err := json.Unmarshal(rec.Results, &bls); err != nil {
-		return fmt.Errorf("resume pending commit: decode certificate for block %d: %w", rec.Height, err)
-	}
-	if block.BlockNumber != rec.Height || block.BlockHash.Hex() != rec.BlockHash {
-		return fmt.Errorf("resume pending commit: record for height %d (%s) holds block %d (%s)",
-			rec.Height, rec.BlockHash, block.BlockNumber, block.BlockHash.Hex())
-	}
-
-	// Committed before the record was cleared: just clear it.
-	if tip, terr := committedTip(); terr == nil && tip >= rec.Height {
-		if state, serr := storedBlockStateAt(&block); serr == nil && state == storedSameApplied {
-			return pendingCommits.Clear(rec.Height)
-		}
-	}
-
-	logger().Info(ctx, "Resuming a certified block that was not stored before shutdown",
-		ion.Uint64("block_number", block.BlockNumber),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Uint64("period", block.Period),
-		ion.String("function", "ResumePendingCommit"))
-	if err := commitCertifiedBlock(ctx, &block, bls); err != nil {
+	block, bls, err := resumeUnderLock(ctx)
+	if err != nil || block == nil {
 		return err
 	}
 	if h != nil {
-		if err := broadcastCommitted(h, &block, bls); err != nil {
+		if err := broadcastCommitted(h, block, bls); err != nil {
 			logger().Warn(ctx, "Resumed block committed but broadcast failed; peers will reconcile via catch-up",
 				ion.String("error", err.Error()),
 				ion.Uint64("block_number", block.BlockNumber),
@@ -397,4 +381,50 @@ func ResumePendingCommit(ctx context.Context, h host.Host) error {
 		}
 	}
 	return nil
+}
+
+// resumeUnderLock reads the pending record and commits it while holding
+// certifiedCommitMu, so a record the live path has just committed and cleared
+// is not committed (or broadcast) again. It returns the block to broadcast,
+// or nil when there was nothing to commit.
+func resumeUnderLock(ctx context.Context) (*config.ZKBlock, []BLS_Signer.BLSresponse, error) {
+	certifiedCommitMu.Lock()
+	defer certifiedCommitMu.Unlock()
+
+	rec, err := pendingCommits.Current()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resume pending commit: %w", err)
+	}
+	if rec == nil {
+		return nil, nil, nil
+	}
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err != nil {
+		return nil, nil, fmt.Errorf("resume pending commit: decode block %d: %w", rec.Height, err)
+	}
+	var bls []BLS_Signer.BLSresponse
+	if err := json.Unmarshal(rec.Results, &bls); err != nil {
+		return nil, nil, fmt.Errorf("resume pending commit: decode certificate for block %d: %w", rec.Height, err)
+	}
+	if block.BlockNumber != rec.Height || block.BlockHash.Hex() != rec.BlockHash {
+		return nil, nil, fmt.Errorf("resume pending commit: record for height %d (%s) holds block %d (%s)",
+			rec.Height, rec.BlockHash, block.BlockNumber, block.BlockHash.Hex())
+	}
+
+	// Committed before the record was cleared: just clear it.
+	if tip, terr := committedTip(); terr == nil && tip >= rec.Height {
+		if state, serr := storedBlockStateAt(&block); serr == nil && state == storedSameApplied {
+			return nil, nil, pendingCommits.Clear(rec.Height)
+		}
+	}
+
+	logger().Info(ctx, "Resuming a certified block that is not stored yet",
+		ion.Uint64("block_number", block.BlockNumber),
+		ion.String("block_hash", block.BlockHash.Hex()),
+		ion.Uint64("period", block.Period),
+		ion.String("function", "ResumePendingCommit"))
+	if err := commitCertifiedBlockLocked(ctx, &block, bls); err != nil {
+		return nil, nil, err
+	}
+	return &block, bls, nil
 }

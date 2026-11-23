@@ -37,6 +37,19 @@ import (
 // set when the node holds a block it could not roll back, recorded so a
 // restart does not lift it. Clear it only once the node's state is again the
 // canonical chain's, after a resync (docs/block-apply-halt.md).
+//
+//	GET  /consensus/pending-commit
+//	POST /consensus/pending-commit/drop {"height": N, "block_hash": "0x..."}
+//
+// report and, as a last resort, drop the sequencer's pending certified-block
+// record. While it exists the block servers refuse proposals at that height
+// and above, and the block is retried in the background. Drop it only when
+// that block can never be stored here (for example a different or partly
+// applied block is stored, or this node's block apply is halted and no peer
+// holds the block) AND the fleet has agreed how the height continues: once
+// the record is gone a different block can be certified at the height while
+// this block's certificate still exists. Height and block hash must both
+// match the record. The drop is logged with the full record identity.
 func RegisterConsensusAdminRoutes(router gin.IRouter) {
 	var secCfg *settings.SecurityConfig
 	if settings.IsLoaded() {
@@ -45,6 +58,70 @@ func RegisterConsensusAdminRoutes(router gin.IRouter) {
 	router.POST("/consensus/round-ledger/clear", gatekeeper.AdminHTTPMiddleware(secCfg), handleClearRoundLedger)
 	router.GET("/consensus/apply-halt", gatekeeper.AdminHTTPMiddleware(secCfg), handleApplyHaltStatus)
 	router.POST("/consensus/apply-halt/clear", gatekeeper.AdminHTTPMiddleware(secCfg), handleClearApplyHalt)
+	router.GET("/consensus/pending-commit", gatekeeper.AdminHTTPMiddleware(secCfg), handlePendingCommitStatus)
+	router.POST("/consensus/pending-commit/drop", gatekeeper.AdminHTTPMiddleware(secCfg), handleDropPendingCommit)
+}
+
+// handlePendingCommitStatus reports the pending certified-block record.
+func handlePendingCommitStatus(c *gin.Context) {
+	rec, err := pendingcommit.Default.Current()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if rec == nil {
+		c.JSON(http.StatusOK, gin.H{"pending": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"pending":    true,
+		"height":     rec.Height,
+		"block_hash": rec.BlockHash,
+		"created_at": rec.CreatedAt,
+	})
+}
+
+type dropPendingCommitRequest struct {
+	Height    *uint64 `json:"height"`
+	BlockHash string  `json:"block_hash"`
+}
+
+// handleDropPendingCommit removes the pending record when height and block
+// hash both match it. See RegisterConsensusAdminRoutes for when this is safe.
+func handleDropPendingCommit(c *gin.Context) {
+	var req dropPendingCommitRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Height == nil || strings.TrimSpace(req.BlockHash) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": `body must be {"height": <block number>, "block_hash": "<hash of the pending block>"}`})
+		return
+	}
+	rec, err := pendingcommit.Default.Current()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if rec == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending certified block"})
+		return
+	}
+	if rec.Height != *req.Height || !strings.EqualFold(rec.BlockHash, strings.TrimSpace(req.BlockHash)) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":              "height and block_hash must match the pending record",
+			"pending_height":     rec.Height,
+			"pending_block_hash": rec.BlockHash,
+		})
+		return
+	}
+	if err := pendingcommit.Default.Clear(rec.Height); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if l := logger(); l != nil {
+		l.Warn(c.Request.Context(), "Operator dropped the pending certified-block record; a different block may now be certified at this height",
+			ion.Uint64("height", rec.Height),
+			ion.String("block_hash", rec.BlockHash),
+			ion.Int64("created_at", rec.CreatedAt))
+	}
+	c.JSON(http.StatusOK, gin.H{"dropped": true, "height": rec.Height, "block_hash": rec.BlockHash})
 }
 
 // handleApplyHaltStatus reports the halt. recorded=false while halted means

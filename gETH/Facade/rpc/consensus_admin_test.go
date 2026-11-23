@@ -8,6 +8,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/store"
+	"gossipnode/internal/pendingcommit"
 	"gossipnode/internal/roundlock"
 	"gossipnode/messaging/BlockProcessing"
 
@@ -140,5 +141,77 @@ func TestApplyHaltEndpoints_StatusAndClear(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
 	if !strings.Contains(w.Body.String(), `"halted":false`) {
 		t.Fatalf("after clear: %s", w.Body.String())
+	}
+}
+
+// Both pending-commit endpoints are admin-only and fail closed without config.
+func TestPendingCommitEndpoints_FailClosedWithoutConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterConsensusAdminRoutes(r)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/consensus/pending-commit", nil),
+		httptest.NewRequest(http.MethodPost, "/consensus/pending-commit/drop", strings.NewReader(`{"height":9,"block_hash":"0x9"}`)),
+	} {
+		req.Header.Set("Authorization", "Bearer anything")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s: status %d", req.Method, req.URL.Path, w.Code)
+		}
+	}
+}
+
+// Status reports the record; drop removes it only when height and block hash
+// both match, after which proposals at the height are no longer refused.
+func TestPendingCommitEndpoints_StatusAndDrop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := pendingcommit.Default
+	pendingcommit.Default = pendingcommit.New()
+	t.Cleanup(func() { pendingcommit.Default = prev })
+	const hash = "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	if err := pendingcommit.Default.Save(pendingcommit.Record{Height: 90, BlockHash: hash, Block: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := gin.New()
+	r.GET("/s", handlePendingCommitStatus)
+	r.POST("/d", handleDropPendingCommit)
+	post := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/d", strings.NewReader(body)))
+		return w
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/s", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"pending":true`) || !strings.Contains(w.Body.String(), hash) {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+
+	if w := post(`{"height":90}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing block_hash: status %d", w.Code)
+	}
+	if w := post(`{"height":91,"block_hash":"` + hash + `"}`); w.Code != http.StatusConflict {
+		t.Fatalf("wrong height: status %d", w.Code)
+	}
+	if w := post(`{"height":90,"block_hash":"0xbb"}`); w.Code != http.StatusConflict {
+		t.Fatalf("wrong hash: status %d", w.Code)
+	}
+	if blocked, _, _ := pendingcommit.Default.BlocksProposal(90, 89); !blocked {
+		t.Fatal("a refused drop must keep the record")
+	}
+
+	if w := post(`{"height":90,"block_hash":"` + strings.ToUpper(hash[2:]) + `"}`); w.Code != http.StatusConflict {
+		t.Fatalf("hash without 0x prefix: status %d", w.Code)
+	}
+	if w := post(`{"height":90,"block_hash":"` + hash + `"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"dropped":true`) {
+		t.Fatalf("drop: %d %s", w.Code, w.Body.String())
+	}
+	if blocked, _, _ := pendingcommit.Default.BlocksProposal(90, 89); blocked {
+		t.Fatal("proposals at the height must be accepted after the drop")
+	}
+	if w := post(`{"height":90,"block_hash":"` + hash + `"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("second drop: status %d", w.Code)
 	}
 }
