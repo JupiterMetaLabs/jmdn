@@ -356,8 +356,9 @@ func (vt *VoteTrigger) SubmitVote() error {
 	//
 	// Signed in the ballot domain (zkballot:v1), not the vote-result format a
 	// certificate is built from, so ballots collected from gossip cannot be
-	// assembled into a certificate. The tally accepts both formats
-	// (BLS_Verifier.VerifyBallotForBlock). Nodes on the previous release
+	// assembled into a certificate, and a vote result cannot pass as a
+	// ballot. The tally accepts only this domain
+	// (BLS_Verifier.VerifyBallotForBlock), and nodes on the previous release
 	// accept only the old format, so this release is deployed to every node
 	// together; a rolling upgrade is not supported.
 	blsResp, signed, blsErr := BLS_Signer.SignBallotForBlock(

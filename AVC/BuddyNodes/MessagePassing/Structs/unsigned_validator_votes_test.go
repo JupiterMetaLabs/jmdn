@@ -87,7 +87,7 @@ func TestVerifyTallySignatures_ForgeryStillDetectedAlongsideValidSignedVote(t *t
 	buddyRec := stage5SignedRecord(t, buddy, 1, stage5Height, stage5BlockHash)
 
 	// Forged: real key material, but the signature covers a different message.
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
+	otherSigner, _, err := BLS_Signer.SignBallotForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}

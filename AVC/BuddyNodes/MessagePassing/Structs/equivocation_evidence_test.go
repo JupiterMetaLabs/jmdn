@@ -15,7 +15,7 @@ import (
 func signedRecord(t *testing.T, peerID string, vote int8, height uint64, hash, consensusHash string) avcvotes.VoteRecord {
 	t.Helper()
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
-	resp, ok, err := BLS_Signer.SignMessageForBlock(vote, BLS_Signer.DomainChainID(), height, hash, consensusHash)
+	resp, ok, err := BLS_Signer.SignBallotForBlock(vote, BLS_Signer.DomainChainID(), height, hash, consensusHash)
 	if err != nil || !ok {
 		t.Fatalf("sign: ok=%v err=%v", ok, err)
 	}
@@ -52,6 +52,29 @@ func TestSignedEquivocation(t *testing.T) {
 		auth := map[string]string{victim.String(): strings.ToLower(yes.BLSPubKeyHex)}
 		if !SignedEquivocation(layer, height, hash, victim.String(), auth) {
 			t.Fatal("two validly signed values must count as equivocation")
+		}
+	})
+
+	// A member's vote result is signed over the committee's outcome, which
+	// can differ from its own ballot. Presented as a ballot record it must not
+	// make the member an equivocator.
+	t.Run("vote result presented as a ballot is not evidence", func(t *testing.T) {
+		layer := newIngestLayer()
+		yes := signedRecord(t, victim.String(), 1, height, hash, consensusHash)
+		resp, ok, err := BLS_Signer.SignMessageForBlock(-1, BLS_Signer.DomainChainID(), height, hash, consensusHash)
+		if err != nil || !ok {
+			t.Fatalf("sign vote result: ok=%v err=%v", ok, err)
+		}
+		result := avcvotes.VoteRecord{PeerID: victim.String(), Vote: -1, BlockHash: hash, Height: height,
+			BLSSignature: resp.Signature, BLSPubKeyHex: resp.PubKey}
+		for _, r := range []avcvotes.VoteRecord{yes, result} {
+			if err := avcvotes.AddVote(layer, victim, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		auth := map[string]string{victim.String(): strings.ToLower(yes.BLSPubKeyHex)}
+		if SignedEquivocation(layer, height, hash, victim.String(), auth) {
+			t.Fatal("a vote-result signature must not count as a second ballot")
 		}
 	})
 

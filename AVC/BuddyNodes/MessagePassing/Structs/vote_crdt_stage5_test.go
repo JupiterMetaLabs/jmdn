@@ -47,9 +47,9 @@ func stage5TestPeer(t *testing.T) peer.ID {
 // it rather than trivially accepting a fixture.
 func stage5SignedRecord(t *testing.T, peerID peer.ID, vote int8, height uint64, blockHash string) avcvotes.VoteRecord {
 	t.Helper()
-	blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, height, blockHash, stage5ConsensusHash)
+	blsResp, signed, err := BLS_Signer.SignBallotForBlock(vote, stage5ChainID, height, blockHash, stage5ConsensusHash)
 	if err != nil || !signed {
-		t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
+		t.Fatalf("SignBallotForBlock: signed=%v err=%v", signed, err)
 	}
 	return avcvotes.VoteRecord{
 		PeerID:       peerID.String(),
@@ -102,7 +102,7 @@ func TestVerifyTallySignatures_ForgedSignatureIsDroppedAndNotCounted(t *testing.
 	recA := stage5SignedRecord(t, peerA, 1, stage5Height, stage5BlockHash)
 	// Forged: a syntactically valid pubkey/signature pair, but the signature
 	// was never produced by that pubkey's private key for this message.
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
+	otherSigner, _, err := BLS_Signer.SignBallotForBlock(1, stage5ChainID, stage5Height, "0xdifferent-block", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestVerifyTallySignatures_ForgedSecondValueDoesNotManufactureEquivocation(t
 	peerA := stage5TestPeer(t)
 
 	realYes := stage5SignedRecord(t, peerA, 1, stage5Height, stage5BlockHash)
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
+	otherSigner, _, err := BLS_Signer.SignBallotForBlock(1, stage5ChainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}
@@ -223,9 +223,9 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 	// for an unrelated reason and this test would prove nothing.
 	chainID := BLS_Signer.DomainChainID()
 	sign := func(peerID peer.ID, vote int8) avcvotes.VoteRecord {
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, chainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
+		blsResp, signed, err := BLS_Signer.SignBallotForBlock(vote, chainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 		if err != nil || !signed {
-			t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
+			t.Fatalf("SignBallotForBlock: signed=%v err=%v", signed, err)
 		}
 		return avcvotes.VoteRecord{
 			PeerID: peerID.String(), Vote: vote, BlockHash: stage5BlockHash, Height: stage5Height,
@@ -244,7 +244,7 @@ func TestProcessVotesFromCRDT_V2_ForgedVoteDoesNotFlipTheDecision(t *testing.T) 
 
 	// Inject a forged NO vote directly (bypassing AddVote's own signer, the
 	// way a malicious or buggy peer's raw CRDT merge would land it).
-	otherSigner, _, err := BLS_Signer.SignMessageForBlock(-1, chainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
+	otherSigner, _, err := BLS_Signer.SignBallotForBlock(-1, chainID, stage5Height, "0xelsewhere", stage5ConsensusHash)
 	if err != nil {
 		t.Fatalf("building a forged signature fixture: %v", err)
 	}

@@ -46,9 +46,9 @@ func benchTally(b *testing.B, n int) avcvotes.BlockTally {
 		if i%2 == 1 {
 			vote = -1
 		}
-		blsResp, signed, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
+		blsResp, signed, err := BLS_Signer.SignBallotForBlock(vote, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 		if err != nil || !signed {
-			b.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
+			b.Fatalf("SignBallotForBlock: signed=%v err=%v", signed, err)
 		}
 		rec := avcvotes.VoteRecord{
 			PeerID: p.String(), Vote: vote, BlockHash: stage5BlockHash, Height: stage5Height,

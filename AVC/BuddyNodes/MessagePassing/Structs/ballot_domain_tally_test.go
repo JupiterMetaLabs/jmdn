@@ -8,37 +8,40 @@ import (
 	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 )
 
-// The tally counts ballots in the new domain and in the old format alike, so
-// the order of restarts within the coordinated upgrade does not matter.
-func TestVerifyTallySignatures_CountsBothBallotFormats(t *testing.T) {
+// The tally counts ballots in the ballot domain and drops a record whose
+// signature is in the vote-result format.
+func TestVerifyTallySignatures_DropsVoteResultFormat(t *testing.T) {
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
-	peerOld := stage5TestPeer(t)
-	peerNew := stage5TestPeer(t)
+	peerBallot := stage5TestPeer(t)
+	peerResult := stage5TestPeer(t)
 
-	recOld := stage5SignedRecord(t, peerOld, 1, stage5Height, stage5BlockHash)
-	resp, signed, err := BLS_Signer.SignBallotForBlock(1, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
+	recBallot := stage5SignedRecord(t, peerBallot, 1, stage5Height, stage5BlockHash)
+	resp, signed, err := BLS_Signer.SignMessageForBlock(1, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
 	if err != nil || !signed {
-		t.Fatalf("SignBallotForBlock: signed=%v err=%v", signed, err)
+		t.Fatalf("SignMessageForBlock: signed=%v err=%v", signed, err)
 	}
-	recNew := avcvotes.VoteRecord{
-		PeerID: peerNew.String(), Vote: 1, BlockHash: stage5BlockHash, Height: stage5Height,
+	recResult := avcvotes.VoteRecord{
+		PeerID: peerResult.String(), Vote: 1, BlockHash: stage5BlockHash, Height: stage5Height,
 		BLSSignature: resp.Signature, BLSPubKeyHex: resp.PubKey,
 	}
 
 	tally := avcvotes.BlockTally{
-		AuthorizedVotesByPeer: map[string][]int8{peerOld.String(): {1}, peerNew.String(): {1}},
+		AuthorizedVotesByPeer: map[string][]int8{peerBallot.String(): {1}, peerResult.String(): {1}},
 		Signatures: map[string][]avcvotes.VoteRecord{
-			peerOld.String(): {recOld},
-			peerNew.String(): {recNew},
+			peerBallot.String(): {recBallot},
+			peerResult.String(): {recResult},
 		},
 	}
 	verified, dropped := verifyTallySignatures(tally, stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash)
-	if dropped != 0 {
-		t.Fatalf("dropped %d valid ballots", dropped)
+	if dropped != 1 {
+		t.Fatalf("want the vote-result record dropped (1), dropped %d", dropped)
 	}
 	single := verified.SingleVotePeers()
-	if single[peerOld.String()] != 1 || single[peerNew.String()] != 1 {
-		t.Fatalf("a ballot was not counted: %+v", single)
+	if single[peerBallot.String()] != 1 {
+		t.Fatalf("the ballot was not counted: %+v", single)
+	}
+	if _, ok := single[peerResult.String()]; ok {
+		t.Fatalf("a vote-result signature was counted as a ballot: %+v", single)
 	}
 }
 

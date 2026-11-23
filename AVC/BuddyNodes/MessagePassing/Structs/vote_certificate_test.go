@@ -155,17 +155,17 @@ func TestBuildVoteCertificate_AggregateVerifiesWithFastAggregateVerify(t *testin
 
 	// Same message both signed: stage5SignedRecord signs vote=1 for
 	// (stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash) via
-	// SignMessageForBlock, so this reconstructs the identical canonical bytes
+	// SignBallotForBlock, so this reconstructs the identical ballot bytes
 	// independently rather than trusting that buildVoteCertificate got it right.
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash, 1)
+	msg, err := BLS_Signer.CanonicalBallotMessageV1(stage5ChainID, stage5Height, stage5BlockHash, stage5ConsensusHash, 1)
 	if err != nil {
-		t.Fatalf("CanonicalVoteMessageV3: %v", err)
+		t.Fatalf("CanonicalBallotMessageV1: %v", err)
 	}
 	ok, err := blssign.BLSFastAggregateVerify([][]byte{pubA, pubB}, msg, aggSigBytes)
 	if err != nil {
 		t.Fatalf("BLSFastAggregateVerify: %v", err)
 	}
 	if !ok {
-		t.Fatal("aggregate signature must verify against the two YES voters' pubkeys and the canonical v3 message")
+		t.Fatal("aggregate signature must verify against the two YES voters' pubkeys and the ballot-domain message")
 	}
 }

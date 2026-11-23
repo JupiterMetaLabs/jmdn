@@ -41,30 +41,29 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 	return nil
 }
 
-// VerifyBallotForBlock checks a gossiped ballot. It accepts the ballot domain
-// (BLS_Signer.CanonicalBallotMessageV1) and the vote-result format ballots
-// were signed in before (CanonicalVoteMessageV3).
+// VerifyBallotForBlock checks a gossiped ballot. It accepts only the ballot
+// domain (BLS_Signer.CanonicalBallotMessageV1).
 //
-// Rollout: this release must be deployed to every node together (a
-// coordinated fleet-wide upgrade). A node on the previous release verifies
-// ballots only in the old format and drops ballots signed in the ballot
-// domain, so a rolling upgrade is not supported. Accepting the old format
-// here only makes the order of restarts within that upgrade irrelevant; it is
-// removed in a later release. Accepting the old format only counts a vote;
-// it never lets a ballot count as a certificate signature, because
-// certificate checks use VerifyForBlock, which rejects the ballot domain.
-// Use this only where a ballot is checked, never for a certificate.
+// The vote-result format (CanonicalVoteMessageV3) is not accepted here. A
+// member signs its vote result in that format, over the committee's
+// aggregated outcome, which can differ from its own ballot; accepting it as a
+// ballot would let anyone holding that vote result present it as a second,
+// conflicting ballot from the member (false equivocation evidence).
+// Certificate checks use VerifyForBlock, which rejects the ballot domain, so
+// the two formats never verify as each other.
+//
+// Rollout: this release is deployed to every node together (a coordinated
+// fleet-wide upgrade). A node on the previous release signs ballots in the
+// vote-result format, which this release does not count, so ballots between
+// old and new nodes are dropped until every node has restarted; a rolling
+// upgrade is not supported.
 func VerifyBallotForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings, consensusHash string, vote int8) error {
 	msg, err := BLS_Signer.CanonicalBallotMessageV1(chainID, height, bindings, consensusHash, vote)
 	if err != nil {
 		return fmt.Errorf("build ballot message: %w", err)
 	}
-	if verifyCanonical(resp, msg) == nil {
-		return nil
-	}
-	// Ballots from nodes that still sign the old format.
-	if err := VerifyForBlock(resp, chainID, height, bindings, consensusHash, vote); err != nil {
-		return fmt.Errorf("bls verify (ballot) failed for peer %s", resp.PeerID)
+	if err := verifyCanonical(resp, msg); err != nil {
+		return fmt.Errorf("bls verify (ballot) failed for peer %s: %w", resp.PeerID, err)
 	}
 	return nil
 }

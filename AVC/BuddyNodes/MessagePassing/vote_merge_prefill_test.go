@@ -51,7 +51,7 @@ func newPrefillEnv(t *testing.T, height uint64, seen bool) *prefillEnv {
 	}
 
 	t.Setenv("JMDN_BLS_AUTOGEN", "1")
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, BLS_Signer.DomainChainID(), height, e.hash, e.consensusHash)
+	resp, ok, err := BLS_Signer.SignBallotForBlock(1, BLS_Signer.DomainChainID(), height, e.hash, e.consensusHash)
 	if err != nil || !ok {
 		t.Fatalf("sign: ok=%v err=%v", ok, err)
 	}
@@ -255,7 +255,7 @@ func TestMergeVoteCRDTElement_OneVerifiedRecordPerPeerVote(t *testing.T) {
 		t.Fatalf("want one verified record for (victim, +1), stored %d", got)
 	}
 
-	resp, ok, err := BLS_Signer.SignMessageForBlock(-1, BLS_Signer.DomainChainID(), e.height, e.hash, e.consensusHash)
+	resp, ok, err := BLS_Signer.SignBallotForBlock(-1, BLS_Signer.DomainChainID(), e.height, e.hash, e.consensusHash)
 	if err != nil || !ok {
 		t.Fatalf("sign -1: ok=%v err=%v", ok, err)
 	}

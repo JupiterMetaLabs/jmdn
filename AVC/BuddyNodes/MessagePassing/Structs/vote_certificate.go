@@ -34,11 +34,10 @@ type VoteCertificate struct {
 // weaponized against the block.
 //
 // Uses blssign (gossipnode/AVC/BLS/bls-sign) to aggregate, not avc's own bls
-// package — VoteRecord.BLSSignature is produced by BLS_Signer.SignBallotForBlock
-// (older nodes: SignMessageForBlock), both of which sign via this same local
-// package (BLS_Signer/Signer.go's signCanonical calls blssign.BLSSign), so
-// aggregation must use the
-// matching library. Aggregating signatures across two different BLS
+// package — VoteRecord.BLSSignature is produced by BLS_Signer.SignBallotForBlock,
+// which signs via this same local package (BLS_Signer/Signer.go's signCanonical
+// calls blssign.BLSSign), so aggregation must use the matching library. The
+// aggregate is over the ballot-domain message (CanonicalBallotMessageV1). Aggregating signatures across two different BLS
 // implementations, even on the same curve, is not guaranteed to produce a
 // verifiable result.
 //

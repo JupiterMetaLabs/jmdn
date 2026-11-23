@@ -28,18 +28,19 @@ func TestBallotDomain_BallotIsNotACertificateSignature(t *testing.T) {
 	}
 }
 
-// Ballots signed in the old format still count as ballots, so the order of
-// restarts within the coordinated upgrade does not matter.
-func TestBallotDomain_OldFormatBallotStillCounts(t *testing.T) {
-	old, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash, consHash)
+// A vote-result signature (the format certificates use) is not a ballot.
+// Otherwise anyone holding a member's vote result could present it as a
+// second, conflicting ballot from that member.
+func TestBallotDomain_VoteResultSignatureIsNotABallot(t *testing.T) {
+	result, ok, err := BLS_Signer.SignMessageForBlock(-1, chainA, 100, blkHash, consHash)
 	if err != nil || !ok {
-		t.Fatalf("sign old format: ok=%v err=%v", ok, err)
+		t.Fatalf("sign vote result: ok=%v err=%v", ok, err)
 	}
-	if err := VerifyBallotForBlock(old, chainA, 100, blkHash, consHash, 1); err != nil {
-		t.Fatalf("old-format ballot should still count: %v", err)
+	if err := VerifyForBlock(result, chainA, 100, blkHash, consHash, -1); err != nil {
+		t.Fatalf("setup: the vote result should verify as a vote result: %v", err)
 	}
-	if err := VerifyBallotForBlock(old, chainA, 100, blkHash, consHash, -1); err == nil {
-		t.Fatal("old-format +1 ballot verified as -1")
+	if err := VerifyBallotForBlock(result, chainA, 100, blkHash, consHash, -1); err == nil {
+		t.Fatal("a vote-result signature verified as a ballot")
 	}
 }
 

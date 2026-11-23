@@ -36,7 +36,7 @@ func buildMixedTally(t *testing.T, n int) (avcvotes.BlockTally, int) {
 		if i%3 == 0 {
 			// Forged: syntactically valid signature, but for a different
 			// message than the one being tallied.
-			other, _, err := BLS_Signer.SignMessageForBlock(vote, stage5ChainID, stage5Height, "0xnot-this-block", stage5ConsensusHash)
+			other, _, err := BLS_Signer.SignBallotForBlock(vote, stage5ChainID, stage5Height, "0xnot-this-block", stage5ConsensusHash)
 			if err != nil {
 				t.Fatalf("building forged fixture %d: %v", i, err)
 			}
