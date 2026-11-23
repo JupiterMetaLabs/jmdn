@@ -627,3 +627,112 @@ func TestDropRaisesAboveHighPeriod(t *testing.T) {
 		t.Fatalf("the height must move above period 1000, got %d", got)
 	}
 }
+
+// The drop starts the new round (period raised, claim released) while the
+// record still refuses proposals, and removes the record only afterwards.
+func TestDropStartsNewRoundBeforeRemovingRecord(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 259})
+	prevReport := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	prevRaise, prevRelease := raiseDroppedHeight, releaseProposalClaim
+	t.Cleanup(func() {
+		sendRejectionReport = prevReport
+		raiseDroppedHeight, releaseProposalClaim = prevRaise, prevRelease
+	})
+	const h = 260
+	var raisedWhilePending, releasedWhilePending bool
+	raiseDroppedHeight = func(height, above uint64) uint64 {
+		blocked, _, _ := pendingCommits.BlocksProposal(height, height-1)
+		raisedWhilePending = blocked
+		return prevRaise(height, above)
+	}
+	releaseProposalClaim = func(height uint64) {
+		blocked, _, _ := pendingCommits.BlocksProposal(height, height-1)
+		releasedWhilePending = blocked
+	}
+
+	block := certifiedTestBlock(h, 2)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(h, block.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	if !raisedWhilePending || !releasedWhilePending {
+		t.Fatalf("the period must be raised and the claim released while proposals are still refused (raised=%v released=%v)",
+			raisedWhilePending, releasedWhilePending)
+	}
+	if blocked, _, _ := pendingCommits.BlocksProposal(h, h-1); blocked {
+		t.Fatal("after the drop, proposals at the height must be accepted")
+	}
+}
+
+// A refused drop (wrong hash) changes neither the period nor the claim.
+func TestRefusedDropStartsNoNewRound(t *testing.T) {
+	installFakeCommit(t, &fakeCommit{tip: 269})
+	prevRaise, prevRelease := raiseDroppedHeight, releaseProposalClaim
+	t.Cleanup(func() { raiseDroppedHeight, releaseProposalClaim = prevRaise, prevRelease })
+	calls := 0
+	raiseDroppedHeight = func(uint64, uint64) uint64 { calls++; return 0 }
+	releaseProposalClaim = func(uint64) { calls++ }
+
+	block := certifiedTestBlock(270, 1)
+	rec, _ := pendingRecordFor(block, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(270, "0xwrong"); !errors.Is(err, pendingcommit.ErrRecordMismatch) {
+		t.Fatalf("want ErrRecordMismatch, got %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("a refused drop must not start a new round, got %d calls", calls)
+	}
+}
+
+// The live retry series stops at once when its context is cancelled.
+func TestLiveRetryStopsOnCancel(t *testing.T) {
+	f := &fakeCommit{tip: 279, applyErrs: []error{errors.New("store timeout"), errors.New("store timeout")}}
+	installFakeCommit(t, f)
+	certifiedCommitDelays = []time.Duration{time.Hour}
+	certifiedCommitSleep = func(ctx context.Context, d time.Duration) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(d):
+			return true
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- commitCertifiedBlock(ctx, certifiedTestBlock(280, 1), testCert) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCertifiedBlockHalted) {
+			t.Fatalf("want ErrCertifiedBlockHalted, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the live retry did not stop on a cancelled context")
+	}
+}
+
+// withCancelOf keeps the values of one context and the cancellation of
+// another.
+func TestWithCancelOf(t *testing.T) {
+	type key struct{}
+	values := context.WithValue(context.Background(), key{}, "trace")
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	c := withCancelOf(values, cancelCtx)
+	if c.Value(key{}) != "trace" {
+		t.Fatal("values must come from the first context")
+	}
+	if c.Err() != nil {
+		t.Fatal("not cancelled yet")
+	}
+	cancel()
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("cancellation must come from the second context")
+	}
+	if !errors.Is(c.Err(), context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", c.Err())
+	}
+}

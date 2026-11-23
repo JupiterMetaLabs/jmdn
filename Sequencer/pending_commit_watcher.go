@@ -77,8 +77,26 @@ func DropUnreadablePendingCommit() error {
 // attempt applies it, and reports its transactions to the orchestrator as not
 // landed. Errors: pendingcommit.ErrNoPending, pendingcommit.ErrRecordMismatch
 // (with the current record), or a store error.
+//
+// Order matters: the new round is started (period raised, claim released)
+// while the record still exists, so proposals at the height are still
+// refused; only then is the record removed. A proposal admitted after the
+// drop therefore sees the raised period and keeps its claim.
 func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, error) {
 	certifiedAttemptMu.Lock()
+	cur, err := pendingCommits.Current()
+	switch {
+	case err != nil:
+		certifiedAttemptMu.Unlock()
+		return nil, err
+	case cur == nil:
+		certifiedAttemptMu.Unlock()
+		return nil, pendingcommit.ErrNoPending
+	case cur.Height != height || !strings.EqualFold(cur.BlockHash, strings.TrimSpace(blockHash)):
+		certifiedAttemptMu.Unlock()
+		return cur, pendingcommit.ErrRecordMismatch
+	}
+	startNewRoundAfterDrop(cur)
 	rec, err := pendingCommits.DropMatching(height, blockHash)
 	if err == nil {
 		droppedPending.height, droppedPending.roundID = rec.Height, droppedRoundID(rec)
@@ -87,7 +105,6 @@ func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, 
 	if err != nil {
 		return rec, err
 	}
-	startNewRoundAfterDrop(rec)
 	ReportDroppedPendingBlock(*rec)
 	return rec, nil
 }
@@ -200,4 +217,23 @@ func ReportDroppedPendingBlock(rec pendingcommit.Record) {
 		return
 	}
 	sendRejectionReport(&block, droppedPendingReason, "")
+}
+
+// cancelOf is a context that carries values (trace data) from one context
+// and takes its deadline, cancellation and error from another.
+type cancelOf struct {
+	context.Context // values
+	cancel          context.Context
+}
+
+func (c cancelOf) Deadline() (time.Time, bool) { return c.cancel.Deadline() }
+func (c cancelOf) Done() <-chan struct{}       { return c.cancel.Done() }
+func (c cancelOf) Err() error                  { return c.cancel.Err() }
+
+// withCancelOf returns a context with the values of values and the
+// cancellation of cancel. The vote-collection goroutine uses it so its trace
+// stays parented on the round while shutdown (the goroutine's ctx) can stop a
+// certified block's retry wait.
+func withCancelOf(values, cancel context.Context) context.Context {
+	return cancelOf{Context: values, cancel: cancel}
 }

@@ -1598,7 +1598,10 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 	// Process vote collection asynchronously
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
-		processCtx, processSpan := tracer.Start(trace_ctx, "Consensus.ProcessVoteCollection.process")
+		// Parent the span on this call's trace, but take cancellation from the
+		// GRO goroutine's ctx, so shutdown ends a certified block's retry wait
+		// (the pending record makes stopping safe).
+		processCtx, processSpan := tracer.Start(withCancelOf(trace_ctx, ctx), "Consensus.ProcessVoteCollection.process")
 		defer processSpan.End()
 
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
