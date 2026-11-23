@@ -103,6 +103,7 @@ if [ -t 0 ]; then
 fi
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/go/bin:$PATH"
+export GOTOOLCHAIN=local
 
 apt_wait() {
   local n=0
@@ -193,6 +194,21 @@ PY
   apt_wait
   ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" bash ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null )
   command -v go >/dev/null || die "Go not on PATH after setup_dependencies"
+  # setup_dependencies installs a fixed fallback Go; use the exact toolchain go.mod pins.
+  want=$(awk '$1=="toolchain"{print $2; exit}' "$REPO/go.mod")
+  [ -n "$want" ] || want="go$(awk '$1=="go"{print $2; exit}' "$REPO/go.mod")"
+  have=$(GOTOOLCHAIN=local go version | awk '{print $3}')
+  if [ "$have" != "$want" ]; then
+    case "$(uname -m)" in x86_64) garch=amd64 ;; aarch64|arm64) garch=arm64 ;; *) die "unsupported arch $(uname -m)" ;; esac
+    gfile="$want.linux-$garch.tar.gz"
+    gsum=$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" | python3 -c 'import sys,json; f=sys.argv[1]; print(next((x["sha256"] for r in json.load(sys.stdin) for x in r["files"] if x["filename"]==f), ""))' "$gfile")
+    [ -n "$gsum" ] || die "no published checksum for $gfile"
+    curl -fsSL -o "/tmp/$gfile" "https://go.dev/dl/$gfile"
+    echo "$gsum  /tmp/$gfile" | sha256sum -c - >/dev/null || die "$gfile checksum mismatch"
+    rm -rf /usr/local/go && tar -C /usr/local -xzf "/tmp/$gfile" && rm -f "/tmp/$gfile"
+    info "Go $have replaced by $want (go.mod toolchain, checksum verified)"
+  fi
+  [ "$(GOTOOLCHAIN=local go version | awk '{print $3}')" = "$want" ] || die "Go is $(go version), want $want"
   go env -w GOPRIVATE=github.com/JupiterMetaLabs GONOSUMDB=github.com/JupiterMetaLabs
   mark 03-deps; ok "$(go version)"
 fi
