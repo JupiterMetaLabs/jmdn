@@ -351,3 +351,51 @@ func TestCommitAfterEarlyRecordCommitsOnce(t *testing.T) {
 // fakeHost satisfies host.Host for the resume path; broadcast is a hook, so no
 // method is ever called.
 type fakeHost struct{ host.Host }
+
+// Shutdown cancels the resume: a cancelled context ends the retry wait at
+// once, the period is not advanced and the record stays for the next start.
+func TestResumePendingCommitStopsOnCancel(t *testing.T) {
+	f := &fakeCommit{tip: 59, applyErrs: []error{errors.New("store timeout"), errors.New("store timeout")}}
+	installFakeCommit(t, f)
+	certifiedCommitDelays = []time.Duration{time.Hour}
+	certifiedCommitSleep = func(ctx context.Context, d time.Duration) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(d):
+			return true
+		}
+	}
+	block := certifiedTestBlock(60, 2)
+	rec, err := pendingRecordFor(block, testCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingCommits.Save(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ResumePendingCommit(ctx, fakeHost{}) }()
+	time.Sleep(20 * time.Millisecond) // first attempt fails, then waits
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCertifiedBlockHalted) {
+			t.Fatalf("want ErrCertifiedBlockHalted after cancel, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resume did not return after its context was cancelled")
+	}
+	if got, _ := pendingCommits.Current(); got == nil || got.Height != 60 {
+		t.Fatalf("record must be kept for the next start, got %+v", got)
+	}
+	if f.broadcasted != 0 {
+		t.Fatalf("nothing may be broadcast, got %d", f.broadcasted)
+	}
+	if got := messaging.DefaultProposerPeriods.PeriodFor(60); got != 0 {
+		t.Fatalf("the period must not advance, got %d", got)
+	}
+}

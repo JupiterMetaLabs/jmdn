@@ -625,21 +625,3 @@ func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 }
-
-// sendRejectionReport is RejectionReport.Send; a seam for tests.
-var sendRejectionReport = RejectionReport.Send
-
-// localApplyFailureReason is the reason reported to the orchestrator when a
-// certified block could not be applied or stored on the sequencer.
-const localApplyFailureReason = "certified, but the sequencer could not apply or store it; block withheld"
-
-// reportLocalApplyFailure reports a certified block that the sequencer could
-// not apply or store. The block is withheld from peers, so its transactions
-// did not land.
-func reportLocalApplyFailure(block *config.ZKBlock, err error) {
-	detail := ""
-	if err != nil {
-		detail = err.Error()
-	}
-	sendRejectionReport(block, localApplyFailureReason, detail)
-}

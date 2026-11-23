@@ -2457,11 +2457,15 @@ func main() {
 	// Proposals at or above its height are refused by the block servers until
 	// it is stored, so this runs in the background and the servers can start.
 	if cfg.Ports.BlockGen > 0 || cfg.Ports.BlockGRPC > 0 {
-		go func() {
-			if err := Sequencer.ResumePendingCommit(context.Background(), n.Host); err != nil {
-				mainLogger().Error(context.Background(), "Could not resume the pending certified block; its height stays halted", err)
+		// Tracked, so shutdown cancels ctx and ends the retry wait.
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SequencerResumeCommitThread, func(ctx context.Context) error {
+			if err := Sequencer.ResumePendingCommit(ctx, n.Host); err != nil {
+				mainLogger().Error(ctx, "Could not resume the pending certified block; its height stays halted", err)
 			}
-		}()
+			return nil
+		}); err != nil {
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.SequencerResumeCommitThread))
+		}
 	}
 
 	if cfg.Ports.BlockGen > 0 {
