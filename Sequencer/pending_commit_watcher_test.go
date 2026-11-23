@@ -575,3 +575,33 @@ func TestResumeSettlesSupersededRecord(t *testing.T) {
 		t.Fatalf("the superseded record must be removed, got %+v", got)
 	}
 }
+
+// If the watcher commits a block from the record saved at quorum before the
+// live path gets to it, the live path does nothing more: one apply, one
+// certificate, one broadcast, and no record left behind.
+func TestLivePathSkipsBlockTheWatcherCommitted(t *testing.T) {
+	f := &fakeCommit{tip: 239}
+	installFakeCommit(t, f)
+	const h = 240
+	block := certifiedTestBlock(h, 1)
+	rec, _ := pendingRecordFor(block, testCert) // saved at quorum
+	_ = pendingCommits.Save(rec)
+
+	if err := ResumePendingCommit(context.Background(), fakeHost{}); err != nil { // the watcher tick
+		t.Fatal(err)
+	}
+	// The block is now stored and applied, and the tip covers it.
+	f.tip = h
+	stateByHeight(map[uint64]storedState{h: storedSameApplied}, nil)
+
+	c := &Consensus{ZKBlockData: PubSubMessages.NewConsensusMessageBuilder(nil).SetZKBlock(block), mu: &sync.RWMutex{}}
+	if err := c.BroadcastAndProcessBlock(context.Background(), testCert, true); err != nil {
+		t.Fatalf("the live path must treat a committed block as done, got %v", err)
+	}
+	if len(f.applied) != 1 || f.recorded != 1 || f.broadcasted != 1 {
+		t.Fatalf("want one apply, one certificate and one broadcast, got %d, %d, %d", len(f.applied), f.recorded, f.broadcasted)
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("no record may be left behind, got %+v", got)
+	}
+}

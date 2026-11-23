@@ -456,6 +456,14 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// height while this certificate still exists. A pending record refuses
 		// new proposals at the height until the block is stored.
 		if err := commitCertifiedBlock(ctx, block, blsResults); err != nil {
+			if errors.Is(err, errCertifiedBlockAlreadyCommitted) {
+				// The background watcher committed and broadcast it already.
+				logger().Info(ctx, "Certified block was already committed by the background retry; nothing more to do",
+					ion.Uint64("block_number", block.BlockNumber),
+					ion.String("block_hash", block.BlockHash.Hex()),
+					ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+				return nil
+			}
 			if errors.Is(err, ErrCertifiedBlockDropped) {
 				// An operator dropped this round. The drop already released
 				// the height's proposal claim and moved it to a new period.

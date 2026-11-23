@@ -207,6 +207,23 @@ func certifiedRoundID(block *config.ZKBlock) string {
 	return fmt.Sprintf("%s/p%d", block.BlockHash.Hex(), block.Period)
 }
 
+// errCertifiedBlockAlreadyCommitted reports that the block was already
+// committed and broadcast by the background watcher; the live path does
+// nothing more.
+var errCertifiedBlockAlreadyCommitted = errors.New("certified block already committed")
+
+// certifiedBlockAlreadyCommitted reports whether block is stored at its
+// height and applied, with the committed tip at or above it. A read error
+// counts as not committed, so the normal path runs.
+func certifiedBlockAlreadyCommitted(block *config.ZKBlock) bool {
+	tip, err := committedTip()
+	if err != nil || tip < block.BlockNumber {
+		return false
+	}
+	state, serr := storedBlockStateAt(block)
+	return serr == nil && state == storedSameApplied
+}
+
 // settleRecordBelowTip handles a pending record whose height the committed
 // tip has reached, and reports whether the record was removed:
 //
@@ -307,6 +324,14 @@ func commitCertifiedBlock(ctx context.Context, block *config.ZKBlock, bls []BLS_
 	// must not apply the same block concurrently.
 	certifiedCommitMu.Lock()
 	defer certifiedCommitMu.Unlock()
+	// The background watcher may have committed this block (from the record
+	// saved at quorum) before the live path got here. Then there is nothing
+	// to do: no record, no apply, no certificate, no broadcast. This check is
+	// only at entry; inside the retry series a stored, applied block may be
+	// this series' own late-landing write, which still needs its apply.
+	if certifiedBlockAlreadyCommitted(block) {
+		return errCertifiedBlockAlreadyCommitted
+	}
 	// Normally already saved by ProcessVoteCollection when quorum was
 	// verified; saving the same block again just rewrites the record. Only
 	// the live path saves it, and never for a block an operator dropped (the
