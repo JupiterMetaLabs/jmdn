@@ -2,6 +2,7 @@ package Sequencer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -455,6 +456,13 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// height while this certificate still exists. A pending record refuses
 		// new proposals at the height until the block is stored.
 		if err := commitCertifiedBlock(ctx, block, blsResults); err != nil {
+			if errors.Is(err, ErrCertifiedBlockDropped) {
+				// An operator dropped this round: ProcessBlockLocally never ran,
+				// so release the height's proposal claim for the next round
+				// (the drop already moved the height to a new period).
+				releaseProposalClaim(block.BlockNumber)
+				return fmt.Errorf("certified block dropped by operator; not stored: %w", err)
+			}
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).

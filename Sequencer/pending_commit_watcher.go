@@ -14,6 +14,8 @@ import (
 	"gossipnode/Sequencer/RejectionReport"
 	"gossipnode/config"
 	"gossipnode/internal/pendingcommit"
+	"gossipnode/internal/proposalguard"
+	"gossipnode/messaging"
 )
 
 // certifiedCommitMu serializes commit series of a certified block between
@@ -85,8 +87,30 @@ func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, 
 	if err != nil {
 		return rec, err
 	}
+	startNewRoundAfterDrop(rec)
 	ReportDroppedPendingBlock(*rec)
 	return rec, nil
+}
+
+// startNewRoundAfterDrop moves the dropped height to a period above the
+// dropped block's and releases its proposal claim, so the next proposal at
+// the height is a new round. Without it, the same transactions proposed again
+// would rebuild the identical round (same period, same ConsensusHash), which
+// the drop marker refuses, and the height could never commit.
+func startNewRoundAfterDrop(rec *pendingcommit.Record) {
+	var droppedPeriod uint64
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err == nil {
+		droppedPeriod = block.Period
+	}
+	// Bounded: each step raises the period by at least one, up to the cap.
+	for i := 0; i < 1024; i++ {
+		next, capped := advanceDroppedHeight(rec.Height)
+		if capped || next > droppedPeriod {
+			break
+		}
+	}
+	releaseProposalClaim(rec.Height)
 }
 
 // certifiedNow is the clock for halt-alert pacing; a seam for tests.
@@ -151,6 +175,14 @@ func RunPendingCommitWatcher(ctx context.Context, h host.Host) {
 		}
 	}
 }
+
+// advanceDroppedHeight and releaseProposalClaim are seams for tests.
+var (
+	advanceDroppedHeight = func(height uint64) (uint64, bool) {
+		return messaging.DefaultProposerPeriods.AdvanceAfterFailure(height, config.MaxMainPeers)
+	}
+	releaseProposalClaim = proposalguard.Default.Release
+)
 
 // sendRejectionReport is RejectionReport.Send; a seam for tests.
 var sendRejectionReport = RejectionReport.Send

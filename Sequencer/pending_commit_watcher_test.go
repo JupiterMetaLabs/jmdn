@@ -389,3 +389,45 @@ func TestDroppedAttemptKeepsNewRoundRecord(t *testing.T) {
 		t.Fatalf("the new round's record must be kept, got %+v", got)
 	}
 }
+
+// A drop moves the height to a period above the dropped block's and releases
+// the height's proposal claim, so the same transactions proposed again form a
+// new round that commits.
+func TestDropStartsNewRound(t *testing.T) {
+	f := &fakeCommit{tip: 179}
+	installFakeCommit(t, f)
+	prevReport := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prevReport })
+	var released []uint64
+	prevRelease := releaseProposalClaim
+	releaseProposalClaim = func(h uint64) { released = append(released, h) }
+	t.Cleanup(func() { releaseProposalClaim = prevRelease })
+
+	const h = 180
+	for messaging.DefaultProposerPeriods.PeriodFor(h) < 3 { // the dropped round ran at period 3
+		messaging.DefaultProposerPeriods.AdvanceAfterFailure(h, 7)
+	}
+	dropped := certifiedTestBlock(h, messaging.DefaultProposerPeriods.PeriodFor(h))
+	rec, _ := pendingRecordFor(dropped, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(h, dropped.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+
+	next := messaging.DefaultProposerPeriods.PeriodFor(h)
+	if next <= dropped.Period {
+		t.Fatalf("the drop must move the height above period %d, got %d", dropped.Period, next)
+	}
+	if len(released) != 1 || released[0] != h {
+		t.Fatalf("the drop must release the height's proposal claim, got %v", released)
+	}
+	// The same transactions proposed again, at the period the proposer now uses.
+	again := certifiedTestBlock(h, next)
+	if err := commitCertifiedBlock(context.Background(), again, testCert); err != nil {
+		t.Fatalf("the next round must commit, got %v", err)
+	}
+	if len(f.applied) != 1 || f.applied[0].Period != next {
+		t.Fatalf("want the new round applied once, got %+v", f.applied)
+	}
+}
