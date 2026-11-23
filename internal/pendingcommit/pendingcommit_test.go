@@ -63,7 +63,7 @@ func TestClearRemovesRecordDurably(t *testing.T) {
 	a := New()
 	a.SetStore(s, "")
 	_ = a.Save(rec(10, "0xaa"))
-	if err := a.Clear(10, "0xaa"); err != nil {
+	if err := a.Clear(10, "0xaa", ""); err != nil {
 		t.Fatal(err)
 	}
 	b := New()
@@ -76,7 +76,7 @@ func TestClearRemovesRecordDurably(t *testing.T) {
 func TestClearOtherHeightIsNoop(t *testing.T) {
 	a := New()
 	_ = a.Save(rec(10, "0xaa"))
-	_ = a.Clear(9, "0xaa")
+	_ = a.Clear(9, "0xaa", "")
 	if got, _ := a.Current(); got == nil {
 		t.Fatal("clearing a different height must keep the pending record")
 	}
@@ -155,7 +155,7 @@ func TestClearStaleAfterFailedClearLetsNextHeightBeRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.failPut = true
-	if err := a.Clear(10, "0xaa"); err == nil {
+	if err := a.Clear(10, "0xaa", ""); err == nil {
 		t.Fatal("the failed clear must be reported")
 	}
 	if err := a.ClearStale(10); err == nil {
@@ -198,11 +198,11 @@ func TestClearStaleKeepsUncommittedRecord(t *testing.T) {
 func TestClearOtherBlockIsNoop(t *testing.T) {
 	a := New()
 	_ = a.Save(rec(10, "0xaa"))
-	_ = a.Clear(10, "0xbb")
+	_ = a.Clear(10, "0xbb", "")
 	if got, _ := a.Current(); got == nil {
 		t.Fatal("clearing a different block must keep the pending record")
 	}
-	if err := a.Clear(10, "0xAA"); err != nil {
+	if err := a.Clear(10, "0xAA", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := a.Current(); got != nil {
@@ -270,5 +270,23 @@ func TestDropUnreadable(t *testing.T) {
 	}
 	if got, _ := b.Current(); got == nil {
 		t.Fatal("a refused DropUnreadable must keep the record")
+	}
+}
+
+// A clear for the same transactions in another round keeps the record.
+func TestClearOtherRoundIsNoop(t *testing.T) {
+	a := New()
+	r := rec(10, "0xaa")
+	r.RoundID = "0xc2"
+	_ = a.Save(r)
+	_ = a.Clear(10, "0xaa", "0xc1")
+	if got, _ := a.Current(); got == nil {
+		t.Fatal("clearing another round must keep the pending record")
+	}
+	if err := a.Clear(10, "0xaa", "0xC2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Current(); got != nil {
+		t.Fatal("clearing the recorded round must remove it")
 	}
 }

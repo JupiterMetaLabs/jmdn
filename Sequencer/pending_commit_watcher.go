@@ -29,18 +29,34 @@ var certifiedAttemptMu sync.Mutex
 // record of the block being committed, so it is not applied.
 var ErrCertifiedBlockDropped = errors.New("certified block dropped by operator")
 
-// droppedPending is the last block an operator dropped; guarded by
-// certifiedAttemptMu.
+// droppedPending is the certified round an operator last dropped; guarded by
+// certifiedAttemptMu. It is matched by round (certifiedRoundID), not by
+// BlockHash: BlockHash covers only the transactions, and the orchestrator may
+// re-propose the same transactions at the dropped height after the drop is
+// reported. That new round must be able to commit.
 var droppedPending struct {
-	height uint64
-	hash   string
+	height  uint64
+	roundID string
 }
 
-// pendingDropped reports whether block is the one an operator dropped. The
-// caller holds certifiedAttemptMu.
+// pendingDropped reports whether block's certified round is the one an
+// operator dropped. The caller holds certifiedAttemptMu.
 func pendingDropped(block *config.ZKBlock) bool {
-	return droppedPending.hash != "" && droppedPending.height == block.BlockNumber &&
-		strings.EqualFold(droppedPending.hash, block.BlockHash.Hex())
+	return droppedPending.roundID != "" && droppedPending.height == block.BlockNumber &&
+		strings.EqualFold(droppedPending.roundID, certifiedRoundID(block))
+}
+
+// droppedRoundID returns the round of a dropped record: its RoundID, or for
+// a record written before that field existed, the round of its decoded block.
+func droppedRoundID(rec *pendingcommit.Record) string {
+	if rec.RoundID != "" {
+		return rec.RoundID
+	}
+	var block config.ZKBlock
+	if err := json.Unmarshal(rec.Block, &block); err == nil {
+		return certifiedRoundID(&block)
+	}
+	return ""
 }
 
 // DropUnreadablePendingCommit removes the stored pending record only when it
@@ -63,7 +79,7 @@ func DropPendingCommit(height uint64, blockHash string) (*pendingcommit.Record, 
 	certifiedAttemptMu.Lock()
 	rec, err := pendingCommits.DropMatching(height, blockHash)
 	if err == nil {
-		droppedPending.height, droppedPending.hash = rec.Height, rec.BlockHash
+		droppedPending.height, droppedPending.roundID = rec.Height, droppedRoundID(rec)
 	}
 	certifiedAttemptMu.Unlock()
 	if err != nil {

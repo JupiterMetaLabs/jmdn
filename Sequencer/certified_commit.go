@@ -188,9 +188,23 @@ func pendingRecordFor(block *config.ZKBlock, bls []BLS_Signer.BLSresponse) (pend
 	return pendingcommit.Record{
 		Height:    block.BlockNumber,
 		BlockHash: block.BlockHash.Hex(),
+		RoundID:   certifiedRoundID(block),
 		Block:     rawBlock,
 		Results:   rawResults,
 	}, nil
+}
+
+// certifiedRoundID identifies the certified round of block: its
+// ConsensusHash, which covers the period and the consensus fields. BlockHash
+// alone covers only the transactions, so the same transactions certified
+// again at a later period would look like the same block. Without a
+// ConsensusHash (a block built without the consensus binding) it falls back to
+// block hash and period.
+func certifiedRoundID(block *config.ZKBlock) string {
+	if ch := block.ConsensusHashHex(); ch != "" {
+		return ch
+	}
+	return fmt.Sprintf("%s/p%d", block.BlockHash.Hex(), block.Period)
 }
 
 // recordPendingCertified saves block and its certificate as the pending
@@ -347,7 +361,7 @@ func commitAttempt(ctx context.Context, block *config.ZKBlock, bls []BLS_Signer.
 	// Stored. Only now may the certificate feed the next block (it used to be
 	// recorded before the commit attempt).
 	recordCommitCert(block.BlockNumber, bls)
-	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex()); err != nil {
+	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex(), certifiedRoundID(block)); err != nil {
 		// The record is now at or below the committed tip, so it no longer
 		// blocks proposals. It would make Save refuse the next height, so the
 		// next commitCertifiedBlock drops it first (ClearStale).
@@ -382,7 +396,7 @@ func droppedError(ctx context.Context, block *config.ZKBlock) error {
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.String("function", "commitCertifiedBlock"))
-	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex()); err != nil {
+	if err := pendingCommits.Clear(block.BlockNumber, block.BlockHash.Hex(), certifiedRoundID(block)); err != nil {
 		logger().Warn(ctx, "Could not remove the pending record of a dropped block",
 			ion.String("error", err.Error()),
 			ion.Uint64("block_number", block.BlockNumber),
@@ -469,7 +483,7 @@ func resumeUnderLock(ctx context.Context) (*config.ZKBlock, []BLS_Signer.BLSresp
 	// Committed before the record was cleared: just clear it.
 	if tip, terr := committedTip(); terr == nil && tip >= rec.Height {
 		if state, serr := storedBlockStateAt(&block); serr == nil && state == storedSameApplied {
-			return nil, nil, pendingCommits.Clear(rec.Height, rec.BlockHash)
+			return nil, nil, pendingCommits.Clear(rec.Height, rec.BlockHash, rec.RoundID)
 		}
 	}
 

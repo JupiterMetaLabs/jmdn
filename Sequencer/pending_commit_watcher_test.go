@@ -9,6 +9,8 @@ import (
 	"gossipnode/config"
 	"gossipnode/internal/pendingcommit"
 	"gossipnode/messaging"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // A store outage longer than one retry series halts the height; the watcher
@@ -312,5 +314,78 @@ func TestDropUnreadablePendingCommitRefusesReadable(t *testing.T) {
 	}
 	if got, _ := pendingCommits.Current(); got == nil {
 		t.Fatal("a readable record must be kept")
+	}
+}
+
+// After a drop, the same transactions certified again at a later period (same
+// BlockHash, different ConsensusHash) commit normally.
+func TestReproposalAfterDropCommits(t *testing.T) {
+	f := &fakeCommit{tip: 159}
+	installFakeCommit(t, f)
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	dropped := certifiedTestBlock(160, 1)
+	dropped.ConsensusHash = common.HexToHash("0xc1")
+	rec, err := pendingRecordFor(dropped, testCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingCommits.Save(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DropPendingCommit(160, dropped.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+
+	again := certifiedTestBlock(160, 2) // same transactions, so the same BlockHash
+	again.ConsensusHash = common.HexToHash("0xc2")
+	if again.BlockHash != dropped.BlockHash {
+		t.Fatal("setup: the re-proposal must share the BlockHash")
+	}
+	if err := commitCertifiedBlock(context.Background(), again, testCert); err != nil {
+		t.Fatalf("the re-proposed round must commit, got %v", err)
+	}
+	if len(f.applied) != 1 || f.applied[0].Period != 2 {
+		t.Fatalf("want the period-2 block applied once, got %+v", f.applied)
+	}
+	if got, _ := pendingCommits.Current(); got != nil {
+		t.Fatalf("the record must be cleared after the commit, got %+v", got)
+	}
+}
+
+// A stale attempt for the dropped round does not remove the record of a new
+// round of the same transactions at that height.
+func TestDroppedAttemptKeepsNewRoundRecord(t *testing.T) {
+	f := &fakeCommit{tip: 169}
+	installFakeCommit(t, f)
+	prev := sendRejectionReport
+	sendRejectionReport = func(*config.ZKBlock, string, string) {}
+	t.Cleanup(func() { sendRejectionReport = prev })
+
+	dropped := certifiedTestBlock(170, 1)
+	dropped.ConsensusHash = common.HexToHash("0xd1")
+	rec, _ := pendingRecordFor(dropped, testCert)
+	_ = pendingCommits.Save(rec)
+	if _, err := DropPendingCommit(170, dropped.BlockHash.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	again := certifiedTestBlock(170, 2)
+	again.ConsensusHash = common.HexToHash("0xd2")
+	recAgain, _ := pendingRecordFor(again, testCert)
+	if err := pendingCommits.Save(recAgain); err != nil {
+		t.Fatal(err)
+	}
+
+	certifiedCommitMu.Lock()
+	err := commitCertifiedBlockLocked(context.Background(), dropped, testCert)
+	certifiedCommitMu.Unlock()
+	if !errors.Is(err, ErrCertifiedBlockDropped) {
+		t.Fatalf("want ErrCertifiedBlockDropped, got %v", err)
+	}
+	got, _ := pendingCommits.Current()
+	if got == nil || got.RoundID != certifiedRoundID(again) {
+		t.Fatalf("the new round's record must be kept, got %+v", got)
 	}
 }
