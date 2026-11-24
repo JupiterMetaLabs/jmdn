@@ -5,7 +5,9 @@
 # Before running (once per node):
 #   1. Attach an IAM role with s3:ListBucket + s3:GetObject on the snapshot bucket
 #      (AWS). The script checks it.
-#   2. Copy the canary's /etc/jmdn/jmdn.yaml to this VM as /root/canary-jmdn.yaml.
+#   2. Nothing to copy for the config: the fleet template (the canary's yaml with
+#      per-node secrets blanked) is downloaded from S3, SSE-KMS encrypted; the read
+#      role needs kms:Decrypt on that key. LOCAL_CONFIG=/path overrides it.
 #   3. Get the canary's BLS public key as HEX (bls.json stores it as base64). On the canary:
 #        python3 -c 'import json,base64;print(base64.b64decode(json.load(open("/opt/jmdn/config/bls.json"))["bls_pub"]).hex())'
 #   4. Have a GitHub fine-grained token (Contents: read) for jmdn, avc, ThebeDB,
@@ -16,8 +18,8 @@
 #   sudo bash jmdn_v3base_node_bootstrap.sh
 # It asks for the node alias, the canary's BLS key (hex), an optional reward
 # address and the canary yaml path, then the GitHub token. Answers are saved
-# (0600) for re-runs; NODE_ALIAS, CANARY_BLS_PUB, REWARD_ADDRESS and CANARY_YAML
-# set in the environment override the saved answers.
+# (0600) for re-runs; NODE_ALIAS, CANARY_BLS_PUB and REWARD_ADDRESS set in the
+# environment override the saved answers.
 #
 # Re-runnable: each finished phase leaves a marker in /var/lib/jmdn-bootstrap and is
 # skipped next time. Any failed check stops the run with the reason.
@@ -38,11 +40,12 @@ CANARY_PEER_ID="12D3KooWFci5zowS2aWhTPxY89HxqzAZ6gGtr4BEo9dzrCJfPuD2"
 NODE_ALIAS="${NODE_ALIAS:-}"
 CANARY_BLS_PUB="${CANARY_BLS_PUB:-}"
 REWARD_ADDRESS="${REWARD_ADDRESS:-}"
-CANARY_YAML_SET="${CANARY_YAML:-}"
-CANARY_YAML="${CANARY_YAML:-/root/canary-jmdn.yaml}"
-# Fleet config template (canary yaml with per-node secrets blanked), stored
-# SSE-KMS encrypted. Fetched when CANARY_YAML does not exist locally.
+# Fleet config template (the canary's yaml with per-node secrets blanked), stored
+# SSE-KMS encrypted in S3. Downloaded fresh for every run that still needs it and
+# shredded once the node config is written. LOCAL_CONFIG=/path uses a local file.
 CONFIG_S3="${CONFIG_S3:-s3://jmdt-v3-snapshots/jmdn-config/v3base-node-template.yaml}"
+LOCAL_CONFIG="${LOCAL_CONFIG:-}"
+CANARY_YAML="${LOCAL_CONFIG:-/root/jmdn-config-template.yaml}"
 SRC="/root/src"
 REPO="/root/jmdn"
 JMDN_DATA="/opt/jmdn"
@@ -70,12 +73,12 @@ INPUTS="$MARK/inputs"
 mkdir -p "$MARK"; chmod 700 "$MARK"
 # shellcheck disable=SC1090
 if [ -f "$INPUTS" ]; then
-  env_alias="$NODE_ALIAS" env_bls="$CANARY_BLS_PUB" env_reward="$REWARD_ADDRESS" env_yaml="${CANARY_YAML_SET:-}"
+  env_alias="$NODE_ALIAS" env_bls="$CANARY_BLS_PUB" env_reward="$REWARD_ADDRESS" keep_yaml="$CANARY_YAML"
   . "$INPUTS"
   [ -n "$env_alias" ] && NODE_ALIAS="$env_alias"
   [ -n "$env_bls" ] && CANARY_BLS_PUB="$env_bls"
   [ -n "$env_reward" ] && REWARD_ADDRESS="$env_reward"
-  [ -n "$env_yaml" ] && CANARY_YAML="$env_yaml"
+  CANARY_YAML="$keep_yaml"
   info "saved answers loaded from $INPUTS (values set in the environment take precedence)"
 fi
 ask() {
@@ -96,11 +99,12 @@ step "Inputs"
 ask NODE_ALIAS "Node alias (e.g. jmdn-aws-us-west-1-v3base-2)" '^[A-Za-z0-9._-]+$'
 ask CANARY_BLS_PUB "Canary BLS public key, HEX (see script header for the command)" '^[0-9a-fA-F]{64,}$'
 ask REWARD_ADDRESS "Reward address 0x... (validators only; Enter to skip)" '^0x[0-9a-fA-F]{40}$' optional
-ask CANARY_YAML "Path to the canary's jmdn.yaml copy" '^/.+'
-[ -f "$CANARY_YAML" ] || info "$CANARY_YAML not present; it is fetched from $CONFIG_S3 after step 1"
-( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\nCANARY_YAML=%q\n' \
-    "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" "$CANARY_YAML" > "$INPUTS" )
-ok "alias $NODE_ALIAS; reward address ${REWARD_ADDRESS:-none}; canary yaml $CANARY_YAML"
+if [ -n "$LOCAL_CONFIG" ]; then
+  [ -f "$LOCAL_CONFIG" ] || die "LOCAL_CONFIG=$LOCAL_CONFIG not found"
+fi
+( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\n' \
+    "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" > "$INPUTS" )
+ok "alias $NODE_ALIAS; reward address ${REWARD_ADDRESS:-none}; config ${LOCAL_CONFIG:-$CONFIG_S3}"
 if [ -t 0 ]; then
   read -r -p "    Proceed? [y/N]: " go; [[ "$go" =~ ^[Yy]$ ]] || die "stopped at your request"
 fi
@@ -157,15 +161,18 @@ if ! done_phase 01-apt; then
 fi
 
 # ---- config template (after the AWS CLI is installed) ------------------------------
-if [ ! -f "$CANARY_YAML" ]; then
-  step "Config template from $CONFIG_S3"
-  aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM"
-  ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
-    || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
-  chmod 600 "$CANARY_YAML"
-  ok "fetched to $CANARY_YAML (0600)"
+if ! done_phase 03-deps || ! done_phase 07-config; then
+  if [ -z "$LOCAL_CONFIG" ]; then
+    step "Config template from $CONFIG_S3"
+    aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM"
+    rm -f "$CANARY_YAML"
+    ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
+      || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
+    chmod 600 "$CANARY_YAML"
+    ok "downloaded to $CANARY_YAML (0600; removed after step 7)"
+  fi
+  python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$CANARY_YAML" || die "$CANARY_YAML does not parse"
 fi
-python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$CANARY_YAML" || die "$CANARY_YAML does not parse"
 
 # ---- 2. source: jmdn + private sister repos (HTTPS) -----------------------------
 if ! done_phase 02-src; then
@@ -297,8 +304,9 @@ if ! done_phase 07-config; then
   python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$JMDN_YAML" || die "$JMDN_YAML does not parse (above)"
   drift=$(diff <(grep -vE "alias:|sql_dsn:|password:|reward_address:|admin_token:|signer_bls_pub:|boot_fail_closed:" "$CANARY_YAML") \
                <(grep -vE "alias:|sql_dsn:|password:|reward_address:|admin_token:|signer_bls_pub:|boot_fail_closed:" "$JMDN_YAML") || true)
-  [ -z "$drift" ] || { printf '%s\n' "$drift" | head -20; die "config differs from the canary beyond the per-node keys (above)"; }
-  mark 07-config; ok "alias, sql_dsn, reward_address, admin_token (/root/jmdn-admin-token), checkpoint pin set; rest identical to the canary"
+  [ -z "$drift" ] || { printf '%s\n' "$drift" | head -20; die "config differs from the template beyond the per-node keys (above)"; }
+  mark 07-config; ok "alias, sql_dsn, reward_address, admin_token (/root/jmdn-admin-token), checkpoint pin set; rest identical to the template"
+  [ -n "$LOCAL_CONFIG" ] || { shred -u "$CANARY_YAML" 2>/dev/null || rm -f "$CANARY_YAML"; }
 fi
 
 # ---- 8. snapshot ---------------------------------------------------------------
