@@ -370,6 +370,12 @@ if ! done_phase 09-restore; then
   pg_restore --no-owner --no-privileges --no-publications --no-subscriptions -j 4 -d "$PG_DB" "$IMPORT_DIR/thebe.pgdump" || die "pg_restore reported errors (above)"
   maxblock=$(psql -Atc "SELECT max(block_number) FROM blocks")
   [ "$maxblock" = "$EXPECT_HEIGHT" ] || die "max(block_number) is $maxblock, expected $EXPECT_HEIGHT"
+  # Freeze and analyze the restored tables now, before the CDC slot exists.
+  # Otherwise autovacuum does it after boot and the slot holds that WAL
+  # (about 1 GB) as lag until the first replicated commit.
+  info "VACUUM (FREEZE, ANALYZE) of the restored tables (a few minutes)"
+  psql -v ON_ERROR_STOP=1 -q -c "VACUUM (FREEZE, ANALYZE)" || die "VACUUM after restore failed"
+  sudo -u postgres psql -p "$PGPORT" -v ON_ERROR_STOP=1 -q -c "CHECKPOINT" || die "CHECKPOINT failed"
   naccounts=$(psql -Atc "SELECT count(*) FROM accounts")
   unset PGPASSWORD
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c "CREATE PUBLICATION $CDC_PUB FOR ALL TABLES"
