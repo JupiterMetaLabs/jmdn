@@ -8,6 +8,8 @@
 #   2. Nothing to copy for the config: the fleet template (the canary's yaml with
 #      per-node secrets blanked) is downloaded from S3, SSE-KMS encrypted; the read
 #      role needs kms:Decrypt on that key. LOCAL_CONFIG=/path overrides it.
+#      Non-AWS hosts (GCP): put a links file at /root/jmdn-links.env instead (made on
+#      the canary with `aws s3 presign`); then no AWS role is needed on this host.
 #   3. Get the canary's BLS public key as HEX (bls.json stores it as base64). On the canary:
 #        python3 -c 'import json,base64;print(base64.b64decode(json.load(open("/opt/jmdn/config/bls.json"))["bls_pub"]).hex())'
 #   4. Have a GitHub fine-grained token (Contents: read) for jmdn, avc, ThebeDB,
@@ -45,6 +47,21 @@ REWARD_ADDRESS="${REWARD_ADDRESS:-}"
 # shredded once the node config is written. LOCAL_CONFIG=/path uses a local file.
 CONFIG_S3="${CONFIG_S3:-s3://jmdt-v3-snapshots/jmdn-config/v3base-node-template.yaml}"
 LOCAL_CONFIG="${LOCAL_CONFIG:-}"
+# Non-AWS hosts (GCP, other clouds): a links file with time-limited HTTPS URLs,
+# made on a machine that can read the bucket. Defines CONFIG_URL, PGDUMP_URL,
+# TAR_URL, SUMS_URL and HEIGHT_URL. When present, no AWS credentials are used;
+# the downloads are still checked against the pinned checksums.
+LINKS_FILE="${LINKS_FILE:-/root/jmdn-links.env}"
+USE_LINKS=0
+if [ -f "$LINKS_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$LINKS_FILE"
+  for v in CONFIG_URL PGDUMP_URL TAR_URL SUMS_URL HEIGHT_URL; do
+    [ -n "${!v:-}" ] || { printf 'FAIL %s missing %s\n' "$LINKS_FILE" "$v" >&2; exit 1; }
+  done
+  USE_LINKS=1
+fi
+fetch_url() { curl -fsSL --retry 3 -o "$2" "$1" || die "download failed for $(basename "$2") (link expired? make a new links file)"; }
 CANARY_YAML="${LOCAL_CONFIG:-/root/jmdn-config-template.yaml}"
 SRC="/root/src"
 REPO="/root/jmdn"
@@ -163,11 +180,16 @@ fi
 # ---- config template (after the AWS CLI is installed) ------------------------------
 if ! done_phase 03-deps || ! done_phase 07-config; then
   if [ -z "$LOCAL_CONFIG" ]; then
-    step "Config template from $CONFIG_S3"
-    aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM"
     rm -f "$CANARY_YAML"
-    ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
-      || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
+    if [ "$USE_LINKS" = 1 ]; then
+      step "Config template (links file $LINKS_FILE)"
+      ( umask 077; fetch_url "$CONFIG_URL" "$CANARY_YAML" )
+    else
+      step "Config template from $CONFIG_S3"
+      aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM, or provide $LINKS_FILE"
+      ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
+        || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
+    fi
     chmod 600 "$CANARY_YAML"
     ok "downloaded to $CANARY_YAML (0600; removed after step 7)"
   fi
@@ -311,10 +333,18 @@ fi
 
 # ---- 8. snapshot ---------------------------------------------------------------
 if ! done_phase 08-snapshot; then
-  step "8/10 Snapshot s3://$BUCKET/$PREFIX/"
-  aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM"
   mkdir -p "$IMPORT_DIR"
-  aws s3 cp "s3://$BUCKET/$PREFIX/" "$IMPORT_DIR/" --recursive --region "$BUCKET_REGION" --only-show-errors
+  if [ "$USE_LINKS" = 1 ]; then
+    step "8/10 Snapshot (links file $LINKS_FILE)"
+    fetch_url "$PGDUMP_URL" "$IMPORT_DIR/thebe.pgdump"
+    fetch_url "$TAR_URL" "$IMPORT_DIR/chaindata.tar"
+    fetch_url "$SUMS_URL" "$IMPORT_DIR/SHA256SUMS"
+    fetch_url "$HEIGHT_URL" "$IMPORT_DIR/COPY_HEIGHT"
+  else
+    step "8/10 Snapshot s3://$BUCKET/$PREFIX/"
+    aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM, or provide $LINKS_FILE"
+    aws s3 cp "s3://$BUCKET/$PREFIX/" "$IMPORT_DIR/" --recursive --region "$BUCKET_REGION" --only-show-errors
+  fi
   ( cd "$IMPORT_DIR" && sha256sum -c SHA256SUMS >/dev/null ) || die "SHA256SUMS check failed"
   [ "$(sha256sum "$IMPORT_DIR/thebe.pgdump" | cut -c1-64)" = "$EXPECT_PGDUMP_SHA" ] || die "thebe.pgdump does not match the canary's checksum"
   [ "$(sha256sum "$IMPORT_DIR/chaindata.tar" | cut -c1-64)" = "$EXPECT_TAR_SHA" ] || die "chaindata.tar does not match the canary's checksum"
@@ -389,4 +419,5 @@ cat <<EOF
     then confirm "boot verification passed" again
   - admin token: /root/jmdn-admin-token (0600)
   - clean up when stable: rm -rf $IMPORT_DIR $MARK/pgpass
+  - links file (non-AWS hosts): shred -u $LINKS_FILE once the node is up
 EOF
