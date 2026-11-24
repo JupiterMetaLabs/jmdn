@@ -21,10 +21,11 @@
 #
 # Run:
 #   sudo bash jmdn_v3base_node_bootstrap.sh
-# It asks for the node alias, the canary's BLS key (hex), an optional reward
-# address and the canary yaml path, then the GitHub token. Answers are saved
-# (0600) for re-runs; NODE_ALIAS, CANARY_BLS_PUB and REWARD_ADDRESS set in the
-# environment override the saved answers.
+# It asks for the node alias, the canary's BLS key (hex) and an optional reward
+# address, then the GitHub token. The config template comes from CONFIG_S3 (or a
+# links file); LOCAL_CONFIG=/path uses a local copy instead. Answers are saved
+# (0600) for re-runs; NODE_ALIAS, CANARY_BLS_PUB, REWARD_ADDRESS and LOCAL_CONFIG
+# set in the environment override the saved answers.
 #
 # Re-runnable: each finished phase leaves a marker in /var/lib/jmdn-bootstrap and is
 # skipped next time. Any failed check stops the run with the reason.
@@ -32,7 +33,9 @@
 set -euo pipefail
 
 # ---- release and snapshot -------------------------------------------------------
-JMDN_REF="${JMDN_REF:-9031eeb5}"
+# The jmdn release to build: the release that ships this script. No database
+# schema change since the canary build (9031eeb5), so the canary snapshot applies.
+JMDN_REF="${JMDN_REF:-v3.0.0-beta.2}"
 BUCKET="${BUCKET:-jmdt-v3-snapshots}"
 PREFIX="${PREFIX:-jmdn-transfer/canary-22454}"
 BUCKET_REGION="${BUCKET_REGION:-us-east-1}"
@@ -77,7 +80,7 @@ aws_ready() {
   info "GCP VM detected: exchanging its Google identity for $GCP_AWS_ROLE_ARN"
   req=$(mktemp); chmod 600 "$req"
   python3 -c 'import json,sys; json.dump({"RoleArn":sys.argv[1],"RoleSessionName":sys.argv[2],"DurationSeconds":14400,"WebIdentityToken":sys.stdin.read().strip()}, open(sys.argv[3],"w"))' \
-    "$GCP_AWS_ROLE_ARN" "jmdn-bootstrap-$(hostname -s)" "$req" <<<"$tok"
+    "$GCP_AWS_ROLE_ARN" "jmdn-bootstrap-$(hostname -s | tr -c 'A-Za-z0-9=,.@_\n-' - | cut -c1-49)" "$req" <<<"$tok"
   unset tok
   creds=$(aws sts assume-role-with-web-identity --region "$BUCKET_REGION" --cli-input-json "file://$req" \
     --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>"$req.err") \
@@ -88,8 +91,10 @@ aws_ready() {
   unset creds
   aws sts get-caller-identity --region "$BUCKET_REGION" >/dev/null 2>&1 || die "assumed $GCP_AWS_ROLE_ARN but the credentials do not work"
 }
+# aws_done: drop the assumed-role credentials (GCP) once a download is finished,
+# so later phases and the programs they run never inherit them.
+aws_done() { unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; }
 fetch_url() { curl -fsSL --retry 3 -o "$2" "$1" || die "download failed for $(basename "$2") (link expired? make a new links file)"; }
-CANARY_YAML="${LOCAL_CONFIG:-/root/jmdn-config-template.yaml}"
 SRC="/root/src"
 REPO="/root/jmdn"
 JMDN_DATA="/opt/jmdn"
@@ -117,14 +122,15 @@ INPUTS="$MARK/inputs"
 mkdir -p "$MARK"; chmod 700 "$MARK"
 # shellcheck disable=SC1090
 if [ -f "$INPUTS" ]; then
-  env_alias="$NODE_ALIAS" env_bls="$CANARY_BLS_PUB" env_reward="$REWARD_ADDRESS" keep_yaml="$CANARY_YAML"
+  env_alias="$NODE_ALIAS" env_bls="$CANARY_BLS_PUB" env_reward="$REWARD_ADDRESS" env_local="$LOCAL_CONFIG"
   . "$INPUTS"
   [ -n "$env_alias" ] && NODE_ALIAS="$env_alias"
   [ -n "$env_bls" ] && CANARY_BLS_PUB="$env_bls"
   [ -n "$env_reward" ] && REWARD_ADDRESS="$env_reward"
-  CANARY_YAML="$keep_yaml"
+  [ -n "$env_local" ] && LOCAL_CONFIG="$env_local"
   info "saved answers loaded from $INPUTS (values set in the environment take precedence)"
 fi
+CANARY_YAML="${LOCAL_CONFIG:-/root/jmdn-config-template.yaml}"
 ask() {
   local var="$1" prompt="$2" re="$3" optional="${4:-}" val
   val="${!var:-}"
@@ -135,6 +141,7 @@ ask() {
     fi
     if [ -z "$val" ] && [ -n "$optional" ]; then break; fi
     if [[ "$val" =~ $re ]]; then break; fi
+    [ -t 0 ] || die "$var=\"$val\" is not valid and there is no terminal to ask again on"
     printf '    "%s" is not valid, try again\n' "$val"; val=""
   done
   printf -v "$var" '%s' "$val"
@@ -146,8 +153,8 @@ ask REWARD_ADDRESS "Reward address 0x... (validators only; Enter to skip)" '^0x[
 if [ -n "$LOCAL_CONFIG" ]; then
   [ -f "$LOCAL_CONFIG" ] || die "LOCAL_CONFIG=$LOCAL_CONFIG not found"
 fi
-( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\n' \
-    "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" > "$INPUTS" )
+( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\nLOCAL_CONFIG=%q\n' \
+    "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" "$LOCAL_CONFIG" > "$INPUTS" )
 ok "alias $NODE_ALIAS; reward address ${REWARD_ADDRESS:-none}; config ${LOCAL_CONFIG:-$CONFIG_S3}"
 if [ -t 0 ]; then
   read -r -p "    Proceed? [y/N]: " go; [[ "$go" =~ ^[Yy]$ ]] || die "stopped at your request"
@@ -227,6 +234,7 @@ if ! done_phase 03-deps || ! done_phase 07-config; then
       aws_ready
       ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
         || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
+      aws_done
     fi
     chmod 600 "$CANARY_YAML"
     ok "downloaded to $CANARY_YAML (0600; removed after step 7)"
@@ -237,6 +245,7 @@ fi
 # ---- 2. source: jmdn + private sister repos (HTTPS) -----------------------------
 if ! done_phase 02-src; then
   step "2/10 Source code"
+  [ -t 0 ] || die "the GitHub token is read from a terminal only; run this script interactively"
   printf '    GitHub token (hidden): '; read -rs GH_TOKEN; echo
   [ -n "$GH_TOKEN" ] || die "empty token"
   export GH_TOKEN
@@ -247,12 +256,14 @@ if ! done_phase 02-src; then
   ok "token can read jmdn and $SISTERS"
   export GIT_TERMINAL_PROMPT=0
   gitauth() { git -c credential.helper= -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' "$@"; }
-  if [ -d "$REPO/.git" ]; then gitauth -C "$REPO" fetch -q origin; else gitauth clone -q https://github.com/JupiterMetaLabs/jmdn.git "$REPO"; fi
+  if [ -d "$REPO/.git" ]; then gitauth -C "$REPO" fetch -q --tags origin; else gitauth clone -q https://github.com/JupiterMetaLabs/jmdn.git "$REPO"; fi
   mkdir -p "$SRC"
   for r in $SISTERS; do
     if [ -d "$SRC/$r/.git" ]; then gitauth -C "$SRC/$r" fetch -q --tags origin; else gitauth clone -q "https://github.com/JupiterMetaLabs/$r.git" "$SRC/$r"; fi
   done
   unset GH_TOKEN
+  git -C "$REPO" rev-parse -q --verify "$JMDN_REF^{commit}" >/dev/null \
+    || die "$JMDN_REF not found in jmdn (release not tagged yet?); set JMDN_REF to an existing tag or commit"
   git -C "$REPO" checkout -q "$JMDN_REF"
   for r in $SISTERS; do git config --global url."file://$SRC/$r".insteadOf "https://github.com/JupiterMetaLabs/$r"; done
   mark 02-src; ok "jmdn at $(git -C "$REPO" rev-parse --short HEAD); sister repos in $SRC"
@@ -341,7 +352,9 @@ if ! done_phase 05-build; then
   ( cd "$REPO" && bash ./Scripts/build.sh )
   git -C "$REPO" checkout -q -- go.mod go.sum 2>/dev/null || true
   [ -x "$REPO/jmdn" ] || die "build.sh did not produce $REPO/jmdn"
-  "$REPO/jmdn" --version 2>&1 | grep "${JMDN_REF:0:7}" >/dev/null || die "built jmdn is not $JMDN_REF: $("$REPO/jmdn" --version 2>&1 | head -1)"
+  want_commit=$(git -C "$REPO" rev-parse --short HEAD)
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse "$JMDN_REF^{commit}")" ] || die "$REPO is not at $JMDN_REF"
+  "$REPO/jmdn" --version 2>&1 | grep -F "$want_commit" >/dev/null || die "built jmdn is not $JMDN_REF ($want_commit): $("$REPO/jmdn" --version 2>&1 | head -1)"
   install -m 0755 "$REPO/jmdn" /usr/local/bin/jmdn
   mark 05-build; ok "built and installed: $(/usr/local/bin/jmdn --version 2>&1 | head -1)"
 fi
@@ -353,7 +366,7 @@ if ! done_phase 06-service; then
   ( cd "$REPO" && printf 'n\n' | bash ./Scripts/install_services.sh --mode local )
   systemctl stop jmdn 2>/dev/null || true
   [ -n "$(ls -A "$JMDN_DATA/certs" 2>/dev/null)" ] || die "no certs in $JMDN_DATA/certs"
-  /usr/local/bin/jmdn --version 2>&1 | grep "${JMDN_REF:0:7}" >/dev/null || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
+  /usr/local/bin/jmdn --version 2>&1 | grep -F "$(git -C "$REPO" rev-parse --short HEAD)" >/dev/null || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
   mark 06-service; ok "service installed and stopped; certs in $JMDN_DATA/certs"
 fi
 
@@ -393,6 +406,7 @@ if ! done_phase 08-snapshot; then
     step "8/10 Snapshot s3://$BUCKET/$PREFIX/"
     aws_ready
     aws s3 cp "s3://$BUCKET/$PREFIX/" "$IMPORT_DIR/" --recursive --region "$BUCKET_REGION" --only-show-errors
+    aws_done
   fi
   ( cd "$IMPORT_DIR" && sha256sum -c SHA256SUMS >/dev/null ) || die "SHA256SUMS check failed"
   [ "$(sha256sum "$IMPORT_DIR/thebe.pgdump" | cut -c1-64)" = "$EXPECT_PGDUMP_SHA" ] || die "thebe.pgdump does not match the canary's checksum"
