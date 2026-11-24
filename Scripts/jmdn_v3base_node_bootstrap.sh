@@ -272,8 +272,21 @@ PY
   mkdir -p "$MARK"; chmod 700 "$MARK"
   PG_APP_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); export PG_APP_PASSWORD
   ( umask 077; printf '%s' "$PG_APP_PASSWORD" > "$MARK/pgpass" )
+  # The snapshot is a Postgres 18 dump. Distros older than Ubuntu 26.04 ship an
+  # older default; add the PostgreSQL apt repository so "postgresql" resolves to 18+.
+  pg_candidate_major() { apt-cache policy postgresql 2>/dev/null | awk '/Candidate:/{print $2}' | sed 's/[^0-9].*//'; }
+  pgc=$(pg_candidate_major)
+  if [ -z "$(pg_lsclusters --no-header 2>/dev/null | awk -v m="$MIN_PG_MAJOR" '$1+0>=m')" ] && [ "${pgc:-0}" -lt "$MIN_PG_MAJOR" ]; then
+    info "distro Postgres is ${pgc:-unavailable}; adding the PostgreSQL apt repository (apt.postgresql.org)"
+    apt_wait; DEBIAN_FRONTEND=noninteractive apt-get install -y -q postgresql-common >/dev/null
+    apt_wait; DEBIAN_FRONTEND=noninteractive /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y </dev/null >/dev/null \
+      || die "could not add the PostgreSQL apt repository"
+    pgc=$(pg_candidate_major); [ "${pgc:-0}" -ge "$MIN_PG_MAJOR" ] || die "postgresql candidate is still $(pg_candidate_major) after adding apt.postgresql.org"
+  fi
   apt_wait
-  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" bash ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null )
+  # setup_dependencies prints the Thebe DSN with the password; redact it.
+  ( cd "$REPO" && PG_APP_USER="$PG_USER" PG_APP_DB="$PG_DB" bash ./Scripts/setup_dependencies.sh --go --yggdrasil --redis --storage-local </dev/null ) 2>&1 \
+    | sed -u -E 's#(postgres(ql)?://[^:/@[:space:]]+:)[^@[:space:]]+@#\1<redacted>@#g'
   command -v go >/dev/null || die "Go not on PATH after setup_dependencies"
   # setup_dependencies installs a fixed fallback Go; use the exact toolchain go.mod pins.
   want=$(awk '$1=="toolchain"{print $2; exit}' "$REPO/go.mod")
@@ -297,10 +310,8 @@ fi
 # ---- 4. Postgres for ThebeDB (role, replication, WAL) ----------------------------
 if ! done_phase 04-pg; then
   step "4/10 PostgreSQL for ThebeDB"
-  PGPORT=$(pg_lsclusters --no-header 2>/dev/null | awk '$4=="online"{print $3; exit}')
-  [ -n "$PGPORT" ] || die "no online Postgres cluster (pg_lsclusters)"
-  PGVER=$(pg_lsclusters --no-header | awk '$4=="online"{print $1; exit}')
-  [ "${PGVER%%.*}" -ge "$MIN_PG_MAJOR" ] || die "Postgres $PGVER < $MIN_PG_MAJOR; the snapshot is a Postgres 18 dump"
+  read -r PGVER PGPORT <<<"$(pg_lsclusters --no-header 2>/dev/null | awk -v m="$MIN_PG_MAJOR" '$4=="online" && $1+0>=m {print $1, $3}' | sort -n | tail -1)"
+  [ -n "${PGPORT:-}" ] || die "no online Postgres $MIN_PG_MAJOR+ cluster (pg_lsclusters: $(pg_lsclusters --no-header 2>/dev/null | awk '{print $1"/"$2" "$4}' | tr '\n' ' '))"
   PG_APP_PASSWORD=$(cat "$MARK/pgpass")
   sudo -u postgres psql -p "$PGPORT" -v ON_ERROR_STOP=1 -q <<SQL
 DO \$\$ BEGIN
@@ -394,12 +405,25 @@ fi
 if ! done_phase 09-restore; then
   step "9/10 Restore chain data and Postgres"
   [ "$(systemctl is-active jmdn 2>/dev/null || true)" != "active" ] || die "jmdn is running"
-  [ -z "$(ls -A "$JMDN_DATA/storage" 2>/dev/null)" ] || die "$JMDN_DATA/storage is not empty"
+  if [ -f "$MARK/09-restore.started" ]; then
+    # An earlier run of this phase stopped partway. Everything below was put there
+    # by that run, so clear it and restore again.
+    info "previous restore did not finish: clearing $JMDN_DATA/storage and recreating database $PG_DB"
+    find "$JMDN_DATA/storage" -mindepth 1 -delete 2>/dev/null || true
+    sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -Atc "SELECT pg_drop_replication_slot('$CDC_SLOT') FROM pg_replication_slots WHERE slot_name='$CDC_SLOT'" >/dev/null 2>&1 || true
+    sudo -u postgres dropdb -p "$PGPORT" --if-exists --force "$PG_DB"
+    sudo -u postgres createdb -p "$PGPORT" -O "$PG_USER" "$PG_DB"
+  fi
+  [ -z "$(ls -A "$JMDN_DATA/storage" 2>/dev/null)" ] || die "$JMDN_DATA/storage is not empty and was not filled by this script; move it aside and rerun"
   grep -qs "$CANARY_PEER_ID" "$JMDN_DATA/config/peer.json" && die "$JMDN_DATA/config/peer.json holds the canary's identity"
+  if tar -tf "$IMPORT_DIR/chaindata.tar" | grep -qE '(^|/)config/(peer|bls)\.json$'; then
+    die "chaindata.tar contains node identity files (config/peer.json or bls.json); refusing to extract"
+  fi
   export PGHOST=127.0.0.1 PGPORT PGUSER="$PG_USER" PGDATABASE="$PG_DB" PGSSLMODE=disable
   PGPASSWORD=$(cat "$MARK/pgpass"); export PGPASSWORD
   trap 'unset PGPASSWORD' EXIT
-  [ "$(psql -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")" = "0" ] || die "database $PG_DB is not empty"
+  [ "$(psql -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")" = "0" ] || die "database $PG_DB is not empty and was not filled by this script"
+  touch "$MARK/09-restore.started"
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -Atc "SELECT pg_drop_replication_slot('$CDC_SLOT') FROM pg_replication_slots WHERE slot_name='$CDC_SLOT'" >/dev/null
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -Atc "DROP PUBLICATION IF EXISTS $CDC_PUB" >/dev/null
   tar -C "$JMDN_DATA" -xf "$IMPORT_DIR/chaindata.tar"
@@ -418,7 +442,7 @@ if ! done_phase 09-restore; then
   unset PGPASSWORD
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c "CREATE PUBLICATION $CDC_PUB FOR ALL TABLES"
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -v ON_ERROR_STOP=1 -Atc "SELECT pg_create_logical_replication_slot('$CDC_SLOT', 'pgoutput')" >/dev/null
-  mark 09-restore; ok "accounts $naccounts, max block $maxblock; publication $CDC_PUB and slot $CDC_SLOT created"
+  mark 09-restore; rm -f "$MARK/09-restore.started"; ok "accounts $naccounts, max block $maxblock; publication $CDC_PUB and slot $CDC_SLOT created"
 fi
 
 # ---- 10. start + first-boot checks ------------------------------------------------
