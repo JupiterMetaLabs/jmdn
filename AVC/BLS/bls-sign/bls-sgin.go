@@ -1,21 +1,22 @@
 package blssign
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"gossipnode/config"
 
 	"go.dedis.ch/dela/crypto"
 	"go.dedis.ch/dela/crypto/bls"
+	"go.dedis.ch/kyber/v3"
+	"go.dedis.ch/kyber/v3/pairing/bn256"
 )
 
 //
@@ -36,8 +37,81 @@ func BLSSign(privateKey, message []byte) ([]byte, error) {
 	return sig.MarshalBinary()
 }
 
+// PublicKeyLen and SignatureLen are the exact encoded sizes on this curve
+// (BN256: a public key is a G2 point, a signature a G1 point).
+const (
+	PublicKeyLen = 128
+	SignatureLen = 64
+)
+
+var (
+	// ErrBadPublicKey rejects a key of the wrong length, the identity point, a
+	// point not on the curve, or a non-canonical encoding.
+	ErrBadPublicKey = errors.New("bls: public key must be a canonical 128-byte encoding and not the identity point")
+	// ErrBadSignature rejects a signature of the wrong length, the identity
+	// point, a point not on the curve, or a non-canonical encoding.
+	ErrBadSignature = errors.New("bls: signature must be a canonical 64-byte encoding and not the identity point")
+)
+
+// suite is the pairing dela's bls package signs on: signatures in G1, public
+// keys in G2.
+var suite = bn256.NewSuite()
+
+func checkPublicKey(b []byte) error {
+	return checkPoint(b, PublicKeyLen, ErrBadPublicKey, suite.G2().Point)
+}
+
+func checkSignature(b []byte) error {
+	return checkPoint(b, SignatureLen, ErrBadSignature, suite.G1().Point)
+}
+
+// checkPoint enforces the exact encoded length, rejects the identity point
+// (all zeros), and requires the one canonical encoding of the point. The
+// identity key paired with the identity signature verifies EVERY message, and
+// the decoder ignores trailing bytes, so without the first two checks a
+// malformed key or signature could pass as valid. Every caller (votes,
+// committee snapshots and their PoP, checkpoints, entropy aggregates, RANDAO
+// reveals) gets the check (2026-10-22 audit, A-6).
+//
+// The canonical check is decode, re-encode, compare. kyber's BN256 decoder
+// does not check that a coordinate is below the field prime p, so x and x+p
+// (whenever x+p < 2^256) decode to the same point: different bytes, same
+// valid signature. A vote record keyed by its signature, or a RANDAO reveal
+// hashed into the mix, would then have several valid values for one signer.
+// Same check as avc/bls (A-2 work, LLD §6.2).
+func checkPoint(b []byte, n int, errBad error, newPoint func() kyber.Point) error {
+	if len(b) != n {
+		return errBad
+	}
+	zero := true
+	for _, x := range b {
+		if x != 0 {
+			zero = false
+			break
+		}
+	}
+	if zero {
+		return errBad
+	}
+	pt := newPoint()
+	if err := pt.UnmarshalBinary(b); err != nil {
+		return fmt.Errorf("%w: %v", errBad, err)
+	}
+	out, err := pt.MarshalBinary()
+	if err != nil || !bytes.Equal(out, b) {
+		return fmt.Errorf("%w: non-canonical encoding", errBad)
+	}
+	return nil
+}
+
 // BLSVerify verifies (pubKey, message, signature).
 func BLSVerify(pubKey, message, signature []byte) error {
+	if err := checkPublicKey(pubKey); err != nil {
+		return err
+	}
+	if err := checkSignature(signature); err != nil {
+		return err
+	}
 	pk, err := bls.NewPublicKey(pubKey)
 	if err != nil {
 		return err
@@ -64,12 +138,22 @@ func BLSAggregate(signatures ...[]byte) ([]byte, error) {
 }
 
 // BLSFastAggregateVerify verifies aggregated signature against all pubkeys for the same message.
+//
+// Plain BLS aggregation is only sound if every key was registered with a proof
+// of possession; otherwise a rogue key lets its holder forge the aggregate
+// alone. The committee source enforces that (seednode/committee PoP check).
 func BLSFastAggregateVerify(pubKeys [][]byte, message, aggSig []byte) (bool, error) {
 	if len(pubKeys) == 0 {
 		return false, errors.New("no pubkeys provided")
 	}
+	if err := checkSignature(aggSig); err != nil {
+		return false, err
+	}
 	pubs := make([]crypto.PublicKey, len(pubKeys))
 	for i, p := range pubKeys {
+		if err := checkPublicKey(p); err != nil {
+			return false, err
+		}
 		pk, err := bls.NewPublicKey(p)
 		if err != nil {
 			return false, err
@@ -224,206 +308,4 @@ type SignatureShare struct {
 	PublicKey []byte
 	Signature []byte
 	Message   []byte
-}
-
-// MultiSigManager collects/validates shares, aggregates, and verifies.
-type MultiSigManager struct {
-	mu              sync.RWMutex
-	signers         map[string]*Signer          // id -> signer
-	threshold       int                         // minimum signatures required
-	signatureShares map[string][]SignatureShare // messageKey -> shares
-}
-
-// NewMultiSigManager creates a new manager with a threshold.
-func NewMultiSigManager(threshold int) *MultiSigManager {
-	return &MultiSigManager{
-		signers:         make(map[string]*Signer),
-		threshold:       threshold,
-		signatureShares: make(map[string][]SignatureShare),
-	}
-}
-
-// AddSigner registers a signer (with pubkey; private key only if this process will sign).
-func (m *MultiSigManager) AddSigner(id string, publicKey, privateKey []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.signers[id]; exists {
-		return fmt.Errorf("signer %s already exists", id)
-	}
-	m.signers[id] = &Signer{ID: id, PublicKey: publicKey, PrivateKey: privateKey}
-	return nil
-}
-
-// SignAsParticipant produces a signature for the given message using signer's private key.
-func (m *MultiSigManager) SignAsParticipant(signerID string, message []byte) ([]byte, error) {
-	m.mu.RLock()
-	s, ok := m.signers[signerID]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unknown signer %s", signerID)
-	}
-	if s.PrivateKey == nil {
-		return nil, fmt.Errorf("signer %s has no private key", signerID)
-	}
-	return BLSSign(s.PrivateKey, message)
-}
-
-// AddSignatureShare verifies and records a signature share for messageKey.
-func (m *MultiSigManager) AddSignatureShare(messageKey string, share SignatureShare) error {
-	// Verify sig strictly before recording
-	if err := BLSVerify(share.PublicKey, share.Message, share.Signature); err != nil {
-		return fmt.Errorf("invalid signature from %s: %w", share.SignerID, err)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Prevent duplicate signer for the same messageKey
-	for _, s := range m.signatureShares[messageKey] {
-		if s.SignerID == share.SignerID {
-			return fmt.Errorf("signer %s already submitted", share.SignerID)
-		}
-	}
-
-	m.signatureShares[messageKey] = append(m.signatureShares[messageKey], share)
-	return nil
-}
-
-// HasReachedThreshold returns true if we have >= threshold shares for messageKey.
-func (m *MultiSigManager) HasReachedThreshold(messageKey string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.signatureShares[messageKey]) >= m.threshold
-}
-
-// AggregateSignatures aggregates all collected shares for messageKey (requires threshold).
-func (m *MultiSigManager) AggregateSignatures(messageKey string) (aggSig []byte, pubKeys [][]byte, msg []byte, err error) {
-	m.mu.RLock()
-	shares := append([]SignatureShare(nil), m.signatureShares[messageKey]...) // copy
-	m.mu.RUnlock()
-
-	if len(shares) < m.threshold {
-		return nil, nil, nil, fmt.Errorf("not enough signatures: got %d, need %d", len(shares), m.threshold)
-	}
-
-	// Defensive: ensure all shares are for the exact same message bytes
-	msg = shares[0].Message
-	for i := 1; i < len(shares); i++ {
-		if !bytesEqual(shares[i].Message, msg) {
-			return nil, nil, nil, errors.New("shares contain different message bytes")
-		}
-	}
-
-	sigs := make([][]byte, len(shares))
-	pubKeys = make([][]byte, len(shares))
-	for i, s := range shares {
-		sigs[i] = s.Signature
-		pubKeys[i] = s.PublicKey
-	}
-
-	agg, err := BLSAggregate(sigs...)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("aggregate failed: %w", err)
-	}
-	return agg, pubKeys, msg, nil
-}
-
-// VerifyAggregatedSignature verifies an aggregated signature for messageKey.
-func (m *MultiSigManager) VerifyAggregatedSignature(messageKey string, aggregatedSig []byte) (bool, error) {
-	m.mu.RLock()
-	shares := append([]SignatureShare(nil), m.signatureShares[messageKey]...) // copy
-	m.mu.RUnlock()
-
-	if len(shares) < m.threshold {
-		return false, fmt.Errorf("not enough signatures for verification")
-	}
-
-	// Same-message guard
-	msg := shares[0].Message
-	for i := 1; i < len(shares); i++ {
-		if !bytesEqual(shares[i].Message, msg) {
-			return false, errors.New("shares contain different message bytes")
-		}
-	}
-
-	pubKeys := make([][]byte, len(shares))
-	for i, s := range shares {
-		pubKeys[i] = s.PublicKey
-	}
-	return BLSFastAggregateVerify(pubKeys, msg, aggregatedSig)
-}
-
-// SignedSignerIDs returns signer IDs that have already submitted for messageKey.
-func (m *MultiSigManager) SignedSignerIDs(messageKey string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	shares := m.signatureShares[messageKey]
-	out := make([]string, 0, len(shares))
-	for _, s := range shares {
-		out = append(out, s.SignerID)
-	}
-	return out
-}
-
-// UnsignedSignerIDs returns signer IDs that haven't submitted yet for messageKey.
-func (m *MultiSigManager) UnsignedSignerIDs(messageKey string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	seen := map[string]struct{}{}
-	for _, s := range m.signatureShares[messageKey] {
-		seen[s.SignerID] = struct{}{}
-	}
-	var out []string
-	for id := range m.signers {
-		if _, ok := seen[id]; !ok {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
-// GetCurrentSignatureCount returns how many shares we have for messageKey.
-func (m *MultiSigManager) GetCurrentSignatureCount(messageKey string) int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.signatureShares[messageKey])
-}
-
-// Threshold returns the configured threshold.
-func (m *MultiSigManager) Threshold() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.threshold
-}
-
-// Helper to build a stable key for the message map (sha256 hex of the message).
-func MessageKey(message []byte) string {
-	sum := sha256.Sum256(message)
-	return hex.EncodeToString(sum[:])
-}
-
-// tiny local helper to avoid importing bytes for one use
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (m *MultiSigManager) RemoveSigner(signerID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.signers, signerID)
-}
-
-func (m *MultiSigManager) GetSigner(signerID string) (*Signer, error) {
-	if signer, ok := m.signers[signerID]; ok {
-		return signer, nil
-	}
-	return nil, fmt.Errorf("signer %s not found", signerID)
 }

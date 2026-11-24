@@ -1,0 +1,343 @@
+//go:build applygate
+
+// Apply-path determinism gate (audit P2.5 / EVM). Proves that two INDEPENDENT
+// ThebeDB stores, given the SAME genesis and the SAME blocks, derive BYTE-IDENTICAL
+// state (accounts + contract storage + fingerprint), and that a perturbed store
+// HALTS instead of serving divergent state.
+//
+// It bypasses the whole sequencer pipeline (seed/mempool/MRE/orchestrator/
+// Espresso/ZKVM) and drives the real apply entry point ProcessBlockTransactions
+// directly against two stores in one process (the store is selected by the
+// process-wide DB_OPs global handle, so the two runs are sequential: build store
+// A, seed+apply, capture; then store B, seed+apply, capture; compare).
+//
+// HOST-GATED (CGO + real go-ethereum + ThebeDB):
+//
+//	CGO_ENABLED=1 go test -tags applygate ./messaging/BlockProcessing/ -run TestApplyGate -v
+//
+// Provide the contract deploy bytecode (compile local-2node-gate/contracts/
+// SimpleStorage.sol with solc, or reuse the driver's output):
+//
+//	export APPLYGATE_DEPLOY_BYTECODE=0x60806040...   # SimpleStorage creation bytecode
+//
+// NOTE: this file is written against the wiring in main.go (ThebeDB init) and the
+// apply path in Processing.go. Because it can't be compiled in the authoring
+// sandbox, expect to reconcile a few imports/signatures on first `go test` — the
+// likely spots are called out in local-2node-gate/APPLY-HARNESS.md.
+
+package BlockProcessing_test
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"math/big"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/Security"
+	"gossipnode/config"
+	"gossipnode/internal/applygate"
+	"gossipnode/messaging/BlockProcessing"
+)
+
+const chainID = applygate.ChainID
+
+var (
+	acctA = applygate.AcctA
+	acctB = applygate.AcctB
+	oneK  = applygate.OneK
+)
+
+// Thin wrappers over the shared harness (gossipnode/internal/applygate).
+// buildHandle opens a fresh store for one test. A fresh store is a fresh node,
+// so a block-apply halt latched by an earlier test is cleared.
+func buildHandle(t *testing.T, dir string) func() {
+	BlockProcessing.ResetApplyHaltForTest()
+	return applygate.BuildHandle(t, dir)
+}
+
+func seedGenesis(t *testing.T) { applygate.SeedGenesis(t) }
+
+// setSelector returns the calldata for SimpleStorage.set(uint256 v).
+func setCalldata(v uint64) []byte {
+	sel := crypto.Keccak256([]byte("set(uint256)"))[:4]
+	arg := common.LeftPadBytes(new(big.Int).SetUint64(v).Bytes(), 32)
+	return append(append([]byte{}, sel...), arg...)
+}
+
+// deployBytecode reads the SimpleStorage creation bytecode from the environment.
+func deployBytecode(t *testing.T) []byte {
+	t.Helper()
+	h := strings.TrimPrefix(strings.TrimSpace(os.Getenv("APPLYGATE_DEPLOY_BYTECODE")), "0x")
+	if h == "" {
+		t.Skip("set APPLYGATE_DEPLOY_BYTECODE to the SimpleStorage creation bytecode (compile contracts/SimpleStorage.sol with solc)")
+	}
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		t.Fatalf("bad APPLYGATE_DEPLOY_BYTECODE hex: %v", err)
+	}
+	return b
+}
+
+// contractAddr is the CREATE address for a deploy from `sender` at `nonce`.
+func contractAddr(sender common.Address, nonce uint64) common.Address {
+	return crypto.CreateAddress(sender, nonce)
+}
+
+// makeBlock assembles a ZKBlock, stamps the ART identity nonces, and computes the
+// canonical block hash. StateFingerprint is left empty so the FIRST apply stamps
+// it (producer role); subsequent applies verify against it.
+func makeBlock(t *testing.T, num uint64, prev common.Hash, txs []config.Transaction) *config.ZKBlock {
+	t.Helper()
+	cb := acctA
+	zk := acctB
+	blk := &config.ZKBlock{
+		Transactions: txs,
+		Timestamp:    int64(1_700_000_000 + num),
+		CoinbaseAddr: &cb,
+		ZKVMAddr:     &zk,
+		PrevHash:     prev,
+		BlockNumber:  num,
+		GasLimit:     30_000_000,
+	}
+	blk.BlockHash = Security.RecomputeBlockHashFromContents(txs)
+	// EnrichBlockAccountNonces was removed as dead code; it was exactly
+	// EnrichBlockAccountNoncesWithPredicted(block, nil).
+	if err := DB_OPs.EnrichBlockAccountNoncesWithPredicted(blk, nil); err != nil {
+		t.Fatalf("EnrichBlockAccountNoncesWithPredicted(block %d): %v", num, err)
+	}
+	return blk
+}
+
+func deployTx(sender common.Address, nonce uint64, code []byte) config.Transaction {
+	h := crypto.Keccak256Hash(append([]byte("deploy"), append(sender.Bytes(), byte(nonce))...))
+	return config.Transaction{
+		Hash:     h,
+		From:     &sender,
+		To:       nil, // contract creation
+		Value:    big.NewInt(0),
+		Type:     0,
+		ChainID:  big.NewInt(chainID),
+		Nonce:    nonce,
+		GasLimit: 3_000_000,
+		GasPrice: big.NewInt(1),
+		Data:     code,
+	}
+}
+
+func callTx(sender, to common.Address, nonce uint64, data []byte, value *big.Int) config.Transaction {
+	h := crypto.Keccak256Hash(append([]byte("call"), append(append(sender.Bytes(), to.Bytes()...), byte(nonce))...))
+	return config.Transaction{
+		Hash:     h,
+		From:     &sender,
+		To:       &to,
+		Value:    value,
+		Type:     0,
+		ChainID:  big.NewInt(chainID),
+		Nonce:    nonce,
+		GasLimit: 1_000_000,
+		GasPrice: big.NewInt(1),
+		Data:     data,
+	}
+}
+
+// produceOnA builds the blocks WHILE store A's handle is live (EnrichBlockAccountNonces
+// needs an active store), applies them so A STAMPS each block's fingerprint, and
+// returns the stamped blocks for replay on B. Building+applying incrementally so the
+// call block is enriched after the contract exists.
+func produceOnA(t *testing.T, dir string, code []byte) []*config.ZKBlock {
+	t.Helper()
+	cleanup := buildHandle(t, dir)
+	defer cleanup()
+	seedGenesis(t)
+
+	deployer := acctA
+	cAddr := contractAddr(deployer, 0)
+
+	b1 := makeBlock(t, 1, common.Hash{}, []config.Transaction{deployTx(deployer, 0, code)})
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b1, nil); err != nil {
+		t.Fatalf("A apply deploy: %v", err)
+	}
+	b2 := makeBlock(t, 2, b1.BlockHash, []config.Transaction{callTx(deployer, cAddr, 1, setCalldata(42), big.NewInt(0))})
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b2, nil); err != nil {
+		t.Fatalf("A apply call: %v", err)
+	}
+	if b1.StateFingerprint == "" || b2.StateFingerprint == "" {
+		t.Fatal("store A did not stamp fingerprints")
+	}
+	return []*config.ZKBlock{b1, b2}
+}
+
+// TestApplyGate_Determinism: store B, seeded identically, replays the exact blocks
+// A stamped. The P2.5 fingerprint commits accounts AND contract storage, so B
+// recomputes and compares against A's stamp on every block — if B diverges in any
+// way, ProcessBlockTransactions returns a halt error. Success == identical state.
+func TestApplyGate_Determinism(t *testing.T) {
+	code := deployBytecode(t)
+
+	blocks := produceOnA(t, t.TempDir(), code)
+
+	// Replay on an independent store B.
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+	for _, b := range blocks {
+		if err := BlockProcessing.ProcessBlockTransactions(context.Background(), b, nil); err != nil {
+			t.Fatalf("store B diverged applying block %d (fingerprint mismatch): %v", b.BlockNumber, err)
+		}
+	}
+	t.Logf("PASS: store B independently reproduced A's state for %d blocks (no divergence)", len(blocks))
+}
+
+// TestStoreFailureRollback (D-858): a block whose transactions apply successfully
+// but whose STORE then fails must leave NO state change — every affected account
+// back at its pre-block snapshot, no per-tx marker, no block-processed marker.
+// This is the block-858 regression: a second duplicate-height candidate's txs were
+// applied (value + fee split) and then StoreZKBlock failed on uq_txn_block_index;
+// the old code returned without rolling back, advancing the sender's nonce and the
+// reward credits on the sequencer only. ProcessBlockTransactionsAndStore now reuses
+// the fingerprint-mismatch rollback for the store-failure path.
+func TestStoreFailureRollback(t *testing.T) {
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+
+	// A value transfer acctA -> acctB (nonce 0). makeBlock sets Coinbase=acctA and
+	// ZKVM=acctB, so the fee split also credits both — the full affected set is
+	// {acctA, acctB}, exactly the accounts a store-failure rollback must restore.
+	sender, recipient := acctA, acctB
+	transfer := callTx(sender, recipient, 0, nil, big.NewInt(5e17))
+	blk := makeBlock(t, 1, common.Hash{}, []config.Transaction{transfer})
+
+	// Snapshot every affected account BEFORE applying.
+	type snap struct {
+		bal   string
+		nonce uint64
+		count uint64
+	}
+	pre := map[common.Address]snap{}
+	for _, a := range []common.Address{sender, recipient} {
+		d, err := DB_OPs.GetAccount(nil, a)
+		if err != nil {
+			t.Fatalf("pre GetAccount(%s): %v", a.Hex(), err)
+		}
+		pre[a] = snap{d.Balance, d.TxNonce, d.TxCountSent}
+	}
+
+	// Apply + store, with a store callback that deterministically fails — simulating
+	// the uq_txn_block_index (23505) failure of a duplicate-height candidate.
+	forced := errors.New("forced store failure (uq_txn_block_index 23505 simulated)")
+	err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return forced
+	})
+	if err == nil {
+		t.Fatal("expected store-failure error, got nil (block was applied without rollback — the D-858 bug)")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "store failed after apply") {
+		t.Fatalf("expected a store-failure rollback error, got: %v", err)
+	}
+
+	// Every affected account must equal its pre-block snapshot.
+	for _, a := range []common.Address{sender, recipient} {
+		d, gerr := DB_OPs.GetAccount(nil, a)
+		if gerr != nil {
+			t.Fatalf("post GetAccount(%s): %v", a.Hex(), gerr)
+		}
+		want := pre[a]
+		if d.Balance != want.bal || d.TxNonce != want.nonce || d.TxCountSent != want.count {
+			t.Fatalf("account %s NOT rolled back after store failure: got {bal=%s nonce=%d count=%d} want {bal=%s nonce=%d count=%d}",
+				a.Hex(), d.Balance, d.TxNonce, d.TxCountSent, want.bal, want.nonce, want.count)
+		}
+	}
+
+	// The per-tx processed marker must be revoked (not applied).
+	applied, ferr := DB_OPs.FilterProcessedTxMarkers([]string{transfer.Hash.String()})
+	if ferr != nil {
+		t.Fatalf("FilterProcessedTxMarkers: %v", ferr)
+	}
+	if applied[transfer.Hash.String()] {
+		t.Fatal("per-tx processed marker survived the store-failure rollback (replay would skip a rolled-back tx)")
+	}
+
+	// The block-processed marker must NOT have been written (store failed before it).
+	blkApplied, merr := DB_OPs.IsMarkerApplied(nil, DB_OPs.BlockProcessedKey(blk.BlockHash.Hex()))
+	if merr != nil {
+		t.Fatalf("IsMarkerApplied(block): %v", merr)
+	}
+	if blkApplied {
+		t.Fatal("block-processed marker was written despite the store failure")
+	}
+
+	// A subsequent clean apply+store of the SAME block must now succeed — proving the
+	// rollback left a clean state that re-verifies deterministically.
+	if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return nil
+	}); err != nil {
+		t.Fatalf("clean re-apply after rollback failed: %v", err)
+	}
+	t.Logf("PASS: store failure rolled back all affected accounts and markers; clean re-apply succeeded")
+}
+
+// TestStoreFailureRollback_ContractRefusesRollback (review B2): a store failure on a
+// block that committed CONTRACT STATE must NOT perform an accounts-only rollback
+// (contract storage has no undo, so a partial rollback would silently diverge). The
+// apply must fail closed with the "refusing incomplete rollback" error instead.
+func TestStoreFailureRollback_ContractRefusesRollback(t *testing.T) {
+	code := deployBytecode(t) // skips if APPLYGATE_DEPLOY_BYTECODE unset
+
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+
+	deployer := acctA
+	blk := makeBlock(t, 1, common.Hash{}, []config.Transaction{deployTx(deployer, 0, code)})
+
+	forced := errors.New("forced store failure (uq_txn_block_index 23505 simulated)")
+	err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), blk, nil, func() error {
+		return forced
+	})
+	if err == nil {
+		t.Fatal("expected a store-failure error on a contract block, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "refusing incomplete rollback") {
+		t.Fatalf("contract-block store failure must fail closed WITHOUT an accounts-only rollback; got: %v", err)
+	}
+	t.Logf("PASS: contract-block store failure refused the incomplete rollback and failed closed: %v", err)
+}
+
+// TestApplyGate_HaltOnDivergence: a store whose state is perturbed after genesis
+// must HALT when applying a block whose fingerprint was stamped from clean state.
+func TestApplyGate_HaltOnDivergence(t *testing.T) {
+	code := deployBytecode(t)
+
+	// Clean run on A → stamped blocks.
+	blocks := produceOnA(t, t.TempDir(), code)
+	deploy, call := blocks[0], blocks[1]
+
+	// Perturbed store: apply deploy, corrupt a balance, then apply the clean-stamped
+	// call block → expect a divergence halt.
+	cleanup := buildHandle(t, t.TempDir())
+	defer cleanup()
+	seedGenesis(t)
+	if err := BlockProcessing.ProcessBlockTransactions(context.Background(), deploy, nil); err != nil {
+		t.Fatalf("apply deploy: %v", err)
+	}
+	// Bump acctB's balance so the recomputed fingerprint cannot match A's stamp.
+	if err := DB_OPs.UpdateAccountBalance(nil, acctB, new(big.Int).Add(oneK, big.NewInt(1)).String(), 0); err != nil {
+		t.Fatalf("perturb balance: %v", err)
+	}
+	err := BlockProcessing.ProcessBlockTransactions(context.Background(), call, nil)
+	if err == nil {
+		t.Fatal("expected halt on state divergence, but apply succeeded (P2.5 did not fire)")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "divergence") {
+		t.Fatalf("expected a state-divergence halt, got: %v", err)
+	}
+	t.Logf("PASS: perturbed store halted as expected: %v", err)
+}

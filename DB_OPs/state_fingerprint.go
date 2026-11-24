@@ -19,7 +19,82 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"gossipnode/consensushash"
 )
+
+// ComputeAccountStateFingerprintV1 is the consensus (audit P2.5) post-apply
+// account-state fingerprint: the canonical, domain-tagged keccak digest
+// (consensushash.StateFingerprintV1) over every account's consensus-relevant
+// fields, streamed in the deterministic ListAccountsPaginatedFrom key order so
+// every node at the same height with the same ledger computes the identical hex
+// digest. A mismatch between a node's recompute and the block-carried value means
+// the ledgers diverged.
+//
+// v1 covers PLAIN ACCOUNTS only (the reproduced live-vs-synced divergence is an
+// account-balance divergence); contract state is committed separately by the
+// state root in P4. O(N) over all accounts per call — gate its use (it runs only
+// when contract execution is enabled) and make it incremental if N grows large.
+func ComputeAccountStateFingerprintV1(ctx context.Context) (string, error) {
+	const pageSize = 1000
+	f := consensushash.NewStateFingerprinterV1()
+	var lastKey []byte
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		accs, nextKey, err := ListAccountsPaginatedFrom(nil, pageSize, lastKey, "")
+		if err != nil {
+			return "", fmt.Errorf("state fingerprint v1: page after %q: %w", string(lastKey), err)
+		}
+		if len(accs) == 0 {
+			break
+		}
+		for _, acc := range accs {
+			if acc == nil {
+				continue
+			}
+			f.FoldAccount(consensushash.AccountLeaf{
+				Address:     acc.Address.Hex(),
+				Balance:     acc.Balance,
+				TxNonce:     acc.TxNonce,
+				TxCountSent: acc.TxCountSent,
+			})
+		}
+		if nextKey == nil || len(accs) < pageSize {
+			break
+		}
+		lastKey = nextKey
+	}
+
+	// P4: after the account pass, fold contract leaves (address, nonce, codeHash,
+	// storageRoot) so the fingerprint — and thus the P2.5 halt-on-divergence —
+	// covers contract STORAGE too. The hook is installed at startup when contract
+	// execution is enabled (evmexec.Register), keeping DB_OPs free of a contractDB
+	// import. Nil hook (contracts off) = accounts-only, unchanged.
+	if hook := contractFoldHook; hook != nil {
+		if err := hook(f); err != nil {
+			return "", fmt.Errorf("state fingerprint v1: contract fold: %w", err)
+		}
+	}
+
+	return f.Sum().Hex(), nil
+}
+
+// contractFoldHook, when non-nil, folds every contract into the fingerprint after
+// the account pass (audit P4). Installed via SetContractFoldHook at startup so
+// DB_OPs does not import DB_OPs/contractDB (avoids an import cycle and keeps the
+// account path buildable without the EVM layer).
+var contractFoldHook func(*consensushash.StateFingerprinterV1) error
+
+// SetContractFoldHook installs the contract-fold step used by
+// ComputeAccountStateFingerprintV1. Call once at startup when contract execution
+// is enabled; pass nil to disable (accounts-only fingerprint).
+func SetContractFoldHook(fn func(*consensushash.StateFingerprinterV1) error) {
+	contractFoldHook = fn
+}
 
 // ComputeAccountStateFingerprint hashes every account's consensus-relevant
 // fields in ascending key order. Returns the hex digest and the number of

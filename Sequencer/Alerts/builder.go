@@ -63,17 +63,6 @@ func (b *AlertBuilder) Label(key, value string) *AlertBuilder {
 	return b
 }
 
-// Labels merges multiple labels into the alert.
-func (b *AlertBuilder) Labels(labels map[string]string) *AlertBuilder {
-	if b.labels == nil {
-		b.labels = make(map[string]string)
-	}
-	for k, v := range labels {
-		b.labels[k] = v
-	}
-	return b
-}
-
 // Send enqueues the alert for async delivery.
 // No-ops silently if the alert service is not configured.
 func (b *AlertBuilder) Send() {

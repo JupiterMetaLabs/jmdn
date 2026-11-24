@@ -1,57 +1,55 @@
 // MODULE: DB_OPs/tx_markers
-// PURPOSE: Value-aware processed-marker layer + the per-tx atomic apply used by
-//          the live executor.
+// PURPOSE: Value-aware processed-marker layer + the per-tx apply used by
+//          the live executor. ThebeDB retarget of the F4 module.
 //
-// MARKER SEMANTICS (value-aware, NOT existence-based):
+// MARKER SEMANTICS (value-aware, NOT existence-based — unchanged from F4):
 //   value > 0  → applied (Unix timestamp of application)
 //   value = -1 → REVOKED: the tx's balance effects were rolled back after the
-//                marker committed. Needed because per-tx atomic commits make
-//                the prefix's markers durable before a later tx can fail the
-//                block; rollback restores balances but immudb cannot delete
-//                inside a transaction — so rollback overwrites the prefix
-//                markers with -1 and every consumer treats -1 as not-processed.
-//   unparseable → applied (legacy markers hold timestamps; treating a corrupt
-//                value as applied silently skips its effects only if those
-//                effects are also absent — the lower-risk direction).
+//                marker committed. Rollback overwrites the prefix markers with
+//                -1 and every consumer treats -1 as not-processed.
+//   unparseable → applied (the lower-risk skip direction; see markerValueApplied).
 //
-// DB PRECEDENCE (dual-read): accountsdb is authoritative when the key exists
-// there (the live path writes markers + revocations to accountsdb, atomically
-// with the balances they describe); defaultdb is consulted only for keys
-// absent from accountsdb (legacy populations: current-era defaultdb markers +
-// older history). Precedence is load-bearing: a -1 revocation in accountsdb
-// must never be overridden by a stale legacy marker for the same tx.
+// STORAGE (ThebeDB): markers live in the BadgerDB sync-state KV — the same
+// store as the canonical log, so a volume restore rolls markers back together
+// with the log that produced the balances (the projection is rebuilt from the
+// log). Mode (a) fresh-bootstrap migration: the legacy dual-population
+// (defaultdb + accountsdb) dual-read is retired — there is exactly ONE marker
+// population.
 //
-// WHY MARKERS LIVE IN accountsdb: immudb ExecAll executes on the
-// session's selected database (ExecAllRequest carries no DB field) — the ONLY
-// way a marker can commit atomically with the account balances it describes is
-// to live in the same database.
+// ORDERING: account writes commit BEFORE their marker (ApplyTxAtomic writes
+// docs first, marker last; the drain writes markers strictly after all account
+// chunks), so a crash never produces a marker over missing effects.
+//
+// CRASH SAFETY (live apply): the account writes and the marker are separate
+// store commits, so ApplyTxAtomic first persists a redo record holding the
+// tx's complete staged post-state (absolute documents, not deltas). If the
+// process dies part-way, RecoverPendingTxApply rewrites those same documents
+// and the marker at boot — an idempotent roll-forward — instead of letting the
+// tx be re-staged from a partially updated base (which would apply it twice).
+// A present record is always rolled forward; block rollbacks drop it before
+// they revoke markers (see DiscardPendingTxApply).
 
 package DB_OPs
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/config"
-
-	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
 // MarkerRevoked is the value-aware "rolled back" sentinel. Matches the
 // convention already used for tx_processing cleanup (Processing.go).
 const MarkerRevoked = int64(-1)
 
-// maxExecAllEntries mirrors immudb embedded/store DefaultMaxTxEntries (1024).
-// Any ExecAll larger than this fails the commit outright (the previous
-// block-end marker commit wrote 2×txs+1 entries and halted on blocks >511 txs).
-const maxExecAllEntries = 1024
-
 // TxProcessedKey / BlockProcessedKey build the marker keys. Formats are frozen —
 // they must match the legacy populations already on disk.
-func TxProcessedKey(txHash string) string       { return "tx_processed:" + txHash }
+func TxProcessedKey(txHash string) string { return "tx_processed:" + txHash }
+
 func TxProcessingKey(txHash string) string      { return "tx_processing:" + txHash }
 func BlockProcessedKey(blockHash string) string { return "block_processed:" + blockHash }
 
@@ -71,102 +69,330 @@ func markerValueApplied(raw []byte) bool {
 	return v != MarkerRevoked
 }
 
-// IsMarkerApplied dual-reads one marker key: accountsdb (authoritative,
-// value-aware) first, defaultdb (legacy) only when accountsdb has no key.
-// accountsConn may be the caller's accounts connection (it is used as-is);
-// the defaultdb read acquires its own pooled connection.
-// Fail direction: (false, err) — callers decide; the live guard sites keep
-// their existing behavior: err → process, and log.
-func IsMarkerApplied(accountsConn *config.PooledConnection, key string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// markerKV is the frozen marker wire form: key bytes + decimal-string value
+// bytes (identical to toBytes(int64) / the legacy markers on disk). It
+// replaces the retired immudb schema.Op with the same GetKv() surface so the
+// encoding test pins the exact same bytes.
+type markerKV struct {
+	Key   []byte
+	Value []byte
+}
 
-	// accountsdb — authoritative.
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+// GetKv preserves the schema.Op accessor shape used by TestMarkerOpEncoding.
+func (m *markerKV) GetKv() *markerKV { return m }
+
+// markerOp builds a KV op holding an int64 in the frozen marker encoding
+// (JSON int64 = decimal string bytes — matches toBytes and the legacy
+// populations on disk).
+func markerOp(key string, value int64) *markerKV {
+	return &markerKV{
+		Key:   []byte(key),
+		Value: []byte(strconv.FormatInt(value, 10)),
+	}
+}
+
+// IsMarkerApplied reads one marker key from the ThebeDB sync-state KV
+// (single authoritative population — the legacy defaultdb dual-read retired
+// with mode (a) bootstrap).
+// Fail direction: (false, err) — callers decide; the live guard sites keep
+// their historical fail-open shape (err → process) and log.
+func IsMarkerApplied(_ *config.PooledConnection, key string) (bool, error) {
+	h, err := getHandle(nil)
 	if err != nil {
 		return false, fmt.Errorf("marker %s: %w", key, err)
 	}
-	entry, aerr := conn.Client.Client.Get(ctx, []byte(key))
-	release()
-	if aerr == nil && entry != nil {
-		return markerValueApplied(entry.Value), nil
-	}
-	if aerr != nil && !isNotFoundError(aerr) {
-		return false, fmt.Errorf("marker %s (accountsdb): %w", key, aerr)
-	}
-
-	// defaultdb — legacy population.
-	mainConn, err := GetMainDBConnection(ctx)
+	raw, err := h.GetSyncKV(key)
 	if err != nil {
-		return false, fmt.Errorf("marker %s: main connection: %w", key, err)
+		return false, fmt.Errorf("marker %s: %w", key, err)
 	}
-	defer PutMainDBConnection(mainConn)
-	if err := ensureMainDBSelected(mainConn); err != nil {
-		return false, fmt.Errorf("marker %s: select defaultdb: %w", key, err)
+	if raw == nil {
+		return false, nil
 	}
-	entry, merr := mainConn.Client.Client.Get(ctx, []byte(key))
-	if merr != nil {
-		if isNotFoundError(merr) {
-			return false, nil
-		}
-		return false, fmt.Errorf("marker %s (defaultdb): %w", key, merr)
-	}
-	return markerValueApplied(entry.Value), nil
+	return markerValueApplied(raw), nil
 }
 
-// ApplyTxAtomic commits one transaction's complete effect in ONE accountsdb
-// ExecAll: every touched account document + the tx_processed marker.
-// All-or-nothing: a crash leaves either no trace of the tx or a fully-applied,
-// fully-marked tx — the partially-applied state the previous code could produce
-// (≤6 independent commits per tx) is no longer expressible.
-//
-// The transient tx_processing: advisory lock is deliberately NOT included — it
-// lives (and is read) in defaultdb and is not correctness-bearing for replay;
-// pulling its cleanup into this accountsdb ExecAll would create a new
-// split-brain marker population across the two databases.
-//
-// Entry count is len(docs)+1 — far under the 1024 ExecAll cap by
-// construction.
-func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
-	if len(docs) == 0 {
-		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", txHash)
-	}
-	if len(docs)+1 > maxExecAllEntries {
-		return fmt.Errorf("ApplyTxAtomic %s: %d entries exceeds ExecAll cap %d", txHash, len(docs)+1, maxExecAllEntries)
-	}
+// txApplyRedoKey holds the in-flight live apply. Live applies are serialized by
+// LockStateApply, so at most one is ever in flight and a single key suffices.
+// An empty value means "nothing pending".
+const txApplyRedoKey = "tx_apply_redo"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+// txApplyRedo is the persisted form of one in-flight apply. A single-tx apply
+// sets TxHash only, in the same format older binaries wrote. A group apply
+// (ApplyTxGroupAtomic with more than one tx) sets TxHashes, the full list in
+// block order, and leaves TxHash EMPTY: a binary that predates groups rejects
+// such a record as malformed and refuses to start, instead of rolling the
+// group forward with only one marker.
+type txApplyRedo struct {
+	TxHash    string     `json:"tx_hash"`
+	TxHashes  []string   `json:"tx_hashes,omitempty"`
+	AppliedAt int64      `json:"applied_at"`
+	Docs      []*Account `json:"docs"`
+}
 
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+// hashes returns every tx the record covers.
+func (r *txApplyRedo) hashes() []string {
+	if len(r.TxHashes) > 0 {
+		return r.TxHashes
+	}
+	return []string{r.TxHash}
+}
+
+// applyLabel names an apply in errors: the tx hash, or the first hash and a
+// count for a group.
+func applyLabel(txHashes []string) string {
+	switch len(txHashes) {
+	case 0:
+		return "(no txs)"
+	case 1:
+		return txHashes[0]
+	default:
+		return fmt.Sprintf("%s (+%d txs)", txHashes[0], len(txHashes)-1)
+	}
+}
+
+// redoStore is the subset of the handle the redo record needs.
+type redoStore interface {
+	GetSyncKV(key string) ([]byte, error)
+	PutSyncKV(key string, value []byte) error
+}
+
+func readTxApplyRedo(h redoStore) (*txApplyRedo, error) {
+	raw, err := h.GetSyncKV(txApplyRedoKey)
 	if err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: %w", txHash, err)
+		return nil, fmt.Errorf("read apply redo: %w", err)
 	}
-	defer release()
-
-	ops := make([]*schema.Op, 0, len(docs)+1)
-	for _, doc := range docs {
-		val, err := json.Marshal(doc)
-		if err != nil {
-			return fmt.Errorf("ApplyTxAtomic %s: marshal account %s: %w", txHash, doc.Address.Hex(), err)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var r txApplyRedo
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("decode apply redo: %w", err)
+	}
+	single := r.TxHash != "" && len(r.TxHashes) == 0
+	group := r.TxHash == "" && len(r.TxHashes) > 0
+	if len(r.Docs) == 0 || (!single && !group) {
+		return nil, fmt.Errorf("apply redo record is malformed (tx=%q txs=%d docs=%d)", r.TxHash, len(r.TxHashes), len(r.Docs))
+	}
+	for _, h := range r.TxHashes {
+		if h == "" {
+			return nil, fmt.Errorf("apply redo record is malformed (empty tx hash in group)")
 		}
-		key := fmt.Sprintf("%s%s", Prefix, doc.Address)
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(key), Value: val}}})
 	}
-	ops = append(ops, markerOp(TxProcessedKey(txHash), appliedAt))
+	return &r, nil
+}
 
-	if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-		return fmt.Errorf("ApplyTxAtomic %s: ExecAll (%d ops): %w", txHash, len(ops), err)
+func clearTxApplyRedo(h redoStore) error {
+	if err := h.PutSyncKV(txApplyRedoKey, []byte{}); err != nil {
+		return fmt.Errorf("clear apply redo: %w", err)
 	}
 	return nil
 }
 
-// WriteTxProcessedMarkers writes applied markers for a set of txs to
-// accountsdb, chunked under the ExecAll cap. Used by the drain worker for
-// RECON-applied txs: reconciliation's balance effects commit through
-// BatchRestoreAccounts, and these markers make those txs visible to the live
-// guards and to future delta exclusion — without them, a recon re-run after a
-// failed anchor advance re-applies the same deltas.
+// writeTxEffects performs the commits that make up an apply's effect: the
+// absolute account documents, then one tx_processed marker per tx, in order.
+// Idempotent: re-running it with the same inputs converges to the same state.
+func writeTxEffects(h redoStore, docs []*Account, txHashes []string, appliedAt int64) error {
+	// RAW authoritative write (merge-bypassing). The stage was built from the
+	// stored base under LockStateApply, so these absolute docs must win
+	// unconditionally; the LWW merge gate is for uncoordinated sync writers
+	// only (see DB_OPs/authoritative_write.go).
+	entries := make([]struct {
+		Key   string
+		Value []byte
+	}, 0, len(docs))
+	for _, doc := range docs {
+		val, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("marshal account %s: %w", doc.Address.Hex(), err)
+		}
+		entries = append(entries, struct {
+			Key   string
+			Value []byte
+		}{Key: Prefix + doc.Address.Hex(), Value: val})
+	}
+	if err := BatchPutAccountsAuthoritative(entries); err != nil {
+		return fmt.Errorf("accounts: %w", err)
+	}
+	for i, txHash := range txHashes {
+		op := markerOp(TxProcessedKey(txHash), appliedAt)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("marker %s (%d/%d written): %w", txHash, i, len(txHashes), err)
+		}
+	}
+	return nil
+}
+
+// ErrPartialApply marks an apply whose writes failed part-way: some account
+// documents, and possibly some tx markers, may already be written. Only a
+// rollback of the block makes that state consistent again.
+var ErrPartialApply = errors.New("apply failed part-way; some of its writes may be committed")
+
+// ErrPartialRevoke marks a marker revocation that stopped after revoking some
+// markers: those txs are applied with no marker, which no replay handles.
+var ErrPartialRevoke = errors.New("marker revocation stopped part-way")
+
+// ErrApplyRedoNotCleared marks an apply that committed every account document
+// AND every tx marker, but whose redo record could not be cleared. Its txs are
+// applied: a rollback of the block must revoke their markers along with the
+// rest, or a replay would skip them over restored balances.
+var ErrApplyRedoNotCleared = errors.New("applied and marked, but the apply record could not be cleared")
+
+// ApplyTxAtomic commits one transaction's complete effect: every touched
+// account document, then the tx_processed marker LAST, bracketed by a redo
+// record so a crash between the commits is rolled forward at boot
+// (RecoverPendingTxApply) rather than re-applied on a mutated base.
+//
+// Caller must hold LockStateApply.
+//
+// On a returned error the redo record is cleared: the caller rolls the block
+// back (BlockProcessing planRollback/restoreAfterRevoke), and a leftover record would otherwise re-apply the
+// failed tx after that rollback.
+func ApplyTxAtomic(c *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
+	return ApplyTxGroupAtomic(c, docs, []string{txHash}, appliedAt)
+}
+
+// ApplyTxGroupAtomic commits the combined effect of consecutive txs of one
+// block: the final document of every account they touched (each written
+// once), then one tx_processed marker per tx in block order. The docs must be
+// the post-state of applying the txs in that order on the stored base, under
+// one continuous hold of LockStateApply.
+//
+// The same redo record as ApplyTxAtomic brackets the writes, so a crash
+// part-way is rolled forward at boot. On a returned error the redo record is
+// cleared and some markers of the group may already be written: the caller
+// must revoke the markers of every tx in txHashes before restoring balances.
+//
+// Caller must hold LockStateApply.
+func ApplyTxGroupAtomic(_ *config.PooledConnection, docs []*Account, txHashes []string, appliedAt int64) error {
+	label := applyLabel(txHashes)
+	if len(txHashes) == 0 {
+		return fmt.Errorf("ApplyTxGroupAtomic: no txs")
+	}
+	for _, hash := range txHashes {
+		if hash == "" {
+			return fmt.Errorf("ApplyTxGroupAtomic %s: empty tx hash", label)
+		}
+	}
+	if len(docs) == 0 {
+		return fmt.Errorf("ApplyTxAtomic %s: no account docs staged", label)
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
+	}
+
+	// A record left over here means boot recovery did not run or failed.
+	// Never stack a second apply on top of an unresolved one.
+	pending, err := readTxApplyRedo(h)
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: %w", label, err)
+	}
+	if pending != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: unresolved apply of tx %s is pending; run RecoverPendingTxApply first", label, applyLabel(pending.hashes()))
+	}
+
+	rec := &txApplyRedo{AppliedAt: appliedAt, Docs: docs}
+	if len(txHashes) == 1 {
+		rec.TxHash = txHashes[0]
+	} else {
+		rec.TxHashes = txHashes
+	}
+	redo, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: encode redo: %w", label, err)
+	}
+	if err := h.PutSyncKV(txApplyRedoKey, redo); err != nil {
+		return fmt.Errorf("ApplyTxAtomic %s: write redo: %w", label, err)
+	}
+
+	if err := writeTxEffects(h, docs, txHashes, appliedAt); err != nil {
+		if cerr := clearTxApplyRedo(h); cerr != nil {
+			return fmt.Errorf("ApplyTxAtomic %s: %w: %w (and %v)", label, ErrPartialApply, err, cerr)
+		}
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrPartialApply, err)
+	}
+
+	if err := clearTxApplyRedo(h); err != nil {
+		// Effects and markers are committed. A stale record is harmless to
+		// recovery (it rewrites identical docs) but blocks the next apply, so
+		// surface it, marked so a rollback also revokes these txs' markers.
+		return fmt.Errorf("ApplyTxAtomic %s: %w: %w", label, ErrApplyRedoNotCleared, err)
+	}
+	return nil
+}
+
+// RecoverPendingTxApply rolls forward a live apply that was interrupted
+// between its account writes and its marker. Call once at startup, after the
+// ThebeDB handle is wired and before any block processing.
+//
+// Returns the recovered tx hash, or the comma-separated hashes of a group
+// ("" when nothing was pending). An error means state could not be made
+// consistent; the node must not process blocks.
+func RecoverPendingTxApply() (string, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return "", fmt.Errorf("recover apply: %w", err)
+	}
+	LockStateApply()
+	defer UnlockStateApply()
+	return recoverPendingTxApply(h)
+}
+
+func recoverPendingTxApply(h redoStore) (string, error) {
+	pending, err := readTxApplyRedo(h)
+	if err != nil {
+		return "", fmt.Errorf("recover apply: %w", err)
+	}
+	if pending == nil {
+		return "", nil
+	}
+	hashes := pending.hashes()
+	label := applyLabel(hashes)
+	// A present record is always rolled forward. The block rollback paths
+	// drop the record (DiscardPendingTxApply) BEFORE they revoke any marker,
+	// so a record never outlives the start of a rollback. A revoked marker
+	// seen here is therefore stale, from an earlier failed attempt at the
+	// same block, and says nothing about this record: discarding on it would
+	// leave the record's account writes applied without their markers.
+	if err := writeTxEffects(h, pending.Docs, hashes, pending.AppliedAt); err != nil {
+		return "", fmt.Errorf("recover apply %s: %w", label, err)
+	}
+	if err := clearTxApplyRedo(h); err != nil {
+		return "", fmt.Errorf("recover apply %s: %w", label, err)
+	}
+	return strings.Join(hashes, ","), nil
+}
+
+// DiscardPendingTxApply drops an in-flight apply record without applying it.
+// The block rollback paths call it FIRST, before revoking any marker or
+// restoring balances: boot recovery rolls every present record forward, so a
+// record must not survive into a rollback. If it fails, the caller must skip
+// the rollback and leave the apply for boot recovery to complete.
+// Caller must hold LockStateApply.
+func DiscardPendingTxApply() error {
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	raw, err := h.GetSyncKV(txApplyRedoKey)
+	if err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if err := clearTxApplyRedo(h); err != nil {
+		return fmt.Errorf("discard apply: %w", err)
+	}
+	return nil
+}
+
+// WriteTxProcessedMarkers writes applied markers for a set of txs.
+// Used by the drain worker for RECON-applied txs: reconciliation's balance
+// effects commit through BatchRestoreAccounts, and these markers make those
+// txs visible to the live guards and to future delta exclusion — without
+// them, a recon re-run after a failed anchor advance re-applies the same
+// deltas.
 //
 // ORDERING (enforced by the caller): markers commit strictly AFTER all
 // account chunks of the drain batch. Markers-first + a later account-chunk
@@ -174,106 +400,96 @@ func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHas
 // markers-last fails toward bounded double-apply on retry instead.
 //
 // Idempotent: re-writing the same marker value is a no-op semantically.
-func WriteTxProcessedMarkers(accountsConn *config.PooledConnection, markers map[string]int64) error {
+func WriteTxProcessedMarkers(_ *config.PooledConnection, markers map[string]int64) error {
 	if len(markers) == 0 {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("write tx markers: %w", err)
 	}
-	defer release()
-
-	const chunk = 500 // < maxExecAllEntries
-	ops := make([]*schema.Op, 0, chunk)
-	flush := func() error {
-		if len(ops) == 0 {
-			return nil
+	n := 0
+	for hash, appliedAt := range markers {
+		op := markerOp(TxProcessedKey(hash), appliedAt)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			return fmt.Errorf("write tx markers (%d/%d written): %w", n, len(markers), err)
 		}
-		if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-			return fmt.Errorf("write tx markers (%d ops): %w", len(ops), err)
-		}
-		ops = ops[:0]
-		return nil
+		n++
 	}
-	for h, appliedAt := range markers {
-		ops = append(ops, markerOp(TxProcessedKey(h), appliedAt))
-		if len(ops) >= chunk {
-			if err := flush(); err != nil {
-				return err
-			}
-		}
-	}
-	return flush()
+	return nil
 }
 
-// RevokeTxProcessedMarkers overwrites the given txs' markers with -1 in
-// accountsdb (rollback path). Chunked under the ExecAll cap. Runs
-// BEFORE balance restoration: a crash between revocation and restore leaves
-// revoked markers over still-applied balances → replay re-applies → bounded
-// double-apply, the repairable direction. The reverse order would leave
-// applied markers over restored balances → effects silently skipped forever.
-func RevokeTxProcessedMarkers(accountsConn *config.PooledConnection, txHashes []string) error {
+// RevokeTxProcessedMarkers overwrites the given txs' markers with -1
+// (rollback path). Runs BEFORE balance restoration: a crash between
+// revocation and restore leaves revoked markers over still-applied balances →
+// replay re-applies → bounded double-apply, the repairable direction. The
+// reverse order would leave applied markers over restored balances → effects
+// silently skipped forever.
+func RevokeTxProcessedMarkers(_ *config.PooledConnection, txHashes []string) error {
 	if len(txHashes) == 0 {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("revoke markers: %w", err)
 	}
-	defer release()
-
-	const chunk = 500 // < maxExecAllEntries
-	for i := 0; i < len(txHashes); i += chunk {
-		end := i + chunk
-		if end > len(txHashes) {
-			end = len(txHashes)
-		}
-		ops := make([]*schema.Op, 0, end-i)
-		for _, h := range txHashes[i:end] {
-			ops = append(ops, markerOp(TxProcessedKey(h), MarkerRevoked))
-		}
-		if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-			return fmt.Errorf("revoke markers [%d:%d]: %w", i, end, err)
+	for i, hash := range txHashes {
+		op := markerOp(TxProcessedKey(hash), MarkerRevoked)
+		if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+			if i > 0 {
+				return fmt.Errorf("revoke markers (%d/%d revoked): %w: %w", i, len(txHashes), ErrPartialRevoke, err)
+			}
+			return fmt.Errorf("revoke markers (%d/%d revoked): %w", i, len(txHashes), err)
 		}
 	}
 	return nil
 }
 
-// WriteBlockProcessedMarker writes the block-level marker to accountsdb.
+// WriteBlockProcessedMarker writes the block-level marker.
 // This is only a fast-path hint — the per-tx markers carry the actual
 // exactly-once guarantee — but it short-circuits whole-block replays cheaply.
-func WriteBlockProcessedMarker(accountsConn *config.PooledConnection, blockHash string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, release, err := withAccountsConn(ctx, accountsConn)
+func WriteBlockProcessedMarker(_ *config.PooledConnection, blockHash string) error {
+	h, err := getHandle(nil)
 	if err != nil {
 		return fmt.Errorf("block marker %s: %w", blockHash, err)
 	}
-	defer release()
-
-	ops := []*schema.Op{markerOp(BlockProcessedKey(blockHash), time.Now().UTC().Unix())}
-	if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
-		return fmt.Errorf("block marker %s: ExecAll: %w", blockHash, err)
+	op := markerOp(BlockProcessedKey(blockHash), time.Now().UTC().Unix())
+	if err := h.PutSyncKV(string(op.Key), op.Value); err != nil {
+		return fmt.Errorf("block marker %s: %w", blockHash, err)
 	}
 	return nil
 }
 
-// markerOp builds a KV op holding an int64 in the frozen marker encoding
-// (JSON int64 = decimal string bytes — matches toBytes and the legacy
-// populations on disk).
-func markerOp(key string, value int64) *schema.Op {
-	return &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{
-		Key:   []byte(key),
-		Value: []byte(strconv.FormatInt(value, 10)),
-	}}}
+// FilterProcessedTxMarkers returns which of txHashes carry an APPLIED
+// tx_processed marker (value-aware: -1 revoked = not processed). Used by
+// reconciliation's delta exclusion (I2: never re-apply live-applied txs).
+//
+// FAIL-CLOSED: any storage error returns (nil, err) — the caller must abort
+// delta computation rather than proceed with a partial view, because a
+// partial "not processed" answer re-applies live-applied txs (double-count).
+//
+// ThebeDB: exactly ONE marker population (sync-state KV) — the legacy
+// defaultdb dual-read died with mode (a) fresh bootstrap.
+func FilterProcessedTxMarkers(txHashes []string) (map[string]bool, error) {
+	processed := make(map[string]bool, len(txHashes))
+	if len(txHashes) == 0 {
+		return processed, nil
+	}
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("marker filter: %w", err)
+	}
+	for _, hash := range txHashes {
+		raw, err := h.GetSyncKV(TxProcessedKey(hash))
+		if err != nil {
+			return nil, fmt.Errorf("marker filter %s: %w", hash, err) // fail-closed
+		}
+		if raw == nil {
+			continue
+		}
+		if markerValueApplied(raw) {
+			processed[hash] = true
+		}
+	}
+	return processed, nil
 }

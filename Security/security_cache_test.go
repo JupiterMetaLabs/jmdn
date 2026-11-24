@@ -73,7 +73,15 @@ func TestSecurityCache_BasicOperations(t *testing.T) {
 	// Ensure account exists
 	_ = DB_OPs.CreateAccount(conn, did, addr, map[string]interface{}{"type": "test"})
 	err = DB_OPs.UpdateAccountBalance(conn, addr, initialBalance.String(), time.Now().UTC().UnixNano())
-	assert.NoError(t, err)
+	if err != nil {
+		// No ThebeHandle in a unit context: the compat pool shims return
+		// (nil, nil) as the "use the process handle" sentinel, so the DB-avail
+		// guard above cannot fire — the real availability signal is the first
+		// handle-backed write failing here. Skip cleanly (audit PRC-01: this
+		// test previously panicked instead of skipping).
+		t.Skip("Skipping — no ThebeHandle available (integration test):", err)
+		return
+	}
 	DB_OPs.PutAccountsConnection(conn)
 
 	fmt.Printf("Loading account %s into cache...\n", addr.Hex())
@@ -126,9 +134,14 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 	}
 	defer DB_OPs.PutAccountsConnection(conn)
 
-	// Create/Update Sender with 100 Wei
+	// Create/Update Sender with 100 Wei. The first handle-backed write is the
+	// real DB-availability signal: the compat pool shims return (nil, nil), so
+	// the guard above cannot fire in a unit context (audit PRC-01).
 	_ = DB_OPs.CreateAccount(conn, "did:test:sender", senderAddr, nil)
-	_ = DB_OPs.UpdateAccountBalance(conn, senderAddr, "100", time.Now().UTC().UnixNano())
+	if err := DB_OPs.UpdateAccountBalance(conn, senderAddr, "100", time.Now().UTC().UnixNano()); err != nil {
+		t.Skip("Skipping — no ThebeHandle available (integration test):", err)
+		return
+	}
 
 	// Create/Update Receiver with 0 Wei
 	_ = DB_OPs.CreateAccount(conn, "did:test:receiver", receiverAddr, nil)
@@ -163,6 +176,7 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 	fmt.Println("Checking Tx2 (Double Spend): Send 50 Wei...")
 	valid, err = cache.CheckBalanceWithCache(tx2, ctx)
 	// CheckBalanceWithCache returns false, nil if insufficient funds
+	assert.NoError(t, err)
 	assert.False(t, valid, "Tx2 should fail insufficient funds (40 < 50)")
 	if !valid {
 		fmt.Println("Tx2 Failed as expected (Insufficient Funds)")
@@ -179,6 +193,7 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 
 	fmt.Println("Checking Tx3: Send 30 Wei...")
 	valid, err = cache.CheckBalanceWithCache(tx3, ctx)
+	assert.NoError(t, err)
 	assert.True(t, valid, "Tx3 should be valid (40 >= 30)")
 
 	// Verify Final State

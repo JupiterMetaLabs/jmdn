@@ -11,6 +11,7 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -129,6 +130,17 @@ func (sc *StructStreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
 	sc.StreamCache.Mutex.Lock()
 	defer sc.StreamCache.Mutex.Unlock()
 
+	// Another caller may have cached a stream for this peer while we were
+	// dialing. Keep theirs and close ours; overwriting the entry would leak the
+	// other stream and duplicate the peer in the LRU order.
+	if entry, exists := sc.StreamCache.Streams[peerID]; exists {
+		_ = stream.Close()
+		entry.LastUsed = time.Now().UTC()
+		entry.AccessCount++
+		sc.moveToEnd(peerID)
+		return entry.Stream, nil
+	}
+
 	// Add to cache
 	sc.addEntry(peerID, stream)
 	return stream, nil
@@ -194,19 +206,6 @@ func (sc *StructStreamCache) CloseStream(peerID peer.ID) {
 	sc.removeEntry(peerID)
 }
 
-// CloseAll closes all streams in the cache and unregisters from global cleanup
-func (sc *StructStreamCache) CloseAll() {
-	sc.StreamCache.Mutex.Lock()
-	defer sc.StreamCache.Mutex.Unlock()
-
-	for peerID := range sc.StreamCache.Streams {
-		sc.removeEntry(peerID)
-	}
-
-	// Unregister from global cleanup routine to prevent memory leak
-	sc.unregisterStreamCache()
-}
-
 // CleanupExpiredStreams removes streams that have exceeded their TTL
 func (sc *StructStreamCache) CleanupExpiredStreams() {
 	sc.StreamCache.Mutex.Lock()
@@ -229,24 +228,6 @@ func (sc *StructStreamCache) CleanupExpiredStreams() {
 	}
 }
 
-// GetStats returns cache statistics
-func (sc *StructStreamCache) GetStats() map[string]interface{} {
-	sc.StreamCache.Mutex.RLock()
-	defer sc.StreamCache.Mutex.RUnlock()
-
-	totalAccesses := int64(0)
-	for _, entry := range sc.StreamCache.Streams {
-		totalAccesses += entry.AccessCount
-	}
-
-	return map[string]interface{}{
-		"active_streams": len(sc.StreamCache.Streams),
-		"max_streams":    sc.StreamCache.MaxStreams,
-		"ttl_seconds":    sc.StreamCache.TTL.Seconds(),
-		"total_accesses": totalAccesses,
-	}
-}
-
 // registerStreamCache adds a StreamCache instance to the global registry
 func (sc *StructStreamCache) registerStreamCache() {
 	globalStreamCachesMutex.Lock()
@@ -262,23 +243,6 @@ func (sc *StructStreamCache) registerStreamCache() {
 	globalStreamCaches = append(globalStreamCaches, sc.StreamCache)
 }
 
-// unregisterStreamCache removes a StreamCache instance from the global registry
-func (sc *StructStreamCache) unregisterStreamCache() {
-	globalStreamCachesMutex.Lock()
-	defer globalStreamCachesMutex.Unlock()
-
-	for i, cache := range globalStreamCaches {
-		if cache == sc.StreamCache {
-			// Create a new slice to avoid issues with underlying array
-			newCaches := make([]*AVCStruct.StreamCache, 0, len(globalStreamCaches)-1)
-			newCaches = append(newCaches, globalStreamCaches[:i]...)
-			newCaches = append(newCaches, globalStreamCaches[i+1:]...)
-			globalStreamCaches = newCaches
-			return
-		}
-	}
-}
-
 // ParallelCleanUpRoutine starts a single global cleanup routine for all StreamCache instances
 // This ensures only ONE goroutine runs regardless of how many StreamCache instances exist
 func (sc *StructStreamCache) ParallelCleanUpRoutine() {
@@ -286,7 +250,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 		var err error
 		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
 		if err != nil {
-			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
+			logger().Info(context.Background(), "❌ Failed to initialize ListenerHandler local manager", ion.Err(err))
 			return
 		}
 	}
@@ -297,7 +261,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 	// Use sync.Once to ensure only one cleanup goroutine is spawned globally
 	cleanupOnce.Do(func() {
 		// cleanupRunning = true  // unused: assigned but never read
-		fmt.Println("🚀 Starting global StreamCache cleanup routine (singleton)")
+		logger().Info(context.Background(), "Starting global StreamCache cleanup routine")
 
 		ListenerHandlerLocal.Go(GRO.StreamCacheParallelCleanUpRoutineThread, func(ctx context.Context) error {
 			defer func() {
@@ -307,7 +271,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 			for {
 				select {
 				case <-ctx.Done():
-					fmt.Println("🛑 Global StreamCache cleanup routine stopping")
+					logger().Info(context.Background(), "Global StreamCache cleanup routine stopping")
 					return nil
 				default:
 					// Cleanup all registered StreamCache instances

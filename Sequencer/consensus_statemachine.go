@@ -3,11 +3,12 @@ package Sequencer
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Pubsub"
 	"gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Alerts"
@@ -18,8 +19,10 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
 	"gossipnode/config/settings"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/messaging"
 	"gossipnode/seednode"
+	seedcommittee "gossipnode/seednode/committee"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -36,15 +39,14 @@ type PeerList struct {
 	BackupPeers []peer.ID
 }
 type Consensus struct {
-	mu               *sync.RWMutex
-	Channel          string
-	PeerList         PeerList
-	Host             host.Host
-	gossipnode       *Pubsub.StructGossipPubSub
-	ListenerNode     *MessagePassing.StructListener
-	ResponseHandler  *ResponseHandler
-	DiscoveryService *Service.NodeDiscoveryService
-	ZKBlockData      *PubSubMessages.ConsensusMessage
+	mu              *sync.RWMutex
+	Channel         string
+	PeerList        PeerList
+	Host            host.Host
+	gossipnode      *Pubsub.StructGossipPubSub
+	ListenerNode    *MessagePassing.StructListener
+	ResponseHandler *ResponseHandler
+	ZKBlockData     *PubSubMessages.ConsensusMessage
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string
@@ -110,7 +112,12 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
 	// verifier enforces peer_id membership only — the key binding is available
 	// only via the authenticated snapshot below.
-	legacyBuddySource := func() (map[string]string, error) {
+	// (epoch, pinned) are ignored here: the legacy source is a per-node live view
+	// with no epoch concept at all. That is exactly why v2 refuses to run on it
+	// (ErrLegacySourceUnderV2) — seed-ranking a set the nodes already disagree
+	// about would still diverge. A pinned request cannot be honoured by this
+	// source, so require_pinned_committee must not be set alongside it.
+	legacyBuddySource := func(_ uint64, _ bool) (map[string]string, error) {
 		if main := c.PeerList.MainPeers; len(main) > 0 {
 			set := make(map[string]string, len(main))
 			for _, pid := range main {
@@ -139,33 +146,90 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
 	// tally. Fail-closed: if the seed client can't be built we refuse rather than
 	// fall back to an unauthenticated list.
+	if !WireCommitteeSources(host) {
+		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
+		// No pinned seed snapshot => no authenticated reward-address map. Leave the
+		// reward source UNSET so that if reward_split_enabled is turned on without an
+		// authenticated committee source, R4/R5 fail closed (rewardAddressesForBlock
+		// errors) rather than silently splitting to nobody.
+	}
+
+	return c
+}
+
+// WireCommitteeSources registers the committee-eligibility and reward-address
+// sources from the pinned, seed-authenticated epoch snapshot. Both derive from
+// the SAME snapshot, so R4 (the sequencer populating block.FeeRecipients) and R5
+// (every node validating it) agree by construction.
+//
+// It returns false when no pinned authority + seednode pair is configured,
+// leaving BOTH sources untouched so the caller can install its own fallback
+// (NewConsensus installs the legacy buddy source for eligibility and
+// deliberately leaves the reward source unset, so reward_split_enabled fails
+// closed rather than splitting to nobody).
+//
+// CALL THIS AT STARTUP. It used to live inline in NewConsensus, which is only
+// reached from the block-production path — and reached there AFTER
+// attachAVCConsensusFields, which needs the reward source. On the sequencer
+// (fastsync.enable_catchup=false, so main.go's validator wiring is skipped) the
+// first block therefore failed with "reward-address source not configured (fail
+// closed)", returned 503 before NewConsensus ran, and the source was never wired
+// for the life of the process — every subsequent block failed identically.
+// main.go now calls this at startup for the sequencer; NewConsensus still calls
+// it so other entry points keep working, and re-wiring is harmless.
+func WireCommitteeSources(host host.Host) bool {
 	cfg := settings.Get()
 
 	// Register this node's libp2p identity key to sign committee-selection
-	// (ListBuddy) requests. NewConsensus is only invoked on the sequencer (the
-	// Block server paths), so this node is the sequencer; the seed serves
-	// selection only to the sequencer PeerID it has configured and refuses all
-	// other callers.
+	// (ListBuddy) requests. The seed serves selection only to the sequencer
+	// PeerID it has configured and refuses all other callers. Done before the
+	// pinned check, and regardless of the outcome, exactly as when this lived
+	// inline in NewConsensus.
 	if host != nil {
 		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
 			seednode.SetSequencerSignKey(sk)
 		}
 	}
 
-	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
-		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
-			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
-		} else {
-			initErr := err
-			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {
-				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
-			})
-		}
-	} else {
-		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
+	pinned := cfg.Consensus.SeedAuthorityBLSPub
+	if pinned == "" || cfg.Network.SeedNode == "" {
+		return false
 	}
 
-	return c
+	sc, err := seednode.NewClient(cfg.Network.SeedNode)
+	if err != nil {
+		// Fail closed: refuse rather than fall back to an unauthenticated list.
+		initErr := err
+		messaging.SetCommitteeEligibilitySource(func(_ uint64, _ bool) (map[string]string, error) {
+			return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
+		})
+		messaging.SetRewardAddressSource(func() (map[string]string, error) {
+			return nil, fmt.Errorf("reward-address source: seed client init failed (fail closed): %w", initErr)
+		})
+		return true
+	}
+
+	messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
+	messaging.SetRewardAddressSource(sc.RewardAddresses(pinned, cfg.Consensus.CommitteeEpochSeconds))
+	// W1: where this proposer gets the seed's CURRENT signed snapshot to carry
+	// on committee-anchor blocks. messaging.BuildCommitteeAnchor verifies it
+	// against the pinned authority before use.
+	messaging.SetCommitteeAnchorSource(func(ctx context.Context) (*seedcommittee.CommitteeSnapshot, error) {
+		return sc.FetchCommitteeSnapshot(ctx, 0)
+	})
+	if messaging.CommitteeAnchoringEnabled() {
+		// Start-up check, off the start-up path: surfaces a wrong pinned seed
+		// authority or an unreachable seed long before the first anchor height.
+		go func() {
+			if epoch, n, perr := messaging.PreflightCommitteeAnchorSource(); perr != nil {
+				logger().Error(context.Background(), "committee anchor preflight FAILED - fix before the chain reaches consensus.committee_anchor_activation_height", perr)
+			} else {
+				logger().Info(context.Background(), "committee anchor preflight OK: seed snapshot verifies against the pinned authority",
+					ion.Uint64("seed_epoch", epoch), ion.Int("members", n))
+			}
+		}()
+	}
+	return true
 }
 
 /*
@@ -195,7 +259,7 @@ func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_
 	Maps.ClearVoteResults()
 	Cache.ClearCache()
 
-	logger().NamedLogger.Info(ctx, "Cleared previous round vote results at start of consensus round",
+	logger().Info(ctx, "Cleared previous round vote results at start of consensus round",
 		ion.String("function", "Consensus.warmup"))
 
 	buddies, errMSG := helper.QueryBuddyNodes()
@@ -203,14 +267,14 @@ func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_
 		return nil, fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
-	logger().NamedLogger.Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
+	logger().Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
 		ion.Int("candidates", len(buddies)),
 		ion.String("function", "Consensus.warmup"))
 
 	// Deduplicate buddies by peer.ID (buddies may have multiple multiaddrs per peer)
 	candidates := helper.GetUniqueBuddyPeers(buddies)
 
-	logger().NamedLogger.Info(ctx, "got candidates after deduplication",
+	logger().Info(ctx, "got candidates after deduplication",
 		ion.Int("candidates", len(candidates)),
 		ion.String("function", "Consensus.warmup"))
 
@@ -276,6 +340,53 @@ func (consensus *Consensus) SetZKBlockData(zkblock *config.ZKBlock, buddies []Pu
 
 	// Clear the zkblock data
 	consensus.ZKBlockData = nil
+
+	// F1: the peers ASKED to vote must be the peers the verifier will COUNT.
+	//
+	// Without this, `buddies` is whatever the per-node VRF shuffle returned while
+	// VerifyCertificateForRound tallies against messaging.SelectCommittee - two
+	// sources, and at pool > k they disagree. Every seated member could sign and
+	// the certificate would still fall short, because the signers were never the
+	// seated ones. That is the observed halt.
+	//
+	// Under v2 the seated set decides. A seated member with no known multiaddr is
+	// dropped from the wire list but still counts toward n, which is the correct
+	// BFT reading: quorum is 2f+1 of the committee, not of whoever was reachable.
+	if messaging.CommitteeV2Enabled {
+		rc := messaging.RoundContextForBlock(zkblock)
+		seated, selErr := messaging.SeatedPeerIDs(rc)
+		if selErr != nil {
+			// Fail closed. Falling back to the shuffle here would reintroduce the
+			// exact two-source split this replaces.
+			return fmt.Errorf("committee selection failed (fail closed): %w", selErr)
+		}
+		kept := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(buddies))
+		reachable := make(map[string]struct{}, len(buddies))
+		for _, b := range buddies {
+			pid := b.PeerID.String()
+			if _, ok := seated[pid]; !ok {
+				continue
+			}
+			kept = append(kept, b)
+			reachable[pid] = struct{}{}
+		}
+		if len(kept) < len(seated) {
+			missing := make([]string, 0, len(seated)-len(reachable))
+			for pid := range seated {
+				if _, ok := reachable[pid]; !ok {
+					missing = append(missing, pid)
+				}
+			}
+			sort.Strings(missing)
+			logger().Warn(context.Background(),
+				"committee v2: seated members have no known multiaddr and cannot be asked to vote",
+				ion.Int("seated", len(seated)),
+				ion.Int("dialable", len(kept)),
+				ion.String("missing", strings.Join(missing, ",")),
+				ion.String("function", "Consensus.SetZKBlockData"))
+		}
+		buddies = kept
+	}
 
 	var err error
 	consensus.ZKBlockData, err = helper.AddBuddyNodesToPeerList(zkblock, buddies)
@@ -346,6 +457,14 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 				Label("block_hash", block.BlockHash.Hex()).
 				Send()
+			// The certified block was never committed, so the retry at this
+			// height is a new round (R3). ProcessBlockLocally has already
+			// released the height's proposal claim.
+			// The orchestrator marked these transactions included when it
+			// submitted the block; tell it they did not land, as for a
+			// rejected round.
+			reportLocalApplyFailure(block, err)
+			consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, "local apply failed")
 			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
 		}
 
@@ -355,14 +474,14 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// direction (producer ahead, fleet catches up), unlike the old order that
 		// could leave the producer behind.
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-			logger().NamedLogger.Warn(ctx, "Block applied locally but broadcast to peers failed; peers will reconcile via catch-up",
+			logger().Warn(ctx, "Block applied locally but broadcast to peers failed; peers will reconcile via catch-up",
 				ion.String("error", err.Error()),
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.Int64("block_number", int64(block.BlockNumber)),
 				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 		}
 
-		logger().NamedLogger.Info(ctx, "Applied block locally and broadcast to peers",
+		logger().Info(ctx, "Applied block locally and broadcast to peers",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
@@ -381,14 +500,15 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// Broadcast the "rejected" status so nodes discard the block; it is never
 		// applied locally. The alert from VerifyConsensusWithBLS already notifies
 		// about the failed vote, so a broadcast error here is not propagated.
+
 		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-			logger().NamedLogger.Warn(ctx, "Failed to broadcast rejected-block notice to peers",
+			logger().Warn(ctx, "Failed to broadcast rejected-block notice to peers",
 				ion.String("error", err.Error()),
 				ion.String("block_hash", block.BlockHash.Hex()),
 				ion.Int64("block_number", int64(block.BlockNumber)),
 				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 		}
-		logger().NamedLogger.Info(ctx, "Broadcasted rejected block",
+		logger().Info(ctx, "Broadcasted rejected block",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
@@ -426,9 +546,50 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		// unless orchestrator.url + orchestrator.api_key are configured, and it
 		// can never block or fail this round.
 		RejectionReport.Send(block, reason, detail)
+
+		// R3: the retry at this height is a new round. Advance the period
+		// first, then free the height's proposal claim - the consensus
+		// terminal that normally releases it (ProcessBlockLocally) never runs
+		// on this path, so without this a resubmission would be refused as
+		// height_in_flight until the claim's TTL expires.
+		consensus.advancePeriodAfterFailedRound(ctx, block.BlockNumber, reason)
+		proposalguard.Default.Release(block.BlockNumber)
 	}
 
 	return nil
+}
+
+// advancePeriodAfterFailedRound moves height to its next period (R3) after a
+// round ended without the block being committed, so the next proposal at the
+// height is a new round: buddies may sign it (they sign one block per round),
+// and under committee v2 with a pool larger than the committee it seats a
+// different committee. Buddy refusals collected during the round
+// (parseVoteResultResponse) lift the period above rounds this process does
+// not remember, e.g. after a restart.
+func (consensus *Consensus) advancePeriodAfterFailedRound(ctx context.Context, height uint64, reason string) {
+	next, capped := messaging.DefaultProposerPeriods.AdvanceAfterFailure(height, config.MaxMainPeers)
+	if capped {
+		logger().Error(ctx, "Height reached the period cap; it cannot commit without operator attention",
+			fmt.Errorf("period cap %d reached at height %d", config.MaxPeriodAt(height), height),
+			ion.Uint64("block_number", height),
+			ion.Uint64("period", next),
+			ion.String("reason", reason),
+			ion.String("function", "Consensus.advancePeriodAfterFailedRound"))
+		Alerts.NewAlertBuilder(ctx).
+			AlertName("Consensus: Period Cap Reached").
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(fmt.Sprintf("Height %d failed %d rounds and reached the period cap; it cannot commit until the cause is fixed", height, config.MaxPeriodAt(height))).
+			Label("block_number", fmt.Sprintf("%d", height)).
+			Label("reason", reason).
+			Send()
+		return
+	}
+	logger().Info(ctx, "Round failed; next proposal at this height uses a new period",
+		ion.Uint64("block_number", height),
+		ion.Uint64("next_period", next),
+		ion.String("reason", reason),
+		ion.String("function", "Consensus.advancePeriodAfterFailedRound"))
 }
 
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
@@ -445,19 +606,37 @@ func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 
 	// Unsubscribe from consensus channel
 	if err := Subscription.Unsubscribe(gps, config.PubSub_ConsensusChannel); err != nil {
-		logger().NamedLogger.Warn(ctx, "Failed to unsubscribe from consensus channel",
+		logger().Warn(ctx, "Failed to unsubscribe from consensus channel",
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	} else {
-		logger().NamedLogger.Info(ctx, "Cleaned up consensus channel subscription",
+		logger().Info(ctx, "Cleaned up consensus channel subscription",
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 
 	// Unsubscribe from CRDT sync channel
 	if err := Subscription.Unsubscribe(gps, config.Pubsub_CRDTSync); err != nil {
 		// This may fail if we never subscribed - that's OK
-		logger().NamedLogger.Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
+		logger().Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
 			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
+}
+
+// sendRejectionReport is RejectionReport.Send; a seam for tests.
+var sendRejectionReport = RejectionReport.Send
+
+// localApplyFailureReason is the reason reported to the orchestrator when a
+// certified block could not be applied or stored on the sequencer.
+const localApplyFailureReason = "certified, but the sequencer could not apply or store it; block withheld"
+
+// reportLocalApplyFailure reports a certified block that the sequencer could
+// not apply or store. The block is withheld from peers, so its transactions
+// did not land.
+func reportLocalApplyFailure(block *config.ZKBlock, err error) {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	sendRejectionReport(block, localApplyFailureReason, detail)
 }

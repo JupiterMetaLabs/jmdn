@@ -1,6 +1,7 @@
 package Service
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -9,8 +10,6 @@ import (
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
 	common "gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -18,6 +17,7 @@ import (
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/l1finality"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -102,16 +102,6 @@ func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub, optionalParams ...in
 	return service
 }
 
-// SetBFTAdapterFactory allows setting the factory after creation
-func (s *SubscriptionService) SetBFTAdapterFactory(factory BFTAdapterFactory) {
-	s.adapterFactory = factory
-}
-
-// SetBFTAdapter sets the BFT adapter for handling consensus messages
-func (s *SubscriptionService) SetBFTAdapter(adapter BFTMessageHandler) {
-	s.bftAdapter = adapter
-}
-
 // handleReceivedMessage processes received pubsub messages
 func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	if LocalGRO == nil {
@@ -122,7 +112,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		}
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Processing received pubsub message",
+	logger().Info(logger_ctx, "Processing received pubsub message",
 		ion.String("topic", msg.Topic),
 		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 		ion.String("sender", msg.Sender.String()),
@@ -132,13 +122,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	if msg.Data == nil {
 		return errors.New("received message has no data")
 	}
-	logger().NamedLogger.Info(logger_ctx, "Message",
+	logger().Info(logger_ctx, "Message",
 		ion.String("message", string(msg.Data.Message)),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 	// Attach ACK if missing
 	if msg.Data.ACK == nil {
-		logger().NamedLogger.Error(logger_ctx,
+		logger().Error(logger_ctx,
 			"Received message with nil ACK - attaching default ACK",
 			nil,
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -150,7 +140,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err == nil {
 				if _, isVote := voteData["vote"]; isVote {
 					ackStage = config.Type_SubmitVote
-					logger().NamedLogger.Info(logger_ctx, "Detected vote message - setting ACK stage to Type_SubmitVote",
+					logger().Info(logger_ctx, "Detected vote message - setting ACK stage to Type_SubmitVote",
 						ion.String("topic", config.PubSub_ConsensusChannel),
 						ion.String("function", "SubscriptionService.handleReceivedMessage"))
 				}
@@ -164,18 +154,27 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		msg.Data.SetACK(ack)
 	}
 
+	// H5 (2026-10-22 audit): these control messages belong to the sequencer.
+	if !sequencerControlAllowed(msg) {
+		logger().Warn(logger_ctx, "Dropping sequencer-only control message not published by the sequencer",
+			ion.String("stage", msg.Data.ACK.Stage),
+			ion.String("sender", msg.Sender.String()),
+			ion.String("function", "SubscriptionService.handleReceivedMessage"))
+		return nil
+	}
+
 	// Process the message based on its type
 	switch msg.Data.ACK.Stage {
 
 	// ========== BFT CONSENSUS MESSAGES ==========
 	case config.Type_BFTRequest:
-		logger().NamedLogger.Info(logger_ctx, "Processing BFT_REQUEST from pubsub",
+		logger().Info(logger_ctx, "Processing BFT_REQUEST from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 		return s.handleBFTRequest(logger_ctx, msg)
 
 	case config.Type_StartPubSub:
-		logger().NamedLogger.Info(logger_ctx, "Processing START_PUBSUB from pubsub",
+		logger().Info(logger_ctx, "Processing START_PUBSUB from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -186,7 +185,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return nil
 
 	case config.Type_EndPubSub:
-		logger().NamedLogger.Info(logger_ctx, "Processing END_PUBSUB from pubsub",
+		logger().Info(logger_ctx, "Processing END_PUBSUB from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.Bool("success", msg.Data.ConsensusSuccess),
@@ -195,13 +194,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// CRITICAL FIX: Always unsubscribe when receiving END_PUBSUB to prevent resource accumulation
 		// This MUST happen regardless of whether bftAdapter exists
 		if err := Connector.Unsubscribe(s.pubSub, config.PubSub_ConsensusChannel); err != nil {
-			logger().NamedLogger.Warn(logger_ctx, "Failed to unsubscribe from consensus channel (non-fatal)",
+			logger().Warn(logger_ctx, "Failed to unsubscribe from consensus channel (non-fatal)",
 				ion.String("error", err.Error()),
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			// Don't return error - cleanup failure shouldn't stop processing
 		} else {
-			logger().NamedLogger.Info(logger_ctx, "Successfully unsubscribed from consensus channel",
+			logger().Info(logger_ctx, "Successfully unsubscribed from consensus channel",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("round_id", msg.Data.RoundID),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -213,7 +212,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return nil
 
 	case config.Type_SubmitVote:
-		logger().NamedLogger.Info(logger_ctx, "Processing SUBMIT_VOTE from pubsub",
+		logger().Info(logger_ctx, "Processing SUBMIT_VOTE from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.String("phase", msg.Data.Phase),
@@ -223,35 +222,68 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		globalVars := AVCStruct.NewGlobalVariables()
 		listenerNode := globalVars.Get_ForListner()
 
-		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
-			logger().NamedLogger.Info(logger_ctx, "Skipping own vote (self-loop prevention)",
+		// D-26(a) CLOSED — this handler now keys on the AUTHENTICATED sender.
+		//
+		// msg.Sender is libp2p's msg.GetFrom() (Pubsub/Subscription/
+		// SubscriberHelper.go:293, SubscriptionManager.go:257) — the identity
+		// gossipsub authenticated for this delivery. msg.Data.Sender is a JSON
+		// field the publisher fills in itself and is no longer read here.
+		//
+		// WHY A COMPARISON WAS NOT THE FIX. Rejecting on
+		// msg.Data.Sender != msg.Sender was tried (617dd0e) and reverted:
+		// handleSubmitVote used to republish a direct-stream vote to pubsub
+		// under the RELAYER's identity, so the two disagreed on every honest
+		// relay too and no guard at this layer could tell relay from
+		// forgery. The fix was to remove the ambiguity instead of trying to
+		// judge it: phase 1 made every voter publish its own vote
+		// under its own identity, and phase 2 (this change) dropped that
+		// republish and re-keyed here. There is now exactly one sender for a
+		// vote, and it is authenticated by the transport.
+		//
+		// PRECONDITION THIS SHIPPED ON: every node runs phase 1. A node that
+		// only sends via direct stream has no republisher any more, so its vote
+		// reaches one peer and no one else — silently. This released as a
+		// coordinated fleet-wide restart on that basis (operator-confirmed),
+		// the same restart the v2 vote-CRDT read cutover already required.
+		if listenerNode != nil && msg.Sender == listenerNode.PeerID {
+			// Own vote arriving back via pubsub republication.
+			// Skip BFT re-triggering (prevents infinite loops) but DO store
+			// in CRDT — SubmitVote() already stores it, this is a no-op upsert
+			// that keeps the CRDT consistent and doesn't cost anything.
+			logger().Info(logger_ctx, "Received own vote via pubsub — storing in CRDT, skipping BFT re-trigger",
 				ion.String("topic", config.PubSub_ConsensusChannel),
-				ion.String("vote_from", msg.Data.Sender.String()),
-				ion.String("vote_message", msg.Data.Message),
+				ion.String("vote_from", msg.Sender.String()),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
-			return nil // Don't process own vote from pubsub
+			// Fall through to CRDT storage below; early return removed intentionally.
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Received vote message via pubsub",
+		logger().Info(logger_ctx, "Received vote message via pubsub",
 			ion.String("to_buddy_node", listenerNode.PeerID.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
-			ion.String("sender", msg.Data.Sender.String()),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("vote_message", msg.Data.Message),
 			ion.String("channel", msg.Topic),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		// listenerNode was already retrieved above for self-loop check
-		if listenerNode == nil || listenerNode.CRDTLayer == nil {
-			logger().NamedLogger.Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+		// G1 (legacy-CRDT gate cleanup): this used to also require
+		// listenerNode.CRDTLayer != nil, blocking the v2 ingest call below
+		// (IngestValidatorVote) on the legacy engine's readiness even though
+		// it only writes to VoteCRDTLayer. The legacy write that guard used
+		// to also protect has since been removed outright (W4, legacy-CRDT
+		// migration Phase 3) — there is no remaining CRDTLayer reference in
+		// this file to guard.
+		if listenerNode == nil {
+			logger().Error(logger_ctx, "Listener node not initialized", nil,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
-			return errors.New("listener node or CRDT layer not initialized")
+			return errors.New("listener node not initialized")
 		}
 
 		// Add vote to CRDT directly
 		voteData := make(map[string]interface{})
 		if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Failed to unmarshal vote message", err,
+			logger().Error(logger_ctx, "Failed to unmarshal vote message", err,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			return errors.New("failed to unmarshal vote message: " + err.Error())
 		}
@@ -261,32 +293,71 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			blockHashRaw, hasBlockHash := voteData["block_hash"]
 			blockHash, _ := blockHashRaw.(string)
 			if !hasBlockHash || blockHash == "" {
-				logger().NamedLogger.Error(logger_ctx, "Vote missing block_hash; skipping vote processing trigger", nil,
+				logger().Error(logger_ctx, "Vote missing block_hash; skipping vote processing trigger", nil,
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
 				blockHash = "" // Will cause processVotesAndTriggerBFT to skip processing
 			}
 
-			// Use the sender's peer ID as the CRDT set key to separate votes by sender
-			OP := &Types.OP{
-				NodeID: msg.Data.Sender,
-				OpType: int8(1), // 1 for add, -1 for remove
-				KeyValue: Types.KeyValue{
-					Key:   msg.Data.Sender.String(), // Use peer ID as the key to separate votes by sender
-					Value: msg.Data.Message,
-				},
+			// Stage 4 (JMDN-CRDT-VOTE-MIGRATION-LLD.md): extract height so it
+			// can be threaded to ProcessVotesFromCRDT, which now requires it
+			// (avcvotes.TallyBlock keys by height+blockHash, not blockHash
+			// alone). encoding/json decodes a JSON number into interface{} as
+			// float64, never uint64 directly — must convert explicitly. Zero
+			// on messages from nodes that predate the Height field
+			// (PubSubMessages.Vote.Height); the v2 read path treats
+			// height==0 as "unknown" rather than a real genesis vote (see
+			// that field's doc comment), same posture the legacy path (which
+			// ignores height entirely) already has by omission.
+			var blockHeight uint64
+			if heightRaw, hasHeight := voteData["height"]; hasHeight {
+				if heightF, ok := heightRaw.(float64); ok && heightF >= 0 {
+					blockHeight = uint64(heightF)
+				}
 			}
 
-			result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
-			if err, ok := result.(error); ok && err != nil {
-				logger().NamedLogger.Error(logger_ctx, "Failed to add vote to CRDT", err,
+			// D-26(a): key on msg.Sender — the libp2p-AUTHENTICATED publisher —
+			// not on msg.Data.Sender, which the publisher chooses. Keying on
+			// the payload field let any peer write elements under any other
+			// peer's CRDT key; keying on the authenticated identity makes that
+			// structurally impossible rather than merely checked, because a
+			// peer cannot publish under an identity it does not hold a key for.
+			//
+			// msg.Data.Sender is now only a claim. It is no longer read for
+			// anything, but a disagreement is worth surfacing: post-phase-2
+			// there is no honest reason for the two to differ, so a mismatch
+			// is either a stale pre-phase-1 publisher or an attempted
+			// impersonation. Logged, not rejected — the write is already safe
+			// because it is keyed on the authenticated id regardless.
+			if msg.Data.Sender != "" && msg.Data.Sender != msg.Sender {
+				logger().Warn(logger_ctx, "vote payload sender disagrees with the authenticated publisher — keying on the authenticated one (D-26a)",
+					ion.String("authenticated_sender", msg.Sender.String()),
+					ion.String("claimed_sender", msg.Data.Sender.String()),
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
-				return errors.New("failed to add vote to local CRDT Engine: " + err.Error())
 			}
 
-			logger().NamedLogger.Info(logger_ctx, "Successfully added vote to CRDT",
-				ion.String("topic", config.PubSub_ConsensusChannel),
-				ion.String("sender", msg.Data.Sender.String()),
-				ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			// "Count every validator's vote in the buddy tally again" LLD, C5:
+			// ingest into the v2, block-keyed vote CRDT — the only keyspace
+			// the tally reads. This used to be ordered deliberately ahead of
+			// a legacy write below it, so that write's own failure path
+			// could never cost a vote the tally would otherwise have
+			// counted — that legacy write was removed outright (W4,
+			// legacy-CRDT migration Phase 3), so there is nothing left to be
+			// ordered ahead of; this call is now simply the ingest. Keyed on
+			// msg.Sender, the authenticated identity (D-26a), never
+			// msg.Data.Sender. Non-fatal: an unsigned/malformed vote is
+			// simply not counted, logged, not an error.
+			if err := Structs.IngestValidatorVote(listenerNode.VoteCRDTLayer, msg.Sender, msg.Data.Message, "pubsub"); err != nil {
+				logger().Warn(logger_ctx, "validator vote: v2 CRDT ingest failed (vote not counted by this buddy)",
+					ion.Err(err),
+					ion.String("sender", msg.Sender.String()),
+					ion.String("function", "SubscriptionService.handleReceivedMessage"))
+			}
+
+			// W4 (legacy-CRDT migration, Phase 3 — stop legacy writes): this
+			// used to also write the authenticated sender's vote into the
+			// legacy CRDT. Not deleted outright — see W1's comment in
+			// Vote/Trigger.go for why. The v2 ingest above is independent
+			// and unaffected.
 
 			// Only trigger vote processing once (check if already triggered)
 			voteProcessingMutex.Lock()
@@ -297,7 +368,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 				// Increased from 10s to 30s to handle network delays and ensure votes are collected
 				LocalGRO.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
 					time.Sleep(30 * time.Second) // Wait 30 seconds to collect more votes
-					processVotesAndTriggerBFT(logger_ctx, listenerNode, blockHash)
+					processVotesAndTriggerBFT(logger_ctx, listenerNode, blockHash, blockHeight)
 					voteProcessingMutex.Lock()
 					voteProcessingTriggered = false // Reset flag after processing
 					voteProcessingMutex.Unlock()
@@ -313,7 +384,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	case config.Type_Publish:
 		// Check if it's a BFT vote (has Phase and RoundID)
 		if msg.Data.Phase != "" && msg.Data.RoundID != "" {
-			logger().NamedLogger.Info(logger_ctx, "Processing BFT vote via PUBLISH",
+			logger().Info(logger_ctx, "Processing BFT vote via PUBLISH",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("round_id", msg.Data.RoundID),
 				ion.String("phase", msg.Data.Phase),
@@ -323,21 +394,21 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		}
 
 		// Regular publish message
-		logger().NamedLogger.Info(logger_ctx, "Processing publish message from pubsub",
+		logger().Info(logger_ctx, "Processing publish message from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return nil
 
 	case config.Type_AskForSubscription:
-		logger().NamedLogger.Info(logger_ctx, "Processing subscription request from pubsub",
+		logger().Info(logger_ctx, "Processing subscription request from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return s.handleSubscriptionRequest(logger_ctx, msg)
 
 	case config.Type_ToBeProcessed:
-		logger().NamedLogger.Info(logger_ctx, "Processing TO_BE_PROCESSED message",
+		logger().Info(logger_ctx, "Processing TO_BE_PROCESSED message",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -357,7 +428,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			return nil
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Processing verify subscription request from pubsub",
+		logger().Info(logger_ctx, "Processing verify subscription request from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -379,7 +450,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 	default:
 		// Debugging in the default case
-		logger().NamedLogger.Info(logger_ctx, "Received message with unknown stage",
+		logger().Info(logger_ctx, "Received message with unknown stage",
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -391,7 +462,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	if s.bftAdapter == nil {
-		logger().NamedLogger.Info(logger_ctx, "BFT adapter not set, ignoring vote",
+		logger().Info(logger_ctx, "BFT adapter not set, ignoring vote",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleVoteSubmission"))
 		return nil
@@ -405,7 +476,7 @@ func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, m
 		return s.handleCommitVote(logger_ctx, msg)
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Unknown vote phase",
+	logger().Info(logger_ctx, "Unknown vote phase",
 		ion.String("phase", msg.Data.Phase),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVoteSubmission"))
@@ -413,7 +484,7 @@ func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, m
 }
 
 func (s *SubscriptionService) handlePrepareVote(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Processing PREPARE vote",
+	logger().Info(logger_ctx, "Processing PREPARE vote",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("round_id", msg.Data.RoundID),
 		ion.String("sender", msg.Sender.String()),
@@ -427,7 +498,7 @@ func (s *SubscriptionService) handlePrepareVote(logger_ctx context.Context, msg 
 }
 
 func (s *SubscriptionService) handleCommitVote(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Processing COMMIT vote",
+	logger().Info(logger_ctx, "Processing COMMIT vote",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("round_id", msg.Data.RoundID),
 		ion.String("sender", msg.Sender.String()),
@@ -443,7 +514,7 @@ func (s *SubscriptionService) handleCommitVote(logger_ctx context.Context, msg *
 // ========== EXISTING METHODS ==========
 // handleSubscriptionRequest processes subscription requests from other nodes
 func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Handling subscription request from pubsub",
+	logger().Info(logger_ctx, "Handling subscription request from pubsub",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -455,7 +526,7 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 4. Send a response back to the requesting node
 
 	// For now, we'll just log the request
-	logger().NamedLogger.Info(logger_ctx, "Subscription request received from",
+	logger().Info(logger_ctx, "Subscription request received from",
 		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -468,7 +539,7 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context.Context, channelName string) error {
 	if s.pubSub == nil {
 		err := errors.New("SubscriptionService.HandleStreamSubscriptionRequest - pubsub not available")
-		logger().NamedLogger.Error(logger_ctx, err.Error(),
+		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
@@ -476,11 +547,11 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	}
 
 	// start trace
-	tracer := logger().NamedLogger.Tracer("SubscriptionService")
+	tracer := logger().Tracer("SubscriptionService")
 	logger_ctx, span := tracer.Start(logger_ctx, "SubscriptionService.HandleStreamSubscriptionRequest")
 	defer span.End()
 
-	logger().NamedLogger.Info(logger_ctx, "Handling stream subscription request",
+	logger().Info(logger_ctx, "Handling stream subscription request",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
@@ -498,7 +569,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 			Creator:      s.pubSub.Host.ID(),
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Created channel locally for peer",
+		logger().Info(logger_ctx, "Created channel locally for peer",
 			ion.String("channel", channelName),
 			ion.String("peer", s.pubSub.Host.ID().String()),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
@@ -507,11 +578,11 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 
 	// Use the Connector.Subscribe to handle the subscription properly with GossipSub
 	// This ensures messages are received via GossipSub
-	logger().NamedLogger.Info(logger_ctx, "About to call Connector.Subscribe for",
+	logger().Info(logger_ctx, "About to call Connector.Subscribe for",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 	err := Connector.Subscribe(logger_ctx, s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
-		logger().NamedLogger.Info(logger_ctx, "Received message on channel",
+		logger().Info(logger_ctx, "Received message on channel",
 			ion.String("channel", channelName),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Sender.String()),
@@ -520,7 +591,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 
 		// Handle the received message by processing it through the message router
 		if err := s.handleReceivedMessage(logger_ctx, msg); err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Failed to handle received message", err,
+			logger().Error(logger_ctx, "Failed to handle received message", err,
 				ion.String("channel", channelName),
 				ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 				ion.String("sender", msg.Sender.String()),
@@ -530,71 +601,18 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	})
 
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to subscribe to channel", err,
+		logger().Error(logger_ctx, "Failed to subscribe to channel", err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 		return errors.New("failed to subscribe to " + channelName + ": " + err.Error())
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Successfully subscribed to channel",
+	logger().Info(logger_ctx, "Successfully subscribed to channel",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
 	return nil
 }
-
-/* UNUSED
-func (s *SubscriptionService) subscribeToTopic(topic string, handler func(*AVCStruct.GossipMessage)) error {
-	if s.pubSub == nil {
-		return errors.New("SubscriptionService.subscribeToTopic - pubsub not available")
-	}
-
-	hostID := s.pubSub.Host.ID()
-	if !s.canSubscribe(topic, hostID) {
-		return errors.New("SubscriptionService.subscribeToTopic - access denied: not authorized to subscribe to channel " + topic)
-	}
-
-	s.pubSub.Mutex.Lock()
-	defer s.pubSub.Mutex.Unlock()
-
-	s.pubSub.Topics[topic] = true
-	s.pubSub.Handlers[topic] = handler
-	return nil
-}
-
-func (s *SubscriptionService) unsubscribeFromTopic(topic string) error {
-	if s.pubSub == nil {
-		return errors.New("SubscriptionService.unsubscribeFromTopic - pubsub not available")
-	}
-
-	s.pubSub.Mutex.Lock()
-	defer s.pubSub.Mutex.Unlock()
-
-	delete(s.pubSub.Topics, topic)
-	delete(s.pubSub.Handlers, topic)
-	return nil
-}
-
-func (s *SubscriptionService) canSubscribe(channelName string, peerID peer.ID) bool {
-	if s.pubSub == nil {
-		return false
-	}
-
-	s.pubSub.Mutex.RLock()
-	defer s.pubSub.Mutex.RUnlock()
-
-	access, exists := s.pubSub.ChannelAccess[channelName]
-	if !exists {
-		return false
-	}
-
-	if access.IsPublic {
-		return true
-	}
-
-	return access.AllowedPeers[peerID]
-}
-*/
 
 func (s *SubscriptionService) GetMyBuddyID() string {
 	if s.myBuddyID != "" {
@@ -606,7 +624,7 @@ func (s *SubscriptionService) GetMyBuddyID() string {
 func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	// If no factory is set, just log and return
 	if s.adapterFactory == nil {
-		logger().NamedLogger.Info(logger_ctx, "BFT adapter factory not configured, ignoring BFT request",
+		logger().Info(logger_ctx, "BFT adapter factory not configured, ignoring BFT request",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return nil
@@ -649,13 +667,13 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 	}
 
 	if !amIaBuddy {
-		logger().NamedLogger.Info(logger_ctx, "Not in buddy list, skipping consensus",
+		logger().Info(logger_ctx, "Not in buddy list, skipping consensus",
 			ion.Int64("round", int64(reqData.Round)),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return nil
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "I'm a buddy! Starting consensus",
+	logger().Info(logger_ctx, "I'm a buddy! Starting consensus",
 		ion.Int64("round", int64(reqData.Round)),
 		ion.String("function", "SubscriptionService.handleBFTRequest"))
 
@@ -667,7 +685,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 				reqData.GossipsubTopic,
 			)
 			if err != nil {
-				logger().NamedLogger.Error(logger_ctx, "Failed to create BFT adapter", err,
+				logger().Error(logger_ctx, "Failed to create BFT adapter", err,
 					ion.String("function", "SubscriptionService.handleBFTRequest"))
 				return errors.New("failed to create BFT adapter: " + err.Error())
 			}
@@ -683,11 +701,11 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 		)
 
 		if err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Consensus failed", err,
+			logger().Error(logger_ctx, "Consensus failed", err,
 				ion.Int64("round", int64(reqData.Round)),
 				ion.String("function", "SubscriptionService.handleBFTRequest"))
 		} else {
-			logger().NamedLogger.Info(logger_ctx, "Consensus completed successfully",
+			logger().Info(logger_ctx, "Consensus completed successfully",
 				ion.Int64("round", int64(reqData.Round)),
 				ion.String("decision", string(result.Decision)),
 				ion.Bool("accepted", result.BlockAccepted),
@@ -701,30 +719,44 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 
 // processVotesAndTriggerBFT processes votes from CRDT and triggers BFT consensus
 // If blockHash is empty, processing is skipped to avoid mixing votes from different blocks
-func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string) {
-	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		err := errors.New("cannot process votes - listener node or CRDT layer not initialized")
-		logger().NamedLogger.Error(logger_ctx, err.Error(),
+func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string, blockHeight uint64) {
+	// G2 (legacy-CRDT gate cleanup): this used to also require
+	// listenerNode.CRDTLayer != nil, blocking this function's only real work
+	// (Structs.ProcessVotesFromCRDT below, v2-only) on the legacy engine's
+	// readiness. No legacy write happens in this function, so no replacement
+	// check is needed.
+	if listenerNode == nil {
+		err := errors.New("cannot process votes - listener node not initialized")
+		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
 
 	if blockHash == "" {
-		logger().NamedLogger.Error(logger_ctx, "Cannot Scope Votes",
+		logger().Error(logger_ctx, "Cannot Scope Votes",
 			errors.New("skipping vote processing - block hash not available (cannot scope votes)"),
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Processing votes and triggering BFT",
+	logger().Info(logger_ctx, "Processing votes and triggering BFT",
 		ion.String("block_hash", blockHash),
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
 	// Process votes from CRDT with block hash filtering
-	result, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
+	result, _, _, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash, blockHeight)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to process votes from CRDT", err,
+		if errors.Is(err, Structs.ErrNoVotesInCRDT) {
+			// Votes not replicated here yet — nothing to push this time; the
+			// sequencer's pull path (handleVoteResultRequest) retries.
+			logger().Warn(logger_ctx, "No votes in CRDT yet; skipping BFT trigger",
+				ion.String("block_hash", blockHash),
+				ion.Uint64("height", blockHeight),
+				ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
+			return
+		}
+		logger().Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
@@ -737,29 +769,30 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Vote Result from VoteAggregation",
+	logger().Info(logger_ctx, "Vote Result from VoteAggregation",
 		ion.Int64("result", int64(result)),
 		ion.String("bft_decision", bftDecision),
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
-	// Send vote result back to the sequencer
-	// sendVoteResultToSequencer(listenerNode, result)
+	// Push the vote result to the sequencer directly.
+	// The sequencer also polls via CollectVoteResultsFromBuddies (pull path),
+	// but the pull path depends on handleVoteResultRequest having a valid
+	// listenerNode at query time. The push path is the reliable primary signal.
+	sendVoteResultToSequencer(logger_ctx, listenerNode, result)
 
-	// BFT will be triggered elsewhere (from ListenerHandler)
-	logger().NamedLogger.Info(logger_ctx, "Vote processing completed, BFT will be triggered",
+	logger().Info(logger_ctx, "Vote processing completed, result pushed to sequencer",
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 }
 
-/* UNUSED
 // sendVoteResultToSequencer sends the vote result back to the sequencer via SubmitMessageProtocol
 func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, result int8) {
-	logger().NamedLogger.Info(logger_ctx, "Sending vote result to sequencer",
+	logger().Info(logger_ctx, "Sending vote result to sequencer",
 		ion.String("listener_node", listenerNode.PeerID.String()),
 		ion.Int64("result", int64(result)),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 
 	if listenerNode == nil || listenerNode.PeerID == "" {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - listener node not initialized",
+		logger().Error(logger_ctx, "Cannot send vote result - listener node not initialized",
 			errors.New("Cannot send vote result - listener node not initialized"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -767,7 +800,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 	// Get the host from the current buddy node
 	if listenerNode.Host == nil {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - buddy node host not initialized",
+		logger().Error(logger_ctx, "Cannot send vote result - buddy node host not initialized",
 			errors.New("Cannot send vote result - buddy node host not initialized"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -775,43 +808,60 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 	// Get the sequencer peer ID from the subscription cache
 	// The sequencer is the first peer in the cache (from when we subscribed)
-	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
-	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - no sequencer peer found",
-			errors.New("Cannot send vote result - no sequencer peer found"),
-			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
-		return
-	}
-
-	// Find a valid sequencer peer (not self)
-	var sequencerPeerID peer.ID
-	found := false
 	currentPeerID := listenerNode.PeerID
 	currentHostID := listenerNode.Host.ID()
 
-	for _, peerID := range pubSubNode.BuddyNodes.Buddies_Nodes {
-		// Skip if this is our own peer ID
-		if peerID == currentPeerID || peerID == currentHostID {
-			logger().NamedLogger.Info(logger_ctx, "Skipping self-peer",
-				ion.String("peer_id", peerID.String()),
-				ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
-			continue
+	var sequencerPeerID peer.ID
+	found := false
+
+	// Path 1: pubsub buddy node list (set on buddy nodes when the sequencer
+	// broadcasts its buddy list at consensus start).
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if pubSubNode != nil {
+		for _, pid := range pubSubNode.BuddyNodes.Buddies_Nodes {
+			if pid == currentPeerID || pid == currentHostID {
+				continue
+			}
+			sequencerPeerID = pid
+			found = true
+			break
 		}
-		sequencerPeerID = peerID
-		found = true
-		break
+	}
+
+	// Path 2: consensus message cache — SequencerID is explicitly set by the
+	// sequencer at round start for exactly this purpose ("so voters know where
+	// to send votes"). Used when pubSubNode has no buddy list (common on buddy nodes).
+	if !found {
+		for _, msg := range AVCStruct.SnapshotConsensusMessages() {
+			if msg == nil || msg.SequencerID == "" {
+				continue
+			}
+			pid, err := peer.Decode(msg.SequencerID)
+			if err != nil {
+				continue
+			}
+			if pid == currentPeerID || pid == currentHostID {
+				continue // this node IS the sequencer — no-op
+			}
+			sequencerPeerID = pid
+			found = true
+			logger().Info(logger_ctx, "sendVoteResultToSequencer: resolved sequencer from consensus cache",
+				ion.String("sequencer_id", msg.SequencerID),
+				ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
+			break
+		}
 	}
 
 	if !found {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - no valid sequencer peer found (all are self)",
-			errors.New("Cannot send vote result - no valid sequencer peer found (all are self)"),
+		// Node is the sequencer itself (no non-self peer found anywhere) — no-op.
+		logger().Warn(logger_ctx, "sendVoteResultToSequencer: sequencer peer not found — node is likely the sequencer itself",
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
 
 	host := listenerNode.Host
 
-	logger().NamedLogger.Info(logger_ctx, "Sending vote result",
+	logger().Info(logger_ctx, "Sending vote result",
 		ion.Int64("result", int64(result)),
 		ion.String("sequencer_peer_id", sequencerPeerID.String()),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
@@ -824,7 +874,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	})
 
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to marshal result message", err,
+		logger().Error(logger_ctx, "Failed to marshal result message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -841,7 +891,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// Open a stream to the sequencer
 	stream, err := host.NewStream(context.Background(), sequencerPeerID, config.SubmitMessageProtocol)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to open stream to sequencer", err,
+		logger().Error(logger_ctx, "Failed to open stream to sequencer", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -850,7 +900,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// Serialize and send the message
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to marshal message", err,
+		logger().Error(logger_ctx, "Failed to marshal message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -858,28 +908,27 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	writer := bufio.NewWriter(stream)
 	_, err = writer.WriteString(string(messageBytes) + string(rune(config.Delimiter)))
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to write message", err,
+		logger().Error(logger_ctx, "Failed to write message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
 
 	err = writer.Flush()
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to flush message", err,
+		logger().Error(logger_ctx, "Failed to flush message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Vote result sent to sequencer successfully",
+	logger().Info(logger_ctx, "Vote result sent to sequencer successfully",
 		ion.Int64("result", int64(result)),
 		ion.String("message", resultMessage),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 }
-*/
 
 // handleVerifySubscriptionRequest processes verification requests from the sequencer
 func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Handling verify subscription request from sequencer",
+	logger().Info(logger_ctx, "Handling verify subscription request from sequencer",
 		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
@@ -900,13 +949,13 @@ func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context
 		SetACK(ack)
 
 	// Publish the response back to the channel
-	logger().NamedLogger.Info(logger_ctx, "Sending verification response",
+	logger().Info(logger_ctx, "Sending verification response",
 		ion.String("sender", s.pubSub.Host.ID().String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 
 	if err := Publisher.Publish(logger_ctx, s.pubSub, config.PubSub_ConsensusChannel, responseMsg, nil); err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to publish verification response", err,
+		logger().Error(logger_ctx, "Failed to publish verification response", err,
 			ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 		return err
 	}
@@ -921,15 +970,31 @@ func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context
 func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	var payload l1finality.CommitPayload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit payload", err,
+		logger().Error(logger_ctx, "Failed to parse L1 commit payload", err,
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return err
 	}
 
 	if err := payload.Validate(); err != nil {
-		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit: "+err.Error(),
+		logger().Info(logger_ctx, "Skipping L1 commit: "+err.Error(),
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return nil
+	}
+
+	// SECURITY (Ibnu76): only the pinned sequencer may stamp L1 finality. msg.Sender
+	// is the gossipsub StrictSign-authenticated originator, so a non-sequencer peer's
+	// forged commit is dropped here instead of poisoning the block record.
+	if proceed, enforced := l1finality.AuthorizeGossipSender(msg.Sender.String()); !proceed {
+		logger().Warn(logger_ctx, "Dropping L1 commit: authenticated sender is not the pinned sequencer (unauthorized forgery)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	} else if !enforced {
+		logger().Warn(logger_ctx, "Applying L1 commit WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
 	}
 
 	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
@@ -937,27 +1002,27 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit update", err,
+		logger().Error(logger_ctx, "DB connection failed for L1 commit update", err,
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return err
 	}
 
 	found, err := l1finality.ApplyCommit(conn, payload)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to update block with L1 finality", err,
+		logger().Error(logger_ctx, "Failed to update block with L1 finality", err,
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return err
 	}
 	if !found {
 		// Block may not exist on this peer yet; treat as non-fatal.
-		logger().NamedLogger.Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
+		logger().Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "SubscriptionService.handleL1Commit"))
 		return nil
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "L1 finality applied from peer broadcast",
+	logger().Info(logger_ctx, "L1 finality applied from peer broadcast",
 		ion.Int64("block_number", int64(payload.BlockNumber)),
 		ion.String("l1_tx_hash", payload.L1TxHash),
 		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
@@ -972,15 +1037,30 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	var payload l1finality.RangePayload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit range payload", err,
+		logger().Error(logger_ctx, "Failed to parse L1 commit range payload", err,
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 		return err
 	}
 
 	if err := payload.Validate(); err != nil {
-		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
+		logger().Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 		return nil
+	}
+
+	// SECURITY (Ibnu76): only the pinned sequencer may stamp L1 finality — one forged
+	// range message could otherwise poison up to MaxRangeSpan blocks.
+	if proceed, enforced := l1finality.AuthorizeGossipSender(msg.Sender.String()); !proceed {
+		logger().Warn(logger_ctx, "Dropping L1 commit range: authenticated sender is not the pinned sequencer (unauthorized forgery)",
+			ion.String("sender", msg.Sender.String()),
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return nil
+	} else if !enforced {
+		logger().Warn(logger_ctx, "Applying L1 commit range WITHOUT sender authentication — consensus.sequencer_pinned_peer_id is unset (set it to enforce; required in production posture)",
+			ion.String("sender", msg.Sender.String()),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 	}
 
 	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)
@@ -988,14 +1068,22 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit range update", err,
+		logger().Error(logger_ctx, "DB connection failed for L1 commit range update", err,
 			ion.String("function", "SubscriptionService.handleL1CommitRange"))
 		return err
 	}
 
-	updated, skipped := l1finality.ApplyRange(conn, payload)
+	updated, skipped, applyErr := l1finality.ApplyRange(conn, payload)
+	if applyErr != nil {
+		// S3: a regressing (replay/rollback) range from a peer broadcast is dropped fail-closed.
+		logger().Error(logger_ctx, "L1 range finality rejected from peer broadcast", applyErr,
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return applyErr
+	}
 
-	logger().NamedLogger.Info(logger_ctx, "L1 range finality applied from peer broadcast",
+	logger().Info(logger_ctx, "L1 range finality applied from peer broadcast",
 		ion.Int64("start_block", int64(payload.StartBlock)),
 		ion.Int64("end_block", int64(payload.EndBlock)),
 		ion.String("l1_tx_hash", payload.L1TxHash),
@@ -1004,4 +1092,16 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		ion.String("function", "SubscriptionService.handleL1CommitRange"))
 
 	return nil
+}
+
+// sequencerControlAllowed reports whether msg may be acted on. Sequencer-only
+// control messages pass only when gossipsub signed them (SenderAuthenticated)
+// and the publisher is the sequencer; every other stage passes unchanged.
+func sequencerControlAllowed(msg *AVCStruct.GossipMessage) bool {
+	switch msg.Data.ACK.Stage {
+	case config.Type_BFTRequest, config.Type_EndPubSub, config.Type_AskForSubscription:
+		ok, _ := sequencerid.AuthorizeSender(msg.Sender.String(), msg.SenderAuthenticated)
+		return ok
+	}
+	return true
 }

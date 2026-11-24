@@ -2,7 +2,7 @@ package metrics
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -25,6 +25,14 @@ var DefaultRegistry = prometheus.NewRegistry()
 // Create a factory that uses our DefaultRegistry
 var factory = promauto.With(DefaultRegistry)
 
+// Verification sites for ConsensusLegacyVotesTotal's "site" label. Fixed
+// strings chosen here, never derived from a message, so the label is bounded.
+const (
+	LegacyVoteSiteSequencer   = "sequencer"    // Sequencer per-vote alerting loop
+	LegacyVoteSiteCommitteeV2 = "committee_v2" // seated-committee certificate tally
+	LegacyVoteSitePoolTally   = "pool_tally"   // countEligibleYes: legacy and pool-wide tallies
+)
+
 // GetLibp2pRegisterer returns a registerer suitable for libp2p metrics
 func GetLibp2pRegisterer() prometheus.Registerer {
 	// This creates a registerer that will add the "libp2p_" prefix to all metrics
@@ -32,6 +40,18 @@ func GetLibp2pRegisterer() prometheus.Registerer {
 }
 
 var (
+	// HandlerPanicsCounter counts panics recovered at a network-ingress boundary
+	// (libp2p stream handler, pubsub message handler, HTTP/RPC worker). Label
+	// "where" is a fixed handler name / protocol ID — bounded, never taken from
+	// a message.
+	HandlerPanicsCounter = factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jmdn_handler_panics_recovered_total",
+			Help: "Panics recovered at a network-ingress boundary, by handler",
+		},
+		[]string{"where"},
+	)
+
 	// Node connection metrics
 	ConnectedPeersGauge = factory.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_connected_peers_total",
@@ -47,6 +67,25 @@ var (
 		Name: "p2p_active_peers_total",
 		Help: "The number of active (responding) peers",
 	})
+
+	// ConsensusLegacyVotesTotal counts BLS votes that verified only as a legacy
+	// unbound "vote:<v>" signature instead of the block-bound v3 message.
+	//
+	// It counts DETECTION, not acceptance. With reject_legacy_votes on (the
+	// default) such a vote is counted here and then refused — that is the
+	// point: the metric is how an operator finds validators still signing the
+	// legacy domain, and a metric that only fired once the flag was already
+	// off would arrive too late to be used for anything.
+	//
+	// The "site" label names the verification layer that saw the vote, because
+	// the three layers do not see the same traffic: only a sequencer runs
+	// "sequencer", and only a node checking a certificate runs the other two.
+	// A vote seen by two layers is counted once under each, so read the
+	// per-site series rather than summing them.
+	ConsensusLegacyVotesTotal = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "consensus_legacy_votes_total",
+		Help: "BLS votes that verified only as a legacy unbound signature, by verification site",
+	}, []string{"site"})
 
 	// Heartbeat metrics
 	HeartbeatSentCounter = factory.NewCounter(prometheus.CounterOpts{
@@ -112,6 +151,22 @@ var (
 		[]string{"reason", "peer_id"},
 	)
 
+	// RPCQueryRefusedCounter counts public JSON-RPC requests refused by a
+	// configured cost bound or submission policy rather than by a client error.
+	// This is the signal for tuning them: without it an operator cannot tell
+	// whether a limit is doing security work or quietly breaking an integrator.
+	// The reason label is the bound or policy that fired, from a fixed set,
+	// never a client-supplied value, so cardinality stays fixed:
+	//   eth_getLogs:            "logs_span", "logs_results", "logs_scan"
+	//   eth_sendRawTransaction: "new_recipient_gas"
+	RPCQueryRefusedCounter = factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rpc_query_refused_total",
+			Help: "Public JSON-RPC requests refused by a configured cost bound or submission policy, by method and reason",
+		},
+		[]string{"method", "reason"},
+	)
+
 	// (File transfer metrics are not registered.)
 
 	// Database metrics
@@ -156,7 +211,7 @@ func StartMetricsServer(addr string) {
 		var err error
 		LocalGRO, err = common.InitializeGRO(GRO.MetricsLocal)
 		if err != nil {
-			fmt.Printf("Error initializing LocalGRO: %v\n", err)
+			log.Printf("Error initializing LocalGRO: %v\n", err)
 			return
 		}
 	}

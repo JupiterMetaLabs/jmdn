@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -22,6 +24,8 @@ import (
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/explorer/lifecycle"
+	"gossipnode/internal/proposalguard"
 	"gossipnode/l1finality"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
@@ -31,54 +35,43 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-type APIAccessTuple struct {
-	Address     string   `json:"address"`
-	StorageKeys []string `json:"storage_keys"`
-}
-
-type TransactionResponse struct {
-	LegacyTx  *FullTxn `json:"legacy_tx,omitempty"`
-	EIP1559Tx *FullTxn `json:"eip1559_tx,omitempty"`
-}
-
-type FullTxn struct {
-	Transaction     *config.Transaction `json:"transaction"`
-	TransactionHash string              `json:"transaction_hash"`
-}
-
-/* UNUSED
-// Global mutex to protect account access
-var accountMutex sync.Mutex
-
-// Convert API AccessTuple to Block.AccessList
-func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
-	if len(apiList) == 0 {
-		return config.AccessList{}
+// isAllowedHTTPOrigin reports whether a browser Origin may be reflected in the
+// CORS Access-Control-Allow-Origin header. Defaults to loopback only; an empty
+// Origin (non-browser client) is treated as not-a-CORS-request and returns false
+// so no CORS header is emitted.
+//
+// TODO: replace with a config-driven allowlist when that field exists.
+func isAllowedHTTPOrigin(origin string) bool {
+	if origin == "" {
+		return false
 	}
-
-	result := make(config.AccessList, len(apiList))
-	for i, tuple := range apiList {
-		storageKeys := make([]common.Hash, len(tuple.StorageKeys))
-		for j, key := range tuple.StorageKeys {
-			storageKeys[j] = common.HexToHash(key)
-		}
-
-		result[i] = config.AccessTuple{
-			Address:     common.HexToAddress(tuple.Address),
-			StorageKeys: storageKeys,
-		}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
 	}
-	return result
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
-*/
+
+// addrHex safely converts a *common.Address to its hex string.
+// Returns the fallback string when the pointer is nil (e.g. contract creation has To == nil).
+func addrHex(addr *common.Address, fallback string) string {
+	if addr == nil {
+		return fallback
+	}
+	return addr.Hex()
+}
 
 func submitRawTransaction(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.submitRawTransaction")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.submitRawTransaction")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -88,7 +81,7 @@ func submitRawTransaction(c *gin.Context) {
 		attribute.String("path", c.Request.URL.Path),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Received submit raw transaction request",
+	logger().Info(spanCtx, "Received submit raw transaction request",
 		ion.String("client_ip", c.ClientIP()),
 		ion.String("method", c.Request.Method),
 		ion.String("path", c.Request.URL.Path),
@@ -105,7 +98,7 @@ func submitRawTransaction(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "bind_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid transaction format",
+		logger().Error(spanCtx, "Invalid transaction format",
 			err,
 			ion.String("client_ip", c.ClientIP()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -116,13 +109,13 @@ func submitRawTransaction(c *gin.Context) {
 		return
 	}
 
-	txHash, err := SubmitRawTransaction(spanCtx, &tx)
+	txHash, err := SubmitRawTransaction(spanCtx, &tx, OriginHTTP(c.Request.RemoteAddr))
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction validation failed",
+		logger().Error(spanCtx, "Transaction validation failed",
 			err,
 			ion.String("client_ip", c.ClientIP()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -136,7 +129,7 @@ func submitRawTransaction(c *gin.Context) {
 	span.SetAttributes(attribute.String("tx_hash", txHash))
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Transaction submitted successfully",
+	logger().Info(spanCtx, "Transaction submitted successfully",
 		ion.String("tx_hash", txHash),
 		ion.String("client_ip", c.ClientIP()),
 		ion.Float64("duration", duration),
@@ -153,9 +146,20 @@ func submitRawTransaction(c *gin.Context) {
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (string, error) {
+// isSelfTransfer reports whether tx sends to its own sender. It compares the
+// addresses, not the pointers: two distinct pointers to one address are a
+// self-transfer.
+func isSelfTransfer(tx *config.Transaction) bool {
+	return tx.To != nil && tx.From != nil && *tx.To == *tx.From
+}
+
+func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction, origin TxOrigin) (string, error) {
+	// Reject a transaction with no sender before anything dereferences tx.From.
+	if err := Security.CheckTransactionShape(tx); err != nil {
+		return "", fmt.Errorf("invalid transaction: %w", err)
+	}
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
+	spanCtx, span := logger().Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -172,9 +176,9 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		}
 	}
 
-	logger().NamedLogger.Info(spanCtx, "Processing raw transaction",
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
+	logger().Info(spanCtx, "Processing raw transaction",
+		ion.String("from", addrHex(tx.From, "<nil>")),
+		ion.String("to", addrHex(tx.To, "<contract creation>")),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", TOPIC),
@@ -189,26 +193,53 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		return "", errors.New("invalid transaction: hash is required and must be provided by the client")
 	}
 
-	// Run security checks (includes hash validation)
-	status, err := Security.AllChecks(tx)
-	if !status || err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "security_check_failed"), attribute.Bool("security_status", status))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Security checks failed",
-			err,
-			ion.Bool("security_status", status),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
+	// Unsigned contract-creation bypass (To == nil, V == nil). Trust is decided
+	// from the CALLER'S TRANSPORT (origin.Trusted() — same-host/in-process),
+	// NOT from the transaction's shape. A remote peer sending {To:nil, V:nil}
+	// is no longer trusted, so it falls through to full Security.AllChecks and
+	// its unsigned/impersonated deployment is rejected (audit SEC-02).
+	isInternalDeployment := origin.Trusted() && tx.To == nil && tx.V == nil
+	if isInternalDeployment {
+		span.SetAttributes(
+			attribute.Bool("internal_deployment", true),
+			attribute.String("status", "internal_deployment_bypass"),
+			attribute.String("origin_transport", origin.Transport),
+		)
+		logger().Info(spanCtx, "Trusted same-host contract deployment — bypassing signature validation",
+			ion.String("from", addrHex(tx.From, "<nil>")),
+			ion.String("origin_transport", origin.Transport),
+			ion.String("origin_peer", origin.RemoteAddr),
 			ion.String("function", "BlockServer.SubmitRawTransaction"))
-		return "", err
+	} else {
+		// Run full security checks (includes signature + hash validation)
+		status, err := Security.AllChecks(tx)
+		if !status || err != nil {
+			span.RecordError(err)
+			span.SetAttributes(attribute.String("status", "security_check_failed"), attribute.Bool("security_status", status))
+			duration := time.Since(startTime).Seconds()
+			span.SetAttributes(attribute.Float64("duration", duration))
+			logger().Error(spanCtx, "Security checks failed",
+				err,
+				ion.Bool("security_status", status),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", FILENAME),
+				ion.String("topic", TOPIC),
+				ion.String("function", "BlockServer.SubmitRawTransaction"))
+			return "", err
+		}
 	}
 
 	span.SetAttributes(attribute.Bool("security_checks_passed", true))
 
 	// Basic transaction validation
+	// Guard tx.Value == nil BEFORE arithmetic: a remote submission can omit
+	// value entirely, and both the signed and internal-deployment paths reach
+	// here (SEC-02). A nil deref here is a remote unauthenticated node crash.
+	if tx.Value == nil {
+		span.RecordError(errors.New("transaction value is nil"))
+		span.SetAttributes(attribute.String("status", "validation_failed"))
+		return "", errors.New("transaction value must not be nil")
+	}
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
 		if len(tx.Data) == 0 || tx.Data == nil {
 			span.RecordError(errors.New("value is 0/empty AND data is 0/empty"))
@@ -220,7 +251,7 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 	}
 
 	// Check that To and From addresses are not the same (not checked in security checks)
-	if tx.To == tx.From {
+	if isSelfTransfer(tx) {
 		span.RecordError(errors.New("invalid transaction: To and From address are the same"))
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		duration := time.Since(startTime).Seconds()
@@ -231,16 +262,16 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 	txHash := tx.Hash.Hex()
 	span.SetAttributes(
 		attribute.String("tx_hash", txHash),
-		attribute.String("from", tx.From.Hex()),
-		attribute.String("to", tx.To.Hex()),
+		attribute.String("from", addrHex(tx.From, "<nil>")),
+		attribute.String("to", addrHex(tx.To, "<contract creation>")),
 		attribute.String("value", tx.Value.String()),
 		attribute.Int("tx_type", int(tx.Type)),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Transaction validated, submitting to mempool",
+	logger().Info(spanCtx, "Transaction validated, submitting to mempool",
 		ion.String("tx_hash", txHash),
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
+		ion.String("from", addrHex(tx.From, "<nil>")),
+		ion.String("to", addrHex(tx.To, "<contract creation>")),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", TOPIC),
@@ -252,24 +283,24 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 
 	LocalGRO.Go(GRO.SubmitRawTransactionThread, func(_ context.Context) error {
 		// Use a fresh context background but link it to the original request
-		asyncCtx, asyncSpan := logger().NamedLogger.Tracer("BlockServer").Start(context.Background(), "AsyncSubmitRawTransaction", ion.WithLinks(link))
+		asyncCtx, asyncSpan := logger().Tracer("BlockServer").Start(context.Background(), "AsyncSubmitRawTransaction", ion.WithLinks(link))
 		defer asyncSpan.End()
 
-		if err := SubmitToMempool(asyncCtx, tx, txHash); err != nil {
-			logger().NamedLogger.Error(asyncCtx, "Error submitting raw transaction to mempool",
+		if err := SubmitToMempool(tx, txHash); err != nil {
+			logger().Error(asyncCtx, "Error submitting raw transaction to mempool",
 				err,
 				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
+				ion.String("from", addrHex(tx.From, "<nil>")),
+				ion.String("to", addrHex(tx.To, "<contract creation>")),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", FILENAME),
 				ion.String("topic", TOPIC),
 				ion.String("function", "BlockServer.SubmitRawTransaction"))
 		} else {
-			logger().NamedLogger.Info(asyncCtx, "Raw transaction successfully submitted to mempool",
+			logger().Info(asyncCtx, "Raw transaction successfully submitted to mempool",
 				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
+				ion.String("from", addrHex(tx.From, "<nil>")),
+				ion.String("to", addrHex(tx.To, "<contract creation>")),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", FILENAME),
 				ion.String("topic", TOPIC),
@@ -322,10 +353,6 @@ func getPublishGPS() *PubSubMessages.GossipPubSub {
 	return globalGPS
 }
 
-func Startserver(bindAddr string, port int, h host.Host, chainID int) {
-	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
-}
-
 // StartserverWithContext starts the transaction/block API server and shuts it down when ctx is cancelled.
 func StartserverWithContext(ctx context.Context, bindAddr string, port int, h host.Host, chainID int) error {
 	// Create logs directory if it doesn't exist
@@ -333,18 +360,9 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Configure zerolog for transactions
-	txLogger := zerolog.New(os.Stdout).With().
-		Timestamp().
-		Str("component", "transactions").
-		Logger()
-
-	// Set up Gin to use our transaction logger
+	// Set up Gin writers
 	gin.DefaultWriter = io.MultiWriter(os.Stdout)
 	gin.DefaultErrorWriter = io.MultiWriter(os.Stderr)
-
-	// Configure global logger
-	SetLogger(txLogger)
 
 	// Configure metrics for Prometheus
 	metrics.DatabaseOperations.WithLabelValues("init", "success").Inc()
@@ -356,10 +374,17 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {
-		// CORS headers
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+		// CORS headers. Previously this reflected "*" alongside an Authorization
+		// header on state-mutating POSTs, letting any web origin drive the API.
+		// Restrict to loopback origins by default (echoing the specific Origin so
+		// it composes with credentialed requests, which browsers forbid under "*").
+		// TODO: source an explicit allowlist from config once a field exists.
+		if origin := c.Request.Header.Get("Origin"); isAllowedHTTPOrigin(origin) {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -373,7 +398,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		method := c.Request.Method
 
 		// Create span for request
-		spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.HTTPRequest")
+		spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.HTTPRequest")
 		span.SetAttributes(
 			attribute.String("client_ip", clientIP),
 			attribute.String("method", method),
@@ -396,7 +421,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		metrics.DatabaseOperations.WithLabelValues("api_request", fmt.Sprintf("%d", statusCode)).Inc()
 
 		// Log request details with structured format
-		logger().NamedLogger.Info(spanCtx, "API Request",
+		logger().Info(spanCtx, "API Request",
 			ion.String("client_ip", clientIP),
 			ion.String("method", method),
 			ion.String("path", path),
@@ -416,11 +441,11 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	// Rate Limiter
 	rl, err := gatekeeper.NewRateLimiter(secCfg, secCfg.IPCacheSize)
 	if err != nil {
-		logger().NamedLogger.Error(ctx, "Failed to init rate limiter", err)
+		logger().Error(ctx, "Failed to init rate limiter", err)
 		return err
 	} else {
 		// Middleware
-		middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger().NamedLogger)
+		middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger())
 		// Apply Gatekeeper Middleware
 		router.Use(middleware.Middleware(settings.ServiceBlockIngestHTTP))
 	}
@@ -435,9 +460,9 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	router.GET("/api/tx/:hash", getTransactionInfo)
 	router.GET("/api/latest-block", getLatestBlock)
 
-	// router.POST("/api/contract/compile", compileContract)
-	// router.POST("/api/contract/deploy", deployContract)
-	// router.POST("/api/contract/execute", executeContract)
+	// router.POST("/api/contract/compile", compileContract) // retired on main — SmartContract service owns compilation
+	// router.POST("/api/contract/deploy", deployContract)   // retired on main — SmartContract service owns deployment
+	// router.POST("/api/contract/execute", executeContract) // retired on main — SmartContract service owns execution
 
 	// Add a health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -446,7 +471,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 	// Start server
 	portStr := fmt.Sprintf("%s:%d", bindAddr, port)
-	logger().NamedLogger.Info(ctx, "Starting transaction generator API",
+	logger().Info(ctx, "Starting transaction generator API",
 		ion.Int("port", port),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
@@ -457,21 +482,30 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		Addr:              portStr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout bounds a slow body (a /api/process-block body carries the
+		// multi-MB proof). IdleTimeout closes idle keep-alive connections: with
+		// neither set, a client that opens a connection per poll and never closes
+		// it pins one server goroutine per connection for the process lifetime.
+		// WriteTimeout is deliberately left unset — process-block responds after
+		// consensus.Start, and cutting that response would make the orchestrator
+		// retry a block that was already accepted.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// --- TLS CONFIGURATION ---
-	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger().NamedLogger)
+	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger())
 	// Configure TLS if enabled
 	tlsConfig, err := tlsLoader.LoadServerTLS(settings.ServiceBlockIngestHTTP)
 	if err != nil {
 		// FAIL HARD: If TLS is enabled in policy but fails to load, we must not start insecurely.
-		logger().NamedLogger.Error(ctx, "Failed to load TLS config for Sequencer", err)
+		logger().Error(ctx, "Failed to load TLS config for Sequencer", err)
 		return fmt.Errorf("failed to load TLS config for Sequencer: %w", err)
 	}
 
 	if tlsConfig != nil {
 		srv.TLSConfig = tlsConfig
-		logger().NamedLogger.Info(ctx, "TLS Enabled for Sequencer API")
+		logger().Info(ctx, "TLS Enabled for Sequencer API")
 	}
 
 	errCh := make(chan error, 1)
@@ -499,7 +533,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 func processZKBlock(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.processZKBlock")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.processZKBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -509,7 +543,7 @@ func processZKBlock(c *gin.Context) {
 		attribute.String("path", c.Request.URL.Path),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Received process ZK block request",
+	logger().Info(spanCtx, "Received process ZK block request",
 		ion.String("client_ip", c.ClientIP()),
 		ion.String("method", c.Request.Method),
 		ion.String("path", c.Request.URL.Path),
@@ -525,7 +559,7 @@ func processZKBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid block data",
+		logger().Error(spanCtx, "Invalid block data",
 			err,
 			ion.String("client_ip", c.ClientIP()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -536,8 +570,18 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// CodeQL go/incorrect-integer-conversion (alerts #3-#7): block.BlockNumber
+	// is uint64, populated straight from the submitted request body
+	// (c.ShouldBindJSON above) with no upper bound, and every log/span call
+	// in this function narrows it to int64 unchecked. Clamp once here and
+	// reuse below instead of repeating the check at each of the six sites.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 		attribute.Int("tx_count", len(block.Transactions)),
 		attribute.String("block_status", block.Status),
@@ -562,32 +606,151 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
-	// Stamp every distinct sender/receiver with its canonical ART identity nonce
-	// (existing account → stored nonce; account this block creates → the next
-	// monotonic ordinal). Advisory field — not part of the canonical block hash —
-	// so this does not invalidate block.BlockHash. Fail-closed: without carried
-	// identities the fleet would fall back to per-node nonce minting, the exact
-	// divergence this exists to prevent, so a failed enrichment rejects the block
-	// (the orchestrator retries/requeues the batch).
-	if err := DB_OPs.EnrichBlockAccountNonces(&block); err != nil {
+	// D-858 item 2: duplicate-height ingress guard. The block-858 incident admitted
+	// a SECOND candidate for a height while the first was still in consensus (the
+	// orchestrator recomputed tip+1 because /api/latest-block still showed the old
+	// tip). Reject fail-closed, BEFORE any consensus work, when:
+	//   (a) the height is already committed (<= tip), or
+	//   (b) a consensus round for this height is already in flight (proposalguard).
+	// The 409 + reason is a DISTINCT, non-retryable signal the orchestrator treats as
+	// "already proposed" (item 4). proposalguard is claimed here and released on the
+	// consensus terminal (ProcessBlockLocally, or the rejected-round branch of
+	// BroadcastAndProcessBlock), with a TTL backstop for a dead round.
+	if tip, terr := DB_OPs.GetLatestDataCompleteBlock(); terr != nil {
+		span.RecordError(terr)
+		span.SetAttributes(attribute.String("status", "tip_read_failed"))
+		logger().Error(spanCtx, "Refusing proposal — committed-tip read failed (fail closed)", terr,
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "cannot read committed tip", "reason": "tip_unavailable"})
+		return
+	} else if block.BlockNumber <= tip {
+		// CodeQL go/incorrect-integer-conversion: tip (uint64, from
+		// GetLatestDataCompleteBlock) narrowed to int64 unchecked for a log
+		// field. Gate the conversion itself behind the bound check rather
+		// than converting then overwriting, so the check actually guards it.
+		var tipAttr int64
+		if tip > math.MaxInt64 {
+			tipAttr = math.MaxInt64
+		} else {
+			tipAttr = int64(tip)
+		}
+		span.SetAttributes(attribute.String("status", "duplicate_height_committed"))
+		logger().Warn(spanCtx, "Rejecting proposal for an already-committed height (duplicate/stale)",
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("committed_tip", tipAttr),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  fmt.Sprintf("height %d already committed (tip %d)", block.BlockNumber, tip),
+			"reason": "height_already_committed",
+		})
+		return
+	}
+	if !proposalguard.Default.Claim(block.BlockNumber) {
+		span.SetAttributes(attribute.String("status", "duplicate_height_inflight"))
+		logger().Warn(spanCtx, "Rejecting proposal for a height already in consensus (in-flight)",
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  fmt.Sprintf("height %d already in consensus", block.BlockNumber),
+			"reason": "height_in_flight",
+		})
+		return
+	}
+	// Release the in-flight claim on ANY early return before consensus is handed to
+	// its async flow; once consensus.Start succeeds, the consensus terminal
+	// (ProcessBlockLocally, or the rejected-round branch) owns the release, with
+	// proposalguard's TTL as backstop.
+	consensusHandedOff := false
+	defer func() {
+		if !consensusHandedOff {
+			proposalguard.Default.Release(block.BlockNumber)
+		}
+	}()
+
+	if err := checkProposalHeader(&block); err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "account_nonce_enrichment_failed"))
+		span.SetAttributes(attribute.String("status", "header_binding_failed"))
+		logger().Warn(spanCtx, "Refusing proposal: header binding check failed",
+			ion.String("error", err.Error()),
+			ion.Int64("block_number", blockNumberAttr),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "reason": "header_binding"})
+		return
+	}
+
+	// Account-nonce enrichment (EnrichBlockAccountNonces) now runs AFTER
+	// attachAVCConsensusFields below, not here: attach populates block.FeeRecipients
+	// (buddy reward-split recipients), and enrichment must see them so a never-funded
+	// reward address gets a block-carried ART identity in the SAME deterministic
+	// ordinal pass as tx senders/receivers — otherwise the reward credit at apply
+	// fails ("account must exist before transfer"). ConsensusHash never folds
+	// AccountNonces, but from consensus.header_binding_from_height on it folds
+	// FeeRecipients (Security/consensus_fields_hash.go): FeeRecipients must not
+	// change after attachAVCConsensusFields computes the hash. See the enrichment
+	// call below.
+
+	// M2b (Architecture §8) + VDF-Implementation-Handoff.md §6's corrected
+	// attachment point — set Slot/Period from jmdn's own live tracking and
+	// compute the separate ConsensusHash that binds them. BlockHash is NOT
+	// touched (corrected 2026-09-15: this said "when the rollout flag is on,
+	// recompute BlockHash"; no flag gates this path and BlockHash is never
+	// rewritten here). Must run after all other validation/enrichment above
+	// and before consensus.Start below — see Block/consensus_fields.go for the
+	// full rationale. Fails closed (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// item 8) if this node's slot/epoch clock has not been recovered from its
+	// committed history.
+	if err := attachAVCConsensusFields(&block); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "consensus_fields_attach_failed"))
+		logger().Error(spanCtx, "Refusing to propose — consensus-field attach failed (reason in error: slot recovery, reward source, VDF proof, or committee snapshot)",
+			err,
+			ion.Int64("block_number", blockNumberAttr),
+			ion.String("log_file", FILENAME),
+			ion.String("topic", BLOCKTOPIC),
+			ion.String("function", "BlockServer.processZKBlock"))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Stamp every distinct sender/receiver AND buddy reward-split recipient with its
+	// canonical ART identity nonce (existing account → stored nonce; account this
+	// block creates → the next monotonic ordinal). Runs AFTER attach so FeeRecipients
+	// is populated: a never-funded reward address needs a block-carried identity to be
+	// created from at apply, exactly like a first-time tx receiver. Advisory field —
+	// not part of BlockHash or ConsensusHash — so this does not invalidate either.
+	// Fail-closed: without carried identities the fleet falls back to per-node nonce
+	// minting (the exact divergence this prevents), so a failed enrichment rejects the
+	// block (the orchestrator retries/requeues the batch).
+	//
+	//
+	// Contract txs can also create accounts DURING execution (internal CALL{value}
+	// to a fresh address, SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2);
+	// stampProposalAccountNonces predicts those too. It is the SAME step the gRPC
+	// ingress (grpc_server.go) runs — do not inline it here.
+	if err := stampProposalAccountNonces(spanCtx, &block); err != nil {
+		span.RecordError(err)
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to enrich block with account nonces — block rejected",
+		code, stat := http.StatusInternalServerError, "account_nonce_enrichment_failed"
+		if errors.Is(err, errProposalPrediction) {
+			code, stat = http.StatusServiceUnavailable, "execution_prediction_failed"
+		}
+		span.SetAttributes(attribute.String("status", stat))
+		logger().Error(spanCtx, "Failed to stamp block account nonces — block rejected",
 			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
 			ion.String("function", "BlockServer.processZKBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enrich block with account nonces: " + err.Error()})
+		c.JSON(code, gin.H{"error": err.Error()})
 		return
 	}
 
-	logger().NamedLogger.Info(spanCtx, "Block validated, starting consensus process",
-		ion.Int64("block_number", int64(block.BlockNumber)),
+	logger().Info(spanCtx, "Block validated, starting consensus process",
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)),
 		ion.Int("account_nonces", len(block.AccountNonces)),
@@ -601,6 +764,16 @@ func processZKBlock(c *gin.Context) {
 		MainPeers:   []peer.ID{},
 		BackupPeers: []peer.ID{},
 	}
+	// Explorer lifecycle: PENDING — this block (and its txs) has been proposed and
+	// is about to enter consensus. Best-effort, guarded; never affects consensus.
+	{
+		txHashes := make([]string, 0, len(block.Transactions))
+		for i := range block.Transactions {
+			txHashes = append(txHashes, block.Transactions[i].Hash.Hex())
+		}
+		lifecycle.MarkProposed(block.BlockNumber, block.BlockHash.Hex(), txHashes)
+	}
+
 	consensus := Sequencer.NewConsensus(peerList, globalHost)
 
 	consensusStartTime := time.Now().UTC()
@@ -611,9 +784,9 @@ func processZKBlock(c *gin.Context) {
 		span.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to start consensus process",
+		logger().Error(spanCtx, "Failed to start consensus process",
 			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Float64("consensus_duration", consensusDuration),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -626,14 +799,18 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// Consensus is now running in its async flow; its terminal (ProcessBlockLocally)
+	// owns the in-flight claim release. Suppress the defer's early-return release.
+	consensusHandedOff = true
+
 	consensusDuration := time.Since(consensusStartTime).Seconds()
 	span.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
 
 	for _, tx := range block.Transactions {
 		LogTransaction(
 			tx.Hash.Hex(),
-			tx.From.Hex(),
-			tx.To.Hex(),
+			addrHex(tx.From, "<nil>"),
+			addrHex(tx.To, "<contract creation>"),
 			tx.Value.String(),
 			fmt.Sprintf("%d", tx.Type),
 		)
@@ -641,8 +818,8 @@ func processZKBlock(c *gin.Context) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block processed successfully",
-		ion.Int64("block_number", int64(block.BlockNumber)),
+	logger().Info(spanCtx, "Block processed successfully",
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Int("tx_count", len(block.Transactions)),
 		ion.Float64("consensus_duration", consensusDuration),
@@ -665,7 +842,7 @@ func processZKBlock(c *gin.Context) {
 // getBlockByNumber retrieves a block by its number
 func getBlockByNumber(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByNumber")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByNumber")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -682,7 +859,7 @@ func getBlockByNumber(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid block number",
+		logger().Error(spanCtx, "Invalid block number",
 			err,
 			ion.String("block_number_str", blockNumberStr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -693,52 +870,39 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("block_number", int64(blockNumber)))
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged in processZKBlock (alerts #3-#7) —
+	// telemetry-only, so clamp rather than error. The convert-then-overwrite
+	// shape used here originally still left the conversion itself unguarded
+	// as far as CodeQL's analysis is concerned; gate it behind the check.
+	var blockNumberAttr int64
+	if blockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	} else {
+		blockNumberAttr = int64(blockNumber)
+	}
 
-	logger().NamedLogger.Info(spanCtx, "Getting block by number",
-		ion.Int64("block_number", int64(blockNumber)),
+	span.SetAttributes(attribute.Int64("block_number", blockNumberAttr))
+
+	logger().Info(spanCtx, "Getting block by number",
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getBlockByNumber"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.Int64("block_number", int64(blockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer func() {
-		logger().NamedLogger.Info(spanCtx, "Putting database connection back to pool",
-			ion.String("database", "MainDB Connection"),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
-		DB_OPs.PutMainDBConnection(mainDBClient)
-	}()
 
-	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
+	block, err := DB_OPs.GetZKBlockByNumber(nil, blockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "block_not_found"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Block not found",
+		logger().Error(spanCtx, "Block not found",
 			err,
-			ion.Int64("block_number", int64(blockNumber)),
+			ion.Int64("block_number", blockNumberAttr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
@@ -749,8 +913,8 @@ func getBlockByNumber(c *gin.Context) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block lookup by number successful",
-		ion.Int64("block_number", int64(blockNumber)),
+	logger().Info(spanCtx, "Block lookup by number successful",
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -764,7 +928,7 @@ func getBlockByNumber(c *gin.Context) {
 // getBlockByHash retrieves a block by its hash
 func getBlockByHash(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByHash")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByHash")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -776,41 +940,23 @@ func getBlockByHash(c *gin.Context) {
 		attribute.String("block_hash", blockHash),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Getting block by hash",
+	logger().Info(spanCtx, "Getting block by hash",
 		ion.String("block_hash", blockHash),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getBlockByHash"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("block_hash", blockHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByHash"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
+	block, err := DB_OPs.GetZKBlockByHash(nil, blockHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "block_not_found"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Block not found",
+		logger().Error(spanCtx, "Block not found",
 			err,
 			ion.String("block_hash", blockHash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -821,11 +967,18 @@ func getBlockByHash(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same class as alerts #3-#7,
+	// unflagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block lookup by hash successful",
+	logger().Info(spanCtx, "Block lookup by hash successful",
 		ion.String("block_hash", blockHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
@@ -838,7 +991,7 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getTransactionInfo")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getTransactionInfo")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -850,41 +1003,23 @@ func getTransactionInfo(c *gin.Context) {
 		attribute.String("tx_hash", txHash),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Getting transaction info",
+	logger().Info(spanCtx, "Getting transaction info",
 		ion.String("tx_hash", txHash),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", TOPIC),
 		ion.String("function", "BlockServer.getTransactionInfo"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("tx_hash", txHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.getTransactionInfo"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	block, err := DB_OPs.GetTransactionBlock(ctx, mainDBClient, txHash)
+	block, err := DB_OPs.GetTransactionBlock(spanCtx, nil, txHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "transaction_not_found"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction not found",
+		logger().Error(spanCtx, "Transaction not found",
 			err,
 			ion.String("tx_hash", txHash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -909,7 +1044,7 @@ func getTransactionInfo(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "transaction_details_missing"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction found in block but details missing",
+		logger().Error(spanCtx, "Transaction found in block but details missing",
 			fmt.Errorf("transaction found in block but details missing"),
 			ion.String("tx_hash", txHash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -920,16 +1055,23 @@ func getTransactionInfo(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same class as alerts #3-#7,
+	// unflagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
+
 	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 	)
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Transaction info retrieved successfully",
+	logger().Info(spanCtx, "Transaction info retrieved successfully",
 		ion.String("tx_hash", txHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
+		ion.Int64("block_number", blockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -950,7 +1092,7 @@ func getTransactionInfo(c *gin.Context) {
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getLatestBlock")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getLatestBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -960,39 +1102,31 @@ func getLatestBlock(c *gin.Context) {
 		attribute.String("path", c.Request.URL.Path),
 	)
 
-	logger().NamedLogger.Info(spanCtx, "Getting latest block",
+	logger().Info(spanCtx, "Getting latest block",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getLatestBlock"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(ctx, mainDBClient)
+	// D-858 review B7: this endpoint MUST report the data-complete tip, not
+	// MAX(block_number). The orchestrator polls /api/latest-block to compute the next
+	// height (see internal/proposalguard header), and the three D-858 gates now read
+	// GetLatestDataCompleteBlock. After a store failure at height N the skeleton
+	// blocks row advances MAX to N while the data-complete marker holds N-1; returning
+	// MAX here would make the orchestrator propose N+1 (skipping the failed N) and
+	// every validator reject it as non-contiguous — the exact divergence this PR
+	// fixes. Reading the data-complete tip keeps all four readers in agreement and
+	// also avoids serving a skeleton (txless) block body below.
+	latestBlockNumber, err := DB_OPs.GetLatestDataCompleteBlock()
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to get latest block number",
+		logger().Error(spanCtx, "Failed to get latest block number",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
@@ -1006,7 +1140,7 @@ func getLatestBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "no_blocks"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(spanCtx, "No blocks in chain yet",
+		logger().Info(spanCtx, "No blocks in chain yet",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
@@ -1015,17 +1149,28 @@ func getLatestBlock(c *gin.Context) {
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("latest_block_number", int64(latestBlockNumber)))
+	// CodeQL go/incorrect-integer-conversion: latestBlockNumber (uint64, from
+	// GetLatestDataCompleteBlock) narrowed to int64 unchecked at 3 log/span
+	// sites below — telemetry-only. Gate the conversion behind the bound
+	// check once and reuse, instead of repeating an unguarded cast per site.
+	var latestBlockNumberAttr int64
+	if latestBlockNumber > math.MaxInt64 {
+		latestBlockNumberAttr = math.MaxInt64
+	} else {
+		latestBlockNumberAttr = int64(latestBlockNumber)
+	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, latestBlockNumber)
+	span.SetAttributes(attribute.Int64("latest_block_number", latestBlockNumberAttr))
+
+	block, err := DB_OPs.GetZKBlockByNumber(nil, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_block_data_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to get latest block data",
+		logger().Error(spanCtx, "Failed to get latest block data",
 			err,
-			ion.Int64("latest_block_number", int64(latestBlockNumber)),
+			ion.Int64("latest_block_number", latestBlockNumberAttr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", FILENAME),
 			ion.String("topic", BLOCKTOPIC),
@@ -1036,8 +1181,8 @@ func getLatestBlock(c *gin.Context) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Latest block lookup successful",
-		ion.Int64("latest_block_number", int64(latestBlockNumber)),
+	logger().Info(spanCtx, "Latest block lookup successful",
+		ion.Int64("latest_block_number", latestBlockNumberAttr),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1053,12 +1198,12 @@ func getLatestBlock(c *gin.Context) {
 // Apply logic is shared with the gossip receivers via the l1finality package —
 // see that package's doc comment for why.
 func receiveL1Commit(c *gin.Context) {
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1Commit")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1Commit")
 	defer span.End()
 
 	var payload l1finality.CommitPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit payload", err,
+		logger().Error(spanCtx, "Invalid l1-commit payload", err,
 			ion.String("function", "BlockServer.receiveL1Commit"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
 		return
@@ -1080,7 +1225,7 @@ func receiveL1Commit(c *gin.Context) {
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+		logger().Error(spanCtx, "DB connection failed", err,
 			ion.String("function", "BlockServer.receiveL1Commit"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
 		return
@@ -1088,21 +1233,26 @@ func receiveL1Commit(c *gin.Context) {
 
 	found, err := l1finality.ApplyCommit(conn, payload)
 	if err != nil {
-		logger().NamedLogger.Error(spanCtx, "Failed to update block with L1 finality", err,
+		// S3: a regressing (replay/rollback) commit is rejected fail-closed.
+		status := http.StatusInternalServerError
+		if errors.Is(err, l1finality.ErrL1Regression) {
+			status = http.StatusConflict
+		}
+		logger().Error(spanCtx, "Failed to update block with L1 finality", err,
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "BlockServer.receiveL1Commit"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
+		c.JSON(status, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
 		return
 	}
 	if !found {
-		logger().NamedLogger.Error(spanCtx, "Block not found", nil,
+		logger().Error(spanCtx, "Block not found", nil,
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "BlockServer.receiveL1Commit"))
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block %d not found", payload.BlockNumber)})
 		return
 	}
 
-	logger().NamedLogger.Info(spanCtx, "L1 finality stored",
+	logger().Info(spanCtx, "L1 finality stored",
 		ion.Int64("block_number", int64(payload.BlockNumber)),
 		ion.String("l1_tx_hash", payload.L1TxHash),
 		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
@@ -1115,14 +1265,14 @@ func receiveL1Commit(c *gin.Context) {
 
 	// Broadcast to peers via gossip so all nodes update their copy.
 	if gps := getPublishGPS(); gps != nil {
-		logger().NamedLogger.Info(spanCtx, "Broadcasting L1 commit to peers",
+		logger().Info(spanCtx, "Broadcasting L1 commit to peers",
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("l1_tx_hash", payload.L1TxHash),
 			ion.String("gps_host", gps.Host.ID().String()),
 			ion.String("function", "BlockServer.receiveL1Commit"))
 		msgJSON, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
-			logger().NamedLogger.Error(spanCtx, "Failed to marshal L1 commit for broadcast", marshalErr,
+			logger().Error(spanCtx, "Failed to marshal L1 commit for broadcast", marshalErr,
 				ion.Int64("block_number", int64(payload.BlockNumber)),
 				ion.String("function", "BlockServer.receiveL1Commit"))
 		} else {
@@ -1134,13 +1284,13 @@ func receiveL1Commit(c *gin.Context) {
 				ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
 			}
 			if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
-				logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
+				logger().Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
 					ion.String("error", pubErr.Error()),
 					ion.String("function", "BlockServer.receiveL1Commit"))
 			}
 		}
 	} else {
-		logger().NamedLogger.Warn(spanCtx, "No GPS instance available — broadcast skipped",
+		logger().Warn(spanCtx, "No GPS instance available — broadcast skipped",
 			ion.Int64("block_number", int64(payload.BlockNumber)),
 			ion.String("function", "BlockServer.receiveL1Commit"))
 	}
@@ -1158,12 +1308,12 @@ func receiveL1Commit(c *gin.Context) {
 // tx hash. After updating all local records, ONE gossip broadcast is sent so peers
 // apply the range atomically. Apply logic is shared via the l1finality package.
 func receiveL1CommitRange(c *gin.Context) {
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1CommitRange")
+	spanCtx, span := logger().Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1CommitRange")
 	defer span.End()
 
 	var payload l1finality.RangePayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit-range payload", err,
+		logger().Error(spanCtx, "Invalid l1-commit-range payload", err,
 			ion.String("function", "BlockServer.receiveL1CommitRange"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
 		return
@@ -1185,15 +1335,28 @@ func receiveL1CommitRange(c *gin.Context) {
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+		logger().Error(spanCtx, "DB connection failed", err,
 			ion.String("function", "BlockServer.receiveL1CommitRange"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
 		return
 	}
 
-	updated, skipped := l1finality.ApplyRange(conn, payload)
+	updated, skipped, applyErr := l1finality.ApplyRange(conn, payload)
+	if applyErr != nil {
+		// S3: a regressing (replay/rollback) range is rejected fail-closed.
+		status := http.StatusInternalServerError
+		if errors.Is(applyErr, l1finality.ErrL1Regression) {
+			status = http.StatusConflict
+		}
+		logger().Error(spanCtx, "L1 range finality rejected", applyErr,
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(status, gin.H{"error": applyErr.Error()})
+		return
+	}
 
-	logger().NamedLogger.Info(spanCtx, "L1 range finality stored",
+	logger().Info(spanCtx, "L1 range finality stored",
 		ion.Int64("start_block", int64(payload.StartBlock)),
 		ion.Int64("end_block", int64(payload.EndBlock)),
 		ion.String("l1_tx_hash", payload.L1TxHash),
@@ -1208,14 +1371,14 @@ func receiveL1CommitRange(c *gin.Context) {
 
 	// ONE broadcast for the entire range — peers apply all blocks in a single message.
 	if gps := getPublishGPS(); gps != nil {
-		logger().NamedLogger.Info(spanCtx, "Broadcasting L1 commit range to peers",
+		logger().Info(spanCtx, "Broadcasting L1 commit range to peers",
 			ion.Int64("start_block", int64(payload.StartBlock)),
 			ion.Int64("end_block", int64(payload.EndBlock)),
 			ion.String("gps_host", gps.Host.ID().String()),
 			ion.String("function", "BlockServer.receiveL1CommitRange"))
 		msgJSON, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
-			logger().NamedLogger.Error(spanCtx, "Failed to marshal L1 commit range for broadcast", marshalErr,
+			logger().Error(spanCtx, "Failed to marshal L1 commit range for broadcast", marshalErr,
 				ion.Int64("start_block", int64(payload.StartBlock)),
 				ion.String("function", "BlockServer.receiveL1CommitRange"))
 		} else {
@@ -1226,7 +1389,7 @@ func receiveL1CommitRange(c *gin.Context) {
 				ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
 			}
 			if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
-				logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
+				logger().Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
 					ion.String("error", pubErr.Error()),
 					ion.String("function", "BlockServer.receiveL1CommitRange"))
 			}

@@ -7,7 +7,8 @@ package FastsyncV2
 // (see reconcile_local.go); the apply side — DB_OPs.ApplyBlockRecon /
 // DB_OPs.ComputeBlockDeltas — recomputes each block's deltas from the locally
 // stored block at apply time, filters tx_processed markers under the global
-// state-apply lock, and commits balances + markers in one ExecAll.
+// state-apply lock, and commits balances (raw authoritative batch) then
+// markers last — see DB_OPs/tx_markers.go for the crash-window contract.
 //
 // Rationale: computing balances at enqueue time bakes in the base they were
 // read against; by apply time that base can have moved (live execution runs

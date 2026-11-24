@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"gossipnode/metrics"
@@ -18,7 +19,11 @@ import (
 // HandleMessageStream processes incoming messages (TCP)
 func HandleMessageStream(s network.Stream) {
 	defer s.Close()
-	reader := bufio.NewReader(s)
+	// Bound the read: cap the size (remote-OOM guard) and set a deadline so a
+	// slow/idle peer cannot hold the stream open forever. Mirrors the bounded
+	// direct block stream in blockPropagation.go (shared package constants).
+	_ = s.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
+	reader := bufio.NewReader(io.LimitReader(s, maxBlockStreamBytes))
 	msg, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Println("Error reading message:", err)
@@ -26,7 +31,7 @@ func HandleMessageStream(s network.Stream) {
 	}
 
 	remotePeer := s.Conn().RemotePeer().String()
-	metrics.MessagesReceivedCounter.WithLabelValues("message", remotePeer).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("message", metrics.PeerLabel(remotePeer)).Inc()
 	metrics.MessageSizeHistogram.WithLabelValues("message", "received").Observe(float64(len(msg)))
 
 	fmt.Printf("\n\033[1;42m                               \033[0m\n")
@@ -63,7 +68,7 @@ func SendMessage(n *config.Node, target string, message string) error {
 	defer s.Close()
 
 	// Record message metrics
-	metrics.MessagesSentCounter.WithLabelValues("message", peerInfo.ID.String()).Inc()
+	metrics.MessagesSentCounter.WithLabelValues("message", metrics.PeerLabel(peerInfo.ID.String())).Inc()
 	metrics.MessageSizeHistogram.WithLabelValues("message", "sent").Observe(float64(len(message)))
 
 	// Send the message

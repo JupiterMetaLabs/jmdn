@@ -5,20 +5,41 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	"gossipnode/DB_OPs"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
+	"gossipnode/consensus/adapters"
+	"gossipnode/internal/roundlock"
+	"gossipnode/internal/votecheck"
 
 	"time"
 
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
+	"gossipnode/config/settings"
 
+	avcvotes "github.com/JupiterMetaLabs/avc/crdt/votes"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// ErrGossipPublishOnly reports that the vote WAS delivered by direct-send but
+// the gossip publish failed. Callers must treat it as PARTIAL SUCCESS, not
+// failure: the vote is out, it simply reaches peers via the next CRDT sync
+// rather than gossip. Returned wrapped, so errors.Is identifies it while the
+// underlying publish error stays inspectable.
+//
+// Logging it as a failure would re-open the false-"Failed to submit vote"
+// flood that the ack-casing fix in this same change removed — before that fix
+// every vote took SubmitVote's error path.
+var ErrGossipPublishOnly = errors.New("vote delivered via direct-send only — gossip publish failed")
 
 type VoteTrigger struct {
 	ConsensusMessage *PubSubMessages.ConsensusMessage
@@ -50,16 +71,79 @@ func (vt *VoteTrigger) setVote(Vote *PubSubMessages.Vote) error {
 	return nil
 }
 
-func (vt *VoteTrigger) GetVote() *PubSubMessages.Vote {
-	return vt.Vote
-}
-
 func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
 	jsonData, err := json.Marshal(vote)
 	if err != nil {
 		return ""
 	}
 	return string(jsonData)
+}
+
+// checkVoteChainPosition reads this node's local tip (and its hash) and decides,
+// via the pure votecheck.ExtendsTip predicate, whether zkBlock extends it. It
+// returns a non-nil error — the vote-rejection reason — when the block is already
+// committed, leaves a gap, or does not link to the local tip. Fail-closed: a tip
+// read failure returns an error so the node abstains rather than voting blind.
+func checkVoteChainPosition(zkBlock *config.ZKBlock) error {
+	// D-858 (review B1): read the DATA-COMPLETE marker, NOT SQL MAX(block_number).
+	// A skeleton `blocks` row from a failed store advances MAX but not this marker,
+	// so MAX would make a node link/reject against a height it never applied.
+	tip, terr := DB_OPs.GetLatestDataCompleteBlock()
+	if terr != nil {
+		return fmt.Errorf("vote position: cannot read local tip (fail closed): %w", terr)
+	}
+	var tipHash common.Hash
+	var tipTimestamp int64
+	if tip > 0 {
+		// Header-only: the tip hash and timestamp; no proof/tx read.
+		parent, perr := DB_OPs.GetZKBlockHeaderByNumber(tip)
+		if perr != nil {
+			return fmt.Errorf("vote position: cannot read local tip block %d (fail closed): %w", tip, perr)
+		}
+		tipHash = parent.BlockHash
+		tipTimestamp = parent.Timestamp
+	}
+	if err := votecheck.ExtendsTip(zkBlock.BlockNumber, zkBlock.PrevHash, tip, tipHash); err != nil {
+		// A proposal AHEAD of our tip means we missed at least one finalized
+		// block. Refusing to vote is correct, but on its own it deadlocks the
+		// chain: the sequencer cannot advance without our votes, and the sync
+		// monitor dismisses a 1-block gap as propagation lag. Ask for catch-up.
+		if zkBlock.BlockNumber > tip+1 && GapCatchUpHook != nil {
+			GapCatchUpHook(tip + 1)
+		}
+		return fmt.Errorf("vote position: %w", err)
+	}
+	// Header binding (consensus.header_binding_from_height): configured
+	// coinbase / zkvm addresses, a timestamp not before the parent's and not
+	// too far in the future. Checked before voting so a bad value is never
+	// certified.
+	if err := Security.CheckHeaderOrder(zkBlock, tipTimestamp); err != nil {
+		return fmt.Errorf("vote: %w", err)
+	}
+	if err := Security.CheckHeaderPolicy(zkBlock, time.Now()); err != nil {
+		return fmt.Errorf("vote: %w", err)
+	}
+	return nil
+}
+
+// GapCatchUpHook is wired by main.go to messaging.RequestCatchUp (Vote cannot
+// import messaging: messaging imports Vote). Nil = no catch-up nudge.
+var GapCatchUpHook func(fromBlock uint64)
+
+// reserveAcceptVote records this node's ACCEPT vote for zkBlock's round in
+// roundlock.Votes, or reports why it may not vote ACCEPT.
+func reserveAcceptVote(zkBlock *config.ZKBlock) error {
+	if err := checkVotePeriod(zkBlock.BlockNumber, zkBlock.Period); err != nil {
+		return err
+	}
+	r := roundlock.Round{Height: zkBlock.BlockNumber, Period: zkBlock.Period}
+	ok, refusal, highest, _ := roundlock.Votes.TryLockFresh(r,
+		roundlock.BlockIdentity(zkBlock.BlockHash.String(), zkBlock.ConsensusHashHex()))
+	if !ok {
+		return fmt.Errorf("vote ledger: height %d period %d refused: %s (highest accepted period %d)",
+			r.Height, r.Period, refusal, highest)
+	}
+	return nil
 }
 
 func (vt *VoteTrigger) SubmitVote() error {
@@ -79,11 +163,17 @@ func (vt *VoteTrigger) SubmitVote() error {
 	logger_ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tracer := logger().NamedLogger.Tracer("Vote")
+	tracer := logger().Tracer("Vote")
 	spanCtx, span := tracer.Start(logger_ctx, "Vote.SubmitVote")
 	defer span.End()
 
 	zkBlock := vt.ConsensusMessage.GetZKBlock()
+	// The broadcast handler validates the proposal first; this guards any other
+	// caller.
+	if zkBlock == nil {
+		span.SetAttributes(attribute.String("status", "no_block"))
+		return fmt.Errorf("consensus message carries no block")
+	}
 	blockHash := zkBlock.BlockHash.String()
 
 	// Add span attributes for tracing
@@ -97,6 +187,38 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// Check the Three security checks from the Security Module
 	status, err := Security.CheckZKBlockValidation(zkBlock)
 
+	// A3 wiring: optionally run the avc-based validator alongside (shadow) or
+	// in place of (enforce) the check above. EvaluateShadow is a strict no-op
+	// — returns status/err completely unchanged — unless this node has
+	// explicitly opted in via config (Features.AvcValidation.Enabled=true AND
+	// Network.Environment=="testnet"). See consensus/adapters/shadow.go.
+	status, err = adapters.EvaluateShadow(spanCtx, settings.Get(), zkBlock, status, err)
+
+	// D-858 item 3: chain-position guard. A tx/hash-valid block must ALSO extend this
+	// node's local tip to be voted for — otherwise a validator at tip N votes ACCEPT
+	// for a second candidate at N (block-858) or for N+2 while missing N+1
+	// (2026-09-24). Only applied when base validation passed, so a genuinely invalid
+	// block keeps its original rejection reason. Fail-closed: a tip read error
+	// abstains (rejects) rather than voting blind.
+	if status && err == nil {
+		if posErr := checkVoteChainPosition(zkBlock); posErr != nil {
+			status = false
+			err = posErr
+		}
+	}
+
+	// One ACCEPT per round, never backwards: refuse to vote for a different
+	// block at a (height, period) this node already accepted, or for a lower
+	// period than one it accepted. The ledger is durable, so a restart does
+	// not reopen a round. A ledger error abstains (rejects), like the guard
+	// above.
+	if status && err == nil {
+		if lockErr := reserveAcceptVote(zkBlock); lockErr != nil {
+			status = false
+			err = lockErr
+		}
+	}
+
 	if !status || err != nil {
 		// VOTE REJECTED (-1)
 		rejectionReason := "validation returned false"
@@ -107,6 +229,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 			Vote:            -1,
 			BlockHash:       blockHash,
 			RejectionReason: rejectionReason,
+			Height:          zkBlock.BlockNumber,
 		}
 		vt.setVote(&vote)
 
@@ -119,7 +242,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 			span.RecordError(err)
 
 			// 🔴 DETAILED REJECTION LOGGING WITH STRUCTURED LOGGER
-			logger().NamedLogger.Error(spanCtx, "VOTE REJECTED: Block validation failed",
+			logger().Error(spanCtx, "VOTE REJECTED: Block validation failed",
 				err,
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
@@ -130,15 +253,16 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("rejection_reason", err.Error()),
 				ion.String("function", "Vote.SubmitVote"))
 
-			// Also print to console for immediate visibility
-			fmt.Printf("❌ VOTE REJECTED (-1)\n")
-			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
-			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
-			fmt.Printf("   Transactions: %d\n", len(zkBlock.Transactions))
-			fmt.Printf("   Rejection Reason: %v\n", err)
+			// Also log to console via logger
+			logger().Info(spanCtx, "VOTE REJECTED (-1)",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.Int("block_number", int(zkBlock.BlockNumber)),
+				ion.Int("transaction_count", len(zkBlock.Transactions)),
+				ion.String("rejection_reason", err.Error()))
 		} else {
 			// Status is false but no error
-			logger().NamedLogger.Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
+			logger().Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
 				ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -146,16 +270,18 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("vote_decision", "REJECT"),
 				ion.String("function", "Vote.SubmitVote"))
 
-			fmt.Printf("❌ VOTE REJECTED (-1)\n")
-			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
-			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
-			fmt.Printf("   Rejection Reason: Validation returned false (no error details)\n")
+			logger().Info(spanCtx, "VOTE REJECTED (-1)",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.Int("block_number", int(zkBlock.BlockNumber)),
+				ion.String("rejection_reason", "Validation returned false (no error details)"))
 		}
 	} else if status {
 		// VOTE ACCEPTED (1)
 		vote := PubSubMessages.Vote{
 			Vote:      1,
 			BlockHash: blockHash,
+			Height:    zkBlock.BlockNumber,
 		}
 		vt.setVote(&vote)
 
@@ -165,7 +291,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 		)
 
 		// ✅ ACCEPTANCE LOGGING
-		logger().NamedLogger.Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
+		logger().Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
 			ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -174,12 +300,111 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.String("vote_decision", "ACCEPT"),
 			ion.String("function", "Vote.SubmitVote"))
 
-		fmt.Printf("✅ VOTE ACCEPTED (1) | Peer: %s | Block: %s (Number: %d)\n",
-			listenerNode.PeerID.String(),
-			blockHash,
-			zkBlock.BlockNumber)
+		logger().Info(spanCtx, "VOTE ACCEPTED (1)",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.String("block_hash", blockHash),
+			ion.Int("block_number", int(zkBlock.BlockNumber)))
 	} else {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
+	}
+
+	// W1 (legacy-CRDT migration, Phase 3 — stop legacy writes): this used to
+	// store the node's own vote in the legacy CRDT too. The comment that
+	// used to sit here ("without this, ProcessVotesFromCRDT finds 0 votes")
+	// was stale — ProcessVotesFromCRDT is v2-only now (voteCRDTV2Enabled
+	// hardcoded true) and never reads this. The real consumer was
+	// voterPeerIDsForBlock's legacy-scan rescue (Sequencer/Consensus.go),
+	// which is why this write was unwired rather than deleted outright —
+	// a cheap revert in case that rescue turned out to be load-bearing.
+	// voterPeerIDsForBlock has since been ported to a v2 equivalent
+	// (BlockVoteKey lookup) rather than restored on the legacy path, so this
+	// write no longer has a live consumer either way; it remains unwired,
+	// not deleted, pending Phase 6's removal of listenerNode.CRDTLayer
+	// entirely. The v2 write below (avcvotes.AddVote) is independent and
+	// unaffected by any of this.
+
+	// D-26(a)/D-51 cutover: the v2 write below is the one that matters for
+	// the tally decision (Structs.ProcessVotesFromCRDT reads only this
+	// keyspace now). The legacy read path it replaced carried no per-vote
+	// signature and keyed its CRDT write on an unauthenticated payload
+	// field; the real authentication boundary is TallyBlock's
+	// committee-registered-pubkey + BLS-signature check on this keyspace.
+	//
+	// This write used to sit behind a VoteCRDTDualWrite flag. That flag was
+	// permanently true and has been removed with its file. DO NOT
+	// reintroduce an env gate here: the cutover ships as one coordinated
+	// fleet-wide restart, and a node silently missing the toggle would run
+	// with an inert v2 keyspace (D-51's own finding).
+	//
+	// The legacy write that used to sit above is gone (W1) — its only
+	// consumer, voterPeerIDsForBlock, was ported to the v2 BlockVoteKey
+	// lookup rather than kept on the legacy path. Nothing here may affect
+	// vt.Vote, blockHash, or this function's return value, and a failure
+	// here is logged and dropped, not fatal.
+
+	// Per-vote BLS signature. Nothing in the codebase signed individual votes
+	// before this cutover — the existing signer only produces an AGGREGATED
+	// result at tally time (ListenerHandler.go). Same domain, same key
+	// material as that path, just invoked at cast time instead of at
+	// aggregation time. Hoisted out of the v2-write block below
+	// (which it used to live inside) because the signature must also be
+	// stamped onto the WIRE vote (vt.Vote, sent via pubsub/direct-send) so a
+	// receiving buddy can build the identical VoteRecord this node writes to
+	// its own VoteCRDTLayer and ingest it into its own — see
+	// Structs.IngestValidatorVote. Signing is attempted unconditionally; only
+	// what happens with the result differs.
+	blsResp, signed, blsErr := BLS_Signer.SignMessageForBlock(
+		vt.Vote.Vote,
+		BLS_Signer.DomainChainID(),
+		zkBlock.BlockNumber,
+		blockHash,
+		zkBlock.ConsensusHashHex(),
+	)
+	signingOK := blsErr == nil && signed
+
+	// Carry the signature on the wire so a receiving buddy can ingest this
+	// vote too (count every validator's vote LLD, C2). Left empty when
+	// signing fails (a normal, non-buddy validator with no BLS key material)
+	// — an unsigned wire vote is not countable by the v2 tally either way
+	// (Structs.IngestValidatorVote requires both fields), so there is nothing
+	// lost by leaving them blank in that case.
+	if signingOK {
+		vt.Vote.BLSSignature = blsResp.Signature
+		vt.Vote.BLSPubKeyHex = blsResp.PubKey
+	}
+
+	if listenerNode.VoteCRDTLayer != nil {
+		// Signing failure means no v2 write. The unsigned normal-validator
+		// seam (avcvotes.AllowUnsignedValidatorVotes) that used to admit an
+		// unsigned record here was removed in avc (D-38, commit 66c0e6c) —
+		// the flag defaulted off and nothing in this repo set it, so removing
+		// it changes no running node's behavior that this repo controls.
+		if !signingOK {
+			logger().Warn(spanCtx, "v2 vote CRDT: per-vote BLS signing failed, skipping v2 write (old path unaffected)",
+				ion.String("block_hash", blockHash),
+				ion.Err(blsErr),
+				ion.String("function", "Vote.SubmitVote"))
+		} else {
+			rec := avcvotes.VoteRecord{
+				PeerID:          listenerNode.PeerID.String(),
+				Vote:            vt.Vote.Vote,
+				BlockHash:       blockHash,
+				Height:          zkBlock.BlockNumber,
+				RejectionReason: vt.Vote.RejectionReason,
+				BLSSignature:    blsResp.Signature,
+				BLSPubKeyHex:    blsResp.PubKey,
+			}
+			if err := avcvotes.AddVote(listenerNode.VoteCRDTLayer, listenerNode.PeerID, rec); err != nil {
+				if !errors.Is(err, avcvotes.ErrHeightCompacted) {
+					logger().Warn(spanCtx, "v2 vote CRDT write failed (old path unaffected)",
+						ion.Err(err),
+						ion.String("block_hash", blockHash),
+						ion.String("function", "Vote.SubmitVote"))
+				}
+				// ErrHeightCompacted is expected/harmless — a late vote for
+				// an already-converged height. Not logged as an error.
+			}
+		}
 	}
 
 	// Create proper message with ACK stage for vote submission
@@ -196,6 +421,79 @@ func (vt *VoteTrigger) SubmitVote() error {
 	}
 
 	// Reuse existing logger_ctx from above (already created with tracer)
+
+	// D-26(a) PHASE 1 — publish this vote under OUR OWN libp2p identity, in
+	// addition to the direct-stream send below.
+	//
+	// WHY. The CRDT write on the pubsub receive path keys on msg.Data.Sender,
+	// a JSON payload field (Service/subscriptionService.go:309). The obvious
+	// hardening — reject when it disagrees with the authenticated msg.Sender —
+	// was tried and reverted (4d621ea), because it is not decidable at that
+	// layer: ListenerHandler.go:1147 legitimately RELAYS a vote it received
+	// over a direct stream, republishing it under the RELAYER's gossipsub key
+	// while the payload still names the original voter. "Honest relay of V's
+	// vote" and "attacker forging a vote as V" are byte-identical to the
+	// receiver, so no comparison there can separate them.
+	//
+	// The relay is what breaks the binding, so this removes the need for it.
+	// When the voter publishes its own vote, msg.Data.Sender == msg.GetFrom()
+	// on every honest message, and the receiver can key the CRDT on the
+	// authenticated identity instead of the payload one — which makes writing
+	// under another peer's key structurally impossible rather than merely
+	// checked. That was PHASE 2, and it HAS NOW LANDED in this same branch:
+	// the relay in handleSubmitVote is deleted and the receive-path write is
+	// keyed on msg.Sender.
+	//
+	// WHAT THIS PUBLISH IS AND IS NOT ON THE HOOK FOR — this was previously
+	// described as "falling back to the direct-stream relay" on failure, which
+	// is now false twice over: the relay is gone, and this publish was never
+	// the path a tallied vote travels.
+	//
+	// The consensus-relevant write is avcvotes.AddVote above (the v2,
+	// block-keyed, BLS-signed keyspace) — what
+	// Structs.processVotesFromCRDT_v2 -> avcvotes.TallyBlock reads.
+	//
+	// This publish feeds PubSub_ConsensusChannel, whose receive path is now
+	// a v2 ingest (subscriptionService.go -> Structs.IngestValidatorVote ->
+	// VoteCRDTLayer); the legacy write that used to live there was removed
+	// by W4. So a failure here DOES cost peers this node's v2 vote on the
+	// gossip path — it is not legacy-only, as this comment previously said.
+	//
+	// It is still logged at WARN rather than escalated because the vote is
+	// recoverable: CRDT sync (TriggerCRDTSyncForBuddyNode, driven per
+	// vote-result request from handleVoteResultRequest — NOT the 3s
+	// CRDTSync.SyncService, which is never started) republishes v2 state
+	// before each tally. Recovery is one round away, not one 3s tick away.
+	//
+	// It must still not mask a direct-send failure, which is why the loop's
+	// error handling below is left exactly as it was.
+	// gossipErr is surfaced below instead of swallowed — D-5: gossip is the
+	// path that actually carries consensus (measured far more reliable than
+	// direct-send), so its failure must reach SubmitVote's caller, not just
+	// a Warn log. Still non-fatal here, and still logged at Warn: a
+	// direct-send failure below must not be masked by this.
+	var gossipErr error
+	if pubSubNode := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); pubSubNode != nil && pubSubNode.PubSub != nil {
+		if perr := Publisher.Publish(logger_ctx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, voteMessage, map[string]string{}); perr != nil {
+			gossipErr = perr
+			logger().Warn(logger_ctx, "Failed to publish own vote to the consensus topic — peers will not receive this vote over gossip; it reaches them only via the next CRDT sync before tally",
+				ion.Err(perr),
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.String("function", "Vote.SubmitVote"))
+		} else {
+			logger().Info(logger_ctx, "Published own vote to the consensus topic under this node's authenticated identity",
+				ion.String("peer_id", listenerNode.PeerID.String()),
+				ion.String("block_hash", blockHash),
+				ion.String("function", "Vote.SubmitVote"))
+		}
+	} else {
+		gossipErr = fmt.Errorf("pubsub node unavailable")
+		logger().Warn(logger_ctx, "PubSub node unavailable — own vote not published to the consensus topic; the tallied v2 vote is unaffected and propagates via CRDT sync",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.String("block_hash", blockHash),
+			ion.String("function", "Vote.SubmitVote"))
+	}
 
 	// Try to send to multiple nodes if first attempt fails
 	maxAttempts := 3
@@ -224,14 +522,13 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 		// Success!
 		fmt.Printf("✅ Vote sent to %s\n", NodeToSendTo.PeerID)
+		if gossipErr != nil {
+			return fmt.Errorf("%w: %w", ErrGossipPublishOnly, gossipErr)
+		}
 		return nil
 	}
 
 	return fmt.Errorf("failed to submit vote after %d attempts", maxAttempts)
-}
-
-func (vt *VoteTrigger) PickListner(PeerID peer.ID) PubSubMessages.Buddy_PeerMultiaddr {
-	return vt.PickListnerWithOffset(PeerID, 0)
 }
 
 // PickListnerWithOffset picks a listener node using consistent hashing with an offset

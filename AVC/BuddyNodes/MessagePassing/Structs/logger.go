@@ -2,13 +2,15 @@ package Structs
 
 import (
 	log "gossipnode/logging"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // Zero allocation logger - its already allocated in the asynclogger
-func logger() *log.Logging {
-	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.MessagePassing_StructService, "")
+func logger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.MessagePassing_StructService, "")
 	if err != nil {
 		return nil
 	}
-	return logger
+	return logInstance.GetNamedLogger()
 }

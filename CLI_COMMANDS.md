@@ -158,7 +158,7 @@ bootstrap to fill gaps that have accumulated since.
 
 Example:
 ```bash
-./jmdn -cmd catchup /ip4/34.174.233.203/tcp/15000/p2p/12D3KooW... 11605
+./jmdn -cmd catchup /ip4/<PEER_IP>/tcp/15000/p2p/12D3KooW... 11605
 ```
 
 ### DID Operations

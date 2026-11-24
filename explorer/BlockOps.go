@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 
@@ -42,9 +41,9 @@ type LatestBlockStats struct {
 }
 
 // Get block by number
-func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
+func (s *ExplorerServer) getBlockByNumber(c *gin.Context) {
 	// Create span for getBlockByNumber
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlockByNumber")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlockByNumber")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -67,7 +66,7 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get block by number",
+		logger().Error(spanCtx, "Failed to get block by number",
 			err,
 			ion.Uint64("block_number", numberInt),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -78,15 +77,22 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
 		attribute.String("block_hash", block.BlockHash.Hex()),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Block retrieved by number",
+	logger().Info(spanCtx, "Block retrieved by number",
 		ion.Uint64("block_number", numberInt),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
@@ -99,9 +105,9 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 }
 
 // Get block by hash
-func (s *ImmuDBServer) getBlock(c *gin.Context) {
+func (s *ExplorerServer) getBlock(c *gin.Context) {
 	// Create span for getBlock
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlock")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -114,7 +120,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get block by hash",
+		logger().Error(spanCtx, "Failed to get block by hash",
 			err,
 			ion.String("block_hash", hash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -125,14 +131,21 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Block retrieved by hash",
+	logger().Info(spanCtx, "Block retrieved by hash",
 		ion.String("block_hash", hash),
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.Float64("duration", duration),
@@ -145,9 +158,9 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 }
 
 // List all blocks by pagination
-func (s *ImmuDBServer) listBlocks(c *gin.Context) {
+func (s *ExplorerServer) listBlocks(c *gin.Context) {
 	// Create span for listBlocks
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listBlocks")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listBlocks")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -176,7 +189,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get total blocks count",
+		logger().Error(spanCtx, "Failed to get total blocks count",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -188,12 +201,20 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 
 	// Calculate offset and limit for pagination
 	offset := (page - 1) * limit
-	endBlock := totalBlocks - uint64(offset)
-	var startBlock uint64
-	if endBlock > uint64(limit) {
-		startBlock = endBlock - uint64(limit) + 1
+	var endBlock, startBlock uint64
+	if uint64(offset) >= totalBlocks {
+		// Page is beyond the end of the chain. The old `totalBlocks - offset`
+		// underflowed uint64 into a huge endBlock and scanned a massive range
+		// (audit API-07). Return an empty page: endBlock=0 makes the descending
+		// loop below (i := endBlock; i >= startBlock; i--) not run.
+		endBlock, startBlock = 0, 1
 	} else {
-		startBlock = 1
+		endBlock = totalBlocks - uint64(offset)
+		if endBlock > uint64(limit) {
+			startBlock = endBlock - uint64(limit) + 1
+		} else {
+			startBlock = 1
+		}
 	}
 
 	// Get blocks for the current page
@@ -203,7 +224,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 		if err != nil {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
-			s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get block, skipping",
+			logger().Error(spanCtx, "Failed to get block, skipping",
 				err,
 				ion.Uint64("block_number", i),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -229,7 +250,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Blocks listed successfully",
+	logger().Info(spanCtx, "Blocks listed successfully",
 		ion.Int("page", page),
 		ion.Int("limit", limit),
 		ion.Int("blocks_returned", len(blocks)),
@@ -255,47 +276,9 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	})
 }
 
-/* UNUSED
-func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
-	// Create span for getTransactionBlock
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransactionBlock")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	hash := c.Param("hash")
-	span.SetAttributes(attribute.String("transaction_hash", hash))
-
-	block, err := DB_OPs.GetTransactionBlock(spanCtx, &s.defaultdb, hash)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "error"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get transaction block",
-			err,
-			ion.String("transaction_hash", hash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ExplorerAPI.getTransactionBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	span.SetAttributes(
-		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
-	)
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration))
-
-	c.JSON(http.StatusOK, block)
-}
-*/
-
-func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
+func (s *ExplorerServer) getLatestBlock(c *gin.Context) {
 	// Create span for getLatestBlock
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlock")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -307,7 +290,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get latest block number",
+		logger().Error(spanCtx, "Failed to get latest block number",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -324,7 +307,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get latest block",
+		logger().Error(spanCtx, "Failed to get latest block",
 			err,
 			ion.Uint64("latest_block_number", latestBlockNumber),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -335,15 +318,22 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 		return
 	}
 
+	// PR #160 review, Task 3 (follow-up): same unguarded uint64->int64
+	// narrowing CodeQL flagged elsewhere in this file (alert #10), not
+	// itself flagged here — telemetry-only, so clamp rather than error.
+	blockNumberAttr := int64(block.BlockNumber)
+	if block.BlockNumber > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
-		attribute.Int64("block_number", int64(block.BlockNumber)),
+		attribute.Int64("block_number", blockNumberAttr),
 		attribute.String("block_hash", block.BlockHash.Hex()),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Latest block retrieved",
+	logger().Info(spanCtx, "Latest block retrieved",
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Float64("duration", duration),
@@ -355,9 +345,9 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, block)
 }
 
-func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
+func (s *ExplorerServer) getLatestBlockStats(c *gin.Context) {
 	// Create span for getLatestBlockStats
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlockStats")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlockStats")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -400,7 +390,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Latest block stats retrieved",
+	logger().Info(spanCtx, "Latest block stats retrieved",
 		ion.Uint64("block_number", latestBlockStats.BlockNumber),
 		ion.String("block_hash", latestBlockStats.BlockHash),
 		ion.Float64("duration", duration),
@@ -413,9 +403,9 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 }
 
 // Get transaction by hash
-func (s *ImmuDBServer) getTransaction(c *gin.Context) {
+func (s *ExplorerServer) getTransaction(c *gin.Context) {
 	// Create span for getTransaction
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransaction")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransaction")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -428,7 +418,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get transaction by hash",
+		logger().Error(spanCtx, "Failed to get transaction by hash",
 			err,
 			ion.String("transaction_hash", hash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -443,7 +433,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Transaction retrieved by hash",
+	logger().Info(spanCtx, "Transaction retrieved by hash",
 		ion.String("transaction_hash", hash),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -455,9 +445,9 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
 }
 
 // Get list of transactions in a given block
-func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
+func (s *ExplorerServer) listTransactions_inBlock(c *gin.Context) {
 	// Create span for listTransactions_inBlock
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_inBlock")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_inBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -480,7 +470,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get block by number",
+		logger().Error(spanCtx, "Failed to get block by number",
 			err,
 			ion.Uint64("block_number", blockNumberInt),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -496,15 +486,28 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		Transactions = append(Transactions, &tx)
 	}
 
+	// CodeQL go/incorrect-integer-conversion (alert #10): blockNumberInt is
+	// uint64 (ConvertStringToUint64, via strconv.ParseUint) and is narrowed
+	// to int64 here only for the trace attribute — the real DB read above
+	// already used the uint64 value unmodified. Clamp instead of erroring:
+	// the request already succeeded, this only feeds telemetry. Gate the
+	// conversion itself behind the bound check (rather than converting then
+	// overwriting) so the check actually guards it.
+	var blockNumberAttr int64
+	if blockNumberInt > math.MaxInt64 {
+		blockNumberAttr = math.MaxInt64
+	} else {
+		blockNumberAttr = int64(blockNumberInt)
+	}
 	span.SetAttributes(
 		attribute.String("status", "success"),
 		attribute.Int("transactions_count", len(Transactions)),
-		attribute.Int64("block_number", int64(blockNumberInt)),
+		attribute.Int64("block_number", blockNumberAttr),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Transactions in block retrieved",
+	logger().Info(spanCtx, "Transactions in block retrieved",
 		ion.Uint64("block_number", blockNumberInt),
 		ion.Int("transactions_count", len(Transactions)),
 		ion.Float64("duration", duration),
@@ -517,9 +520,9 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 }
 
 // Get default db stats
-func (s *ImmuDBServer) getStats(c *gin.Context) {
+func (s *ExplorerServer) getStats(c *gin.Context) {
 	// Create span for getStats
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getStats")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getStats")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -573,40 +576,53 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		stats.TotalBlocks = latestBlockNumber + 1
 		mu.Unlock()
 
-		// Total transactions: SQLite tx-address index first (local
-		// COUNT(DISTINCT tx_hash) — no immudb round trip). Falls back to the
-		// immudb "tx:" prefix Count when the index is uninitialised or
-		// mid-rebuild (IsReady false → txindex.CountTransactions errors by
-		// design, so a truncated table never reports a partial total).
-		if sqlCount, sqlErr := txindex.CountTransactions(ctx); sqlErr == nil {
-			mu.Lock()
-			stats.TotalTransactions = int64(sqlCount)
-			mu.Unlock()
-			return nil
-		}
-		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
+		// Total transactions: COUNT(*) on the ThebeDB SQL projection, behind a
+		// statsCountTTL in-process cache so a burst of stats requests does not
+		// run one count each. On a transient DB error, degrade to the last good
+		// value rather than failing the whole stats response — but only if one
+		// exists. With a cold cache there is nothing honest to show, so the
+		// error surfaces instead of a fabricated 0.
+		totalTx, err := cachedCount(&statsTxCount, func() (int64, error) {
+			return DB_OPs.CountTransactions(&s.defaultdb)
+		})
 		if err != nil {
-			handleErr(fmt.Errorf("failed to count transactions: %w", err))
-			return fmt.Errorf("failed to count transactions: %w", err)
+			stale, ok := statsTxCount.lastGood()
+			if !ok {
+				handleErr(fmt.Errorf("failed to count transactions: %w", err))
+				return fmt.Errorf("failed to count transactions: %w", err)
+			}
+			totalTx = stale
 		}
 		mu.Lock()
-		stats.TotalTransactions = int64(totalTx)
+		stats.TotalTransactions = totalTx
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
-	// Get total DIDs/accounts from the maintained sqlite counter only (O(1)).
-	// Deliberately does NOT fall back to the immudb prefix Count on the request
-	// path: that Count is O(n) and can exceed its deadline on a large accounts DB,
-	// which would fail the whole stats response. Until the one-time background
-	// seed populates the counter, report 0 (transient) rather than erroring.
+	// Total DIDs/accounts: COUNT(*) on the accounts table, same cache and same
+	// degradation contract as the transaction count above. Deliberately does
+	// NOT fall back to the KV prefix Count on the request path: that Count is
+	// O(n) and can exceed its deadline on a large accounts DB, which would fail
+	// the whole stats response.
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		n, _, err := txindex.GetAccountCount(ctx)
+		// accounts.did_address is UNIQUE NOT NULL, so accounts == DIDs here.
+		n, err := cachedCount(&statsAccountCount, func() (int64, error) {
+			return DB_OPs.CountAccounts(&s.defaultdb)
+		})
 		if err != nil {
-			n = 0 // counter unavailable/unseeded — never block the endpoint on a scan
+			// Degrade to the last good value rather than failing the whole
+			// stats response; with a cold cache, surface the error instead of
+			// reporting a fabricated 0.
+			stale, ok := statsAccountCount.lastGood()
+			if !ok {
+				handleErr(fmt.Errorf("failed to count accounts: %w", err))
+				return fmt.Errorf("failed to count accounts: %w", err)
+			}
+			n = stale
 		}
 		mu.Lock()
 		stats.TotalDIDs = n
+		stats.TotalAddresses = n
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
@@ -634,7 +650,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 			span.SetAttributes(attribute.String("status", "error"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			s.defaultdb.Client.Logger.Error(spanCtx, "Error collecting stats",
+			logger().Error(spanCtx, "Error collecting stats",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -655,7 +671,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Stats retrieved successfully",
+	logger().Info(spanCtx, "Stats retrieved successfully",
 		ion.Uint64("latest_block_number", stats.LatestBlockNumber),
 		ion.Uint64("total_blocks", stats.TotalBlocks),
 		ion.Int64("total_transactions", stats.TotalTransactions),
@@ -669,9 +685,9 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
+func (s *ExplorerServer) getDIDDetailsFromAddr(c *gin.Context) {
 	// Create span for getDIDDetailsFromAddr
-	spanCtx, span := s.accountsdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getDIDDetailsFromAddr")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getDIDDetailsFromAddr")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -694,7 +710,7 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.accountsdb.Client.Logger.Error(spanCtx, "Failed to get DID details from address",
+		logger().Error(spanCtx, "Failed to get DID details from address",
 			err,
 			ion.String("address", addr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -712,7 +728,7 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.accountsdb.Client.Logger.Info(spanCtx, "DID details retrieved from address",
+	logger().Info(spanCtx, "DID details retrieved from address",
 		ion.String("address", addr),
 		ion.String("did", DIDDocument.DIDAddress),
 		ion.Float64("duration", duration),
@@ -725,9 +741,9 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 }
 
 // Get the Missing blocks
-func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
+func (s *ExplorerServer) getMissingBlocks(c *gin.Context) {
 	// Create span for getMissingBlocks
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getMissingBlocks")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getMissingBlocks")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -750,7 +766,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get latest block number",
+		logger().Error(spanCtx, "Failed to get latest block number",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -768,8 +784,17 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 		return
 	}
 
+	// Bound the response: without a cap this loop materialises EVERY block above
+	// :number (with all transactions) into memory and JSON — one request can
+	// OOM the node (audit API-01). Serve at most maxMissingBlocksPerRequest and
+	// let the client page with the returned range.
+	const maxMissingBlocksPerRequest = 500
+	upper := latestBlockNumber
+	if upper-blockNumberInt > maxMissingBlocksPerRequest {
+		upper = blockNumberInt + maxMissingBlocksPerRequest
+	}
 	var missingBlocks []*config.ZKBlock
-	for blockNumberInt < latestBlockNumber {
+	for blockNumberInt < upper {
 		blockNumberInt++
 		block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, blockNumberInt)
 		if err != nil {
@@ -777,14 +802,14 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 			span.SetAttributes(attribute.String("status", "error"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get missing block",
+			logger().Error(spanCtx, "Failed to get missing block",
 				err,
 				ion.Uint64("block_number", blockNumberInt),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
 				ion.String("function", "ExplorerAPI.getMissingBlocks"))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read block"})
 			return
 		}
 		missingBlocks = append(missingBlocks, block)
@@ -798,7 +823,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Missing blocks retrieved",
+	logger().Info(spanCtx, "Missing blocks retrieved",
 		ion.Int("missing_blocks_count", len(missingBlocks)),
 		ion.Uint64("latest_block_number", latestBlockNumber),
 		ion.Float64("duration", duration),
@@ -810,9 +835,9 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	c.JSON(http.StatusOK, missingBlocks)
 }
 
-func (s *ImmuDBServer) listTransactions(c *gin.Context) {
+func (s *ExplorerServer) listTransactions(c *gin.Context) {
 	// Create span for listTransactions
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -842,7 +867,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to fetch transactions",
+		logger().Error(spanCtx, "Failed to fetch transactions",
 			err,
 			ion.Int("page", page),
 			ion.Int("limit", limit),
@@ -863,7 +888,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Transactions listed successfully",
+	logger().Info(spanCtx, "Transactions listed successfully",
 		ion.Int("page", page),
 		ion.Int("limit", limit),
 		ion.Int("transactions_returned", len(transactions)),
@@ -888,9 +913,9 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 
 // From last block number - go in reverse order and get the transactions in the block
 // Returns paginated transactions from multiple blocks starting from the latest block going backwards
-func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
+func (s *ExplorerServer) listTransactions_fromLastBlock(c *gin.Context) {
 	// Create span for listTransactions_fromLastBlock
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_fromLastBlock")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_fromLastBlock")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -911,6 +936,9 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 	if limit > 100 {
 		limit = 100 // Maximum limit to prevent excessive memory usage
 	}
+	if page > 100000 {
+		page = 100000 // cap page so page*limit cannot overflow int (audit API-05)
+	}
 
 	span.SetAttributes(
 		attribute.Int("page", page),
@@ -924,7 +952,7 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to get last block number",
+		logger().Error(spanCtx, "Failed to get last block number",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -949,7 +977,7 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 		blockTransactions, err := DB_OPs.GetTransactionsOfBlock(&s.defaultdb, currentBlock)
 		if err != nil {
 			// Log error but continue to next block
-			s.defaultdb.Client.Logger.Warn(spanCtx, "Failed to get transactions from block, skipping",
+			logger().Warn(spanCtx, "Failed to get transactions from block, skipping",
 				ion.String("error", err.Error()),
 				ion.Uint64("block_number", currentBlock),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1050,7 +1078,7 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Transactions from last block listed successfully",
+	logger().Info(spanCtx, "Transactions from last block listed successfully",
 		ion.Int("page", page),
 		ion.Int("limit", limit),
 		ion.Int("transactions_returned", len(paginatedTransactions)),

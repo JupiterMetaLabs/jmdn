@@ -16,10 +16,3 @@ func RegisterPublicKey(buddyID string, pub []byte) {
 	publicKeyRegistry[buddyID] = pub
 	pkMu.Unlock()
 }
-
-func GetPublicKey(buddyID string) ([]byte, bool) {
-	pkMu.RLock()
-	defer pkMu.RUnlock()
-	p, ok := publicKeyRegistry[buddyID]
-	return p, ok
-}

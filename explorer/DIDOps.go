@@ -1,18 +1,22 @@
 package explorer
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"gossipnode/DB_OPs"
 
 	"github.com/gin-gonic/gin"
 )
 
-func (s *ImmuDBServer) listDIDs(c *gin.Context) {
+func (s *ExplorerServer) listDIDs(c *gin.Context) {
 
-	// Get network parameter from URL path (optional)
-	network := c.Query("network")
+	// Note: "network" filter param not used after ThebeDB migration (SQL replaces ImmuDB prefix scan)
+	_ = c.Query("network")
 
 	// Get pagination parameters with defaults
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -31,7 +35,9 @@ func (s *ImmuDBServer) listDIDs(c *gin.Context) {
 
 	// Get the paginated list of DIDs from the database.
 	// This is now efficient as it only fetches the documents for the current page.
-	pagedDIDs, err := DB_OPs.ListAccountsPaginated(&s.accountsdb, limit, offset, network)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pagedDIDs, err := DB_OPs.ListAccountsPaginatedCtx(ctx, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve DIDs: " + err.Error()})
 		return
@@ -60,11 +66,18 @@ func getPaginationMetadata(page, limit, totalPages int) gin.H {
 	}
 }
 
-func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
+func (s *ExplorerServer) getDIDDetails(c *gin.Context) {
 	// list of DIDs in the request
 	DIDs := c.QueryArray("dids")
 	if len(DIDs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one 'dids' query parameter is required"})
+		return
+	}
+	// Cap the fan-out: without a bound each element is one serial 5s DID lookup,
+	// so ~10^5 elements = ~10^5 serial round-trips in one request (audit API-04).
+	const maxDIDsPerRequest = 100
+	if len(DIDs) > maxDIDsPerRequest {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many dids: %d (max %d)", len(DIDs), maxDIDsPerRequest)})
 		return
 	}
 
@@ -72,7 +85,12 @@ func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
 	for _, DID := range DIDs {
 		DID_Doc, err := DB_OPs.GetAccountByDID(&s.accountsdb, DID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			// Not-found is a 404, not a 500 with the raw driver error (audit API-04/API-08).
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "DID not found", "did": DID})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve DID"})
 			return
 		}
 		didDocs = append(didDocs, *DID_Doc)

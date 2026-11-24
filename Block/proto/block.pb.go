@@ -43,6 +43,13 @@ type ZKBlock struct {
 	GasLimit      uint64         `protobuf:"varint,15,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`
 	GasUsed       uint64         `protobuf:"varint,16,opt,name=gas_used,json=gasUsed,proto3" json:"gas_used,omitempty"`
 	BlockNumber   uint64         `protobuf:"varint,17,opt,name=block_number,json=blockNumber,proto3" json:"block_number,omitempty"`
+	// AVC consensus fields (M1/M2a). RandaoReveals is JSON-encoded []config.Reveal.
+	Slot                uint64 `protobuf:"varint,18,opt,name=slot,proto3" json:"slot,omitempty"`
+	Period              uint64 `protobuf:"varint,19,opt,name=period,proto3" json:"period,omitempty"`
+	RandaoReveals       []byte `protobuf:"bytes,20,opt,name=randao_reveals,json=randaoReveals,proto3" json:"randao_reveals,omitempty"`
+	VdfProof            []byte `protobuf:"bytes,21,opt,name=vdf_proof,json=vdfProof,proto3" json:"vdf_proof,omitempty"`
+	SeedEpoch           uint64 `protobuf:"varint,22,opt,name=seed_epoch,json=seedEpoch,proto3" json:"seed_epoch,omitempty"`
+	VotingSnapshotEpoch uint64 `protobuf:"varint,23,opt,name=voting_snapshot_epoch,json=votingSnapshotEpoch,proto3" json:"voting_snapshot_epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -192,6 +199,48 @@ func (x *ZKBlock) GetGasUsed() uint64 {
 func (x *ZKBlock) GetBlockNumber() uint64 {
 	if x != nil {
 		return x.BlockNumber
+	}
+	return 0
+}
+
+func (x *ZKBlock) GetSlot() uint64 {
+	if x != nil {
+		return x.Slot
+	}
+	return 0
+}
+
+func (x *ZKBlock) GetPeriod() uint64 {
+	if x != nil {
+		return x.Period
+	}
+	return 0
+}
+
+func (x *ZKBlock) GetRandaoReveals() []byte {
+	if x != nil {
+		return x.RandaoReveals
+	}
+	return nil
+}
+
+func (x *ZKBlock) GetVdfProof() []byte {
+	if x != nil {
+		return x.VdfProof
+	}
+	return nil
+}
+
+func (x *ZKBlock) GetSeedEpoch() uint64 {
+	if x != nil {
+		return x.SeedEpoch
+	}
+	return 0
+}
+
+func (x *ZKBlock) GetVotingSnapshotEpoch() uint64 {
+	if x != nil {
+		return x.VotingSnapshotEpoch
 	}
 	return 0
 }

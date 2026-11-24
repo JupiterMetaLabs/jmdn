@@ -6,26 +6,27 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
 	"gossipnode/config/GRO"
 	GROHelper "gossipnode/messaging/common"
 
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Security"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
@@ -35,11 +36,44 @@ import (
 var (
 	peerTimeouts     = make(map[string]time.Time)
 	peerTimeoutMutex sync.RWMutex
-	messageFilter    *bloom.BloomFilter
 	// immuClient       *config.PooledConnection // unused: declared but never assigned or read
 	immuClientOnce sync.Once
 	globalHost     host.Host // Add this line
 )
+
+// dedupMessageCacheCapacity bounds the exact, bounded dedup cache below
+// (JMDN-V3-008). Not a target false-positive rate - there IS no false
+// positive with an exact map-backed cache, so this number only trades off
+// how far back duplicate detection reaches against memory: an entry older
+// than the newest dedupMessageCacheCapacity distinct messages can be evicted
+// and, if resent, reprocessed. That is a bounded liveness/efficiency cost,
+// never a correctness one - unlike the old Bloom filter, aging an entry out
+// here can only cause an occasional redundant reprocessing of a genuine old
+// duplicate, never the silent drop of a brand-new valid block.
+const dedupMessageCacheCapacity = 50000
+
+// dedupMessageCache replaces the old *bloom.BloomFilter (JMDN-V3-008: fixed
+// 10,000-entry/1%-target Bloom filter, never rotated, unsynchronized Test/Add
+// - false-positive rate climbed to ~83% by 50,000 inserts and dropped a real
+// block as a duplicate on every hit, permanently, with no way to tell a
+// collision from a genuine repeat).
+//
+// hashicorp/golang-lru.Cache is documented thread-safe (internal RWMutex), so
+// Contains/Add need no external lock. Initialized directly at package load,
+// not lazily behind a nil check - closes both the unsynchronized-init race
+// AND the latent nil-pointer risk if anything ever called isMessageProcessed
+// before StartBlockPropagationCleanup had run.
+var dedupMessageCache = mustNewDedupCache(dedupMessageCacheCapacity)
+
+func mustNewDedupCache(size int) *lru.Cache[string, struct{}] {
+	c, err := lru.New[string, struct{}](size)
+	if err != nil {
+		// Unreachable: size is a positive compile-time constant. lru.New only
+		// errors for size <= 0.
+		panic(fmt.Sprintf("messaging: dedup cache: %v", err))
+	}
+	return c
+}
 
 // maxBlockStreamBytes caps a single direct block-propagation stream read so a
 // peer that opens the stream and streams an endless body (no newline) cannot
@@ -52,6 +86,10 @@ const (
 	// cap so the two transports can never silently diverge on block size.
 	maxBlockStreamBytes    = config.MaxBlockMessageBytes
 	blockStreamReadTimeout = 30 * time.Second
+	// broadcastWriteTimeout bounds every direct-stream write in broadcast.go.
+	// Without it a peer that stops draining its yamux receive window parks the
+	// writer forever, and BroadcastVoteTrigger's WaitGroup never returns.
+	broadcastWriteTimeout = 20 * time.Second
 )
 
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
@@ -60,12 +98,9 @@ func StartBlockPropagationCleanup() {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
-	}
-	if messageFilter == nil {
-		messageFilter = bloom.NewWithEstimates(10000, 0.01)
 	}
 	BlockPropagationLocalGRO.Go(GRO.BlockPropagationPeersCleanupThread, func(ctx context.Context) error {
 		cleanupPeerTimeouts(ctx)
@@ -76,12 +111,9 @@ func StartBlockPropagationCleanup() {
 // Initialize the host when starting the node
 func InitBlockPropagation(h host.Host) error {
 	globalHost = h // Save the host reference
-	fmt.Println("Block propagation system initialized")
 	var initErr error
 	immuClientOnce.Do(func() {
-		// Block propagation system initialized - will get connections on-demand
-		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
-		log.Info().Msg("Block propagation system initialized")
+		broadcastLogger().Info(context.Background(), "Block propagation system initialized - connections will be obtained on-demand")
 	})
 
 	// Wire the durable equivocation store on EVERY node — equivocation
@@ -98,7 +130,7 @@ func InitBlockPropagation(h host.Host) error {
 // generateBlockMessageID creates a unique ID for a block message
 func generateBlockMessageID(sender, nonce string, timestamp int64) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, nonce, timestamp)))
+	hasher.Write(fmt.Appendf(nil, "%s-%s-%d", sender, nonce, timestamp))
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }
@@ -143,24 +175,32 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	defer peerTimeoutMutex.Unlock()
 
 	peerTimeouts[peerID] = time.Now().UTC().Add(duration)
-	log.Info().
-		Str("peer", peerID).
-		Dur("duration", duration).
-		Msg("Peer timed out for sending duplicate block")
+	broadcastLogger().Info(context.Background(), "Peer timed out for sending an invalid block", ion.String("peer", peerID), ion.String("duration", duration.String()))
 }
 
-// isMessageProcessed checks if this message has already been processed
+// isMessageProcessed checks if this message has already been processed.
+// Exact (never a false positive) — see dedupMessageCache's doc comment.
 func isMessageProcessed(messageID string) bool {
-	return messageFilter.Test([]byte(messageID))
+	return dedupMessageCache.Contains(messageID)
 }
 
-// markMessageProcessed marks a message as processed
+// markMessageProcessed marks a message as processed.
 func markMessageProcessed(messageID string) {
-	messageFilter.Add([]byte(messageID))
+	dedupMessageCache.Add(messageID, struct{}{})
 }
 
-// storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
-func storeMessageInImmuDB(msg config.BlockMessage) error {
+// storeMessageInDB is a best-effort message-bookkeeping hook. ImmuDB is
+// gone (see the ThebeDB migration, commit 9288ef9); the actual block data
+// for a zkblock message is already durably persisted earlier in the same
+// caller via DB_OPs.StoreZKBlock (see HandleReceivedBlockMessage). Both
+// DB_OPs.Create calls in this function are currently no-ops — Create only
+// does real work for the "latest_block"/"header_latest_block" sentinel
+// keys (see DB_OPs/thebe_ops.go) — so this function does not persist
+// anything today; it exists for its (also currently misleading, see below)
+// log line and its call into updateMessageSet. Verified under D-34 item 2:
+// moot, not broken — nothing reads the keys this function would have
+// written.
+func storeMessageInDB(msg config.BlockMessage) error {
 	// Determine the key - focus on ZK blocks
 	var key string
 	if msg.Type == "zkblock" && msg.Block != nil {
@@ -173,40 +213,54 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 	// Store the message
 	if err := DB_OPs.Create(nil, key, msg); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
+		broadcastLogger().Error(context.Background(), "Failed to store message in ThebeDB", err, ion.String("key", key))
 		return err
 	}
 
 	// Update message set
 	if err := updateMessageSet(key); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
+		broadcastLogger().Error(context.Background(), "Failed to update message set", err, ion.String("key", key))
 		return err
 	}
 
-	log.Debug().Str("key", key).Str("type", msg.Type).Msg("Message stored in ImmuDB")
+	broadcastLogger().Debug(context.Background(), "Message bookkeeping call completed (no-op: DB_OPs.Create does not persist this key)", ion.String("key", key), ion.String("type", msg.Type))
 	return nil
 }
 
-// updateMessageSet adds a message key to the grow-only set in ImmuDB
+// updateMessageSet is a best-effort per-key marker call. Historically it
+// recorded that key had been stored, but DB_OPs.Create is now a no-op for
+// any key outside the "latest_block"/"header_latest_block" sentinels (see
+// DB_OPs/thebe_ops.go), so today this call persists nothing and always
+// returns nil.
+//
+// D-34 item 2, verified moot, not broken: nothing in the codebase reads a
+// "crdt:message_set:*" key, in current code, all git history, or any test
+// — the loss of persistence has no observable effect. This one-key-per-call
+// shape (O(1)) replaced a single grow-only "crdt:message_set" map that was
+// read and rewritten whole on every call (JMDN-V3-008: that map was never
+// pruned, so each write's cost grew with the total historical message
+// count) — but that map's own read had already been silently failing ever
+// since the ThebeDB migration (commit 9288ef9, ~2.5 months before
+// JMDN-V3-008), always falling back to a fresh single-entry map, so the
+// O(n^2) growth problem JMDN-V3-008 fixed had already stopped occurring by
+// the time that refactor landed.
 func updateMessageSet(key string) error {
-
-	const setKey = "crdt:message_set"
-
-	var messageSet map[string]bool
-	err := DB_OPs.ReadJSON(setKey, &messageSet)
-	if err != nil {
-		messageSet = make(map[string]bool)
-	}
-
-	messageSet[key] = true
-	return DB_OPs.Create(nil, setKey, messageSet)
+	return DB_OPs.Create(nil, "crdt:message_set:"+key, true)
 }
 
-// getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
-func getMessageIDForBloomFilter(msg config.BlockMessage) string {
-	// Special handling for ZK blocks to use hash for deduplication
+// getBlockDedupID gets the appropriate ID to use for duplication checking
+// against dedupMessageCache.
+func getBlockDedupID(msg config.BlockMessage) string {
+	// D-28: keyed on ConsensusHash, not BlockHash. BlockHash is transactions-
+	// only, so two forks sharing identical transactions but different
+	// consensus fields (PrevHash, Period, ...) hash identically and the
+	// second one was dropped here as a "duplicate" before checkEquivocation
+	// (which also used to key on BlockHash) ever ran — the exact
+	// drop-before-check bypass that let an equivocating proposer go
+	// undetected. ConsensusHash differs between such forks, so both now
+	// reach validation.
 	if msg.Type == "zkblock" && msg.Block != nil {
-		return fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
+		return fmt.Sprintf("zkblock:%s", msg.Block.ConsensusHashHex())
 	}
 
 	if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
@@ -224,7 +278,7 @@ func HandleBlockStream(stream network.Stream) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
 	}
@@ -232,11 +286,11 @@ func HandleBlockStream(stream network.Stream) {
 
 	remotePeer := stream.Conn().RemotePeer().String()
 	if isPeerTimedOut(remotePeer) {
-		log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed-out peer")
+		broadcastLogger().Debug(context.Background(), "Ignoring message from timed-out peer", ion.String("peer", remotePeer))
 		return
 	}
 
-	metrics.MessagesReceivedCounter.WithLabelValues("block", remotePeer).Inc()
+	metrics.MessagesReceivedCounter.WithLabelValues("block", metrics.PeerLabel(remotePeer)).Inc()
 
 	// Bound the read: cap the size (remote-OOM guard, mirrors the 7 MB gossip cap)
 	// and set a deadline so a slow/idle peer cannot hold the stream open forever.
@@ -244,18 +298,79 @@ func HandleBlockStream(stream network.Stream) {
 	reader := bufio.NewReader(io.LimitReader(stream, maxBlockStreamBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil && err != io.EOF {
-		log.Error().Err(err).Msg("Failed to read message bytes")
+		broadcastLogger().Error(context.Background(), "Failed to read message bytes", err)
 		return
 	}
 
 	// Parse the message
 	var msg config.BlockMessage
 	if err := json.Unmarshal(messageBytes, &msg); err != nil {
-		log.Error().Err(err).Msg("Failed to unmarshal block message")
+		broadcastLogger().Error(context.Background(), "Failed to unmarshal block message", err)
 		return
 	}
 
+	// With block gossip on, validators never relay blocks over this stream, so
+	// the only legitimate direct sender is the sequencer. Enforced when a
+	// sequencer is pinned. With gossip off, validators forward blocks here and
+	// the sender is a relay; the certificate gate below still applies.
+	// A legacy block (legacy follow mode) is authorized against the main
+	// sequencer in its own path instead.
+	if EnableBlockGossip && (msg.Block == nil || !IsLegacyBlock(msg.Block)) {
+		if ok, _ := AuthorizeBlockSender(remotePeer); !ok {
+			metrics.BlocksRejectedCounter.WithLabelValues("sender_not_sequencer", "direct").Inc()
+			broadcastLogger().Warn(context.Background(), "Dropping direct block message not sent by the pinned sequencer",
+				ion.String("peer", remotePeer), ion.String("type", msg.Type))
+			return
+		}
+	}
+
 	HandleReceivedBlockMessage(msg, remotePeer, true)
+}
+
+// blockMessageForForward returns a copy of msg whose block the forward
+// goroutine can serialize while the apply goroutine, which keeps msg, writes to
+// its own block (prepareReceivedBlock sets CommitteeCertificate; apply may set
+// other fields). The transactions slice is copied too; what the elements point
+// to is not written on either path.
+func blockMessageForForward(msg config.BlockMessage) config.BlockMessage {
+	if msg.Block == nil {
+		return msg
+	}
+	blk := *msg.Block
+	blk.Transactions = slices.Clone(msg.Block.Transactions)
+	msg.Block = &blk
+	return msg
+}
+
+// prepareReceivedBlock is everything that runs on a received, admitted block
+// between the gate and apply+store. It must not touch the network: it runs on
+// the goroutine that applies the block, so one peer that never answers would
+// stop this node applying blocks.
+//
+// It used to pull contract code from peers first (PrefetchMissingContracts),
+// with no read deadline. That pull never served execution: it read and wrote
+// contractDB's sharedKVStore, which is never set up, while IsContractTx reads
+// the code deploys commit to cas.KV() (main.go, evmexec.Register). So every
+// ordinary EIP-1559 transfer made the node ask every peer, and a peer that
+// accepted the stream and stayed silent froze block apply (F1).
+func prepareReceivedBlock(msg config.BlockMessage) {
+	// Persist the committee certificate that already passed
+	// verifyBlockCertificate (fail-closed 2f+1) so it survives past this
+	// ephemeral gossip envelope and is re-verifiable on sync (P-cert /
+	// ThebeSync). Advisory field; does not affect BlockHash. Set BEFORE
+	// apply+store so the stored block carries it.
+	// Stored form: compact when the block is eligible (derived from
+	// the same vote list by the same rule as on the sequencer, so the
+	// bytes match), otherwise the vote list as received.
+	if cert := msg.Data["bls_results"]; cert != "" {
+		msg.Block.CommitteeCertificate = cert
+		var responses []BLS_Signer.BLSresponse
+		if json.Unmarshal([]byte(cert), &responses) == nil {
+			if stored := StoredCertificate(msg.Block, responses); stored != "" {
+				msg.Block.CommitteeCertificate = stored
+			}
+		}
+	}
 }
 
 // HandleReceivedBlockMessage is the single validate-and-apply path for a received
@@ -266,14 +381,59 @@ func HandleBlockStream(stream network.Stream) {
 // direct-stream re-flood; the fail-closed security gate is identical regardless
 // of transport.
 func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
+	// Legacy follow mode (migration from main): legacy blocks from the main
+	// sequencer take their own gate. See legacy_follow.go.
+	if msg.Type == "zkblock" && msg.Block != nil && IsLegacyBlock(msg.Block) {
+		handleLegacyBlockMessage(msg, remotePeer)
+		return
+	}
+
+	// Certificate-only finalize (sender: BroadcastBlockToEveryNodeWithExtraData
+	// with FinalizeCertOnly): the envelope carries the header + committee
+	// certificate but no proof. Substitute the full proposal this node cached at
+	// vote-trigger time and continue down the normal, fail-closed zkblock path.
+	// The cached proposal is the block the certificate was signed over (same
+	// BlockHash / ConsensusHash), so admitZKBlock verifies it exactly as it would
+	// the full envelope. If this node never saw the proposal (not on the
+	// committee, restarted mid-round) it simply waits for the gossiped full copy;
+	// a cert-only envelope is never forwarded.
+	if msg.Type == blockCertMessageType {
+		if msg.Block == nil {
+			return
+		}
+		cm := PubSubMessages.LookupConsensusMessageByBlockHash(msg.Block.BlockHash.Hex())
+		if cm == nil || cm.ZKBlock == nil || cm.ZKBlock.ConsensusHashHex() != msg.Block.ConsensusHashHex() {
+			metrics.BlocksRejectedCounter.WithLabelValues("cert_only_no_proposal", "local").Inc()
+			broadcastLogger().Info(context.Background(), "cert-only finalize for a block without a cached proposal; waiting for gossip copy",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber),
+				ion.String("from", remotePeer))
+			return
+		}
+		full := *cm.ZKBlock
+		if st := msg.Data["status"]; st != "" {
+			full.Status = st
+		}
+		msg.Block = &full
+		msg.Type = "zkblock"
+		forward = false
+	}
+
 	// Check for duplicates
-	messageID := getMessageIDForBloomFilter(msg)
+	messageID := getBlockDedupID(msg)
 	if isMessageProcessed(messageID) {
 		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
 		// a bare peer id for a direct-stream copy. This is the dropped (second)
 		// copy of a block delivered over both transports.
-		log.Debug().Str("message_id", messageID).Str("from", remotePeer).Msg("Duplicate message received")
-		timeoutPeer(remotePeer, 20*time.Second)
+		//
+		// No timeoutPeer here: every block arrives twice by design (gossip +
+		// direct), so a duplicate is not misbehaviour. Timing out the sender
+		// shut the sequencer's own direct channel for 20 s whenever the gossip
+		// copy won the race, and timed out honest relays the same way. A
+		// duplicate costs only this cache lookup; a bad block is still timed
+		// out by the admitZKBlock rejection below.
+		broadcastLogger().Debug(context.Background(), "Duplicate message received",
+			ion.String("message_id", messageID), ion.String("from", remotePeer))
 		return
 	}
 
@@ -290,20 +450,18 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 	// certificate is mandatory. Nothing about an unvalidated remote block may
 	// cross into forwarding or state mutation.
 	if msg.Type == "zkblock" && msg.Block != nil {
-		log.Info().
-			Str("block_hash", msg.Block.BlockHash.Hex()).
-			Uint64("block_number", msg.Block.BlockNumber).
-			Int("txn_count", len(msg.Block.Transactions)).
-			Str("from", remotePeer). // transport tag: "gossip:<peer>" = gossip, bare id = direct
-			Msg("Received ZK block from peer")
+		broadcastLogger().Info(context.Background(), "Received ZK block from peer",
+			ion.String("block_hash", msg.Block.BlockHash.Hex()),
+			ion.Uint64("block_number", msg.Block.BlockNumber),
+			ion.Int("txn_count", len(msg.Block.Transactions)),
+			ion.String("from", remotePeer)) // transport tag: "gossip:<peer>" = gossip, bare id = direct
 
 		// A consensus REJECTION notice carries no block to apply. Discard it
 		// without processing, and without forwarding an unauthenticated
 		// rejection.
 		if status, ok := msg.Data["status"]; ok && status == "rejected" {
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Msg("Received consensus REJECTION for block - discarding")
+			broadcastLogger().Info(context.Background(), "Received consensus REJECTION for block - discarding",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 			helper.NotifyBroadcast(msg)
 			return
 		}
@@ -312,132 +470,152 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 		// success admitZKBlock marks the block processed (validate-before-cache);
 		// on failure the hash never enters the dedup cache.
 		if rej := admitZKBlock(context.Background(), msg, messageID); rej != nil {
-			log.Warn().
-				Err(rej.err).
-				Str("reason", rej.reason).
-				Str("peer", remotePeer).
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Rejecting invalid remote block before forward/process/persist")
-			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
-			timeoutPeer(remotePeer, 30*time.Second)
+			broadcastLogger().Warn(context.Background(), "Rejecting invalid remote block before forward/process/persist",
+				ion.Err(rej.err),
+				ion.String("reason", rej.reason),
+				ion.String("peer", remotePeer),
+				ion.Bool("local_fault", rej.localFault),
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber))
+			if rej.localFault {
+				// OUR fault, not theirs. Refuse the block — fail-closed is
+				// fail-closed — but do not time the peer out and do not tag
+				// the metric with their id: this rejection fires for every
+				// inbound block while the local dependency is unhealthy, so
+				// punishing senders would time out the whole peer set and
+				// self-partition the node, and the counter would page an
+				// operator about innocent peers instead of the real cause.
+				// The "local" label keeps that visible and bounds cardinality.
+				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, "local").Inc()
+			} else {
+				metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, metrics.PeerLabel(remotePeer)).Inc()
+				timeoutPeer(remotePeer, 30*time.Second)
+			}
 			return // no forward, no mutation, no persistence, NOT cached
 		}
 
 		// Block validated and marked processed → forwarding is now safe. The direct
-		// re-flood is OFF by default (gossip-only): the pubsub mesh re-propagates,
-		// and gossip-delivered blocks already pass forward=false. It only runs when
-		// direct propagation is explicitly re-enabled (consensus.p2p >= 1), so a
-		// gossip-only node never re-floods a block it received over a direct stream.
-		if forward && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
+		// re-flood runs ONLY when gossip is off: with gossip on (the default) the
+		// pubsub mesh already re-propagates with its own dedup, and every validator
+		// also received the block directly from the sequencer, so a direct re-flood
+		// to all peers was pure duplication (testnet: 15 validators × 14 peers ×
+		// 2.66 MB ≈ 560 MB per block, every copy dropped by dedup on arrival).
+		if forward && !EnableBlockGossip && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
-				log.Info().
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Uint64("block_number", msg.Block.BlockNumber).
-					Int("hops", msg.Hops).
-					Msg("Forwarding validated ZK block to peers")
+				broadcastLogger().Info(context.Background(), "Forwarding validated ZK block to peers",
+					ion.String("block_hash", msg.Block.BlockHash.Hex()),
+					ion.Uint64("block_number", msg.Block.BlockNumber),
+					ion.Int("hops", msg.Hops))
 
+				fwd := blockMessageForForward(msg)
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-					forwardBlock(globalHost, msg)
+					forwardBlock(globalHost, fwd)
 					return nil
 				})
 			} else {
-				log.Error().Msg("Cannot forward block: global host not initialized")
+				broadcastLogger().Error(context.Background(), "Cannot forward block: global host not initialized", errors.New("global host not initialized"))
 			}
 		}
 
 		// PROCESS AND PERSIST — only reachable after the gate has passed.
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
-			// Create DB clients for processing
-			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to create main DB client")
-				return fmt.Errorf("failed to create main DB client: %w", err)
+			// Rejected notices and certificate verification already ran in the
+			// fail-closed admitZKBlock gate BEFORE forward/process (v2 receive path).
+			// Storage resolves through the process-wide ThebeHandle (nil conn).
+			prepareReceivedBlock(msg)
+
+			// Apply + store atomically (D-858): store runs after the fingerprint
+			// check and before the block-processed marker; a store failure rolls back
+			// the full applied prefix (or, after a contract commit, keeps the block
+			// applied and marked), and the block is stored when it arrives again.
+			if err := BlockProcessing.ProcessBlockTransactionsAndStore(context.Background(), msg.Block, nil, func() error {
+				return DB_OPs.StoreZKBlock(nil, msg.Block)
+			}); err != nil {
+				broadcastLogger().Error(ctx, "Block apply+store failed - block not applied (rolled back)", err,
+					ion.String("block_hash", msg.Block.BlockHash.Hex()))
+				return fmt.Errorf("block apply+store failed: %w", err)
 			}
 
-			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to create accounts DB client")
-				return fmt.Errorf("failed to create accounts DB client: %w", err)
-			}
-			defer func() {
-				DB_OPs.PutMainDBConnection(mainDBClient)
-				DB_OPs.PutAccountsConnection(accountsClient)
-			}()
-
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Processing block transactions")
-
-			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(ctx, msg.Block, accountsClient); err != nil {
-				log.Error().
-					Err(err).
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Block processing failed - not storing block")
-				return fmt.Errorf("block processing failed - not storing block: %w", err)
-			}
-
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Msg("All transactions processed successfully - storing block")
-
-			// Store the validated and processed block in main DB
-			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
-				log.Error().
-					Err(err).
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Failed to store block in database")
-				return fmt.Errorf("failed to store block in database: %w", err)
-			}
+			broadcastLogger().Info(ctx, "All transactions processed and block stored",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 
 			// Full block stored + processed → advance the tip marker.
 			// Monotonic: a replayed/out-of-order block can never regress it.
 			// StoreZKBlock no longer writes the marker itself (skeleton safety).
 			if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(msg.Block.BlockNumber); err != nil {
-				log.Warn().Err(err).Uint64("block_number", msg.Block.BlockNumber).
-					Msg("latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)")
+				broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: the next data-complete tip read repairs it)",
+					ion.String("error", err.Error()),
+					ion.Uint64("block_number", msg.Block.BlockNumber))
 			}
 
-			// Index the block's txs into the SQLite address index. Non-sequencer
-			// nodes receive blocks via pubsub; indexing them here keeps
-			// eth_getTransactionsByAddress current between catchups instead of
-			// drifting stale while IsReady stays true. Async + drop-on-overflow;
-			// drops heal via the next gap scan.
-			txindex.IndexBlockAsync(msg.Block)
+			// Receiver-side twin of the hook in broadcast.go's
+			// ProcessBlockLocally: record the committed height (slot store
+			// and per-round signing ledgers).
+			NoteHeightCommitted(msg.Block.BlockNumber)
+
+			// M4 §C/§D + B1 + Stage-F receive side — receiver-side twin of
+			// broadcast.go's ProcessBlockLocally, sharing one definition.
+			ApplyBlockEntropyEffects(msg.Block)
+
+			// Chain-head checkpoint of this node's own log (receiver-side
+			// twin of the hook in broadcast.go). Best-effort.
+			NoteCommittedForCheckpoint(msg.Block)
+
+			// M4 §4.4 RevealPush — added 2026-08-20. If this node is on the
+			// current epoch's entropy committee and its reveal has not landed
+			// in a committed block yet, push it to whoever proposed this one.
+			//
+			// The target is the pinned sequencer, or msg.Sender only when it
+			// is the transport-authenticated peer (revealPushTarget):
+			// msg.Sender is unsigned, so a relay could otherwise redirect it.
+			// §4.4 requires pushing once per SLOT across the whole reveal
+			// window rather than once per epoch, and a committed block is
+			// exactly a slot boundary, so this hook is the natural trigger.
+			//
+			// In a goroutine: a push opens a network stream, and the commit
+			// path must never block on a peer. Every no-op case (not seated,
+			// no identity, already landed, window closed, we ARE the proposer)
+			// is checked inside PushOwnRevealForSlot, so this stays cheap for
+			// the P-m nodes that are not on the committee.
+			if proposer, ok := revealPushTarget(msg, remotePeer); ok {
+				pushSlot := DefaultSlotStore.Current()
+				go func() {
+					if err := PushOwnRevealForSlot(pushSlot, proposer); err != nil {
+						broadcastLogger().Warn(context.Background(), "entropy: RevealPush to the current proposer failed (will retry next slot)",
+							ion.String("error", err.Error()),
+							ion.Uint64("slot", pushSlot))
+					}
+				}()
+			}
+
+			// Address→tx lookups are served by the ThebeDB SQL projection that
+			// the block store above writes synchronously; nothing to index here.
 
 			// Store block message metadata
-			if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
-				log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
+			if err := storeMessageInDB(msg); err != nil { // msg is a copy, but it's fine
+				broadcastLogger().Error(ctx, "Failed to store block message in ThebeDB", err)
 			}
 
-			log.Info().
-				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Block processed and stored successfully")
+			broadcastLogger().Info(ctx, "Block processed and stored successfully",
+				ion.String("block_hash", msg.Block.BlockHash.Hex()),
+				ion.Uint64("block_number", msg.Block.BlockNumber))
 			return nil
 		})
 
-		// Print to console
-		fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ",
-			msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(),
-			len(msg.Block.Transactions))
+		broadcastLogger().Info(context.Background(), "ZKBlock received",
+			ion.String("sender", msg.Sender),
+			ion.Uint64("block_number", msg.Block.BlockNumber),
+			ion.String("block_hash", msg.Block.BlockHash.Hex()),
+			ion.Int("txn_count", len(msg.Block.Transactions)))
 	} else {
 		// Non-consensus message types have no validation gate here, so mark
-		// processed on receipt to preserve duplicate/loop suppression. Only
-		// zkblock caching is deferred behind validation.
+		// processed on receipt to preserve duplicate/loop suppression — but
+		// NEVER re-flood them. Forwarding an unvalidated, attacker-shaped
+		// message (arbitrary Type, Hops) to every peer was free amplification
+		// for anyone, not just the sequencer's own validated ZKBlock path
+		// above.
 		markMessageProcessed(messageID)
-
-		// Handle other message types (not our focus)
-		if forward && msg.Hops < config.MaxHops {
-			msg.Hops++
-			BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-				forwardBlock(globalHost, msg)
-				return nil
-			})
-		}
 	}
 
 	// Notify explorer or other UI components
@@ -449,11 +627,36 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 type blockRejection struct {
 	reason string
 	err    error
+	// localFault marks a rejection caused by THIS node's own infrastructure
+	// rather than by anything the sending peer did. The block is still
+	// refused — fail-closed is fail-closed — but the peer is not punished for
+	// it and the metric is not labelled with their id. See rejectLocal.
+	localFault bool
 }
 
 // reject builds a *blockRejection with a metric reason and a formatted error.
+// Use this for a defect in the BLOCK: the peer sent something invalid.
 func reject(reason, format string, args ...interface{}) *blockRejection {
 	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// rejectLocal is reject for a fault in THIS NODE, not in the block.
+//
+// The distinction is not cosmetic. The caller punishes a rejection by timing
+// the sending peer out for 30s (HandleReceivedBlockMessage), which drops their
+// stream. A local-fault rejection fires on every inbound block for as long as
+// the local dependency is unhealthy, so routing it through that path walks the
+// entire peer set into timeout and self-partitions the node — turning a
+// recoverable storage problem into a network one, while the
+// BlocksRejectedCounter blames named honest peers for it.
+//
+// Introduced with the CON-08/CON-21 equivocation guards, whose rejections can
+// only be produced by the local durable store failing. Anything else that
+// refuses a block because a LOCAL dependency is unavailable belongs here too.
+func rejectLocal(reason, format string, args ...interface{}) *blockRejection {
+	r := reject(reason, format, args...)
+	r.localFault = true
+	return r
 }
 
 // admitZKBlock is the validate-before-cache gate: a zkblock hash only enters the
@@ -467,6 +670,14 @@ func reject(reason, format string, args ...interface{}) *blockRejection {
 func admitZKBlock(ctx context.Context, msg config.BlockMessage, messageID string) *blockRejection {
 	if rej := validateRemoteBlock(ctx, msg); rej != nil {
 		return rej // rejected block does NOT occupy the dedup cache
+	}
+	// W1: an admitted anchor block fixes the next selection period's pool.
+	// The block is already fully validated; a failure here is local (e.g. the
+	// DB write) and is logged, not a rejection - the pool is still held in
+	// memory and is re-derivable from the stored block.
+	if err := RecordCommitteeAnchor(msg.Block); err != nil {
+		broadcastLogger().Error(context.Background(), "committee anchor: could not record the pool defined by an admitted anchor block", err,
+			ion.Uint64("block_number", msg.Block.BlockNumber))
 	}
 	markMessageProcessed(messageID)
 	return nil
@@ -490,17 +701,104 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
 	}
 
-	// FeeRecipients is NOT bound into the canonical block hash and
-	// the catch-up (FastsyncV2) apply path does not credit it (passes nil), so a
-	// block carrying FeeRecipients would apply differently on live-vs-catch-up
-	// nodes — a silent, non-healing balance divergence (the merkle fingerprint
-	// omits it too). Until it is hash-bound AND threaded through catch-up, refuse
-	// to admit such a block so an accidental enable fails LOUD (rejected) rather
-	// than silently diverging balances.
-	if len(b.FeeRecipients) > 0 {
+	if rej := validateBlockContents(ctx, b); rej != nil {
+		return rej
+	}
+
+	// (Proof seam) Hook for ZK/STARK verification, ordered before the
+	// certificate check. See verifyBlockProof.
+	if err := verifyBlockProof(b); err != nil {
+		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
+	}
+
+	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
+	// (see checkLinkage).
+	if EnforceBlockLinkage {
+		if rej := checkLinkage(ctx, b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Consensus-field binding) When the block carries a ConsensusHash it must
+	// equal the recompute from its own consensus fields — binds Slot/Period/
+	// PrevAggCert/FeeRecipients/CommitteeSnapshotHash so a relay cannot rewrite
+	// them post-commit. Runs BEFORE certificate verification so the cert's v4
+	// signatures verify against a confirmed-honest ConsensusHash. D-28: a zero
+	// value is REJECTED, not skipped — attachAVCConsensusFields stamps one on
+	// every block regardless of Period, so an empty ConsensusHash is the
+	// dedup/equivocation bypass this fix closes.
+	if rej := checkConsensusBinding(b); rej != nil {
+		return rej
+	}
+
+	// (Committee anchor, W1) An anchor block must carry a seed-signed snapshot
+	// that hashes to its CommitteeSnapshotHash (bound by ConsensusHash just
+	// above) and never moves the membership epoch backwards; any other block
+	// must carry none. See committee_anchor.go.
+	if rej := checkCommitteeAnchor(b); rej != nil {
+		return rej
+	}
+
+	// (Committee certificate) MANDATORY and must reach quorum. Absent or empty
+	// bls_results is a rejection, not a pass.
+	if rej := verifyBlockCertificate(msg); rej != nil {
+		return rej
+	}
+
+	// (Fee-recipients recomputation — R5, buddy staking rewards) When reward-split
+	// is enabled, FeeRecipients must equal the value every node independently
+	// recomputes from the block's parent certifiers (PrevAggCert), the
+	// authenticated reward-address map, and parent-state balances — a pure function
+	// of already-agreed inputs. Rejecting a mismatch closes the redirect attack (a
+	// sequencer pointing fees at itself). Placed AFTER verifyBlockCertificate so the
+	// block (and its PrevAggCert, which the M2b hash covers) rides a
+	// certificate-verified body. FAIL CLOSED on any derive error. When reward-split
+	// is OFF this is skipped and the historical interlock above still applies.
+	if rewardSplitEnabled() {
+		if rej := checkFeeRecipients(b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Equivocation) Recorded LAST — only after the block is fully validated —
+	// so an unvalidated block cannot enter the height->hash map and cause the
+	// genuine block to be rejected. A second, DIFFERENT validated block at a
+	// height already seen is a signed fork → rejected.
+	// D-28: keyed on ConsensusHash, not BlockHash — see getBlockDedupID's
+	// comment above for why BlockHash alone cannot distinguish two forks
+	// sharing identical transactions.
+	return checkEquivocation(b.BlockNumber, b.ConsensusHashHex())
+}
+
+// validateBlockContents runs the stateless checks that bind a block's body to
+// its signed transaction contents: the FeeRecipients interlock, per-transaction
+// signature (sender recovery), tx-hash-over-contents and value checks, in-block
+// nonce ordering, and (with EnforceBodyBinding) BlockHash/TxnsRoot over the
+// transactions. Shared by the live receive path (validateRemoteBlock) and the
+// sync apply path (ValidateSyncedBlockContents) so the two cannot drift.
+func validateBlockContents(ctx context.Context, b *config.ZKBlock) *blockRejection {
+	// FeeRecipients handling (buddy staking rewards, docs/STAKING-REWARDS-DESIGN.md).
+	//   - reward-split DISABLED (default): the historical interlock. FeeRecipients
+	//     is not bound into the legacy block hash and the catch-up apply path does
+	//     not credit it, so a block carrying it would diverge balances silently.
+	//     Reject LOUD so an accidental enable fails closed rather than diverging.
+	//   - reward-split ENABLED: the field is EXPECTED; it is recomputed from the
+	//     block's (certificate-verified) PrevAggCert and validated below, AFTER
+	//     verifyBlockCertificate (see the checkFeeRecipients call), so this early
+	//     interlock is skipped for a legitimately populated block.
+	if !rewardSplitEnabled() && len(b.FeeRecipients) > 0 {
 		return reject("feerecipients_unsupported",
 			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded; refusing to admit", b.BlockHash.Hex())
 	}
+	return validateBlockBody(ctx, b)
+}
+
+// validateBlockBody is the part of validateBlockContents that binds a block's
+// body to its signed transactions: per-transaction signature, tx hash over
+// contents, non-negative values, in-block nonce order and (with
+// EnforceBodyBinding) BlockHash/TxnsRoot over the transactions. Shared with the
+// legacy-follow path, which applies its own FeeRecipients rule.
+func validateBlockBody(ctx context.Context, b *config.ZKBlock) *blockRejection {
 
 	// (Signature/chain-ID authenticity) Every transaction must carry a valid
 	// signature for the configured chain. CheckSignature recovers the sender via
@@ -570,32 +868,7 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 			return reject("block_hash_mismatch", "block %s hash does not match tx contents: %v", b.BlockHash.Hex(), err)
 		}
 	}
-
-	// (Proof seam) Hook for ZK/STARK verification, ordered before the
-	// certificate check. See verifyBlockProof.
-	if err := verifyBlockProof(b); err != nil {
-		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
-	}
-
-	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
-	// (see checkLinkage).
-	if EnforceBlockLinkage {
-		if rej := checkLinkage(ctx, b); rej != nil {
-			return rej
-		}
-	}
-
-	// (Committee certificate) MANDATORY and must reach quorum. Absent or empty
-	// bls_results is a rejection, not a pass.
-	if rej := verifyBlockCertificate(msg); rej != nil {
-		return rej
-	}
-
-	// (Equivocation) Recorded LAST — only after the block is fully validated —
-	// so an unvalidated block cannot enter the height->hash map and cause the
-	// genuine block to be rejected. A second, DIFFERENT validated block at a
-	// height already seen is a signed fork → rejected.
-	return checkEquivocation(b.BlockNumber, b.BlockHash.Hex())
+	return nil
 }
 
 // verifyBlockCertificate enforces a mandatory committee certificate that reaches
@@ -625,7 +898,14 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber)
+	// Routed through VerifyCertificateForRound so the tally can run against the
+	// SEATED committee once JMDN_COMMITTEE_V2 is on. With the flag off this is
+	// byte-identical to the previous VerifyCertificate call. The round context
+	// comes from the block, never the clock - see RoundContextForBlock.
+	blockHashHex, consensusHashHex, height := msg.Block.BlockHash.Hex(), msg.Block.ConsensusHashHex(), msg.Block.BlockNumber
+	rc := RoundContextForBlock(msg.Block)
+	res, err := VerifyCertificateForRound(responses, blockHashHex, consensusHashHex, height, rc)
+	res, err = relaxForTrustedSequencer("block_propagation", res, err, responses, blockHashHex, consensusHashHex, height)
 	if err != nil {
 		// Fail closed: no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",
@@ -645,7 +925,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
 			return
 		}
 	}
@@ -654,7 +934,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Convert message to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal block message")
+		broadcastLogger().Error(context.Background(), "Failed to marshal block message", err)
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -662,11 +942,16 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Track forwarding metrics
 	var successCount int
 	var successMutex sync.Mutex
-	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create waitgroup for block forwarding")
-		return
-	}
+
+	// A dedicated, local WaitGroup — NOT GRO.BlockPropagationForwardWG. That
+	// name is also used by sendBlockMessageDirect (broadcast.go), and
+	// NewFunctionWaitGroup returns the SAME *sync.WaitGroup for the same name
+	// on the same LocalManager (confirmed by reading the orchestrator's own
+	// implementation: it looks up an existing group by name before creating
+	// one): a peer that never drains its stream here could hold up the
+	// sequencer's own direct broadcast too. This path gets its own counter so
+	// a stuck relay peer can only ever stall this relay.
+	var wg sync.WaitGroup
 
 	// Send to each peer concurrently
 	for _, peerID := range peers {
@@ -677,16 +962,25 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 
 		peerIDForGoroutine := peerID // Capture peerID in closure to avoid race condition
 
+		wg.Add(1)
 		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
-			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
+			defer wg.Done()
+
+			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			stream, err := h.NewStream(dialCtx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
+				broadcastLogger().Debug(ctx, "Failed to open stream", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
 			defer stream.Close()
 
+			// Without a write deadline, a peer that accepts the stream and
+			// never reads can block this write indefinitely.
+			_ = stream.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
 			if _, err := stream.Write(msgBytes); err != nil {
-				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")
+				_ = stream.Reset()
+				broadcastLogger().Debug(ctx, "Failed to write message", ion.String("peer", peerIDForGoroutine.String()))
 				return err
 			}
 
@@ -694,18 +988,18 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 			successCount++
 			successMutex.Unlock()
 
-			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
+			metrics.MessagesSentCounter.WithLabelValues(metrics.ProtocolLabel(msg.Type), metrics.PeerLabel(peerIDForGoroutine.String())).Inc()
 			return nil
-		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
-			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block forwarding")
+		}); err != nil {
+			wg.Done() // Go() never ran the func — balance the counter we pre-added.
+			broadcastLogger().Error(context.Background(), "Failed to start goroutine for block forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
 		}
 	}
 
 	wg.Wait()
 
-	log.Info().
-		Str("type", msg.Type).
-		Int("success", successCount).
-		Int("total", len(peers)-1).
-		Msg("Block forwarded to peers")
+	broadcastLogger().Info(context.Background(), "Block forwarded to peers",
+		ion.String("type", msg.Type),
+		ion.Int("success", successCount),
+		ion.Int("total", len(peers)-1))
 }

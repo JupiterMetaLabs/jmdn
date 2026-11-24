@@ -9,12 +9,21 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gossipnode/internal/saferun"
+
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 
+	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+// Bounds for the uniquePeers metric map (audit NET-06).
+const (
+	maxUniquePeers      = 50_000
+	uniquePeerRetention = 30 * time.Minute
 )
 
 // NewEnhancedSubscriber creates a new EnhancedSubscriber instance
@@ -31,14 +40,14 @@ func NewEnhancedSubscriber(subscription *pubsub.Subscription, gps *PubSubMessage
 
 // SubscribeEnhanced subscribes to a topic with enhanced reliability
 func SubscribeEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
-	fmt.Printf("About to call SubscribeEnhanced for %s\n", topic)
+	logger().Debug(context.Background(), "About to call SubscribeEnhanced for topic", ion.String("topic", topic))
 
 	// Check if we can subscribe to this channel
 	if !CanSubscribe(gps, topic, gps.Host.ID()) {
 		return fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
 	}
 
-	fmt.Printf("CanSubscribe returned true for %s\n", topic)
+	logger().Debug(context.Background(), "CanSubscribe returned true for topic", ion.String("topic", topic))
 	gps.Mutex.Lock()
 	gps.Topics[topic] = true
 	gps.Handlers[topic] = handler
@@ -62,7 +71,7 @@ func SubscribeEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPub
 		}
 	}
 
-	fmt.Printf("SubscribeEnhanced completed successfully for %s\n", topic)
+	logger().Debug(context.Background(), "SubscribeEnhanced completed successfully for topic", ion.String("topic", topic))
 	log.Printf("📨 Enhanced subscription to topic: %s", topic)
 	return nil
 }
@@ -79,7 +88,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		}
 	}
 
-	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
+	logger().Debug(context.Background(), "About to call GetOrJoinTopic for topic", ion.String("topic", topicName))
 
 	// Get or join the topic
 	topic, err := gps.GetOrJoinTopic(topicName)
@@ -87,7 +96,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		return fmt.Errorf("failed to get or join topic %s: %w", topicName, err)
 	}
 
-	fmt.Printf("GetOrJoinTopic returned successfully for %s\n", topicName)
+	logger().Debug(context.Background(), "GetOrJoinTopic returned successfully for topic", ion.String("topic", topicName))
 
 	// Subscribe to the topic
 	sub, err := topic.Subscribe()
@@ -95,7 +104,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		return fmt.Errorf("failed to subscribe to topic %s: %w", topicName, err)
 	}
 
-	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
+	logger().Debug(context.Background(), "Subscribe returned successfully for topic", ion.String("topic", topicName))
 
 	// Store subscription and cancellation so Unsubscribe can stop the underlying subscription/goroutine.
 	gps.Mutex.Lock()
@@ -121,7 +130,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
-	fmt.Printf("Context set for %s\n", topicName)
+	logger().Debug(context.Background(), "Context set for topic", ion.String("topic", topicName))
 	run := func(ctx context.Context) error {
 		ctxNext, cancelNext := context.WithCancel(ctx)
 		defer cancelNext()
@@ -145,7 +154,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		go func() { _ = run(subCtx) }()
 	}
 
-	fmt.Printf("subscribeEnhancedViaGossipSub returned successfully for %s\n", topicName)
+	logger().Debug(context.Background(), "subscribeEnhancedViaGossipSub returned successfully for topic", ion.String("topic", topicName))
 	return nil
 }
 
@@ -211,9 +220,28 @@ func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error 
 	peerID := msg.ReceivedFrom.String()
 	es.metrics.uniquePeersMu.Lock()
 	es.metrics.uniquePeers[peerID] = time.Now().UTC().UnixNano()
+	// Bound the map: libp2p identities are free to generate, so an unbounded
+	// per-peer-ID map is a memory-exhaustion vector (audit NET-06). When over
+	// the cap, drop entries older than the retention window.
+	if len(es.metrics.uniquePeers) > maxUniquePeers {
+		cutoff := time.Now().Add(-uniquePeerRetention).UTC().UnixNano()
+		for pid, ts := range es.metrics.uniquePeers {
+			if ts < cutoff {
+				delete(es.metrics.uniquePeers, pid)
+			}
+		}
+	}
 	es.metrics.uniquePeersMu.Unlock()
 
-	// Process the message
+	// Process the message behind a panic boundary: a handler bug on one peer
+	// message must drop that message, not the subscription loop or the node.
+	return es.processMessageSafe(msg)
+}
+
+func (es *EnhancedSubscriber) processMessageSafe(msg *pubsub.Message) (err error) {
+	defer saferun.RecoverInto("pubsub.enhanced_subscriber", func(r any) {
+		err = fmt.Errorf("message handler panicked (recovered): %v", r)
+	})
 	return es.processMessageEnhanced(msg)
 }
 
@@ -269,12 +297,13 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 
 	// Convert to our GossipMessage format
 	gossipMsg := &PubSubMessages.GossipMessage{
-		ID:        msg.ID,
-		Topic:     "", // Will be set by caller
-		Data:      &messageData,
-		Sender:    msg.GetFrom(),
-		Timestamp: time.Now().UTC().UnixNano(),
-		TTL:       0,
+		ID:                  msg.ID,
+		Topic:               "", // Will be set by caller
+		Data:                &messageData,
+		Sender:              msg.GetFrom(),
+		SenderAuthenticated: true,
+		Timestamp:           time.Now().UTC().UnixNano(),
+		TTL:                 0,
 	}
 
 	// Call the handler
@@ -283,49 +312,4 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 	}
 
 	return nil
-}
-
-// GetMetrics returns current subscriber metrics (thread-safe)
-func (es *EnhancedSubscriber) GetMetrics() EnhancedSubscriberMetrics {
-	es.metrics.uniquePeersMu.RLock()
-	// Create a copy of unique peers map
-	uniquePeers := make(map[string]int64, len(es.metrics.uniquePeers))
-	for peer, timestamp := range es.metrics.uniquePeers {
-		uniquePeers[peer] = timestamp
-	}
-	es.metrics.uniquePeersMu.RUnlock()
-
-	lastRecvNano := atomic.LoadInt64(&es.metrics.lastReceiveTime)
-
-	return EnhancedSubscriberMetrics{
-		MessagesReceived: atomic.LoadInt64(&es.metrics.MessagesReceived),
-		ReceiveErrors:    atomic.LoadInt64(&es.metrics.ReceiveErrors),
-		ValidationErrors: atomic.LoadInt64(&es.metrics.ValidationErrors),
-		lastReceiveTime:  lastRecvNano,
-		uniquePeers:      uniquePeers,
-	}
-}
-
-// GetUniquePeerCount returns the number of unique peers seen (thread-safe)
-func (es *EnhancedSubscriber) GetUniquePeerCount() int {
-	es.metrics.uniquePeersMu.RLock()
-	defer es.metrics.uniquePeersMu.RUnlock()
-	return len(es.metrics.uniquePeers)
-}
-
-// GetRecentPeers returns peers that have sent messages recently (thread-safe)
-func (es *EnhancedSubscriber) GetRecentPeers(since time.Duration) []string {
-	var recentPeers []string
-	cutoff := time.Now().UTC().Add(-since).UnixNano()
-
-	es.metrics.uniquePeersMu.RLock()
-	defer es.metrics.uniquePeersMu.RUnlock()
-
-	for peer, timestamp := range es.metrics.uniquePeers {
-		if timestamp > cutoff {
-			recentPeers = append(recentPeers, peer)
-		}
-	}
-
-	return recentPeers
 }

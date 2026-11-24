@@ -12,6 +12,9 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
 
+	"google.golang.org/grpc/peer"
+
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -46,7 +49,12 @@ func _GetBlockByNumber(ctx context.Context, req *proto.GetBlockByNumberReq) (*pr
 func _GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
-	if reqHash[0:2] == "0x" {
+	// Guard against an empty/short hash: slicing reqHash[0:2] panics when
+	// req.Hash is empty (reqHash == ""). Reject before any indexing.
+	if len(reqHash) == 0 {
+		return nil, fmt.Errorf("block hash is required")
+	}
+	if len(reqHash) >= 2 && reqHash[0:2] == "0x" {
 		reqHash = reqHash[2:]
 	}
 
@@ -67,7 +75,12 @@ func _GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.
 func _GetTransactionByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Transaction, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
-	if reqHash[0:2] == "0x" {
+	// Guard against an empty/short hash: slicing reqHash[0:2] panics when
+	// req.Hash is empty (reqHash == ""). Reject before any indexing.
+	if len(reqHash) == 0 {
+		return nil, fmt.Errorf("transaction hash is required")
+	}
+	if len(reqHash) >= 2 && reqHash[0:2] == "0x" {
 		reqHash = reqHash[2:]
 	}
 
@@ -108,7 +121,10 @@ func _GetAccountState(ctx context.Context, req *proto.GetAccountStateReq) (*prot
 	// Sort the Txns by nonce
 	Txns = SortTransactionsByNonce(Txns)
 	// Now pick the last nonce
-	nonce := Txns[len(Txns)-1].Nonce
+	var nonce uint64
+	if len(Txns) > 0 {
+		nonce = Txns[len(Txns)-1].Nonce
+	}
 
 	// Create hash of all transactions
 	txHash, err := HashTransactions(Txns)
@@ -146,11 +162,17 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 		return nil, err
 	}
 	// Debugging
-	fmt.Println("Transaction: ", tx)
-	fmt.Println("Transaction Type: ", tx.Type)
-	fmt.Println("Gas Fee Type: ", tx.GasPrice)
-	fmt.Println("Gas Fee: ", tx.GasPrice)
-	hash, err := block.SubmitRawTransaction(ctx, &tx)
+	logger().Debug(context.Background(), "Transaction details",
+		ion.String("type", fmt.Sprintf("%d", tx.Type)),
+		ion.String("gas_price", tx.GasPrice.String()))
+	// Derive trust from the gRPC peer, not the tx shape (audit SEC-02). The
+	// eth gRPC surface is remote-reachable; only a same-host (loopback) caller
+	// is eligible for the unsigned internal-deployment bypass.
+	origin := block.OriginGRPC("")
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		origin = block.OriginGRPC(p.Addr.String())
+	}
+	hash, err := block.SubmitRawTransaction(context.Background(), &tx, origin)
 	if err != nil {
 		return nil, err
 	}
@@ -158,26 +180,9 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
 }
 
-/* UNUSED
-func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
-	// Get the Mempool Client
-	RoutingClient, err := block.ReturnMempoolObject()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mempool client: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// Get the Fee Stats
-	feeStats, err := RoutingClient.WrapperGetFeeStatistics(ctx)
-	if err != nil {
-		return nil, err
-	}
+// Get the Mempool Client
 
-	return &proto.EstimateResp{
-		GasEstimate: feeStats.RecommendedFees.Standard,
-	}, nil
-}
-*/
+// Get the Fee Stats
 
 func _GetChainID(ctx context.Context, req *proto.Empty, chainID int) (*proto.Quantity, error) {
 	return &proto.Quantity{Value: uint64(chainID)}, nil

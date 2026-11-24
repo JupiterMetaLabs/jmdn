@@ -1,6 +1,6 @@
 # JMDN Node Configuration
 # Place at ./jmdn.yaml or /etc/jmdn/jmdn.yaml
-# Env vars override with JMDN_ prefix (e.g. JMDN_NODE_CHAIN_ID=7000700)
+# Env vars override with JMDN_ prefix (e.g. JMDN_NETWORK_CHAIN_ID=7000700)
 
 # ── Node Identity ────────────────────────────────────────
 node:
@@ -8,8 +8,12 @@ node:
 
 # ── Networking ───────────────────────────────────────────
 network:
-  chain_id: 7000700
-  seednode: ""
+  chain_id: 7000700           # mainnet. Testnet is 8000800 (see jmdn_testnet.yaml).
+  # mainnet turns on the production safety locks (consensus and security
+  # posture checks refuse to boot on fail-open settings). A non-mainnet
+  # environment on chain_id 7000700 refuses to boot.
+  environment: mainnet
+  seednode: ""                # REQUIRED: seed node address (host:port)
   mempool: ""
   yggdrasil: true
   heartbeat_interval: 10  # seconds
@@ -22,6 +26,7 @@ ports:
   cli: 0
   did: 15052
   facade: 8545
+  thebe_debug: 19090
   ws: 8546
   metrics: 0       # Disabled by default (use -metrics 8081 to enable)
   profiler: 0      # Disabled by default (use -profiler 6060 to enable)
@@ -33,25 +38,77 @@ binds:
   cli: "127.0.0.1"       # Admin - CLI control
   did: "0.0.0.0"
   facade: "0.0.0.0"
+  thebe_debug: "127.0.0.1"
   ws: "0.0.0.0"
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
-# ── Database (ImmuDB) ───────────────────────────────────
-# address/port: point at an external immudb container (docker-compose default).
-#   For embedded mode (single container): leave as localhost:3322.
-#   Env: JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT
-# username/password: NOT related to P2P — only used for the local DB connection.
-#   Leave blank to use ImmuDB's built-in defaults (fine for most operators).
-#   Env: JMDN_DATABASE_USERNAME / JMDN_DATABASE_PASSWORD
+# ── Database ─────────────────────────────────────────────
+# ThebeDB is embedded (BadgerDB KV + SQL projection) — no address/credentials.
+# redis: account sync worker queue.
 database:
-  address: "localhost"   # Env: JMDN_DATABASE_ADDRESS
-  port: 3322             # Env: JMDN_DATABASE_PORT
-  username: ""           # Env: JMDN_DATABASE_USERNAME
-  password: ""           # Env: JMDN_DATABASE_PASSWORD
   redis:
     url: "127.0.0.1:6379"
     password: ""
+
+# ── ThebeDB ──────────────────────────────────────────────
+thebe:
+  enabled: true                # ThebeDB is the node's only storage backend
+  kv_path: "./storage/thebe-kv"
+  # SEC-04: sslmode=require (no cleartext SQL). Postgres must have TLS enabled;
+  # for a non-TLS local DB, override THEBE_SQL_DSN with sslmode=disable.
+  # No password is shipped: put it in the DSN here or in THEBE_SQL_DSN.
+  sql_dsn: "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
+  redis_url: ""                # Env: THEBE_REDIS_URL
+  stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
+  max_len: 1000                # Env: THEBE_MAX_LEN
+  group_name: "projector"      # Env: THEBE_GROUP_NAME
+  cdc:
+    # CDC is the append-only trace of the SQL projection: Postgres is a projection
+    # that can be mutated or rebuilt, and this DuckDB event log is what makes it
+    # replayable (ThebeDB docs/documentation/eventlog.md). Keep it on. The
+    # replication slot's WAL is capped by Postgres max_slot_wal_keep_size (2GB in
+    # the install scripts); jmdn warns at boot if the slot is inactive, lagging
+    # or invalidated.
+    enabled: true
+    slot_name: thebe_eventlog
+    publication: thebe_pub
+    log_path: ./data/eventlog.duckdb
+    dlq_path: ./data/dlq/DLQ.log
+    max_lag_bytes: 104857600            # 100MB lag alert threshold
+    omit_columns:                       # table.column values the event log stores as "<omitted>"
+      - zk_proofs.stark_proof           # proof body (hash stays in zk_proofs.proof_hash)
+
+# ── Chain-head checkpoints ───────────────────────────────
+# Every node verifies the latest checkpoint at boot. The sequencer signs the
+# canonical-log head once per committee epoch with its own BLS key; checkpoints
+# are verified against that key, so committee changes cannot block a restart.
+# signer_bls_pub optionally pins the key here (guards against a swapped key
+# file); empty uses the node's own key.
+# floor_file records the highest checkpoint seen; a store rolled back below it,
+# or with its checkpoints deleted, will not start. It shares the data volume
+# with the store, so a whole-volume restore rolls it back too: on the sequencer
+# also copy the logged checkpoint_seq into min_seq here (this file is mounted
+# read-only, outside the volume). Delete floor_file and lower min_seq only after
+# a deliberate restore from an older snapshot.
+checkpoint:
+  enabled: true
+  boot_fail_closed: true
+  cadence_blocks: 0                    # 0 = per committee epoch
+  floor_file: "/opt/jmdn/checkpoint-floor.json"
+  min_seq: 0                           # restore-safe floor; 0 = none
+  signer_bls_pub: ""                   # optional pin; empty = node key
+  background_full_verify: true         # full nodes: re-walk the whole log in the background after boot
+
+# ── Storage ──────────────────────────────────────────────
+# full: keep the whole canonical log (sequencer and full nodes).
+# light: keep about light_keep_blocks blocks of canonical log, pruned below a
+# checkpoint this node signed. Not allowed on the sequencer; needs
+# checkpoint.enabled and checkpoint.floor_file. Does not prune SQL data.
+storage:
+  profile: full
+  light_keep_blocks: 10000             # minimum 1000
+  prune_interval: 10m
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
@@ -94,10 +151,13 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
+  enable_solc_compile: false # solc_compile JSON-RPC; requires security.admin_token when on
+  enable_debug_trace: false  # debug_traceTransaction; requires security.admin_token when on
+  grouped_apply_commit: true # commit a block's value transfers together; false = one commit per tx
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
-  enabled: true           # Register protocol handlers and serve data to peers
+  enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships
   enable_pulling: true    # Allow this node to pull data from peers and write to its DB.
                           # Set false on sequencers — they are authoritative and must
                           # never overwrite their own state (they still serve data).
@@ -107,12 +167,123 @@ fastsync:
                           # must never pull state from peers to overwrite its own chain.
   sync_timeout: 10m       # Max wall-clock time for a single full sync operation.
   sync_check_interval: 10m # How often to report Merkle root to seednode. Min: 1m.
-  serve_v4: false         # Serve /fastsync/v4 (read-only) so v3base nodes following this
-                          # network during the migration can catch up. Sequencer only.
   catch_up_from_block: 0  # First block AFTER your bootstrap snapshot (bootstrapTip+1).
                           # 0 = full scan from genesis (safe default, no bootstrap loaded).
                           # Set to bootstrapTip+1 after bootstrap to avoid rescanning
                           # the already-complete bootstrap range on every catchup.
+
+# ── Consensus feature flags ─────────────────────────────
+# YAML home for the rollout switches that used to be env-only. Precedence per
+# key: legacy env var (if SET, with its original parser) > this file > default.
+# Defaults are the historical env defaults, except committee_v2 and agg_cert
+# which default ON to match the testnet fleet (every node sets them; they must
+# be ON together fleet-wide). Leaving this section out = fleet posture. Consensus-critical flags must be identical fleet-wide —
+# coordinate every flip. The effective values are printed once at boot
+# ("consensus flags (env > yaml > default): ...").
+#
+# Legacy env parsers (apply only when the env var is set):
+#   lenient   unset→default; 0/false/no/off→off; anything else→on
+#   exactly-1 "1"→on; anything else (even "true")→off
+#   not-0     "0"→off; anything else (even "false")→on
+consensus:
+  # First block height that catch-up sync requires to carry a committee certificate
+  # (1 for a chain certified from genesis). 0 = unset. Required under production posture.
+  sync_certificate_required_from: 0
+  # REQUIRED: the seed authority dela/bls public key (hex), distributed out of
+  # band. Pins the committee snapshot signer; the sequencer peer ID is learned
+  # from the same signed snapshot once the seed signs it.
+  seed_authority_bls_pub: ""
+  # Optional: pin the sequencer peer ID explicitly (wins over the seed value).
+  sequencer_pinned_peer_id: ""
+  # Store each block's committee certificate as one aggregate signature plus a
+  # signer bitmap (~150 B instead of the full vote list) from this height on.
+  # Fleet-agreed: same value on every node, a height not yet reached. Applies
+  # only once committee_anchor_activation_height is set. 0 = off.
+  compact_certificate_from_height: 0
+  # From this height on, BlockHash covers the coinbase, zkvm address and
+  # timestamp, and ConsensusHash also covers them and fee recipients.
+  # Fleet-agreed: same value on every node and in the orchestrator
+  # (HEADER_BINDING_FROM_HEIGHT), a height not yet reached. 0 = off.
+  header_binding_from_height: 0
+  # The coinbase and zkvm addresses (the orchestrator's) every block must carry,
+  # by height. Required when header_binding_from_height is set: the first entry
+  # must start at or below it. Add an entry with a future from_height to change
+  # an address. Example:
+  #   header_addresses:
+  #     - from_height: 500000
+  #       coinbase: "0x..."
+  #       zkvm: "0x..."
+  header_addresses: []
+  # How far past this node's clock a block timestamp may be when it is proposed
+  # or voted on, from that height on. 0 = not checked.
+  block_timestamp_max_future_seconds: 15
+  # Vote ACCEPT for, or sign the vote result of, period p at a height only if
+  # p <= vote_period_slack + seconds since this node first saw a proposal at the
+  # height / vote_period_min_round_seconds. Stops one proposal jumping a height
+  # to the period cap. Local rule; 0 seconds turns it off.
+  vote_period_min_round_seconds: 1
+  vote_period_slack: 16
+  # From this height on a block's period may go up to 2^20 instead of 1024, so
+  # a high period recorded at a height is never a dead end for the next
+  # proposer. Fleet-agreed: same value on every node, a height not yet
+  # reached. 0 = off (cap stays 1024).
+  period_cap_raise_from_height: 0
+  # From this height on, this node's RPC rejects a plain transfer to a
+  # new recipient whose gas limit is below 46,000, and eth_estimateGas returns
+  # 46,000 (+5%) for it. New = no account, or one that has never held value
+  # or sent a transaction (e.g. DID-registered only). A used account, even
+  # drained to zero, needs only 21,000. Contract calls and deployments are
+  # exempt. Submission and estimation only; block validation does not check
+  # it. Set the same value on every RPC node. 0 = off.
+  new_recipient_gas_from_height: 0
+  # From this height on, a contract transaction whose execution creates an
+  # account that carries no block-stamped identity is applied as a status-0
+  # revert (gas charged, no other effect) instead of failing its whole block.
+  # While 0, such a block fails after its earlier transactions have committed,
+  # and the node stops applying blocks until it is resynced
+  # (docs/block-apply-halt.md). Fleet-agreed: the same value on every node that
+  # applies blocks (sequencer, validators, RPC and exchange nodes), a height
+  # not yet reached, set in one coordinated restart. 0 = off.
+  evm_unstamped_account_revert_height: 0
+  # Migration only: follow the mainnet sequencer that still runs the main
+  # branch. Legacy blocks (<= until_height; all while 0) are accepted only from
+  # main_sequencer (full multiaddr with /p2p/<id>); missed blocks are fetched
+  # over /fastsync/v4 (main needs fastsync.serve_v4). Remove after cutover.
+  legacy_follow:
+    enabled: false
+    main_sequencer: ""
+    until_height: 0
+    catch_up_interval: 30s
+  # Stage 2 (RANDAO+VDF beacon) has no rule switches: reveals are BLS and the VDF
+  # has one valid output per input, always. It requires
+  # committee_anchor_activation_height and refuses to install without it.
+  flags:
+    committee_snapshot_anchor: false        # JMDN_COMMITTEE_SNAPSHOT_ANCHOR (lenient). Older hash-only anchor; unwired.
+    committee_v2: true                      # JMDN_COMMITTEE_V2 (lenient). Authenticated committee snapshots. Fleet-wide ON.
+    reject_legacy_votes: true               # JMDN_REJECT_LEGACY_VOTES (lenient). Production posture locks this ON.
+    enforce_committee_registry: true        # JMDN_ENFORCE_COMMITTEE_REGISTRY (lenient). Production posture locks this ON.
+    enforce_block_linkage: true             # JMDN_ENFORCE_BLOCK_LINKAGE (lenient). Parent/height contiguity on receive.
+    enforce_body_binding: true              # JMDN_ENFORCE_BODY_BINDING (lenient). Production posture locks this ON.
+    agg_cert: true                          # JMDN_AVC_AGG_CERT (exactly-1). Aggregate BLS certificates. Fleet-wide ON.
+    enforce_slot_recovery_gate: true        # JMDN_ENFORCE_SLOT_RECOVERY_GATE (not-0). Applies to BOTH readers (messaging + vote path).
+    enforce_sync_gate: true                 # JMDN_ENFORCE_SYNC_GATE (not-0). A validator behind the head abstains.
+                                            # Devnet genesis bootstrap sets this false; re-enable once blocks flow.
+    emit_block_bound_votes: true            # JMDN_EMIT_BLOCK_BOUND_VOTES (not-0). Block-bound BLS vote domain.
+    validator_voter_set: true               # JMDN_VALIDATOR_VOTER_SET (lenient).
+    validator_vote_ingest: true             # JMDN_VALIDATOR_VOTE_INGEST (lenient).
+    emit_committee_bls: true                # JMDN_EMIT_COMMITTEE_BLS (not-0). Seed signs committee snapshots.
+    allow_new_receiver_accounts: true       # JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS (lenient). Create unknown receivers at apply.
+    block_gossip: true                      # JMDN_BLOCK_GOSSIP (lenient). Block propagation over gossipsub.
+    finalize_cert_only: false               # JMDN_FINALIZE_CERT_ONLY (lenient). Committee receives header+certificate at finalize instead of the full block (it already holds the proposal). Enable only once every validator runs a build with this flag.
+    trust_sequencer_certificate: false     # JMDN_TRUST_SEQUENCER_CERT (lenient). Accept a received block below 2f+1 when >= f+1 eligible votes verify. Testnet stopgap only; refused under production posture.
+    vote_crdt_compact_k: 3                  # JMDN_VOTE_CRDT_COMPACT_K (uint). Rounds kept behind tip; floored at 2.
+
+# ── Reputation (observe-only) ───────────────────────────
+reputation:
+  observe: true                 # JMDN_REPUTATION_OBSERVE (lenient). Score peers; never feeds the quorum tally.
+  push_interval_seconds: 300    # JMDN_REPUTATION_PUSH_INTERVAL_SECONDS. 0 = never push scores to the seednode.
+  push_suspend: true            # JMDN_REPUTATION_PUSH_SUSPEND (not-0). Suspend pushes while self-faulted (D-61).
+  store_path: ""                # JMDN_REPUTATION_STORE_PATH. Durable score file; empty = in-memory only.
 
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)
@@ -122,9 +293,11 @@ security:
   cert_dir: "certs"
   ip_cache_size: 10000
 
-  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense)
-  global_rate_limit: 0
-  global_burst: 0
+  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense).
+  # The public JSON-RPC is unauthenticated by design, so this is its abuse
+  # control; 0 disables it and fails the production security posture check.
+  global_rate_limit: 50
+  global_burst: 100
 
   # Cloud Native / Load Balancer Support
   trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
@@ -139,6 +312,11 @@ security:
   # Legacy Secrets (Moved here for unification)
   explorer_api_key: ""
   jwt_secret: ""
+  # Bearer token for admin-only operations: POST /sync/reconcile, the
+  # /consensus/* recovery endpoints (round-ledger clear, block-apply halt
+  # status and clear), and solc_compile / debug_traceTransaction when enabled
+  # under features. Empty = those operations are refused.
+  admin_token: ""
 
   # Service Policies (Granular Control)
   services:
@@ -154,8 +332,8 @@ security:
     eth_rpc:
       tls: false            # Public endpoint
       auth_type: "none"
-      rate_limit: 0
-      burst: 0
+      rate_limit: 20        # per IP, req/s
+      burst: 40
 
     # 3. Block Ingest/Sequencer (Internal - Token Auth)
     block_ingest_http:
@@ -223,3 +401,101 @@ alerts:
   api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
   chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
   http_timeout: 10s
+
+# ── Transaction status ─────────────────────────────────
+# Answers "where is this transaction?" for hashes that are not in a block, by
+# consulting the mempool routing engine and a local record of what this node
+# forwarded. Powers the non-standard jmdt_getTransactionStatus method.
+#
+# DEFAULT-OFF. While disabled: no submit records are kept,
+# jmdt_getTransactionStatus reports the method as unavailable, and
+# eth_getTransactionByHash behaves exactly as it does today.
+#
+# eth_getTransactionReceipt is NEVER affected by anything here. A receipt stays
+# null until the transaction is in a block, because wallets read a non-null
+# receipt as proof of mining — a synthesised receipt with status 0x0 would show
+# a merely-queued transaction as FAILED.
+#
+# Requires MRE_LOOKUP_ENABLED=true on the mempool routing engine; without it
+# every mempool lookup returns UNIMPLEMENTED and statuses degrade to `unknown`.
+tx_status:
+  enabled: false                      # JMDN_TX_STATUS_ENABLED
+
+  # How long this node remembers that it forwarded a transaction. This is the
+  # ONLY evidence that permits a `processing` answer, so it must comfortably
+  # exceed the worst-case time-to-inclusion. MEASURE that on your network
+  # first: the sequencer polls the mempool on an interval and only builds a
+  # block once enough transactions are pending, so it is far longer than
+  # intuition suggests. Too short and in-flight transactions report `unknown`.
+  submit_record_ttl: 30m               # JMDN_TX_STATUS_SUBMIT_RECORD_TTL
+  submit_record_capacity: 100000       # JMDN_TX_STATUS_SUBMIT_RECORD_CAPACITY
+
+  # Ceiling on how long a status query may wait on the mempool. Expiry degrades
+  # the answer to `unknown`; it never hangs or errors the RPC.
+  mempool_timeout: 400ms               # JMDN_TX_STATUS_MEMPOOL_TIMEOUT
+  chain_timeout: 2s                    # JMDN_TX_STATUS_CHAIN_TIMEOUT
+
+  # Remembers CONCLUSIVE unknowns so repeated probes for nonexistent hashes do
+  # not each trigger a fleet-wide fan-out. Inconclusive answers are never
+  # cached. Keep the TTL short — it bounds how long a freshly submitted
+  # transaction can stay invisible after a miss on the same hash.
+  negative_cache_ttl: 2s               # JMDN_TX_STATUS_NEGATIVE_CACHE_TTL
+  negative_cache_size: 16384           # JMDN_TX_STATUS_NEGATIVE_CACHE_SIZE
+
+  # Load protection, not tuning: the JSON-RPC port is public and every
+  # chain-store miss amplifies into an N-shard scatter-gather inside MRE.
+  # There is no transport auth between jmdn and MRE today, so do not raise
+  # these or set them to 0.
+  rate_limit_per_sec: 50               # JMDN_TX_STATUS_RATE_LIMIT_PER_SEC
+  rate_limit_burst: 100                # JMDN_TX_STATUS_RATE_LIMIT_BURST
+
+  # Stops calling an unresponsive mempool, so an outage does not add the full
+  # timeout to every request.
+  breaker_failure_threshold: 5         # JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD
+  breaker_cooldown: 5s                 # JMDN_TX_STATUS_BREAKER_COOLDOWN
+
+  # Second, separate opt-in: lets eth_getTransactionByHash answer from the
+  # mempool, returning a queued transaction with null blockHash / blockNumber /
+  # transactionIndex (the standard Ethereum pending representation), and null
+  # for a hash that is not known anywhere. Off even when `enabled` is true,
+  # because it changes what existing clients see.
+  pending_tx_by_hash: false            # JMDN_TX_STATUS_PENDING_TX_BY_HASH
+
+# ── Public JSON-RPC cost bounds ──────────────────────────────────────────────
+#
+# What one request may cost this node. Every value here was a compile-time Go
+# constant; they are config now because this is the only surface exposed to the
+# open internet (binds.facade is 0.0.0.0, eth_rpc has no auth), and the right
+# number differs between an archive node serving indexers and a validator that
+# serves RPC incidentally.
+#
+# A zero or negative value means "use the compiled default", never "unlimited".
+# Before changing any of these, look at rpc_query_refused_total{reason=...} —
+# it says which bound is actually binding, and for whom.
+rpc:
+  logs:
+    # Blocks an address-less eth_getLogs may span. 2000 matches what public
+    # providers commonly allow; 10000 was the generous end of that range and was
+    # never derived from this node's cost. Note it is a COUNT of blocks, so what
+    # it means in wall-clock depends on this chain's block cadence.
+    max_block_span: 2000               # JMDN_RPC_LOGS_MAX_BLOCK_SPAN
+    # Logs any eth_getLogs may return. Bounds response memory only, and is
+    # reached only once a log MATCHES the filter.
+    max_results: 10000                 # JMDN_RPC_LOGS_MAX_RESULTS
+    # Blocks a single query may actually TOUCH, on both paths. This is the only
+    # bound on the address path, which walks a contract's whole history from
+    # block 0 regardless of the requested range. Set below max_block_span to
+    # advertise a wide range while capping the work behind it.
+    max_scan_blocks: 2000              # JMDN_RPC_LOGS_MAX_SCAN_BLOCKS
+    # Contract addresses one query may filter on. Each is a separate index
+    # scan; the list was neither capped nor deduplicated, so listing one
+    # address N times cost N scans. Duplicates are now collapsed before this
+    # cap is applied.
+    max_addresses: 100                 # JMDN_RPC_LOGS_MAX_ADDRESSES
+  batch:
+    # Calls in one JSON-RPC batch. Upstream geth's own default is 1000.
+    max_size: 100                      # JMDN_RPC_BATCH_MAX_SIZE
+    # How many of them run at once. Before this, the batch size was also the
+    # concurrency, so one HTTP request could put max_size CPU-heavy calls on
+    # the scheduler together. Bounds fan-out, not throughput.
+    max_concurrency: 8                 # JMDN_RPC_BATCH_MAX_CONCURRENCY

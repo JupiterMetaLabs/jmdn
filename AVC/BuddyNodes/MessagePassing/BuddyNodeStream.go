@@ -1,7 +1,6 @@
 package MessagePassing
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/streamread"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -62,7 +62,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 	}
 
 	// Record trace span and close it
-	streamSpanCtx, streamSpan := logger().NamedLogger.Tracer("MessagePassing").Start(spanCtx, "MessagePassing.HandleBuddyNodesMessageStream")
+	streamSpanCtx, streamSpan := logger().Tracer("MessagePassing").Start(spanCtx, "MessagePassing.HandleBuddyNodesMessageStream")
 	defer streamSpan.End()
 
 	startTime := time.Now().UTC()
@@ -72,15 +72,14 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 		attribute.String("local_peer_id", host.ID().String()),
 	)
 
-	reader := bufio.NewReader(s)
-	msg, err := reader.ReadString(config.Delimiter)
+	raw, err := streamread.Frame(s, config.Delimiter, streamread.DefaultMaxBytes, streamread.DefaultTimeout)
+	msg := string(raw)
 	if err != nil {
 		streamSpan.RecordError(err)
 		streamSpan.SetAttributes(attribute.String("status", "read_error"))
 		duration := time.Since(startTime).Seconds()
 		streamSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(streamSpanCtx, "Error reading message from peer",
-			err,
+		logger().Error(streamSpanCtx, "Error reading message from peer", err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -95,7 +94,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 
-	logger().NamedLogger.Info(streamSpanCtx, "Received buddy message from peer",
+	logger().Info(streamSpanCtx, "Received buddy message from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", msg),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -110,7 +109,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 		streamSpan.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		streamSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(streamSpanCtx, "Failed to parse message - malformed JSON or invalid structure",
+		logger().Error(streamSpanCtx, "Failed to parse message - malformed JSON or invalid structure",
 			errors.New("failed to parse message"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("raw_message", msg),
@@ -129,7 +128,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 		streamSpan.SetAttributes(attribute.String("status", "nil_ack"))
 		duration := time.Since(startTime).Seconds()
 		streamSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(streamSpanCtx, "Received message with nil ACK",
+		logger().Error(streamSpanCtx, "Received message with nil ACK",
 			errors.New("received message with nil ACK"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("raw_message", msg),
@@ -160,10 +159,14 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 	// For all other message types, delegate to the service layer via Router
 	// Convert Message to GossipMessage for Router
 	gossipMessage := AVCStruct.NewGossipMessageBuilder(nil).SetMesssage(message)
+	// The stream peer is the transport-authenticated sender; the Router's
+	// sequencer check (H5) needs it.
+	gossipMessage.Sender = remotePeer
+	gossipMessage.SenderAuthenticated = true
 	if err := Router.Router(gossipMessage); err != nil {
 		streamSpan.RecordError(err)
 		streamSpan.SetAttributes(attribute.String("status", "router_failed"))
-		logger().NamedLogger.Error(streamSpanCtx, "Failed to handle message via service layer",
+		logger().Error(streamSpanCtx, "Failed to handle message via service layer",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
@@ -190,7 +193,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.
 // handleStartPubSub handles the StartPubSub message type with direct logic
 func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Context, s network.Stream) {
 	// Record trace span and close it
-	startPubSubSpanCtx, startPubSubSpan := logger().NamedLogger.Tracer("MessagePassing").Start(spanCtx, "MessagePassing.handleStartPubSub")
+	startPubSubSpanCtx, startPubSubSpan := logger().Tracer("MessagePassing").Start(spanCtx, "MessagePassing.handleStartPubSub")
 	defer startPubSubSpan.End()
 
 	startTime := time.Now().UTC()
@@ -215,7 +218,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 			startPubSubSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(startPubSubSpanCtx, "Failed to marshal ACK message",
+			logger().Error(startPubSubSpanCtx, "Failed to marshal ACK message",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_TRUE"),
@@ -232,7 +235,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 			startPubSubSpan.SetAttributes(attribute.String("status", "send_failed"))
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(startPubSubSpanCtx, "Failed to send ACK to peer",
+			logger().Error(startPubSubSpanCtx, "Failed to send ACK to peer",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_TRUE"),
@@ -244,7 +247,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 		} else {
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"), attribute.String("ack_sent", "ACK_TRUE"))
-			logger().NamedLogger.Info(startPubSubSpanCtx, "Sent ACK_TRUE to peer for pubsub subscription",
+			logger().Info(startPubSubSpanCtx, "Sent ACK_TRUE to peer for pubsub subscription",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_TRUE"),
 				ion.Float64("duration", duration),
@@ -271,7 +274,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 			startPubSubSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(startPubSubSpanCtx, "Failed to marshal ACK message",
+			logger().Error(startPubSubSpanCtx, "Failed to marshal ACK message",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_FALSE"),
@@ -288,7 +291,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 			startPubSubSpan.SetAttributes(attribute.String("status", "send_failed"))
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(startPubSubSpanCtx, "Failed to send ACK to peer",
+			logger().Error(startPubSubSpanCtx, "Failed to send ACK to peer",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_FALSE"),
@@ -300,7 +303,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 		} else {
 			duration := time.Since(startTime).Seconds()
 			startPubSubSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"), attribute.String("ack_sent", "ACK_FALSE"))
-			logger().NamedLogger.Info(startPubSubSpanCtx, "Sent ACK_FALSE to peer - node not ready for pubsub",
+			logger().Info(startPubSubSpanCtx, "Sent ACK_FALSE to peer - node not ready for pubsub",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_type", "ACK_FALSE"),
 				ion.Float64("duration", duration),
@@ -316,7 +319,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(spanCtx context.Contex
 // handleSubscriptionResponse handles subscription response messages
 func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	subResponseSpanCtx, subResponseSpan := logger().NamedLogger.Tracer("MessagePassing").Start(spanCtx, "MessagePassing.handleSubscriptionResponse")
+	subResponseSpanCtx, subResponseSpan := logger().Tracer("MessagePassing").Start(spanCtx, "MessagePassing.handleSubscriptionResponse")
 	defer subResponseSpan.End()
 
 	startTime := time.Now().UTC()
@@ -331,7 +334,7 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx conte
 			subResponseSpan.SetAttributes(attribute.String("status", "ack_true"))
 			if StructBuddyNode.BuddyNode.ResponseHandler != nil {
 				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(remotePeer, true, "main")
-				logger().NamedLogger.Info(subResponseSpanCtx, "Handled ACK_TRUE subscription response",
+				logger().Info(subResponseSpanCtx, "Handled ACK_TRUE subscription response",
 					ion.String("remote_peer_id", remotePeer.String()),
 					ion.String("ack_status", "ACK_TRUE"),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -344,7 +347,7 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx conte
 			subResponseSpan.SetAttributes(attribute.String("status", "ack_false"))
 			if StructBuddyNode.BuddyNode.ResponseHandler != nil {
 				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(remotePeer, false, "main")
-				logger().NamedLogger.Info(subResponseSpanCtx, "Handled ACK_FALSE subscription response",
+				logger().Info(subResponseSpanCtx, "Handled ACK_FALSE subscription response",
 					ion.String("remote_peer_id", remotePeer.String()),
 					ion.String("ack_status", "ACK_FALSE"),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -358,7 +361,7 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx conte
 			subResponseSpan.SetAttributes(attribute.String("status", "unknown_ack_status"))
 			duration := time.Since(startTime).Seconds()
 			subResponseSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(subResponseSpanCtx, "Unknown status in ACK_Message",
+			logger().Error(subResponseSpanCtx, "Unknown status in ACK_Message",
 				errors.New("unknown status in ACK_Message"),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("ack_status", ackStatus),
@@ -373,7 +376,7 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx conte
 		subResponseSpan.SetAttributes(attribute.String("status", "nil_ack"))
 		duration := time.Since(startTime).Seconds()
 		subResponseSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(subResponseSpanCtx, "Unknown message type received from peer",
+		logger().Error(subResponseSpanCtx, "Unknown message type received from peer",
 			errors.New("unknown message type received"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -387,7 +390,7 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(spanCtx conte
 // sendACKResponse sends ACK response based on success/failure
 func (StructBuddyNode *StructBuddyNode) sendACKResponse(spanCtx context.Context, s network.Stream, success bool, stage string) {
 	// Record trace span and close it
-	ackResponseSpanCtx, ackResponseSpan := logger().NamedLogger.Tracer("MessagePassing").Start(spanCtx, "MessagePassing.sendACKResponse")
+	ackResponseSpanCtx, ackResponseSpan := logger().Tracer("MessagePassing").Start(spanCtx, "MessagePassing.sendACKResponse")
 	defer ackResponseSpan.End()
 
 	startTime := time.Now().UTC()
@@ -423,7 +426,7 @@ func (StructBuddyNode *StructBuddyNode) sendACKResponse(spanCtx context.Context,
 		ackResponseSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		ackResponseSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(ackResponseSpanCtx, "Failed to marshal ACK response message",
+		logger().Error(ackResponseSpanCtx, "Failed to marshal ACK response message",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("ack_type", ackType),
@@ -441,7 +444,7 @@ func (StructBuddyNode *StructBuddyNode) sendACKResponse(spanCtx context.Context,
 		ackResponseSpan.SetAttributes(attribute.String("status", "send_failed"))
 		duration := time.Since(startTime).Seconds()
 		ackResponseSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(ackResponseSpanCtx, "Failed to send ACK response to peer",
+		logger().Error(ackResponseSpanCtx, "Failed to send ACK response to peer",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("ack_type", ackType),
@@ -454,7 +457,7 @@ func (StructBuddyNode *StructBuddyNode) sendACKResponse(spanCtx context.Context,
 	} else {
 		duration := time.Since(startTime).Seconds()
 		ackResponseSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-		logger().NamedLogger.Info(ackResponseSpanCtx, "Sent ACK response to peer",
+		logger().Info(ackResponseSpanCtx, "Sent ACK response to peer",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("ack_type", ackType),
 			ion.String("stage", stage),

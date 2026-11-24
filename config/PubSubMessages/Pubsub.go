@@ -20,6 +20,11 @@ type GossipMessage struct {
 	Timestamp int64             `json:"timestamp"`          // Unix timestamp
 	TTL       int               `json:"ttl"`                // Time to live (hop count)
 	Metadata  map[string]string `json:"metadata,omitempty"` // Additional metadata
+
+	// SenderAuthenticated is true only when Sender was taken from a signed
+	// libp2p GossipSub envelope (msg.GetFrom under StrictSign). Never
+	// serialized, so a message decoded from the wire always starts false.
+	SenderAuthenticated bool `json:"-"`
 }
 
 // ChannelAccess represents access control for a channel
@@ -83,6 +88,24 @@ type Vote struct {
 	Vote            int8   `json:"vote"`                       // 1 for yes, -1 for no
 	BlockHash       string `json:"block_hash"`                 // hash of the block
 	RejectionReason string `json:"rejection_reason,omitempty"` // set when vote == -1
+	// Height is the block number this vote is for. Stage 4
+	// (JMDN-CRDT-VOTE-MIGRATION-LLD.md): the block-keyed vote CRDT
+	// (avc/crdt/votes) tallies by (height, blockHash), so the height must
+	// travel with the vote on the wire — subscriptionService.go's
+	// pubsub-message read path has no other source for it. Zero-value on
+	// messages from nodes that predate this field; callers on the new path
+	// must treat Height==0 as "unknown" rather than a real genesis vote.
+	Height uint64 `json:"height,omitempty"`
+
+	// BLSSignature/BLSPubKeyHex carry the per-vote BLS signature Vote/Trigger.go
+	// already produces for its own avcvotes.VoteRecord (Vote/Trigger.go's
+	// SignMessageForBlock call), so a buddy receiving this vote over pubsub or
+	// direct-stream can build the identical signed VoteRecord and ingest it
+	// into VoteCRDTLayer — the only keyspace the tally reads. omitempty: a vote
+	// from a node that cannot sign (or predates this field) carries neither,
+	// and is not countable by the v2 tally (see Structs.IngestValidatorVote).
+	BLSSignature string `json:"bls_signature,omitempty"` // hex
+	BLSPubKeyHex string `json:"bls_pub_key,omitempty"`   // hex, lowercase
 }
 
 // BlockResult represents the result of block validation

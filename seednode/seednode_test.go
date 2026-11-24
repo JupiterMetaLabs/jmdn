@@ -11,6 +11,9 @@ func Test_GetPeer(t *testing.T) {
 	}
 	PeerID := "12D3KooWSH54xa9zzgwbbpJTMtXWVEAQj518TshqTi84FMGCMT2C"
 	seedNodeURL := os.Getenv("SEED_NODE_URL")
+	if seedNodeURL == "" {
+		t.Skip("integration: set SEED_NODE_URL (e.g. localhost:17002) to run")
+	}
 	client, err := NewClient(seedNodeURL)
 	if err != nil {
 		t.Fatalf("Failed to create seed node client: %v", err)

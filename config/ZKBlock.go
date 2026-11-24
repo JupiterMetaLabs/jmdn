@@ -32,6 +32,19 @@ type Transaction struct {
 	S *big.Int `json:"s,omitempty"`
 }
 
+// HasZKProof reports whether a block carries ANY ZK proof data and should
+// therefore ship its proof over sync. It is the shared gate used by the
+// peer-serving NonHeaders converter (DB_OPs/Nodeinfo.convertZKBlockToNonHeaders);
+// any future converter must use it too so the gates never drift.
+//
+// Gating on ProofHash alone dropped Auspex proofs: proof_hash was Espresso-derived
+// and is empty for Auspex-produced blocks, so a block with a real StarkProof +
+// Commitment but no proof_hash was served/stored without its proof. See
+// docs / the DataSync proof-drop fix.
+func HasZKProof(proofHash string, stark []byte, commitment []uint32) bool {
+	return proofHash != "" || len(stark) > 0 || len(commitment) > 0
+}
+
 // ZKBlock represents a block processed by the ZKVM with proof
 type ZKBlock struct {
 	// ZK-Stark proof data
@@ -60,7 +73,8 @@ type ZKBlock struct {
 	GasUsed       uint64         `json:"gasused"`
 	BlockNumber   uint64         `json:"blocknumber"`
 
-	// L1 finality — set after commitRollup is mined on Ethereum
+	// L1 finality — set after commitRollup is mined on Ethereum.
+	// Hydrated at read time from the append-only l1_finality table.
 	L1TxHash      string `json:"l1_tx_hash,omitempty"`
 	L1BlockNumber uint64 `json:"l1_block_number,omitempty"`
 
@@ -78,6 +92,198 @@ type ZKBlock struct {
 	// never be treated as certificate-verified data: it is identity metadata whose
 	// safety comes from the uniqueness/monotonicity rules in DB_OPs/art_ordinal.go.
 	AccountNonces []AccountNonce `json:"account_nonces,omitempty"`
+
+	// StateFingerprint is the canonical post-apply account-state fingerprint
+	// (consensushash.StateFingerprintV1, hex) computed after this block is applied
+	// — audit P2.5. The producer stamps it; every receiver recomputes after apply
+	// and HALTS on mismatch instead of serving a divergent ledger (the reproduced
+	// live=1000 vs synced=2000 class). ADVISORY, NOT CONSENSUS-HASHED (same as
+	// AccountNonces — canonical BlockHash is tx-contents only), so it is
+	// wire-compatible with older builds and unstamped blocks skip the check. Full
+	// cryptographic binding (committee-signed) arrives with the CON-02 v3 block
+	// hash; until then its trust rests on the single honest sequencer.
+	StateFingerprint string `json:"state_fingerprint,omitempty"`
+
+	// CommitteeCertificate is the JSON-encoded committee vote set
+	// ([]BLS_Signer.BLSresponse) that certified this block — the 2f+1 block-bound
+	// signatures verified on the live receive path (messaging.VerifyCertificate).
+	// It is stamped just before the block is persisted (gossip receive +
+	// ProcessBlockLocally) so the certificate survives past the ephemeral gossip
+	// envelope (BlockMessage.Data["bls_results"]) and can be re-verified during
+	// sync (ThebeSync / FastSync v4). Carried as a raw JSON string to avoid a
+	// config→AVC import cycle.
+	//
+	// ADVISORY, NOT CONSENSUS-HASHED (same as AccountNonces / StateFingerprint):
+	// the canonical BlockHash is tx-contents only, so this field does not change
+	// BlockHash and older builds ignore it on unmarshal — mixed fleets stay
+	// wire-compatible. Blocks produced before this field existed carry it empty
+	// (the legacy prefix); their sync trust rests on the genesis anchor + the
+	// state-root hash chain + the first certified block (see docs/THEBESYNC-DESIGN.md).
+	CommitteeCertificate string `json:"committee_certificate,omitempty"`
+	// AVC consensus metadata (M1/M2a — architecture doc §8). These six fields
+	// put the committee-selection inputs in the block, so a re-syncing node can
+	// reconstruct which committee a block claims instead of trusting the proposer.
+	//
+	// NOT YET HASH-COVERED. Like AccountNonces above, the block hash covers
+	// transaction contents only, so a relay can still rewrite these post-commit.
+	// Making them tamper-evident is M2b
+	// (Security.RecomputeBlockHashWithConsensusFields, written but not wired).
+	// Until then, do not treat these as certificate-verified data.
+	//
+	// Propagation is JSON and every field is omitempty, so old nodes ignore
+	// unknown keys and new nodes read absent keys as zero.
+
+	// Slot is the epoch clock (§7.1). Advances on a commit OR a timeout, so it
+	// skips where BlockNumber never does. Selection epoch = Slot / N.
+	Slot uint64 `json:"slot,omitempty"`
+
+	// Period is the retry counter at this height (§7.1c). Feeds the committee
+	// seed, so a retry re-draws. Resets to 0 on the next height.
+	Period uint64 `json:"period,omitempty"`
+
+	// RandaoReveals are the entropy-committee reveals collected in this block
+	// (§4.4). Empty on blocks that carry none.
+	RandaoReveals []Reveal `json:"randao_reveals,omitempty"`
+
+	// VdfProof is the epoch VDF proof. Present only on the epoch-boundary
+	// block (§7.2), empty on every other block.
+	VdfProof []byte `json:"vdf_proof,omitempty"`
+
+	// SeedEpoch is the frozen RANDAO snapshot lock — which snapshot produced
+	// this epoch's entropy (§3.2). Changes only at epoch boundaries.
+	SeedEpoch uint64 `json:"seed_epoch,omitempty"`
+
+	// VdfParamsDigest is the fleet-checked VDF parameter identity
+	// (group name ‖ modulus digest ‖ difficulty T — messaging.VDFIdentityDigest),
+	// audit D-39/D-54. Stamped on the epoch-boundary block alongside VdfProof;
+	// empty on every other block and on Stage-1 nodes. Advisory today: compared
+	// on proof adoption to name a fleet parameter disagreement (it is NOT yet
+	// folded into ConsensusHash — see docs/audit/D-39-D-54-FIX.md).
+	VdfParamsDigest string `json:"vdf_params_digest,omitempty"`
+
+	// VotingSnapshotEpoch is the declared voting pool that T_vote and T_agg are
+	// checked against (§3.2). Checkpoint-locked; verifiers check monotonicity
+	// only, since "is this the newest" is unenforceable (finding A6).
+	VotingSnapshotEpoch uint64 `json:"voting_snapshot_epoch,omitempty"`
+
+	// PrevAggCert is the buddy-committee certificate for the PREVIOUS block —
+	// the signatures that committed it. Added 2026-08-20 to unblock B1
+	// (Architecture §4.2a's fallback formula, §10 decision 10).
+	//
+	// WHY IT IS THE PREVIOUS BLOCK'S, NOT THIS ONE'S. §4.2a describes folding
+	// "every committed block's BLS aggregate signature", implying each block
+	// carries its own. That is structurally impossible: the buddies sign this
+	// block's HASH, so this block's certificate cannot be an input to its own
+	// hash without a circular dependency. Verified in code — the fields are
+	// attached in Block/consensus_fields.go's attachAVCConsensusFields, which
+	// its own call site documents as running "before consensus.Start", and the
+	// votes are taken over blk.BlockHash (Sequencer/Consensus.go). So the
+	// certificate necessarily lags by exactly one block. The fold window
+	// compensates by reading it one slot later.
+	//
+	// Present ONLY on blocks whose slot falls inside a fold window
+	// [E*N+K+1, E*N+K+B+1) — the +1 is that same one-block lag. Empty on every
+	// other block, which is ~90% of them at N=50, B=5, so the storage cost is
+	// a tenth of what carrying it on every block would be.
+	PrevAggCert []CertSigner `json:"prev_agg_cert,omitempty"`
+
+	// CommitteeSnapshotHash anchors the entropy-committee eligible-set
+	// snapshot on-chain: a 32-byte digest (avc/committee.HashSnapshot) of the
+	// frozen validator list used to seed this block's slot's entropy
+	// committee draw. Added 2026-08-24, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// items 1/6/8 — lets a node that has synced this block verify a snapshot
+	// body served by a seed node (or recovered from its own local cache)
+	// against a value that traveled with the chain itself, instead of having
+	// to trust whoever served the body.
+	//
+	// Gated by JMDN_COMMITTEE_SNAPSHOT_ANCHOR (default off, same coordinated
+	// rollout pattern as M2b and JMDN_AVC_AGG_CERT) and by
+	// messaging.frozenSnapshotHashFor actually having a cached value for this
+	// block's slot's epoch — empty on every block until both are true.
+	// Deliberately does NOT carry the snapshot body itself (large, grows with
+	// the pool) — only the hash. The body is served off-chain; see the TODO.
+	CommitteeSnapshotHash []byte `json:"committee_snapshot_hash,omitempty"`
+
+	// CommitteeSnapshotAnchor is the seed-signed committee snapshot (JSON of
+	// seednode/committee.CommitteeSnapshot) carried ONLY on committee-anchor
+	// blocks (messaging/committee_anchor.go, W1). It defines the eligible pool
+	// for the NEXT selection period. Not itself part of the ConsensusHash
+	// preimage: CommitteeSnapshotHash (which is) is its digest, and receivers
+	// reject a body that does not hash to it or does not carry a valid seed
+	// authority signature. Note that the anchor is only bound when
+	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR is also enabled (enabling it changes the
+	// ConsensusHash preimage, requiring a coordinated fleet restart). Empty on
+	// every other block and whenever consensus.committee_anchor_activation_height
+	// is 0.
+	CommitteeSnapshotAnchor string `json:"committee_snapshot_anchor,omitempty"`
+
+	// ConsensusHash is the M2b consensus-fields digest
+	// (Security.RecomputeBlockHashWithConsensusFields): a hash over the six AVC
+	// consensus fields (Slot/Period/RandaoReveals/VdfProof/SeedEpoch/
+	// VotingSnapshotEpoch) plus PrevAggCert, CommitteeSnapshotHash, FeeRecipients,
+	// and the transaction contents. It is a SEPARATE field and NEVER replaces
+	// BlockHash — BlockHash stays the orchestrator's transactions-only identity.
+	//
+	// Unlike AccountNonces/StateFingerprint (purely advisory), ConsensusHash is
+	// consensus-COVERED: the committee's vote signs over it unconditionally (see
+	// BLS_Signer.CanonicalVoteMessageV3), so Period/FeeRecipients/PrevAggCert
+	// cannot be rewritten post-commit without invalidating the certificate.
+	// Empty (zero hash) ONLY on the genesis block (DB_OPs/genesis_block.go,
+	// written directly, never through attachAVCConsensusFields) — every other
+	// block is rejected on receive if it is missing (D-28,
+	// messaging.checkConsensusBinding), so a vote requiring it is not a
+	// rollout gap. Set by Block/consensus_fields.go's attachAVCConsensusFields;
+	// recomputed and checked on receive by messaging.checkConsensusBinding.
+	ConsensusHash common.Hash `json:"consensus_hash,omitempty"`
+}
+
+// ConsensusHashHex returns the ConsensusHash as a 0x-hex string, or "" when it
+// is the zero hash (block built without the consensus binding). Vote sign/verify
+// call sites use this so a zero ConsensusHash selects the v3 vote domain (block
+// hash only) instead of binding an all-zero consensus hash.
+func (b *ZKBlock) ConsensusHashHex() string {
+	if b == nil || b.ConsensusHash == (common.Hash{}) {
+		return ""
+	}
+	return b.ConsensusHash.Hex()
+}
+
+// CertSigner is one buddy's contribution to a block's commit certificate: who
+// signed, with which committee key, and the signature itself.
+//
+// The components are carried rather than a pre-aggregated blob deliberately.
+// An aggregate alone is opaque — a sequencer could put any 64 bytes there and a
+// verifier could not tell. Carrying the parts lets every node re-verify each
+// signature against the previous block's canonical vote message and then
+// DERIVE the aggregate itself, so the sequencer's only remaining freedom is
+// which qualifying subset to include. That residual is exactly the
+// already-documented subset menu in §4.2a (up to 1,093 values at A=13), not a
+// new unbounded freedom.
+type CertSigner struct {
+	// PeerID of the signing buddy.
+	PeerID string `json:"peer_id"`
+
+	// PubKey is the hex-encoded committee BLS public key, same encoding
+	// BLS_Signer.BLSresponse uses.
+	PubKey string `json:"pub_key"`
+
+	// Signature is the hex-encoded BLS signature over the previous block's
+	// canonical v3 vote message with vote=+1.
+	Signature string `json:"signature"`
+}
+
+// Reveal is one entropy-committee member's RANDAO reveal carried in a block.
+// Mirrors the (peerID -> secret) shape avc/randao uses internally, flattened to
+// a slice because block encoding needs a deterministic order and maps don't
+// have one. Each entry is verified against its own proposer's commitment, so
+// the delivery path doesn't matter and duplicates are harmless (§4.4).
+type Reveal struct {
+	// ProposerID is the peer ID of the revealing member.
+	ProposerID string `json:"proposer_id"`
+
+	// Secret is the raw 32-byte value; its hash must match this member's
+	// earlier commitment (§4.3).
+	Secret []byte `json:"secret"`
 }
 
 // AccountNonce binds one account address to its canonical ART identity nonce

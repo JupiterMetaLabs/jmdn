@@ -3,7 +3,6 @@ package selection
 import (
 	"crypto/ed25519"
 	"crypto/sha512"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -39,32 +38,4 @@ func GenerateNewMnemonic() (string, error) {
 	}
 
 	return bip39.NewMnemonic(entropy)
-}
-
-// LoadKeysFromConfig loads keys based on environment configuration
-func LoadKeysFromConfig(privateKeyHex, mnemonic string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
-	// Priority 1: Use PRIVATE_KEY if provided
-	if privateKeyHex != "" {
-		privateKeyBytes, err := hex.DecodeString(strings.TrimSpace(privateKeyHex))
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid PRIVATE_KEY hex: %w", err)
-		}
-
-		if len(privateKeyBytes) != ed25519.PrivateKeySize {
-			return nil, nil, fmt.Errorf("invalid PRIVATE_KEY size: expected %d, got %d",
-				ed25519.PrivateKeySize, len(privateKeyBytes))
-		}
-
-		privateKey := ed25519.PrivateKey(privateKeyBytes)
-		publicKey := privateKey.Public().(ed25519.PublicKey)
-
-		return publicKey, privateKey, nil
-	}
-
-	// Priority 2: Use MNEMONIC if provided
-	if mnemonic != "" {
-		return GenerateKeysFromMnemonic(mnemonic)
-	}
-
-	return nil, nil, fmt.Errorf("no PRIVATE_KEY or MNEMONIC provided")
 }

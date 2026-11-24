@@ -89,3 +89,66 @@ func TestConsensusVoteReady_GateWiring(t *testing.T) {
 		t.Fatal("enabled: a gate returning true must permit voting")
 	}
 }
+
+// TestConsensusVoteReady_RefusesWhenSlotStoreNotRecovered is the vote-side
+// proof for docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8: a node whose
+// slot/epoch clock has not been recovered from committed history — the exact
+// state a freshly restarted node is in before main.go's
+// messaging.RecoverSlotStoreAtStartup call succeeds — must not cast a
+// consensus vote, independent of whatever the block-height sync gate above
+// says. Simulates "restarted, still at slot 0" via slotStoreReadyFn
+// reporting false, since this package cannot import messaging directly (see
+// SetSlotStoreReadyFn's doc for the import-cycle reason) — main.go wires the
+// real function to messaging.SlotStoreReady in production.
+func TestConsensusVoteReady_RefusesWhenSlotStoreNotRecovered(t *testing.T) {
+	origFn := slotStoreReadyFn
+	origEnforceSlot := enforceSlotRecoveryGate
+	origEnforceSync := enforceConsensusSyncGate
+	origSyncGate := consensusSyncGate
+	t.Cleanup(func() {
+		slotStoreReadyFn = origFn
+		enforceSlotRecoveryGate = origEnforceSlot
+		enforceConsensusSyncGate = origEnforceSync
+		consensusSyncGate = origSyncGate
+	})
+
+	enforceSlotRecoveryGate = true
+	// Make every OTHER gate maximally permissive, so the only thing that
+	// could possibly block the vote is the slot-recovery check itself — a
+	// test that left enforceConsensusSyncGate on could pass for the wrong
+	// reason.
+	enforceConsensusSyncGate = false
+	SetConsensusSyncGate(nil)
+
+	SetSlotStoreReadyFn(func() bool { return true })
+	if !consensusVoteReady() {
+		t.Fatal("sanity check failed: expected consensusVoteReady() to permit once SlotStoreReady() reports true, before testing the false case")
+	}
+
+	SetSlotStoreReadyFn(func() bool { return false })
+	if consensusVoteReady() {
+		t.Fatal("a restarted node whose SlotStore has not been recovered (SlotStoreReady()==false) must NOT be permitted to vote, even with every other gate wide open")
+	}
+
+	// Recovery completes — voting must be permitted again.
+	SetSlotStoreReadyFn(func() bool { return true })
+	if !consensusVoteReady() {
+		t.Fatal("once SlotStoreReady() reports true, voting must be permitted again")
+	}
+
+	// The escape hatch: an operator who explicitly disables the gate (e.g. a
+	// harness that never wires recovery at all) must not be blocked by it.
+	enforceSlotRecoveryGate = false
+	SetSlotStoreReadyFn(func() bool { return false })
+	if !consensusVoteReady() {
+		t.Fatal("enforceSlotRecoveryGate=false must bypass the slot-recovery check entirely")
+	}
+
+	// And the default-nil case (nothing wired at all, e.g. an unrelated
+	// existing test in this package) must not newly abstain.
+	enforceSlotRecoveryGate = true
+	slotStoreReadyFn = nil
+	if !consensusVoteReady() {
+		t.Fatal("an unwired slotStoreReadyFn (nil) must permit voting, matching consensusSyncGate's own nil convention")
+	}
+}

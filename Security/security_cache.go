@@ -54,7 +54,7 @@ func envOn(key string, def bool) bool {
 //     reject, because a funded signed transaction from an unknown account means
 //     this node's account state is out of sync, which must not be papered over.
 //   - Account creation already happens at APPLY time, not validation:
-//     DB_OPs/Nodeinfo/immudb_account_manager.go UpdateAccountBalance falls
+//     DB_OPs/Nodeinfo/thebe_account_manager.go UpdateAccountBalance falls
 //     through to CreateAccount on "key not found". So the account still comes
 //     into existence exactly once, as a side effect of executing the transfer.
 //   - Nothing consensus-critical depends on the account record. The state root
@@ -188,7 +188,7 @@ func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, trace
 		return false, errors.New("from address is nil")
 	}
 
-	// Sender MUST exist
+	// Check Sender — must always exist.
 	sender := s.GetAccount(*tx.From)
 	if sender == nil {
 		return false, fmt.Errorf("sender account %s not found in cache", tx.From.Hex())

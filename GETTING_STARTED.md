@@ -26,11 +26,11 @@ Before you begin, ensure your machine meets the following requirements.
 | Tool | Version | Notes |
 |---|---|---|
 | **Git** | Any | Required to clone the repo |
-| **Go** | 1.25+ | Installed automatically by `setup_dependencies.sh` |
+| **Go** | Version in `go.mod` | Installed by `setup_dependencies.sh` |
 | **GCC** | Any | Required for CGO build (`gcc` package) |
-| **ImmuDB** | Latest | Installed automatically |
+| **PostgreSQL** | 15+ | Installed by `setup_dependencies.sh`; holds ThebeDB's SQL projection |
 | **Yggdrasil** | Latest | Installed automatically |
-| **Redis** | 5+ | Installed automatically; optional — powers the account sync queue, node falls back to direct ImmuDB writes if unavailable |
+| **Redis** | 5+ | Installed by `setup_dependencies.sh`; account sync queue |
 
 ---
 
@@ -66,7 +66,7 @@ git checkout v2.0.0  # replace with target version
 
 ## Step 3 — Install Dependencies
 
-Run the unified setup script. This installs Go, ImmuDB, Yggdrasil, and Redis.
+Run the unified setup script. This installs Go, Yggdrasil, PostgreSQL and Redis. It asks whether PostgreSQL and Redis should run as native services or in Docker.
 
 ```bash
 sudo ./Scripts/setup_dependencies.sh
@@ -77,13 +77,17 @@ sudo ./Scripts/setup_dependencies.sh
 To install dependencies individually:
 
 ```bash
-sudo ./Scripts/setup_dependencies.sh --go         # Go runtime only
-sudo ./Scripts/setup_dependencies.sh --immudb     # ImmuDB only
-sudo ./Scripts/setup_dependencies.sh --yggdrasil  # Yggdrasil only
-sudo ./Scripts/setup_dependencies.sh --redis      # Redis only
+sudo ./Scripts/setup_dependencies.sh --go
+sudo ./Scripts/setup_dependencies.sh --yggdrasil
+sudo ./Scripts/setup_dependencies.sh --redis
+sudo ./Scripts/setup_dependencies.sh --solidity
 ```
 
-> **Redis password:** the script generates a random password on first run and saves it to `/etc/jmdn/redis.env` (root-only). If you start the node via `start_jmdn_wrapper.sh` (the standard systemd/launchd/rc.d path, Step 6), this is automatic — the wrapper sources `redis.env` and exports `JMDN_DATABASE_REDIS_PASSWORD` for you, no manual step needed. Only set `database.redis.password` in `/etc/jmdn/jmdn.yaml` by hand if you're running the binary directly instead of via the wrapper — the config generator in Step 5 does not do this for you yet. Re-running the script reuses the same password rather than rotating it.
+Choose how PostgreSQL and Redis are installed with `--storage-local` (native
+services), `--storage-docker` (containers via compose) or `--storage-none`
+(you provide them).
+
+> **Redis password:** the installer writes it straight into `database.redis.password` in `/etc/jmdn/jmdn.yaml`, and the same value into `REDIS_PASSWORD` in the compose `.env` that the Redis container reads. There is no `redis.env` and nothing to source: the node picks the password up from its own config whether you start it via `start_jmdn_wrapper.sh` or run the binary directly. Re-running the installer reuses the existing value — from `jmdn.yaml` first, then the compose `.env` — and only generates a new one when neither holds a password, so it never rotates silently. `jmdn.yaml` must already exist (copy `jmdn_default.yaml` to `/etc/jmdn/jmdn.yaml` first) or the installer stops and tells you to.
 
 ---
 
@@ -108,13 +112,16 @@ To verify the build:
 Copy the default template and manually inject your Node Alias and secrets:
 
 ```bash
+sudo mkdir -p /etc/jmdn
 sudo cp jmdn_default.yaml /etc/jmdn/jmdn.yaml
 sudo nano /etc/jmdn/jmdn.yaml
 ```
 
 *(Note: The legacy `setup_config.sh` tool is deprecated as it lacks automated secrets injection).*
 
-For all available options, see `config/config.go` or run:
+The node reads `jmdn.yaml` from `/etc/jmdn/` first, then the working directory. Set the PostgreSQL connection in `thebe.sql_dsn` (or the `THEBE_SQL_DSN` environment variable). Any other key can be overridden with a `JMDN_`-prefixed environment variable (for example `JMDN_PORTS_API=8090`).
+
+For all available options, see `jmdn_default.yaml` and `config/settings/`, or run:
 
 ```bash
 ./jmdn --help
@@ -124,10 +131,12 @@ For all available options, see `config/config.go` or run:
 
 ## Step 6 — Install and Start Services
 
-Install the binary to `/usr/local/bin/` and register systemd services (`jmdn` and `immudb`):
+Install the binary and register the `jmdn` service. `--mode local` uses native
+PostgreSQL and Redis services; `--mode docker` runs them with Docker Compose.
+Without a flag the script asks.
 
 ```bash
-sudo ./Scripts/install_services.sh
+sudo ./Scripts/install_services.sh --mode local
 ```
 
 > Before opening firewall rules, review **[PORTS.md](./PORTS.md)** for the full security posture of each port and recommended cloud firewall rules.
@@ -140,45 +149,100 @@ means. For anything other than a throwaway dev node, load the pre-built
 snapshot instead, same as the Docker path does with `jmdn-bootstrap`:
 
 ```bash
-sudo ./Scripts/bootstrap_sync.sh
+sudo SNAPSHOT_SHA256=<published archive sha256> ./Scripts/bootstrap_sync.sh
 ```
 
-Requires `curl`, `wget`, `awk`, `md5sum`, `tar`, `python3` on `PATH` — install
+`SNAPSHOT_SHA256` is the SHA-256 of the full snapshot archive, published by
+JupiterMeta separately from the bucket. The script refuses to install a
+snapshot that does not match it, and installs only the `storage/` and `DB/`
+chain-data directories from the archive.
+
+Requires `curl`, `wget`, `awk`, `md5sum`, `sha256sum`, `tar`, `python3` on `PATH` — install
 any that are missing (`sudo apt install -y wget python3`, most are already
 present on a stock Ubuntu/Debian image). Downloads and verifies the chain
-snapshot into `/opt/jmdn/data`, same location `install_services.sh` just
-created. Takes 10–30 minutes depending on bandwidth; safe to re-run — it
-skips immediately if `/opt/jmdn/data/.bootstrapped` already exists.
+snapshot into `/opt/jmdn`, the data directory `install_services.sh` uses. Takes 10–30 minutes depending on bandwidth; safe to re-run — it
+skips immediately if `/opt/jmdn/.bootstrapped` already exists.
 
-> **Ownership note:** the script chowns `/opt/jmdn/data` to `IMMUDB_UID`
-> (default `3322`, matching the Docker image's `jmdn` user) so it can be
-> re-run unmodified against Docker-style snapshots. On bare metal with the
-> default `SERVICE_USER=root` (see `install_services.sh`), immudb runs as
-> root and ignores file ownership, so this is a no-op in practice. If you set
-> `SERVICE_USER` to a non-root user, pass `IMMUDB_UID=<that user's uid>` so
-> immudb can actually read its own data:
+> **Ownership note:** the script chowns the extracted `storage/` and `DB/`
+> directories to `JMDN_UID` (default `3322`, the Docker image's `jmdn` user).
+> On bare metal with the default `SERVICE_USER=root` this has no effect. If
+> the node runs as a non-root user, pass that user's uid:
 > ```bash
-> sudo IMMUDB_UID=$(id -u jmdn) ./Scripts/bootstrap_sync.sh
+> sudo SNAPSHOT_SHA256=<sha256> JMDN_UID=$(id -u jmdn) ./Scripts/bootstrap_sync.sh
 > ```
 
 To force a fresh snapshot later (e.g. after a long time offline):
 
 ```bash
-sudo rm /opt/jmdn/data/.bootstrapped
-sudo ./Scripts/bootstrap_sync.sh
+sudo rm /opt/jmdn/.bootstrapped
+sudo SNAPSHOT_SHA256=<sha256> ./Scripts/bootstrap_sync.sh
 ```
+
+A snapshot older than the node's last checkpoint will not boot:
+`checkpoint.floor_file` (default `/opt/jmdn/checkpoint-floor.json`) remembers
+the highest checkpoint and the boot check treats an older store as a rollback.
+`bootstrap_sync.sh` deletes the floor when it installs a snapshot (set
+`CHECKPOINT_FLOOR_FILE` if you moved it). After any other deliberate restore,
+delete that file (and lower `checkpoint.min_seq` if you set it) before starting
+the node.
+
+### Chain-head checkpoints
+
+Every node signs a chain-head checkpoint of its own canonical log once per
+committee epoch with its own BLS key. Each boot checks the log written since
+the floor checkpoint against the latest one, so boot time does not grow with
+the log. Nodes that keep the whole log then re-check it from the start in the
+background (`checkpoint.background_full_verify`, default on) and log an error
+on any mismatch. Nothing needs to be configured. Two optional hardening steps:
+
+- `checkpoint.signer_bls_pub` pins the key in `/etc/jmdn/jmdn.yaml` (the boot
+  log prints the value in use as `signer_bls_pub`). With it set, replacing the
+  key file on the data volume does not let a forged checkpoint through.
+- `checkpoint.min_seq`: after each restart the log prints `checkpoint_seq`.
+  Copying it into the sequencer's config makes the floor survive a
+  whole-volume restore, which rolls the floor file back with the store. Set it
+  only on a node that signs checkpoints; on any other node it stops the boot.
+
+Every node checks only its own checkpoints. A node restored from another node's
+snapshot (with no floor file) logs a warning and skips the check until it signs
+a checkpoint of its own.
+
+### Light nodes
+
+`storage.profile: light` keeps about `storage.light_keep_blocks` blocks
+(default 10000, minimum 1000) of canonical log and deletes older entries every
+`storage.prune_interval`. It cuts only below a checkpoint the node signed and
+verified, so the kept log still verifies at boot; kept entries are never
+rewritten. It is refused on the sequencer and needs `checkpoint.enabled` and
+`checkpoint.floor_file`. It does not prune the SQL data (blocks,
+transactions, proofs, accounts). Full nodes and the sequencer keep the whole
+log.
+
+#### Rotating the signing key
+
+Existing checkpoints are signed with the old key, so the first boot with the new
+key fails the check. To rotate:
+
+1. Stop the node, install the new key, and set `checkpoint.boot_fail_closed:
+   false`. If `checkpoint.signer_bls_pub` is set, change it to the new public key.
+2. Start the node. The boot logs the verification failure and continues.
+3. Wait for `[checkpoint] committee-signed chain-head checkpoint stored` in the
+   log: a checkpoint signed with the new key now exists.
+4. Set `checkpoint.boot_fail_closed: true` again. The next boot verifies the new
+   checkpoint.
+
+Do not pin `signer_bls_pub` to the old key instead: the node boots, but every new
+checkpoint is refused.
 
 Start the services:
 
 ```bash
-sudo systemctl start immudb
 sudo systemctl start jmdn
 ```
 
 Enable them to start automatically on reboot:
 
 ```bash
-sudo systemctl enable immudb
 sudo systemctl enable jmdn
 ```
 
@@ -203,14 +267,11 @@ A healthy node will log peer connections and block synchronisation activity with
 To run the node directly without systemd — useful for local development or debugging:
 
 ```bash
-./jmdn -config /etc/jmdn/config.env
+./jmdn
 ```
 
-> **Important:** ImmuDB must be running before starting `jmdn`.
-> Either start it via systemd (`sudo systemctl start immudb`) or manually:
-> ```bash
-> immudb --dir /opt/jmdn/data
-> ```
+> **Important:** PostgreSQL must be reachable at `thebe.sql_dsn` before
+> starting `jmdn`. ThebeDB's KV store is embedded and needs no separate service.
 
 ---
 
@@ -234,31 +295,39 @@ This script builds a new binary, performs an atomic swap, restarts the service, 
 sudo journalctl -u jmdn -n 100 --no-pager
 ```
 
-Check for: missing config file, ImmuDB not running, or port conflicts.
+Check for: missing config file, PostgreSQL not reachable, or port conflicts.
 
-### ImmuDB connection errors
+### PostgreSQL connection errors
 
-Ensure ImmuDB is running and accessible:
-
-```bash
-sudo systemctl status immudb
-```
-
-If you see `server state is older than the client one`, ImmuDB's state is ahead of the local client cache. This typically resolves after a clean restart:
+Check that PostgreSQL is running and that `thebe.sql_dsn` matches it:
 
 ```bash
-sudo systemctl restart immudb && sudo systemctl restart jmdn
+sudo systemctl status postgresql
+psql "<your thebe.sql_dsn>" -c 'select 1'
 ```
+
+The default DSN uses `sslmode=require`. For a local database without TLS,
+set `sslmode=disable` in the DSN.
+
+### Postgres disk keeps growing (replication slots)
+
+ThebeDB CDC (on by default) reads Postgres through the replication slot `thebe_eventlog`, and Postgres keeps the WAL the slot has not consumed. `Scripts/setup_postgres.sh` caps that at 2 GB (`max_slot_wal_keep_size`); past the cap Postgres invalidates the slot and CDC stops until it is recovered. jmdn logs a warning at boot when the CDC slot is inactive, lagging or invalidated, for any other slot nothing reads, and for an unlimited cap. Check as the Postgres superuser:
+
+```bash
+sudo -u postgres psql -d jmdn -c "select slot_name, active, wal_status from pg_replication_slots;" -c "show max_slot_wal_keep_size;"
+```
+
+Drop only a slot nothing uses (`select pg_drop_replication_slot('<name>');`), never `thebe_eventlog` on a node running CDC.
 
 ### Minimal logs on Raspberry Pi
 
-The default configuration disables console logging (`LOG_CONSOLE=false`) on low-resource devices. Logs are available via journald:
+If console logging is turned off (`logging.console.enabled: false` in `jmdn.yaml`), logs are still available via journald:
 
 ```bash
 sudo journalctl -u jmdn -f
 ```
 
-To enable console logs, set `LOG_CONSOLE=true` in `/etc/jmdn/config.env` and restart the service.
+To enable console logs, set `logging.console.enabled: true` in `/etc/jmdn/jmdn.yaml` (or `JMDN_LOGGING_CONSOLE_ENABLED=true`) and restart the service.
 
 ### Go not found after installation
 

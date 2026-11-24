@@ -1,0 +1,233 @@
+package thebesync
+
+// Receiver-side apply for a single synced block. This is the sync-path analogue
+// of messaging.ProcessBlockLocally: it does its OWN contiguous linkage (it must
+// NOT use the gossip checkLinkage, which fail-closes a fresh node at tip 0) and
+// then applies through the shared, hardened apply path. Verification follows the
+// hybrid trust model in docs/THEBESYNC-DESIGN.md. The P2.5 state-fingerprint gate
+// is added in P2.
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/Security"
+	"gossipnode/config"
+	"gossipnode/messaging"
+	"gossipnode/messaging/BlockProcessing"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+
+// syncedParentFn reads an already-applied block by number. A package variable
+// so tests can supply the parent without a database.
+var syncedParentFn = func(number uint64) (*config.ZKBlock, error) {
+	return DB_OPs.GetZKBlockByNumber(nil, number)
+}
+
+// applyBlock verifies and applies one synced block, then stores it and advances
+// the tip. prevNumber/prevHash identify the last applied block (the parent this
+// block must link to). requireCert enforces the "once certified, always
+// certified" monotonic rule: once a certified block has been applied, every later
+// block MUST carry a valid certificate. hasCert reports whether THIS block
+// carried a verified certificate so the caller can latch requireCert.
+func applyBlock(ctx context.Context, block *config.ZKBlock, prevNumber uint64, prevHash common.Hash, requireCert bool) (hasCert bool, err error) {
+	if block == nil {
+		return false, fmt.Errorf("thebesync apply: nil block")
+	}
+	if len(block.Transactions) > 0 && (block.CoinbaseAddr == nil || block.ZKVMAddr == nil) {
+		return false, fmt.Errorf("thebesync apply: block %d has transactions but no coinbase or zkVM address", block.BlockNumber)
+	}
+
+	// 1. Body binding — the canonical BlockHash (and TxnsRoot, when present) must
+	//    match the carried transactions. Same recompute the live receive path uses.
+	if want := Security.ExpectedBlockHash(block, messaging.RecomputeBlockHashFromTxs(block.Transactions)); block.BlockHash != want {
+		return false, fmt.Errorf("thebesync apply: block %d body mismatch: hash %s != recomputed %s",
+			block.BlockNumber, block.BlockHash.Hex(), want.Hex())
+	}
+	if strings.TrimSpace(block.TxnsRoot) != "" {
+		want := messaging.RecomputeTxnsRoot(block.Transactions)
+		if !strings.EqualFold(strings.TrimPrefix(block.TxnsRoot, "0x"), strings.TrimPrefix(want, "0x")) {
+			return false, fmt.Errorf("thebesync apply: block %d txnsroot mismatch (want %s got %s)",
+				block.BlockNumber, want, block.TxnsRoot)
+		}
+	}
+
+	// 2. Contiguous linkage against the last applied block.
+	if block.BlockNumber != prevNumber+1 {
+		return false, fmt.Errorf("thebesync apply: non-contiguous block %d (expected %d)", block.BlockNumber, prevNumber+1)
+	}
+	if block.PrevHash != prevHash {
+		return false, fmt.Errorf("thebesync apply: block %d prevHash %s != last applied %s",
+			block.BlockNumber, block.PrevHash.Hex(), prevHash.Hex())
+	}
+
+	// 2a. Contents: every transaction's signature recovers its sender for this
+	//     chain and its tx hash equals the hash of its contents, so BlockHash
+	//     (and the certificate signed over it) binds what the transactions
+	//     actually do — the same content gate the live receive path applies.
+	if cerr := messaging.ValidateSyncedBlockContents(ctx, block); cerr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d contents: %w", block.BlockNumber, cerr)
+	}
+
+	// 2b. Committee anchor (W1): same rule as the live receive path - an anchor
+	//     block must carry a seed-signed snapshot bound by CommitteeSnapshotHash.
+	if aerr := messaging.ValidateCommitteeAnchor(block); aerr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, aerr)
+	}
+
+	// 2c. Slot = block number (pre-slot history: Slot 0 under a Slot-0 parent).
+	if serr := messaging.CheckSyncedSlot(block, func() (uint64, error) {
+		parent, err := syncedParentFn(prevNumber)
+		if err != nil {
+			return 0, err
+		}
+		return parent.Slot, nil
+	}); serr != nil {
+		return false, fmt.Errorf("thebesync apply: %w", serr)
+	}
+
+	// 2d. Period binding: the certificate below is checked against the
+	//     committee of the block's own Period, so a non-zero Period must be
+	//     bound by the block's ConsensusHash first.
+	if perr := messaging.CheckSyncedPeriodBinding(block); perr != nil {
+		return false, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, perr)
+	}
+
+	// 2e. Header binding: a timestamp not before the parent's
+	//     (consensus.header_binding_from_height). The configured addresses and
+	//     the clock drift were checked by the committee before it certified
+	//     the block (Security.CheckHeaderPolicy), and are not re-checked here.
+	if Security.HeaderBound(block.BlockNumber) {
+		parent, perr := syncedParentFn(prevNumber)
+		if perr != nil {
+			return false, fmt.Errorf("thebesync apply: block %d: read parent %d: %w", block.BlockNumber, prevNumber, perr)
+		}
+		if herr := Security.CheckHeaderOrder(block, parent.Timestamp); herr != nil {
+			return false, fmt.Errorf("thebesync apply: %w", herr)
+		}
+	}
+
+	// 3. Certificate (hybrid trust). A persisted committee certificate is verified
+	//    through the single shared verifier (2f+1, fail-closed). A cert-less block
+	//    is accepted only while still in the legacy prefix (requireCert=false); once
+	//    a cert has been seen, a cert-less block is rejected (no downgrade).
+	if cert := strings.TrimSpace(block.CommitteeCertificate); cert != "" {
+		// Full vote list or compact (aggregate + bitmap) form.
+		res, verr := messaging.VerifyStoredBlockCertificate(block)
+		if verr != nil {
+			return false, fmt.Errorf("thebesync apply: block %d certificate verify failed (fail closed): %w", block.BlockNumber, verr)
+		}
+		if !res.Reached {
+			return false, fmt.Errorf("thebesync apply: block %d certificate below quorum: %d/%d over committee %d",
+				block.BlockNumber, res.YesVotes, res.Threshold, res.CommitteeSize)
+		}
+		hasCert = true
+	} else if requireCert || certificateRequired(block.BlockNumber, prevNumber) {
+		return false, fmt.Errorf("thebesync apply: block %d missing required certificate (post-activation block cannot be legacy)", block.BlockNumber)
+	}
+
+	// 3b. Post-certificate checks shared with the live path: FeeRecipients
+	//     recomputation (reward split) and the durable equivocation record.
+	if ferr := messaging.FinalizeSyncedBlockChecks(block); ferr != nil {
+		return hasCert, fmt.Errorf("thebesync apply: block %d: %w", block.BlockNumber, ferr)
+	}
+
+	// 4. Apply + store atomically (D-858), then verify/repair projection. Process
+	//    BEFORE store (F-train ordering). A HARD store failure now rolls back the
+	//    applied prefix (balances, tx_nonce, tx_count_sent, fee/coinbase/zkvm
+	//    credits, per-tx markers) via ProcessBlockTransactionsAndStore, so a block
+	//    that fails to persist leaves NO state change, mirroring the live path and
+	//    closing the block-858 store-after-apply gap on the sync path too. The
+	//    verify-and-repair pass below is a cheap defensive integrity check, not a
+	//    workaround for a silent-nil store (deliverable E).
+	if perr := BlockProcessing.ProcessBlockTransactionsAndStore(ctx, block, nil, func() error {
+		return DB_OPs.StoreZKBlock(nil, block)
+	}); perr != nil {
+		return hasCert, fmt.Errorf("thebesync apply: block %d process+store: %w", block.BlockNumber, perr)
+	}
+	// Committed: the per-round signing ledgers stop at this height.
+	messaging.NoteHeightCommitted(block.BlockNumber)
+	// Chain-head checkpoint of this node's own log. Best-effort.
+	messaging.NoteCommittedForCheckpoint(block)
+	// B (D-65): defensive check against a PARTIALLY-projected store.
+	//
+	// NOTE (corrected post-C6): StoreZKBlock does NOT return nil on a projection
+	// failure. ThebeDB.Append is a SYNCHRONOUS 2PC — KV is prepared, the SQL
+	// projection (Profile.Apply INSERT) is committed, then KV is committed; a
+	// projection failure returns the error BEFORE the KV commit, and the gateway
+	// enqueues the outbox AND returns that error (never nil). So each of the
+	// separate Appends inside StoreZKBlock (block, snapshot, zkproof, per-tx)
+	// surfaces its own projection fault, and the `perr` branch above already
+	// catches them. (The earlier comment here claimed the opposite; that was stale.)
+	//
+	// This block is therefore belt-and-suspenders: it re-reads the stored block and,
+	// only if the SQL tx count is short of the in-memory block, retries the store
+	// once and then fails loudly. It is cheap (one indexed read on the happy path)
+	// and localizes any residual partial-projection fault instead of letting a gap
+	// ride forward, so it is kept even though the 2PC store makes it rarely-taken.
+	if len(block.Transactions) > 0 {
+		stored, rerr := DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
+		if rerr != nil {
+			return hasCert, fmt.Errorf("thebesync apply: block %d verify projection: %w", block.BlockNumber, rerr)
+		}
+		if len(stored.Transactions) != len(block.Transactions) {
+			if serr := DB_OPs.StoreZKBlock(nil, block); serr != nil {
+				return hasCert, fmt.Errorf("thebesync apply: block %d reproject store: %w", block.BlockNumber, serr)
+			}
+			stored, rerr = DB_OPs.GetZKBlockByNumber(nil, block.BlockNumber)
+			if rerr != nil {
+				return hasCert, fmt.Errorf("thebesync apply: block %d re-verify projection: %w", block.BlockNumber, rerr)
+			}
+			if len(stored.Transactions) != len(block.Transactions) {
+				return hasCert, fmt.Errorf("thebesync apply: block %d STILL partially projected after inline retry — %d of %d transactions in SQL (projection fault; run JMDN_REPROJECT_RANGE)",
+					block.BlockNumber, len(stored.Transactions), len(block.Transactions))
+			}
+		}
+	}
+	// Tip marker is monotonic and self-healing (ReconcileBlockNumber), so a marker
+	// failure is non-fatal — the block is already durably stored. Matches
+	// ProcessBlockLocally's non-fatal treatment.
+	_, _, _ = DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber)
+
+	// Address/tx index (explorer totals, per-address lists). The live gossip
+	// and sequencer paths already do this; the sync path did not, so every
+	// synced block was left to a header-only boot catch-up and never indexed.
+	// Async and non-fatal, like the live paths.
+
+	// W1: a synced anchor block fixes the next selection period's pool here too.
+	// Non-fatal for the same reason as the marker: the block is stored, and the
+	// pool is re-derivable from it (messaging.anchoredRecord).
+	_ = messaging.RecordCommitteeAnchor(block)
+
+	// 5. Entropy side effects — the sync-path twin of ProcessBlockLocally's
+	//    ApplyBlockEntropyEffects.
+	//
+	//    WHY THIS IS HERE AT ALL. Until this call, the sync path performed NONE
+	//    of them: messaging.VerifyAndRecordPrevCert had exactly two callers,
+	//    both live (broadcast.go, blockPropagation.go), and thebesync had no
+	//    reference to PrevAggCert anywhere. A node that caught up through sync
+	//    therefore held no aggregate for any slot it synced, so every epoch
+	//    that fell back during the catch-up failed closed on that node while
+	//    its peers resolved normally — silently, with no log marking it. That
+	//    is the divergence this closes: the live path and the sync path now
+	//    feed the SAME aggregate store.
+	//
+	//    Runs AFTER a successful apply+store, so a block that failed to apply
+	//    never contributes entropy. Non-fatal by construction: every step
+	//    inside logs and returns rather than erroring, because a certificate
+	//    this node cannot fold must not abort a sync of a block whose OWN
+	//    committee certificate already verified above.
+	//
+	//    RecordSyncedBlockEntropy, not ApplyBlockEntropyEffects: it decides
+	//    epochs (so the synced node holds each mix and can verify boundary
+	//    proofs) but with the Stage-E hook suppressed — a bulk catch-up must
+	//    not launch one background VDF evaluation per crossed epoch boundary.
+	//    See its doc comment.
+	messaging.RecordSyncedBlockEntropy(block)
+
+	noteApplied(block.BlockNumber, hasCert)
+	return hasCert, nil
+}

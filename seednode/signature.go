@@ -13,7 +13,6 @@ import (
 	peerpb "gossipnode/seednode/proto"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // calculateVFromSignature calculates V component using a deterministic approach
@@ -37,6 +36,17 @@ func peerRecordCanonicalMessage(peerRecord *peerpb.SignedPeerRecord) string {
 	messageParts = append(messageParts, peerRecord.CurrentStatus.String())
 	if peerRecord.BlsPub != "" {
 		messageParts = append(messageParts, strings.ToLower(strings.TrimSpace(peerRecord.BlsPub)))
+	}
+	// reward_address (R1): appended AFTER bls_pub and ONLY when present, lowercased
+	// + trimmed, so peers that carry neither, or only bls_pub, keep signing the
+	// exact bytes they signed before. MUST match seedNodes vrsSigner.go
+	// ValidatePeerRecordSignature in lockstep. The two optional trailing fields
+	// are unambiguous because their alphabets are disjoint: a bls_pub is bare hex
+	// (PoP-verified), a reward_address always begins "0x" (not valid hex input),
+	// so no single string is acceptable as both — see the note in the seed's
+	// reward_address.go / TestRewardAddress_DisjointFromBLSPub.
+	if peerRecord.RewardAddress != "" {
+		messageParts = append(messageParts, strings.ToLower(strings.TrimSpace(peerRecord.RewardAddress)))
 	}
 	return strings.Join(messageParts, "|")
 }
@@ -96,6 +106,30 @@ var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") != "0"
 // off. MUST be called BEFORE SignPeerRecord so the identity signature covers
 // bls_pub. The bls_pub is the SAME key used to sign consensus votes (loaded from
 // config/bls.json), so committee membership and vote authentication agree.
+// rewardAddress is this node's configured operator wallet, set once at startup
+// from config.Consensus.RewardAddress via SetRewardAddress (the seednode package
+// does not import config/settings, so main.go pushes the value in). Empty = the
+// node claims no reward; AttachRewardAddress is then a no-op and registration
+// stays byte-identical to a node without the field.
+var rewardAddress string
+
+// SetRewardAddress records this node's reward wallet (lowercased+trimmed). Call
+// once at startup, before registering with the seed. Idempotent.
+func SetRewardAddress(addr string) {
+	rewardAddress = strings.ToLower(strings.TrimSpace(addr))
+}
+
+// AttachRewardAddress stamps the configured reward address onto a peer record
+// BEFORE signing, so the identity signature covers it (mirrors AttachCommitteeBLS
+// for bls_pub). No-op when unset. The seed enforces immutability: once bound, a
+// later registration carrying a DIFFERENT address is rejected.
+func AttachRewardAddress(peerRecord *peerpb.SignedPeerRecord) {
+	if rewardAddress == "" {
+		return
+	}
+	peerRecord.RewardAddress = rewardAddress
+}
+
 func AttachCommitteeBLS(peerRecord *peerpb.SignedPeerRecord) error {
 	if !EmitCommitteeBLS {
 		fmt.Printf("🔑 committee bls: emission DISABLED (JMDN_EMIT_COMMITTEE_BLS off) — registering WITHOUT bls_pub\n")
@@ -194,150 +228,6 @@ func SignAlias(alias *peerpb.PeerAlias, h host.Host) error {
 	return nil
 }
 
-// ValidateAliasSignature validates the signature of a peer alias
-func ValidateAliasSignature(alias *peerpb.PeerAlias, peerID peer.ID) error {
-	// Parse the peer ID to get the public key
-	pubKey, err := peerID.ExtractPublicKey()
-	if err != nil {
-		return fmt.Errorf("failed to extract public key from peer ID: %w", err)
-	}
-
-	// Recreate the message that was signed
-	var messageParts []string
-	messageParts = append(messageParts, alias.Name)
-	messageParts = append(messageParts, alias.PeerId)
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Parse the signature components
-	r, s, err := parseRSComponents(alias.R, alias.S)
-	if err != nil {
-		return fmt.Errorf("failed to parse signature components: %w", err)
-	}
-
-	// Reconstruct the libp2p signature from R and S components
-	signature := append(r.Bytes(), s.Bytes()...)
-
-	// Pad to 64 bytes if necessary
-	if len(signature) < 64 {
-		padded := make([]byte, 64)
-		copy(padded[64-len(signature):], signature)
-		signature = padded
-	}
-
-	// Validate using libp2p crypto
-	valid, err := pubKey.Verify(hash[:], signature)
-	if err != nil {
-		return fmt.Errorf("failed to verify signature: %w", err)
-	}
-
-	if !valid {
-		return fmt.Errorf("signature verification failed")
-	}
-
-	return nil
-}
-
-// ValidatePeerRecordSignature validates the signature of a peer record
-func ValidatePeerRecordSignature(peerRecord *peerpb.SignedPeerRecord, peerID peer.ID) error {
-	// Parse the peer ID to get the public key
-	pubKey, err := peerID.ExtractPublicKey()
-	if err != nil {
-		return fmt.Errorf("failed to extract public key from peer ID: %w", err)
-	}
-
-	// Recreate the message that was signed
-	var messageParts []string
-	messageParts = append(messageParts, peerRecord.PeerId)
-	messageParts = append(messageParts, peerRecord.Multiaddrs...)
-	messageParts = append(messageParts, fmt.Sprintf("%d", peerRecord.Seq))
-	messageParts = append(messageParts, peerRecord.CurrentStatus.String())
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Parse the signature components
-	r, s, err := parseRSComponents(peerRecord.R, peerRecord.S)
-	if err != nil {
-		return fmt.Errorf("failed to parse signature components: %w", err)
-	}
-
-	// Reconstruct the libp2p signature from R and S components
-	signature := append(r.Bytes(), s.Bytes()...)
-
-	// Pad to 64 bytes if necessary
-	if len(signature) < 64 {
-		padded := make([]byte, 64)
-		copy(padded[64-len(signature):], signature)
-		signature = padded
-	}
-
-	// Validate using libp2p crypto
-	valid, err := pubKey.Verify(hash[:], signature)
-	if err != nil {
-		return fmt.Errorf("failed to verify signature: %w", err)
-	}
-
-	if !valid {
-		return fmt.Errorf("signature verification failed")
-	}
-
-	return nil
-}
-
-// ValidateHeartbeatSignature validates the signature of a heartbeat message
-func ValidateHeartbeatSignature(heartbeat *peerpb.HeartbeatMessage, peerID peer.ID) error {
-	// Parse the peer ID to get the public key
-	pubKey, err := peerID.ExtractPublicKey()
-	if err != nil {
-		return fmt.Errorf("failed to extract public key from peer ID: %w", err)
-	}
-
-	// Recreate the message that was signed
-	var messageParts []string
-	messageParts = append(messageParts, heartbeat.PeerId)
-	messageParts = append(messageParts, heartbeat.Status.String())
-	messageParts = append(messageParts, heartbeat.Multiaddrs...)
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Parse the signature components
-	r, s, err := parseRSComponents(heartbeat.R, heartbeat.S)
-	if err != nil {
-		return fmt.Errorf("failed to parse signature components: %w", err)
-	}
-
-	// Reconstruct the libp2p signature from R and S components
-	signature := append(r.Bytes(), s.Bytes()...)
-
-	// Pad to 64 bytes if necessary
-	if len(signature) < 64 {
-		padded := make([]byte, 64)
-		copy(padded[64-len(signature):], signature)
-		signature = padded
-	}
-
-	// Validate using libp2p crypto
-	valid, err := pubKey.Verify(hash[:], signature)
-	if err != nil {
-		return fmt.Errorf("failed to verify signature: %w", err)
-	}
-
-	if !valid {
-		return fmt.Errorf("signature verification failed")
-	}
-
-	return nil
-}
-
 // SignNeighbor signs a neighbor record using the host's private key
 func SignNeighbor(neighbor *peerpb.PeerNeighbor, h host.Host) error {
 	// Get the host's private key
@@ -380,71 +270,8 @@ func SignNeighbor(neighbor *peerpb.PeerNeighbor, h host.Host) error {
 	return nil
 }
 
-// ValidateNeighborSignature validates the signature of a neighbor record
-func ValidateNeighborSignature(neighbor *peerpb.PeerNeighbor, peerID peer.ID) error {
-	// Parse the peer ID to get the public key
-	pubKey, err := peerID.ExtractPublicKey()
-	if err != nil {
-		return fmt.Errorf("failed to extract public key from peer ID: %w", err)
-	}
-
-	// Recreate the message that was signed
-	var messageParts []string
-	messageParts = append(messageParts, neighbor.PeerId)
-	messageParts = append(messageParts, neighbor.NeighborId)
-	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.CreatedAt))
-	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.LastSeen))
-	messageParts = append(messageParts, fmt.Sprintf("%t", neighbor.IsActive))
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Parse the signature components
-	r, s, err := parseRSComponents(neighbor.R, neighbor.S)
-	if err != nil {
-		return fmt.Errorf("failed to parse signature components: %w", err)
-	}
-
-	// Reconstruct the libp2p signature from R and S components
-	signature := append(r.Bytes(), s.Bytes()...)
-
-	// Pad to 64 bytes if necessary
-	if len(signature) < 64 {
-		padded := make([]byte, 64)
-		copy(padded[64-len(signature):], signature)
-		signature = padded
-	}
-
-	// Validate using libp2p crypto
-	valid, err := pubKey.Verify(hash[:], signature)
-	if err != nil {
-		return fmt.Errorf("failed to verify neighbor signature: %w", err)
-	}
-
-	if !valid {
-		return fmt.Errorf("neighbor signature verification failed")
-	}
-
-	return nil
-}
-
-// parseRSComponents parses R and S components from hex strings
-func parseRSComponents(rHex, sHex string) (*big.Int, *big.Int, error) {
-	// Parse R component
-	rBytes, err := hex.DecodeString(rHex)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decode R component: %w", err)
-	}
-	r := new(big.Int).SetBytes(rBytes)
-
-	// Parse S component
-	sBytes, err := hex.DecodeString(sHex)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to decode S component: %w", err)
-	}
-	s := new(big.Int).SetBytes(sBytes)
-
-	return r, s, nil
-}
+// SignNeighbor above is retained for the wire-signing path; the corresponding
+// ECDSA R/S validators and parseRSComponents helper were removed as dead code
+// (zero callers). Peer-record / heartbeat / alias / neighbor verification is
+// handled by the BLS committee path (peerRecordCanonicalMessage + seed authority),
+// not by big.Int R/S reconstruction (which silently truncated leading zeros).

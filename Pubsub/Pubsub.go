@@ -1,12 +1,18 @@
 package Pubsub
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
+
+	"gossipnode/internal/saferun"
 
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -16,6 +22,7 @@ import (
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -60,9 +67,9 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*StructGossipPubSub,
 		return nil, fmt.Errorf("failed to create gossip pub/sub")
 	}
 	// Set up stream handler for gossip messages
-	host.SetStreamHandler(Protocol, func(s network.Stream) {
+	host.SetStreamHandler(Protocol, saferun.Stream(string(Protocol), func(s network.Stream) {
 		handleGossipStream(gps.GossipPubSub, s)
-	})
+	}))
 
 	// Close previous instance to prevent goroutine leaks
 	localGROMux.Lock()
@@ -139,11 +146,25 @@ func cleanupMessageCache(ctx context.Context, gps *PubSubMessages.GossipPubSub) 
 			gps.Mutex.Lock()
 			defer gps.Mutex.Unlock()
 
-			entriesCleared := len(gps.MessageCache)
-			gps.MessageCache = make(map[string]time.Time)
-
-			if entriesCleared > 0 {
-				log.Printf("Cache cleanup: cleared all %d entries", entriesCleared)
+			// Age-based expiry, NOT a wholesale flush. Wholesale-clearing every
+			// 4 min made a still-circulating message "unseen" again and it
+			// resurrected on the next cycle (audit NET-04). Keep an entry until
+			// it is older than the retention window; a hard ceiling bounds
+			// memory against a flood of unique IDs (audit NET-03).
+			now := time.Now()
+			cleared := 0
+			for id, seenAt := range gps.MessageCache {
+				if now.Sub(seenAt) > gossipCacheEntryTTL {
+					delete(gps.MessageCache, id)
+					cleared++
+				}
+			}
+			if len(gps.MessageCache) > gossipCacheMaxEntries {
+				// Ceiling breached (flood): drop everything as a last resort.
+				log.Printf("Cache cleanup: hard ceiling %d exceeded, clearing all", gossipCacheMaxEntries)
+				gps.MessageCache = make(map[string]time.Time)
+			} else if cleared > 0 {
+				log.Printf("Cache cleanup: expired %d aged entries (%d remain)", cleared, len(gps.MessageCache))
 			}
 		}()
 	}
@@ -196,29 +217,64 @@ func CreateChannel(gps *PubSubMessages.GossipPubSub, channelName string, isPubli
 	return nil
 }
 
-// RemovePeerFromChannel removes a peer from the allowed list of a channel
-func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) error {
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
+// Gossip receive-path bounds (audit NET-03/NET-04).
+const (
+	gossipStreamReadTimeout = 30 * time.Second // slow-drip peers cannot pin a goroutine
+	gossipCacheEntryTTL     = 10 * time.Minute // dedup retention; age-expired, not wholesale-flushed
+	gossipCacheMaxEntries   = 100_000          // hard ceiling against a unique-ID flood
 
-	access, exists := gps.ChannelAccess[channelName]
-	if !exists {
-		return fmt.Errorf("channel %s does not exist", channelName)
+	// Largest hop budget any local publisher sets (Publish uses 30). A received
+	// TTL above it is clamped so a peer cannot extend a message's reach.
+	gossipMaxTTL = 30
+	// Accepted Timestamp window for relayed messages. The past bound is inside
+	// gossipCacheEntryTTL so a message is stale before its dedup entry ages out.
+	gossipMaxAge    = gossipCacheEntryTTL - time.Minute
+	gossipMaxFuture = time.Minute
+)
+
+// gossipContentKey is a dedup key derived from the message content rather
+// than the sender-chosen ID, so the same payload re-sent under fresh IDs is
+// still recognised as a duplicate.
+func gossipContentKey(m *PubSubMessages.GossipMessage) (string, error) {
+	data, err := json.Marshal(m.Data)
+	if err != nil {
+		return "", err
 	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%d\x00", m.Topic, m.Sender, m.Timestamp)
+	h.Write(data)
+	return "content:" + hex.EncodeToString(h.Sum(nil)), nil
+}
 
-	// Only creator can remove peers
-	if gps.Host.ID() != access.Creator {
-		return fmt.Errorf("only channel creator can remove peers")
+// checkGossipEnvelope validates the sender-controlled envelope fields and
+// clamps TTL. Returns "" when the message may be processed.
+func checkGossipEnvelope(m *PubSubMessages.GossipMessage, now time.Time) string {
+	if m.TTL < 0 {
+		return "negative_ttl"
 	}
-
-	delete(gps.ChannelAccess[channelName].AllowedPeers, peerID)
-	log.Printf("Removed peer %s from channel %s", peerID, channelName)
-	return nil
+	if m.TTL > gossipMaxTTL {
+		m.TTL = gossipMaxTTL
+	}
+	if m.TTL > 0 {
+		ts := time.Unix(m.Timestamp, 0)
+		if now.Sub(ts) > gossipMaxAge {
+			return "stale"
+		}
+		if ts.Sub(now) > gossipMaxFuture {
+			return "future_timestamp"
+		}
+	}
+	return ""
 }
 
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	defer s.Close()
+
+	// Bound how long an unauthenticated peer can hold this goroutine open
+	// (audit NET-03): a peer trickling one byte per minute must not pin a
+	// goroutine + growing buffer indefinitely.
+	_ = s.SetReadDeadline(time.Now().Add(gossipStreamReadTimeout))
 
 	// Read message using delimiter
 	messageBytes, err := readMessage(s)
@@ -236,14 +292,12 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 	// Attach ACK if missing or if Data is nil
 	if gossipMsg.Data == nil {
-		fmt.Printf("Received message with nil Data - initializing new Message\n")
-		log.Printf("Received message with nil Data - initializing new Message\n")
+		logger().Debug(context.Background(), "Received message with nil Data - initializing new Message")
 		gossipMsg.Data = PubSubMessages.NewMessageBuilder(nil).SetSender(gossipMsg.Sender)
 	}
 
 	if gossipMsg.Data.GetACK() == nil {
-		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
-		log.Printf("Received message with nil ACK - attaching default ACK\n")
+		logger().Debug(context.Background(), "Received message with nil ACK - attaching default ACK")
 
 		// Create a default ACK with Type_Publish stage
 		ack := PubSubMessages.NewACKBuilder().
@@ -251,24 +305,46 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 		gossipMsg.Data.SetACK(ack)
 	}
-	fmt.Printf("Received message with ACK: %+v\n", gossipMsg.Data.GetACK())
-	fmt.Printf("==============================================\n")
-	// Check if we've already seen this message
+	logger().Debug(context.Background(), "Received message with ACK",
+		ion.String("ack", fmt.Sprintf("%+v", gossipMsg.Data.GetACK())))
+	if reason := checkGossipEnvelope(&gossipMsg, time.Now().UTC()); reason != "" {
+		log.Printf("Dropping gossip message %s from %s: %s", gossipMsg.ID, s.Conn().RemotePeer(), reason)
+		return
+	}
+	// Relayed messages are also deduplicated by content, since the ID is
+	// sender-chosen. Direct (TTL 0) messages are never relayed and keep
+	// ID-only dedup.
+	var contentKey string
+	if gossipMsg.TTL > 0 {
+		k, err := gossipContentKey(&gossipMsg)
+		if err != nil {
+			log.Printf("Dropping gossip message %s: %v", gossipMsg.ID, err)
+			return
+		}
+		contentKey = k
+	}
+
+	// Check if we've already seen this message.
 	gps.Mutex.Lock()
-	if _, seen := gps.MessageCache[gossipMsg.ID]; seen {
+	_, seen := gps.MessageCache[gossipMsg.ID]
+	if !seen && contentKey != "" {
+		_, seen = gps.MessageCache[contentKey]
+	}
+	if seen {
 		gps.Mutex.Unlock()
 		return // Already processed
 	}
-	gps.MessageCache[gossipMsg.ID] = time.Now()
+	now := time.Now()
+	gps.MessageCache[gossipMsg.ID] = now
+	if contentKey != "" {
+		gps.MessageCache[contentKey] = now
+	}
 	gps.Mutex.Unlock()
 
 	// Skip TTL checks for direct messages (TTL = 0)
 	// TTL is only needed for multi-hop gossip propagation
 	if gossipMsg.TTL == 0 {
 		log.Printf("Processing direct message (no TTL needed): %s", gossipMsg.ID)
-	} else if gossipMsg.TTL < 0 {
-		log.Printf("Gossip message TTL expired: %s", gossipMsg.ID)
-		return
 	} else {
 		// Only decrement TTL for actual gossip messages
 		gossipMsg.TTL--
@@ -288,66 +364,38 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 		handler(&gossipMsg)
 	}
 
-	// Forward message to other peers (gossip)
+	// Forward message to other peers (gossip). Re-marshal so the DECREMENTED
+	// TTL travels on the wire — the old code forwarded the original bytes, so
+	// TTL never dropped hop-to-hop and a message resurrected forever (audit
+	// NET-04). Same JSON schema, so nodes on any branch parse it identically.
 	if gossipMsg.TTL > 0 {
-		Publisher.GossipMessage(gps, messageBytes)
+		forwardBytes, mErr := json.Marshal(gossipMsg)
+		if mErr != nil {
+			log.Printf("Failed to re-marshal gossip message for forward: %v", mErr)
+			return
+		}
+		Publisher.GossipMessage(gps, forwardBytes)
 	}
 }
 
 // readMessage reads a message from the stream using delimiter
 func readMessage(s network.Stream) ([]byte, error) {
 	const MaxMessageSize = 7 * 1024 * 1024 // 7 MB
-	var message []byte
-	buffer := make([]byte, 1)
-
-	for {
-		_, err := s.Read(buffer)
-		if err != nil {
-			return nil, err
-		}
-
-		if buffer[0] == config.Delimiter {
-			break
-		}
-
-		message = append(message, buffer[0])
-
-		if len(message) > MaxMessageSize {
-			return nil, fmt.Errorf("message size exceeds limit of %d bytes", MaxMessageSize)
-		}
+	// Buffered read to the delimiter, hard-capped by a LimitReader so an
+	// oversized or unterminated message cannot grow the buffer without bound
+	// (audit NET-03: the old loop did one syscall PER BYTE — ~7M reads/msg).
+	r := bufio.NewReader(io.LimitReader(s, MaxMessageSize+1))
+	msg, err := r.ReadBytes(config.Delimiter)
+	if err != nil {
+		// EOF without a delimiter (peer closed early or hit the cap), a read
+		// deadline, or a transport error — all fail closed.
+		return nil, err
 	}
-
-	return message, nil
-}
-
-// GetTopics returns a list of subscribed topics
-func GetTopics(gps *PubSubMessages.GossipPubSub) []string {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-
-	topics := make([]string, 0, len(gps.Topics))
-	for topic := range gps.Topics {
-		topics = append(topics, topic)
+	msg = msg[:len(msg)-1] // strip the trailing delimiter
+	if len(msg) > MaxMessageSize {
+		return nil, fmt.Errorf("message size exceeds limit of %d bytes", MaxMessageSize)
 	}
-	return topics
-}
-
-// GetPeerCount returns the number of connected peers
-func GetPeerCount(gps *PubSubMessages.GossipPubSub) int {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-	return len(gps.Peers)
-}
-
-// GetPeers returns a list of connected peers
-func GetPeers(gps *PubSubMessages.GossipPubSub) []peer.ID {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-
-	peers := make([]peer.ID, 0, len(gps.Peers))
-	peers = append(peers, gps.Peers...)
-
-	return peers
+	return msg, nil
 }
 
 // Close closes the gossip pub/sub instance
@@ -366,53 +414,4 @@ func Close(gps *PubSubMessages.GossipPubSub) error {
 	}
 
 	return nil
-}
-
-// HandlePeerFound is called when a new peer is discovered
-func HandlePeerFound(gps *PubSubMessages.GossipPubSub, pi peer.AddrInfo) {
-	log.Printf("Peer discovered: %s", pi.ID)
-
-	// Don't add ourselves
-	if pi.ID == gps.Host.ID() {
-		log.Printf("Skipping self-discovery for peer: %s", pi.ID)
-		return
-	}
-
-	// Validate that peer has addresses
-	if len(pi.Addrs) == 0 {
-		log.Printf("Peer %s has no addresses, skipping", pi.ID)
-		return
-	}
-
-	// Check for duplicate peers before adding
-	gps.Mutex.Lock()
-	peerAlreadyExists := false
-	for _, existingPeer := range gps.Peers {
-
-		if existingPeer == pi.ID {
-			peerAlreadyExists = true
-			break
-		}
-	}
-
-	if !peerAlreadyExists {
-		// Use the largest multiaddr (following the pattern from utils.go)
-		if pi.ID != "" {
-			gps.Peers = append(gps.Peers, pi.ID)
-			log.Printf("Added peer %s to peers list with address: %s", pi.ID, pi.Addrs)
-		}
-	} else {
-		log.Printf("Peer %s already exists in peers list", pi.ID)
-	}
-	gps.Mutex.Unlock()
-
-	// Connect to the discovered peer
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := gps.Host.Connect(ctx, pi); err != nil {
-		log.Printf("Failed to connect to discovered peer %s: %v", pi.ID, err)
-	} else {
-		log.Printf("Connected to peer: %s", pi.ID)
-	}
 }

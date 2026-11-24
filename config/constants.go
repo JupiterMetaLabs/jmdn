@@ -1,7 +1,9 @@
 package config
 
 import (
+	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,21 +18,51 @@ const (
 	ColorGreen  = "\033[1;32m"
 	ColorCyan   = "\033[1;36m"
 	ColorYellow = "\033[1;33m"
-	ColorRed    = "\033[1;31m"
 )
 
 const PeerFile = "./config/peer.json"
 const BLSFile = "./config/bls.json"
 
 const (
-	DefaultProfilerPort = "6060" // Default port for the profiler server
-)
-
-const (
 	MaxMainPeers     = 7 // Production committee size (voting set; keep == consensus.max_validators). n=7 → BFT quorum 2f+1=5 with f=2; n=5 was unsafe (quorum 3, intersection 2q-n=1 < f+1=2).
 	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
+
+// LegacyMaxPeriod and MaxPeriod are the highest Period a block may carry,
+// before and from consensus.period_cap_raise_from_height (MaxPeriodAt). The
+// proposer chooses a height's Period (one more after each failed round, or
+// above the highest period buddies report) and every other node takes it from
+// the block. Enforced by the proposer (ProposerPeriods), the voter and buddy
+// signer, the live receive path (linkageDecision) and ThebeSync
+// (CheckSyncedPeriodBinding).
+//
+// MaxPeriod is set far above any period an honest height reaches so that it is
+// never a dead end: the ledgers refuse any period below the highest one
+// recorded at a height, and a proposer stuck at the cap could never get above
+// a period recorded there. What bounds how high a proposal's period can be in
+// practice is the time bound (roundlock.Pace, consensus.vote_period_*): at
+// the default one period per second, reaching it takes about 12 days at one
+// height. The raise is a fleet-wide rule change, hence the activation height.
+const (
+	LegacyMaxPeriod uint64 = 1024
+	MaxPeriod       uint64 = 1 << 20
+)
+
+var periodCapRaiseFrom atomic.Uint64
+
+// SetPeriodCapRaiseFrom sets consensus.period_cap_raise_from_height; 0 keeps
+// LegacyMaxPeriod at every height. Called once by main after settings load.
+func SetPeriodCapRaiseFrom(height uint64) { periodCapRaiseFrom.Store(height) }
+
+// MaxPeriodAt is the period cap at height: MaxPeriod from
+// consensus.period_cap_raise_from_height on, LegacyMaxPeriod before it.
+func MaxPeriodAt(height uint64) uint64 {
+	if from := periodCapRaiseFrom.Load(); from > 0 && height >= from {
+		return MaxPeriod
+	}
+	return LegacyMaxPeriod
+}
 
 // MaxBlockMessageBytes is the single source of truth for the maximum size of a
 // propagated block message. BOTH transports MUST use it or they silently diverge:
@@ -41,37 +73,54 @@ const (
 // or peers reject each other's gossip. Sized for large many-tx blocks (8 MiB).
 const MaxBlockMessageBytes = 8 * 1024 * 1024
 
-// Time-bounded message handling constants
-const (
-	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds
-	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
-	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
+var (
+	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
+	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
 )
 
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
-	SeedProtocol              protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
 	PeerDiscoveryProtocol     protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
 	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"
-	RegisterProtocol          protocol.ID = "/seednode/register/1.0.0" // For peer registration
 	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
-	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0" // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
-	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
-	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/2.0.0"  // v2 protocol: vote path (eligibility, 2f+1, chain-id domain, sync-gate)
-	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/2.0.0" // v2 protocol: vote path
-	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/2.0.0"  // v2 protocol: signed PREPARE/COMMIT
+	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0"    // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
+	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/3.0.0"  // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
+	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/3.0.0" // v3 protocol: vote path + ConsensusHash/v4-vote rollout isolation
+
+	// RevealPushProtocol carries Architecture §4.4's RevealPush: an entropy-
+	// committee member pushing its own RANDAO reveal directly to the node
+	// proposing the current slot. Added 2026-08-20 with M4 Decision A.
+	//
+	// Its own protocol ID rather than another case on SubmitMessageProtocol's
+	// envelope, deliberately: a reveal is not a vote, it is verified by a
+	// different check (a BLS signature over an epoch message, not a vote over a
+	// block), and giving it its own ID means a node
+	// that does not speak it fails to connect rather than silently mis-routing
+	// into the vote path. Same 1:1 direct-stream shape as the vote path, so it
+	// is still "T1" in the architecture doc's transport inventory.
+	RevealPushProtocol protocol.ID = "/p2p/randao/reveal/1.0.0"
+
+	// VDFProofRequestProtocol carries the entropy-epoch VDF proof pull: "do you
+	// have the VDF proof for entropy epoch E?".
+	//
+	// Request-response over a direct stream, JSON+newline: a node that missed
+	// the epoch-boundary block, restarted, or joined late has no other way to
+	// obtain a proof, because the proof only ever travels inside that one block.
+	//
+	// The response carries the PROOF ONLY, never entropy and never a mix: the
+	// requester verifies against its OWN independently held mix, so a lying
+	// responder can waste a round trip and nothing else.
+	VDFProofRequestProtocol protocol.ID = "/p2p/randao/vdf-proof/1.0.0"
 )
 
 const (
 	Delimiter               = 0x1E
-	PubSub_ConsensusChannel = "pubsub-consensus/2.0.0"     // v2 protocol: chain-id-bound votes + vote sync-gate
-	PubSub_BFTConsensus     = "pubsub-bft-consensus/2.0.0" // v2 protocol: signed BFT messages
+	PubSub_ConsensusChannel = "pubsub-consensus/3.0.0" // v3 protocol: chain-id-bound votes + vote sync-gate + ConsensusHash/v4-vote rollout isolation
 	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
 	PubSub_L1CommitChannel = "pubsub-l1-commit"
-	Pubsub_MessageBuffer   = "pubsub-buffer"
 	Pubsub_CRDTSync        = "pubsub-crdt-sync"
 	// PubSub_BlockPropagation is a persistent topic for fanning finalized,
 	// committee-certified blocks to the whole fleet (not just directly-connected
@@ -87,8 +136,6 @@ const (
 	Type_EndPubSub          = "END_PUBSUB"
 	Type_Publish            = "PUBLISH"
 	Type_ToBeProcessed      = "PROCESS_MESSAGE"
-	Type_Subscribe          = "SUBSCRIBE"
-	Type_Unsubscribe        = "UNSUBSCRIBE"
 	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"
 
 	// Verify
@@ -106,16 +153,10 @@ const (
 	// For CRDT Synchronization
 	Type_CRDT_SYNC = "CRDT_SYNC"
 
-	Topic_SYNCRequest   = "SYNC_REQUEST"
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
-	Type_BFTPrepare     = "BFT_PREPARE"
 	Type_BFTPrepareVote = "BFT_PREPARE_VOTE"
 	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
 	Type_BFTResult      = "BFT_RESULT"
-
-	// For BLS Voting - BLS Voting would be listening on the message transfer protocol
-	Type_BLSRequest = "BLS_REQUEST"
-	Type_BLSVote    = "BLS_VOTE"
 
 	// L1 finality broadcast — sent by the node that received the commit confirmation
 	Type_L1Commit      = "L1_COMMIT"
@@ -125,22 +166,17 @@ const (
 	Type_BlockPropagation = "BLOCK_PROPAGATION"
 )
 
-// Increase buffer sizes
-const (
-	BufferSize            = 1024 * 1024 * 8 // 8MB
-	CHUNK_SIZE            = 1024 * 1024 * 4 // 4MB chunks
-	MAX_CONCURRENT_CHUNKS = 4               // Concurrent chunks
-	FlowControlWindowSize = 7168000         // 7MB
-)
-
 const (
 	MessageExpiryTime = 5 * time.Minute
 	MaxHops           = 5
 )
 
 const (
-	DIDPropagationProtocol protocol.ID = "/gossipnode/did/2.0.0" // v2 protocol: bumped with the network upgrade
-	MaxAccountHops         int         = 7
+	ContractPropagationProtocol protocol.ID = "/gossipnode/contract/1.0.0"
+	MaxContractHops             int         = 7
+	ContractPullProtocol        protocol.ID = "/gossipnode/contract/pull/1.0.0"
+	// ThebeSync (FastSync v4) protocol IDs live in the JMDN-FastSync module
+	// (thebesync.HeadProtocol / thebesync.GetBlocksProtocol), not here.
 )
 
 // Network addresses
@@ -156,9 +192,6 @@ const (
 
 // SeedNodeConfig defines configuration for seed nodes
 const (
-	MaxTrackedPeers           = 1000 // Maximum number of peers to track
-	PeerTTL                   = 3600 // Time in seconds before a peer is considered stale
-	AdvertiseInterval         = 300  // How often seed nodes advertise themselves (seconds)
 	HeartbeatFailureThreshold = 3
 	HeartbeatRemovalThreshold = 9
 )
@@ -192,10 +225,6 @@ var (
 	// Database location and name
 	DBPath = "./DB/gossipnode.db"
 
-	// Table names
-	PeersTable     = "peers"           // For seed node peer tracking
-	KeyValueTable  = "key_value"       // For general key-value storage
-	MerkleTable    = "merkle_hashes"   // For storing Merkle tree hashes
 	ConnectedPeers = "connected_peers" // For tracking connected peers
 )
 

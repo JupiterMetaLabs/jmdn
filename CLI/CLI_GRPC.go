@@ -2,18 +2,20 @@ package CLI
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"strings"
+
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
+	"gossipnode/thebesync"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -42,8 +44,8 @@ type HandleShowStats struct {
 
 type SyncStats struct {
 	TimeTaken     time.Duration
-	MainState     *schema.ImmutableState
-	AccountsState *schema.ImmutableState
+	MainState     *DB_OPs.DatabaseState
+	AccountsState *DB_OPs.DatabaseState
 	Error         string
 }
 
@@ -198,14 +200,14 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	}
 }
 
-func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.ImmutableState, error) {
+func (h *CommandHandler) CheckDBStats() (*DB_OPs.DatabaseState, *DB_OPs.DatabaseState, error) {
 	// Get both database states before sync
-	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get main database state: %v", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get accounts database state: %v", err)
 	}
@@ -222,64 +224,34 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 }
 
 func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: fastsyncv2 <peer_multiaddr>")
-	}
-	if !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-
-	// Make sure engine exists
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
-	}
-
-	startTime := time.Now().UTC()
-	err := h.FastSyncerV2.HandleSync(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 failed: %w", err)
-	}
-
-	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
-	// for the sync itself, so guard against nil before querying.
-	var newMainState, newAccountsState *schema.ImmutableState
-	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
-	}
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
+	return SyncStats{}, fmt.Errorf("fastsync removed: use ThebeDB sync instead")
 }
 
 func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string, fromBlock uint64) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
 	}
-	// fromBlock=0 → auto-detect via effectiveReconRange inside HandleCatchUpSync
+	// ThebeSync (FastSync v4) auto-detects the range from the local tip; fromBlock
+	// is accepted for wire compatibility but no longer used.
+	_ = fromBlock
 	if !h.PullAllowed {
 		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
 	}
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	if h.Node == nil || h.Node.Host == nil {
+		return SyncStats{}, fmt.Errorf("node host unavailable")
 	}
 
 	startTime := time.Now().UTC()
-	if err := h.FastSyncerV2.HandleCatchUpSync(ctx, fromBlock, peeraddr); err != nil {
-		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
+	if _, err := thebesync.CatchUp(ctx, h.Node.Host, peeraddr); err != nil {
+		return SyncStats{}, fmt.Errorf("ThebeSync catchup failed: %w", err)
 	}
 
-	var newMainState, newAccountsState *schema.ImmutableState
+	var newMainState, newAccountsState *DB_OPs.DatabaseState
 	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient)
 	}
 	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
 	}
 
 	return SyncStats{
@@ -290,31 +262,8 @@ func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string,
 }
 
 func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
-	}
-	if !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
-	}
-
-	startTime := time.Now().UTC()
-	_, err := h.FastSyncerV2.AccountSyncOnly(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("AccountSync failed: %w", err)
-	}
-
-	var newAccountsState *schema.ImmutableState
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		AccountsState: newAccountsState,
-	}, nil
+	// Retired: account state is synced as part of ThebeSync (FastSync v4) catchup.
+	return SyncStats{}, fmt.Errorf("accountsync is retired — use 'catchup <peer_multiaddr>' (ThebeSync)")
 }
 
 // HandleFirstSync — RETIRED (fastsync V1 AVRO whole-DB exchange). Superseded
@@ -325,54 +274,46 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	return SyncStats{}, fmt.Errorf("firstsync (V1 AVRO exchange) is retired — bootstrap from snapshot (see DOCKER.md), then 'catchup' (FastsyncV2)")
 }
 
-// HandleRebuildIndex wipes and rebuilds the tx-address SQLite index from genesis.
-// Fixes all gaps regardless of where last_indexed_block is sitting.
-func (h *CommandHandler) HandleRebuildIndex(ctx context.Context) (time.Duration, error) {
-	startTime := time.Now()
-	if err := txindex.RebuildIndex(ctx); err != nil {
-		return 0, fmt.Errorf("RebuildIndex failed: %w", err)
-	}
-	return time.Since(startTime), nil
+// HandleRebuildIndex — RETIRED. The SQLite tx-address index was replaced by the
+// ThebeDB SQL projection (transactions.from_addr/to_addr), which is written
+// synchronously at block apply and therefore has no separate rebuild. The gRPC
+// surface is preserved so older `jmdn -cmd` clients get a clear message.
+func (h *CommandHandler) HandleRebuildIndex(_ context.Context) (time.Duration, error) {
+	return 0, errors.New("rebuildindex: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-// HandleRebuildRange re-indexes a specific block range [from, to].
-// Safe to run over already-indexed blocks — INSERT OR IGNORE prevents duplicates.
-func (h *CommandHandler) HandleRebuildRange(ctx context.Context, from, to uint64) (time.Duration, error) {
-	if from > to {
-		return 0, fmt.Errorf("from_block (%d) must be <= to_block (%d)", from, to)
-	}
-	startTime := time.Now()
-	if err := txindex.RebuildRange(ctx, from, to); err != nil {
-		return 0, fmt.Errorf("RebuildRange [%d..%d] failed: %w", from, to, err)
-	}
-	return time.Since(startTime), nil
+// HandleRebuildRange — RETIRED, see HandleRebuildIndex.
+func (h *CommandHandler) HandleRebuildRange(_ context.Context, _, _ uint64) (time.Duration, error) {
+	return 0, errors.New("rebuildrange: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-// HandleTxIndexStatus reports whether the tx-address index has completed its
-// first full gap catchup, and the highest block number it has indexed so far.
+// HandleTxIndexStatus — RETIRED, see HandleRebuildIndex. Reports ready=true at
+// the chain head: the projection is as current as the block store itself.
 func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool, lastIndexedBlock uint64, err error) {
-	return txindex.Status(ctx)
+	head, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("txindexstatus: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild; head lookup: %w", err)
+	}
+	return true, head, nil
 }
 
-func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
-	if did == "" {
-		return nil, fmt.Errorf("usage: getDID <did>")
+func (h *CommandHandler) HandleGetDID(input string) (*DB_OPs.Account, error) {
+	if input == "" {
+		return nil, fmt.Errorf("usage: getDID <did|address>")
 	}
 
-	// If the input looks like an Ethereum address, look up by address key ("address:<addr>").
-	// Otherwise fall back to DID key ("did:<did>") for full DID strings.
-	if common.IsHexAddress(did) {
-		doc, err := DB_OPs.GetAccount(h.DIDClient, common.HexToAddress(did))
+	if strings.HasPrefix(input, DB_OPs.DIDPrefix) {
+		doc, err := DB_OPs.GetAccountByDID(h.MainClient, input)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+			return nil, fmt.Errorf("failed to retrieve DID %s: %v", input, err)
 		}
 		return doc, nil
 	}
 
-	doc, err := DB_OPs.GetAccountByDID(h.DIDClient, did)
+	// Treat as Ethereum address
+	doc, err := DB_OPs.GetAccount(h.MainClient, common.HexToAddress(input))
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+		return nil, fmt.Errorf("failed to retrieve address %s: %v", input, err)
 	}
-
 	return doc, nil
 }

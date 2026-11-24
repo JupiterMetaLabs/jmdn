@@ -2,13 +2,15 @@ package PubSubMessages
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+
+	log "gossipnode/logging"
 )
 
 // < -- Builder Pattern for GossipPubSub -- >
@@ -111,7 +113,11 @@ func (gps *GossipPubSub) Build() *GossipPubSub {
 	if gps.Host != nil {
 		if err := gps.InitGossipSub(); err != nil {
 			// Log error but don't fail build
-			fmt.Printf("Warning: Failed to initialize GossipSub: %v\n", err)
+			ctx := context.Background()
+			logInstance, logErr := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+			if logErr == nil && logInstance != nil {
+				logInstance.GetNamedLogger().Warn(ctx, "Failed to initialize GossipSub", ion.Err(err))
+			}
 		}
 	}
 	return gps

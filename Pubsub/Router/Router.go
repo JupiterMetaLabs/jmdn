@@ -6,6 +6,9 @@ import (
 
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/sequencerid"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // Router routes messages to appropriate services based on message type
@@ -20,6 +23,20 @@ func Router(message *AVCStruct.GossipMessage) error {
 	}
 	if message.Data.ACK == nil {
 		return fmt.Errorf("message ACK is nil")
+	}
+
+	// H5 (2026-10-22 audit): subscribing to, and unsubscribing from, the
+	// consensus channel is the sequencer's call. From anyone else these
+	// messages could stack subscriptions or cut a validator off from gossip.
+	// Dropped quietly (Warn, nil error) so a sender cannot flood error logs.
+	switch message.Data.ACK.Stage {
+	case config.Type_AskForSubscription, config.Type_EndPubSub:
+		if ok, _ := sequencerid.AuthorizeSender(message.Sender.String(), message.SenderAuthenticated); !ok {
+			logger().Warn(context.Background(), "Router: dropping subscription control message not sent by the sequencer",
+				ion.String("stage", message.Data.ACK.Stage),
+				ion.String("sender", message.Sender.String()))
+			return nil
+		}
 	}
 
 	logger_ctx, cancel := context.WithCancel(context.Background())
@@ -38,8 +55,12 @@ func Router(message *AVCStruct.GossipMessage) error {
 	}
 	PubSub := GossipNode.PubSub
 	serviceManager := NewServiceManager(PubSub, GossipNode)
-	fmt.Printf("Router: Processing message with stage %s from peer %s\n", message.Data.ACK.Stage, message.Sender)
-	fmt.Printf("Router: GossipNode PeerID: %s, PubSub Host: %s\n", GossipNode.PeerID, PubSub.Host.ID())
+	logger().Debug(logger_ctx, "Router: Processing message",
+		ion.String("stage", message.Data.ACK.Stage),
+		ion.String("sender", message.Sender.String()))
+	logger().Debug(logger_ctx, "Router: GossipNode info",
+		ion.String("peer_id", GossipNode.PeerID.String()),
+		ion.String("host", PubSub.Host.ID().String()))
 
 	// Route to appropriate services based on the message ack type
 	switch message.Data.ACK.Stage {

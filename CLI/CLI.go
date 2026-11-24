@@ -13,22 +13,19 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/txindex"
-	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
 	"gossipnode/node"
 	"gossipnode/seednode"
+	"gossipnode/thebesync"
+
 	peerpb "gossipnode/seednode/proto"
 	"gossipnode/shutdown"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 // formatTimestamp handles both Unix seconds and nanoseconds formats
@@ -50,10 +47,12 @@ func formatTimestamp(timestamp int64) string {
 }
 
 // CommandHandler holds dependencies for CLI command execution
+// FastsyncV2 is retired — sync is ThebeSync (FastSync v4). The CLI catch-up
+// commands route through thebesync.CatchUp; no engine handle is held here.
+
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
 	SeedNode        string
@@ -108,15 +107,14 @@ func PrintFuncs() {
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>                    - Fast sync blockchain data with a peer (V2 Engine)")
 	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-	fmt.Println("  rebuildindex                                 - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
-	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
+	fmt.Println("  rebuildindex                                 - (retired) tx-address index replaced by the ThebeDB SQL projection")
+	fmt.Println("  rebuildrange <from_block> <to_block>         - (retired) see rebuildindex")
+	fmt.Println("  txindexstatus                                - (retired) address lookups are served by the ThebeDB SQL projection")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
-	fmt.Println("  dbstate                           - Show current ImmuDB database state")
+	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  statefingerprint                  - Digest of all account balances/nonces (compare across nodes at the same height)")
-	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
+	fmt.Println("  propagateDID                     - (retired) an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
-	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  grometrics                        - Show GRO metrics")
 	fmt.Println("  version                           - Show current binary version")
@@ -282,8 +280,6 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleAccountSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
-	case "syncinfo":
-		h.handleSyncInfo()
 	case "getDID":
 		h.handleGetDID(parts)
 	case "dbstate":
@@ -492,7 +488,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 	logger_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Get mempool client
-	routingClient, err := Block.GetRoutingClient(logger_ctx)
+	routingClient, err := Block.GetRoutingClient()
 	if err != nil {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return
@@ -600,60 +596,7 @@ func (h *CommandHandler) handleBroadcast(parts []string) {
 }
 
 func (h *CommandHandler) handleFastSync(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: fastsync <peer_multiaddr>")
-		return
-	}
-
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
-		return
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(parts[1])
-	if err != nil {
-		fmt.Printf("Invalid multiaddress: %v\n", err)
-		return
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		fmt.Printf("Failed to extract peer info: %v\n", err)
-		return
-	}
-
-	// Show pre-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
-		}
-	}
-
-	fmt.Printf("Starting blockchain fastsync (V2 Engine) with peer %s\n", addrInfo.ID.String())
-
-	startTime := time.Now().UTC()
-	syncErr := h.FastSyncerV2.HandleSync(parts[1])
-	if syncErr != nil {
-		fmt.Printf("Fastsync failed: %v\n", syncErr)
-		return
-	}
-
-	// Show post-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
-		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
-		}
-	}
-
-	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
+	fmt.Println("fastsync (V2) is retired — use 'catchup <peer_multiaddr>' (ThebeSync / FastSync v4)")
 	printDashes()
 }
 
@@ -665,26 +608,25 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 		fmt.Println("                  pass 1 to force a full scan from genesis")
 		return
 	}
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
+	if h.Node == nil || h.Node.Host == nil {
+		fmt.Println("Error: node host unavailable")
 		return
 	}
 
-	var fromBlock uint64
+	// from_block is accepted for backward-compatible usage but ignored: ThebeSync
+	// auto-detects the range from the local tip and verifies parent linkage.
 	if len(parts) >= 3 {
-		var err error
-		fromBlock, err = strconv.ParseUint(parts[2], 10, 64)
-		if err != nil {
+		if _, err := strconv.ParseUint(parts[2], 10, 64); err != nil {
 			fmt.Printf("Invalid from_block %q: %v\n", parts[2], err)
 			return
 		}
-	} // fromBlock=0 → auto-detect inside HandleCatchUpSync
+	}
 
-	fmt.Printf("Starting catch-up sync (from_block=%d) with peer %s\n", fromBlock, parts[1])
+	fmt.Printf("Starting ThebeSync catch-up with peer %s\n", parts[1])
 	startTime := time.Now()
 
-	// Interactive CLI — no cancellable ctx in scope; HandleCatchUpSync applies fs.syncTimeout internally.
-	if err := h.FastSyncerV2.HandleCatchUpSync(context.Background(), fromBlock, parts[1]); err != nil {
+	// Interactive CLI — no cancellable ctx in scope; SyncFrom honors ctx cancellation.
+	if _, err := thebesync.CatchUp(context.Background(), h.Node.Host, parts[1]); err != nil {
 		fmt.Printf("CatchUpSync failed: %v\n", err)
 		return
 	}
@@ -694,133 +636,33 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 }
 
 func (h *CommandHandler) handleRebuildIndex() {
-	fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
-	startTime := time.Now()
-	if err := txindex.RebuildIndex(context.Background()); err != nil {
-		fmt.Printf("RebuildIndex failed: %v\n", err)
-		return
-	}
-	fmt.Printf("RebuildIndex complete in %v\n", time.Since(startTime))
-	printDashes()
+	fmt.Println("rebuildindex: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
-func (h *CommandHandler) handleRebuildRange(parts []string) {
-	if len(parts) != 3 {
-		fmt.Println("Usage: rebuildrange <from_block> <to_block>")
-		return
-	}
-	from, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		fmt.Printf("Invalid from_block %q: %v\n", parts[1], err)
-		return
-	}
-	to, err := strconv.ParseUint(parts[2], 10, 64)
-	if err != nil {
-		fmt.Printf("Invalid to_block %q: %v\n", parts[2], err)
-		return
-	}
-	if from > to {
-		fmt.Println("Error: from_block must be <= to_block")
-		return
-	}
-	fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
-	startTime := time.Now()
-	if err := txindex.RebuildRange(context.Background(), from, to); err != nil {
-		fmt.Printf("RebuildRange failed: %v\n", err)
-		return
-	}
-	fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Since(startTime))
-	printDashes()
+func (h *CommandHandler) handleRebuildRange(_ []string) {
+	fmt.Println("rebuildrange: the tx-address SQLite index is retired — address lookups and stats are served by the ThebeDB SQL projection, which the block-apply path keeps current; nothing to rebuild")
 }
 
 func (h *CommandHandler) handleTxIndexStatus() {
-	isReady, lastIndexed, err := txindex.Status(context.Background())
+	ready, head, err := h.HandleTxIndexStatus(context.Background())
 	if err != nil {
 		fmt.Printf("txindex status: %v\n", err)
-		printDashes()
 		return
 	}
-	state := "SYNCING (catchup in progress)"
-	if isReady {
-		state = "READY"
+	state := "SYNCING"
+	if ready {
+		state = "READY (served by ThebeDB SQL projection)"
 	}
-	fmt.Printf("txindex status: %s — last indexed block: %d\n", state, lastIndexed)
-	printDashes()
+	fmt.Printf("txindex status: %s — chain head: %d\n", state, head)
 }
 
 func (h *CommandHandler) handleAccountSync(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: accountsync <peer_multiaddr>")
-		return
-	}
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
-		return
-	}
-
-	fmt.Printf("Starting account-only sync with peer %s\n", parts[1])
-	startTime := time.Now().UTC()
-
-	synced, err := h.FastSyncerV2.AccountSyncOnly(parts[1])
-	if err != nil {
-		fmt.Printf("AccountSync failed: %v\n", err)
-		return
-	}
-
-	fmt.Printf("AccountSync complete: %d missing accounts synced in %v\n", synced, time.Since(startTime))
+	fmt.Println("accountsync is retired — account state is synced as part of 'catchup' (ThebeSync / FastSync v4)")
 	printDashes()
 }
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {
-	if len(parts) < 3 || len(parts) > 4 {
-		fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
-		return
-	}
-	did := parts[1]
-	publicKey := parts[2]
-
-	// Default balance is "0" if not provided
-	balance := "0"
-	if len(parts) == 4 {
-		balance = parts[3]
-	}
-
-	// First create document then propagate.
-	// GATED out-of-band creation (operator CLI): a manually created account exists
-	// on this node only, with a locally minted ART nonce. Accounts are created at
-	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
-	// re-enables this path for emergencies.
-	if !DB_OPs.AllowLocalAccountCreate {
-		fmt.Printf("Failed to create account: %v\n", DB_OPs.ErrLocalAccountCreateDisabled)
-		return
-	}
-	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
-	if err != nil {
-		fmt.Printf("Failed to create account: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n",
-		did, publicKey, balance)
-
-	Document, err := DB_OPs.GetAccount(nil, common.HexToAddress(publicKey))
-	if err != nil {
-		fmt.Printf("Failed to get account: %v\n", err)
-		return
-	}
-
-	// First create the DID and then propagate
-	err = messaging.PropagateDID(h.Node.Host, Document)
-	if err != nil {
-		fmt.Printf("Failed to propagate DID: %v\n", err)
-	} else {
-		fmt.Println("DID propagated successfully to all connected peers")
-	}
-}
-
-func (h *CommandHandler) handleSyncInfo() {
-	fmt.Println("FastSync Configuration (V2):")
-	fmt.Println("  V1 retired — engine: FastsyncV2")
+	fmt.Println("propagateDID is retired — an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
 	printDashes()
 }
 
@@ -862,61 +704,25 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 }
 
 func (h *CommandHandler) handleDBState() {
-
-	err := h.checkDBClient()
+	// Latest block via globalThebeHandle → Postgres ORDER BY block_number DESC LIMIT 1
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
 	if err != nil {
-		fmt.Printf("Database client not initialized: %v\n", err)
+		fmt.Printf("Failed to get latest block number: %v\n", err)
+		fmt.Println("  (ThebeDB handle may not be initialised yet — check jmdn.yaml thebe config)")
 		return
 	}
 
-	err = h.checkDIDClient()
-	if err != nil {
-		fmt.Printf("DID database client not initialized: %v\n", err)
-		return
-	}
+	fmt.Println("Current ThebeDB State (Postgres):")
+	fmt.Printf("  Latest Block:   %d\n", latestBlock)
 
-	// Debugging
-	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
-
-	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		fmt.Printf("Failed to get database state: %v\n", err)
-		return
-	}
-
-	fmt.Println("Current ImmuDB State:")
-	fmt.Printf("  Transaction ID: %d\n", state.TxId)
-	fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-
-	// Count entries in the database using pagination
-	const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
-	var totalKeys int
-	var lastKey string
-	var hasMoreKeys = true
-
-	for hasMoreKeys {
-		keys, err := DB_OPs.GetAllKeys(h.MainClient, lastKey)
-		if err != nil {
-			fmt.Printf("Failed to count database entries: %v\n", err)
-			hasMoreKeys = false
-			continue
-		}
-
-		count := len(keys)
-		totalKeys += count
-
-		// If we got fewer keys than our limit, we've reached the end
-		if count < maxKeysPerBatch {
-			hasMoreKeys = false
-		} else if count > 0 {
-			// Set the last key for the next batch
-			lastKey = keys[count-1]
-		} else {
-			hasMoreKeys = false
+	// Show the latest block header
+	if latestBlock > 0 {
+		block, berr := DB_OPs.GetZKBlockByNumber(nil, latestBlock)
+		if berr == nil && block != nil {
+			fmt.Printf("  Block Hash:     %s\n", block.BlockHash)
+			fmt.Printf("  Gas Used:       %d\n", block.GasUsed)
 		}
 	}
-
-	fmt.Printf("  Total Keys: %d\n", totalKeys)
 	printDashes()
 }
 
@@ -1009,13 +815,6 @@ func (h *CommandHandler) handleDiscoverNeighbors() {
 	printDashes()
 }
 
-func (h *CommandHandler) checkDBClient() error {
-	if h.MainClient == nil {
-		return fmt.Errorf("database client not initialized")
-	}
-	return nil
-}
-
 // LatencyStats holds latency measurement results
 type LatencyStats struct {
 	Average    float64
@@ -1082,14 +881,6 @@ func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
 	}
 
 	return stats
-}
-
-// checkDIDClient ensures the DID database client is properly initialized before use
-func (h *CommandHandler) checkDIDClient() error {
-	if h.DIDClient == nil {
-		return fmt.Errorf("DID database client not initialized")
-	}
-	return nil
 }
 
 // handleGethStatus displays the current gETH configuration

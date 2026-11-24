@@ -17,8 +17,6 @@ package messaging
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -28,11 +26,14 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/settings"
+	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog/log"
 )
 
@@ -56,6 +57,16 @@ var (
 	// quorum; legacy "vote:<v>" signatures are ignored. Default ON per operator
 	// decision. MUST NOT be true until the whole network emits block-bound votes.
 	RejectLegacyVotes = envOn("JMDN_REJECT_LEGACY_VOTES", true)
+
+	// TrustSequencerCertificate — TESTNET STOPGAP, FAIL-OPEN. See
+	// settings.ConsensusFlags.TrustSequencerCertificate. When true a validator
+	// accepts a received block's certificate below the 2f+1 quorum, provided at
+	// least f+1 block-bound +1 votes from eligible (non-blocklisted) validators
+	// verify. Never applied when the verifier itself errored. Applied ONLY on
+	// the receiving paths (verifyBlockCertificate, ProcessBlockLocally,
+	// VerifySyncedBlockCertificate); the sequencer's own gate
+	// (Sequencer.Consensus) never consults it. Default OFF.
+	TrustSequencerCertificate = envOn("JMDN_TRUST_SEQUENCER_CERT", false)
 
 	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
 	// members count, and an eligibility source MUST be configured. FAIL CLOSED:
@@ -95,9 +106,25 @@ var (
 //
 // Wired at node startup via SetCommitteeEligibilitySource (only the sequencer
 // can legitimately call getBuddy). nil => FAIL CLOSED.
+// The (epoch, pinned) parameters exist for W1 pool pinning:
+//
+//	pinned == false  "whatever the source considers CURRENT" — the legacy/live
+//	                 read; epoch is ignored. Every caller does this today, which
+//	                 is why behaviour is unchanged by this commit.
+//	pinned == true   "the snapshot for exactly this selection epoch" — the read a
+//	                 verifier needs to re-derive a historical block's committee.
+//	                 A source that cannot serve that epoch EXACTLY must fail
+//	                 closed rather than substitute the current one.
+//
+// Plain builtins rather than a shared struct type, deliberately: seednode does
+// not import messaging today and this keeps it that way. And explicitly NOT
+// "epoch 0 means current" — the seed's wire protocol uses that convention, but a
+// block-derived selection epoch 0 is a REAL epoch (with committee_epoch_blocks=0
+// it is currently the ONLY one), so overloading 0 would silently mean "current"
+// forever: a fix that compiles, reads correctly, and changes nothing.
 var (
 	committeeEligibilityMu sync.RWMutex
-	committeeEligibilityFn func() (map[string]string, error)
+	committeeEligibilityFn func(epoch uint64, pinned bool) (map[string]string, error)
 )
 
 // SetCommitteeEligibilitySource wires the live committee-eligibility source. The
@@ -107,7 +134,7 @@ var (
 // (legacy getBuddy source with no committee snapshot) — the peer_id↔bls_pub
 // binding is only ENFORCED when the value is non-empty. Pass nil to clear
 // (forces fail-closed). Safe to call concurrently.
-func SetCommitteeEligibilitySource(fn func() (map[string]string, error)) {
+func SetCommitteeEligibilitySource(fn func(epoch uint64, pinned bool) (map[string]string, error)) {
 	committeeEligibilityMu.Lock()
 	committeeEligibilityFn = fn
 	committeeEligibilityMu.Unlock()
@@ -130,6 +157,24 @@ func blockedBuddies() map[string]struct{} {
 	return blocked
 }
 
+// withoutBlockedBuddies returns members minus the block_buddy blocklist: the
+// peers whose votes this node counts. Use it only for the numerator of a tally;
+// n and the threshold come from the unfiltered set (CON-12, H3). Returns
+// members itself when nothing is blocked.
+func withoutBlockedBuddies(members map[string]string) map[string]string {
+	blocked := blockedBuddies()
+	if len(blocked) == 0 {
+		return members
+	}
+	out := make(map[string]string, len(members))
+	for pid, blsPub := range members {
+		if _, isBlocked := blocked[pid]; !isBlocked {
+			out[pid] = blsPub
+		}
+	}
+	return out
+}
+
 // committeeSizeLimit returns the operator hard cap on the number of validators
 // (buddy nodes) counted toward consensus, from consensus.max_validators. 0 = no
 // cap. Reads settings only if loaded (robust to init order), mirroring
@@ -144,11 +189,82 @@ func committeeSizeLimit() int {
 	return 0
 }
 
-// eligibleMembers returns the authenticated eligible committee: the live buddy
-// set from the configured source, MINUS the block_buddy blocklist. FAIL CLOSED:
-// no source wired, a source error, or an empty result yields an error naming
-// the defect. Callers MUST treat an error as "no one is eligible".
-func eligibleMembers() (map[string]string, error) {
+// eligibleMembersUncapped returns the authenticated eligible committee: the live
+// buddy set from the configured source, MINUS the block_buddy blocklist, and
+// WITHOUT the consensus.max_validators cap.
+//
+// This is the pool committee selection draws from. The cap is applied by
+// eligibleMembers (the legacy path) but NOT here, because seed-ranked selection
+// replaces it: SelectCommitteeWithSize takes k = consensus.max_validators and
+// draws k members from this whole pool, which preserves the property the cap
+// existed for - every node computes the same n, and therefore the same
+// threshold - while adding the rotation an alphabetical prefix could never have.
+// See committee_v2.go and finding F2.
+//
+// FAIL CLOSED: no source wired, a source error, or an empty result yields an
+// error naming the defect. Callers MUST treat an error as "no one is eligible".
+func eligibleMembersUncapped() (map[string]string, error) {
+	return eligibleMembersUncappedForEpoch(0, false)
+}
+
+// eligibleMembersUncappedForEpoch is eligibleMembersUncapped with an explicit
+// epoch reference. See committeeEligibilityFn for the meaning of (epoch, pinned).
+//
+// pinned=false reproduces eligibleMembersUncapped exactly; pinned=true is the W1
+// path and is only reachable once consensus.require_pinned_committee is set AND
+// the wired source can serve a specific epoch. Callers MUST treat an error as
+// "no one is eligible" — never as "fall back to current".
+func eligibleMembersUncappedForEpoch(epoch uint64, pinned bool) (map[string]string, error) {
+	return eligibleMembersForEpochFiltered(epoch, pinned, true)
+}
+
+// FleetEligibleForEpoch is eligibleMembersUncappedForEpoch WITHOUT the local
+// block_buddy blocklist — the FLEET-AGREED pool.
+//
+// WHY THIS EXISTS (D-36). The blocklist is node-local operator config, so any
+// fleet-agreed quantity derived from a blocklist-filtered set differs between
+// nodes. VerifyCertificate has always known this and takes its Byzantine
+// denominator from authenticatedCommittee() for exactly this reason (CON-12,
+// see its comment at the top of the function): a blocked peer is a non-voter
+// while its seat still SIZES n, so blocking can only make quorum harder, never
+// lower the bar.
+//
+// Use this for any denominator, threshold or set whose value must match a
+// peer's. Use eligibleMembersUncappedForEpoch — the filtered one — only for
+// deciding whether to COUNT a particular signer.
+func FleetEligibleForEpoch(epoch uint64, pinned bool) (map[string]string, error) {
+	return eligibleMembersForEpochFiltered(epoch, pinned, false)
+}
+
+// eligibleMembersForEpochFiltered is the shared core. Split out so the filtered
+// and unfiltered views cannot drift apart in anything except the blocklist step.
+func eligibleMembersForEpochFiltered(epoch uint64, pinned bool, applyBlocklist bool) (map[string]string, error) {
+	// W1: once the pool is chain-anchored (committee_anchor.go), every
+	// resolution comes from the chain - the requested selection period when
+	// pinned, otherwise the period of the next height to be decided. Errors
+	// are returned as-is: an anchored period with no provable pool fails
+	// closed and must never fall back to the live seed read below.
+	if CommitteeAnchoringEnabled() {
+		var pool map[string]string
+		var handled bool
+		var err error
+		if pinned {
+			pool, handled, err = anchoredPoolForPeriod(epoch, applyBlocklist)
+		} else {
+			pool, handled, err = anchoredPoolForCurrent(applyBlocklist)
+		}
+		if handled {
+			return pool, err
+		}
+	}
+	return eligibleMembersFromSource(epoch, pinned, applyBlocklist)
+}
+
+// eligibleMembersFromSource is the pre-W1 resolution: read the eligibility
+// source (the seed) and apply the blocklist. Used directly only where a
+// deterministic chain-derived pool does not exist yet (the entropy committee's
+// transition epoch) - see committee_anchor.go.
+func eligibleMembersFromSource(epoch uint64, pinned bool, applyBlocklist bool) (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -156,7 +272,7 @@ func eligibleMembers() (map[string]string, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("committee eligibility source not configured (fail closed): call messaging.SetCommitteeEligibilitySource at startup")
 	}
-	buddies, err := fn()
+	buddies, err := fn(epoch, pinned)
 	if err != nil {
 		return nil, fmt.Errorf("committee eligibility source failed: %w", err)
 	}
@@ -171,16 +287,35 @@ func eligibleMembers() (map[string]string, error) {
 		if pid == "" {
 			continue
 		}
-		if _, isBlocked := blocked[pid]; isBlocked {
-			log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
-			continue
+		if applyBlocklist {
+			if _, isBlocked := blocked[pid]; isBlocked {
+				log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
+				continue
+			}
 		}
 		// Store the authenticated peer_id -> bls_pub binding (normalized) so the
 		// verifier can require a vote's pubkey to match the snapshot-bound key.
 		eligible[pid] = normalizeBLSPub(blsPub)
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
+		if applyBlocklist {
+			return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
+		}
+		return nil, fmt.Errorf("committee eligibility source returned no usable members")
+	}
+	return eligible, nil
+}
+
+// eligibleMembers is eligibleMembersUncapped with the consensus.max_validators
+// hard cap applied. This is the LEGACY committee: the alphabetical prefix.
+//
+// It remains the source for VerifyCertificate while JMDN_COMMITTEE_V2 is off,
+// so behaviour with the flag down is unchanged. Under v2 the cap is not used -
+// see eligibleMembersUncapped.
+func eligibleMembers() (map[string]string, error) {
+	eligible, err := eligibleMembersUncapped()
+	if err != nil {
+		return nil, err
 	}
 
 	// Hard cap on the number of validators (buddy nodes) counted toward
@@ -188,6 +323,9 @@ func eligibleMembers() (map[string]string, error) {
 	// the SAME capped committee (and therefore the SAME 2f+1 threshold). 0 = no
 	// cap. This bounds the threshold so it can never be sized over more validators
 	// than intended (e.g. main+backup=10 requiring 7 while only 5 main vote).
+	//
+	// DETERMINISTIC BUT FROZEN: sorting by peer_id means the same k peers vote at
+	// every height forever. That is finding F2, and it is what v2 replaces.
 	if lim := committeeSizeLimit(); lim > 0 && len(eligible) > lim {
 		ids := make([]string, 0, len(eligible))
 		for pid := range eligible {
@@ -204,6 +342,13 @@ func eligibleMembers() (map[string]string, error) {
 	}
 	return eligible, nil
 }
+
+// AuthorizedCommittee exports eligibleMembers for injection into
+// MessagePassing (Stage 3.5 of docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md,
+// Decision 1: capped, matching what VerifyCertificate uses today). The
+// underlying function stays unexported everywhere else — this is the one
+// deliberate seam.
+func AuthorizedCommittee() (map[string]string, error) { return eligibleMembers() }
 
 // EligibleCommitteePeerIDs returns the set of peer_ids authorized to vote this
 // round — exactly the set keyAuthorized checks against (authenticated source,
@@ -226,6 +371,18 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 	return set, nil
 }
 
+// FleetCommitteeSize returns n for the current committee: the size of the
+// fleet-agreed committee (capped, WITHOUT the local block_buddy blocklist)
+// that certificate thresholds are computed over, so every node gets the same
+// value whatever its own blocklist (CON-12, H3).
+func FleetCommitteeSize() (int, error) {
+	members, err := authenticatedCommittee()
+	if err != nil {
+		return 0, err
+	}
+	return len(members), nil
+}
+
 // keyAuthorized reports whether a vote from (peerID,pubHex) counts toward
 // quorum. FAIL CLOSED: a defective/absent eligibility source authorizes
 // NOBODY.
@@ -234,7 +391,17 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 // the vote's pubHex must equal it. When the bound key is empty (legacy getBuddy
 // source with no snapshot), only peer_id membership is checked.
 func keyAuthorized(peerID, pubHex string) bool {
-	eligible, err := eligibleMembers()
+	// Under JMDN_COMMITTEE_V2 the seated committee rotates across the WHOLE
+	// pool, so authorize against the uncapped pool (same source as
+	// AuthorizedCommitteeForTally). The capped, alphabetical eligibleMembers()
+	// set would deny correctly seated v2 members as not_in_eligible_set.
+	var eligible map[string]string
+	var err error
+	if CommitteeV2Enabled {
+		eligible, err = eligibleMembersUncapped()
+	} else {
+		eligible, err = eligibleMembers()
+	}
 	if err != nil {
 		// fmt.Printf (not zerolog) so this denial reliably reaches journald.
 		fmt.Printf("🚫 committee auth denied: peer=%s reason=eligibility_source_error err=%v\n", peerID, err)
@@ -268,19 +435,11 @@ func ValidateCommitteeSource() error {
 	return err
 }
 
-// ValidateCommitteeRegistry is retained as a back-compat alias for callers and
-// now validates the dynamic eligibility source.
-func ValidateCommitteeRegistry() error { return ValidateCommitteeSource() }
-
 // CommitteeKeyAuthorized reports whether a vote from (peerID,pubHex) is from an
 // eligible committee member. Exported for the sequencer's vote-aggregation path
 // (Sequencer/Consensus.go). FAIL CLOSED: returns false when the eligibility
 // source is missing or failing.
 func CommitteeKeyAuthorized(peerID, pubHex string) bool { return keyAuthorized(peerID, pubHex) }
-
-// RegistryConfigured reports whether a valid, non-empty eligible committee is
-// available. Retained for callers outside this package.
-func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
 // ---- Certificate verification ------------------------------------------------
 
@@ -335,21 +494,183 @@ type CertificateResult struct {
 // EnforceCommitteeRegistry only controls whether votes from non-members are
 // filtered out. Turning enforcement off does NOT remove the 2f+1 requirement,
 // so a node with no committee source fails closed regardless.
-func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64) (CertificateResult, error) {
+// authenticatedCommittee returns the FLEET-AGREED committee used as the quorum
+// DENOMINATOR n: the authenticated eligibility source trimmed ONLY by the
+// consensus.max_validators cap (deterministic, sorted by peer_id), WITHOUT the
+// operator-LOCAL block_buddy blocklist. So n is identical on every node
+// regardless of any node's local blocklist — the CON-12 fix. A local blocklist
+// removes a peer from the NUMERATOR (a non-voter) but its seat still counts here,
+// so blocking can only make quorum HARDER, never lower this node's Byzantine
+// threshold below the fleet's. FAIL CLOSED: an unset/failing/empty source errors.
+//
+// capCommittee trims to committeeSizeLimit() members by sorted peer_id so
+// every node computes the same set and threshold (0 = no cap). Unchanged
+// rule, shared by the legacy and the anchored path.
+func capCommittee(c map[string]string) map[string]string {
+	lim := committeeSizeLimit()
+	if lim <= 0 || len(c) <= lim {
+		return c
+	}
+	ids := make([]string, 0, len(c))
+	for pid := range c {
+		ids = append(ids, pid)
+	}
+	sort.Strings(ids)
+	capped := make(map[string]string, lim)
+	for _, pid := range ids[:lim] {
+		capped[pid] = c[pid]
+	}
+	return capped
+}
+
+// Legacy (JMDN_COMMITTEE_V2 off) path only — the v2 verifier derives n from the
+// seed-ranked selected committee (committee_v2.go) instead.
+//
+// authenticatedCommittee: the fleet-agreed committee for the CURRENT pool
+// (DIDPropagation and other non-block callers).
+func authenticatedCommittee() (map[string]string, error) {
+	// W1: fleet-agreed pool (no blocklist) from the chain once anchored.
+	if pool, handled, err := anchoredPoolForCurrent(false); handled {
+		if err != nil {
+			return nil, err
+		}
+		return capCommittee(pool), nil
+	}
+	return liveAuthenticatedCommittee()
+}
+
+// authenticatedCommitteeForHeight: the fleet-agreed committee for the period
+// that contains height. Anchored periods come from that period's anchor;
+// everything else is exactly authenticatedCommittee's legacy path.
+func authenticatedCommitteeForHeight(height uint64) (map[string]string, error) {
+	if pool, handled, err := AnchoredPoolForHeight(height, false); handled {
+		if err != nil {
+			return nil, err
+		}
+		return capCommittee(pool), nil
+	}
+	return liveAuthenticatedCommittee()
+}
+
+// liveAuthenticatedCommittee is authenticatedCommittee's pre-W1 body:
+// the authenticated eligibility source, normalized and capped, WITHOUT the
+// operator-LOCAL block_buddy blocklist. So n is identical on every node
+// regardless of any node's local blocklist — the CON-12 fix. A local blocklist
+// removes a peer from the NUMERATOR (a non-voter) but its seat still counts here,
+// so blocking can only make quorum HARDER, never lower this node's Byzantine
+// threshold below the fleet's. FAIL CLOSED: an unset/failing/empty source errors.
+func liveAuthenticatedCommittee() (map[string]string, error) {
+	committeeEligibilityMu.RLock()
+	fn := committeeEligibilityFn
+	committeeEligibilityMu.RUnlock()
+
+	if fn == nil {
+		return nil, fmt.Errorf("committee eligibility source not configured (fail closed): call messaging.SetCommitteeEligibilitySource at startup")
+	}
+	buddies, err := fn(0, false)
+	if err != nil {
+		return nil, fmt.Errorf("committee eligibility source failed: %w", err)
+	}
+	if len(buddies) == 0 {
+		return nil, fmt.Errorf("committee eligibility source returned an empty buddy set")
+	}
+
+	// Fleet-agreed set: normalize, but deliberately do NOT apply the local
+	// block_buddy blocklist (that would make n depend on this node's config).
+	committee := make(map[string]string, len(buddies))
+	for pid, blsPub := range buddies {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		committee[pid] = normalizeBLSPub(blsPub)
+	}
+	if len(committee) == 0 {
+		return nil, fmt.Errorf("committee eligibility source returned only empty peer ids (fail closed)")
+	}
+	return capCommittee(committee), nil
+}
+
+func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
 	var res CertificateResult
 
-	committee, err := eligibleMembers()
+	// Denominator n: the FLEET-AGREED committee (capped, WITHOUT the local
+	// block_buddy blocklist), so the Byzantine threshold is identical on every node
+	// regardless of any node's local blocklist (CON-12). NOTE: intentionally NOT
+	// eligibleMembers(), which applies the blocklist and would let a local blocklist
+	// shrink n and diverge this node's threshold from the fleet.
+	quorumCommittee, err := authenticatedCommitteeForHeight(height)
 	if err != nil {
 		// No authenticated committee => cannot compute a Byzantine threshold.
 		return res, err
 	}
-	n := len(committee)
+	n := len(quorumCommittee)
 
-	res.YesVotes = countEligibleYes(responses, blockHashHex, height, committee, EnforceCommitteeRegistry)
+	// Numerator: the denominator MINUS this node's local block_buddy blocklist, so a
+	// blocked peer is a non-voter while its seat still sizes n above (numerator ⊆
+	// denominator). Blocking can only make quorum HARDER, never lower the bar.
+	votingMembers := withoutBlockedBuddies(quorumCommittee)
+
+	res.YesVotes = countEligibleYes(responses, blockHashHex, consensusHashHex, height, votingMembers, EnforceCommitteeRegistry)
 	res.CommitteeSize = n
 	res.Threshold = ByzantineQuorum(n)
 	res.Reached = res.YesVotes >= res.Threshold
 	return res, nil
+}
+
+// relaxForTrustedSequencer is the single place TrustSequencerCertificate takes
+// effect. Given a receive-path verifier outcome (res, err) for a block's
+// certificate, it returns that outcome unchanged when the flag is off, the
+// quorum was reached, or the verifier returned an error (an error means the
+// committee could not be resolved — accepting then would trust a certificate
+// nobody checked). Otherwise it re-counts the certificate against the
+// eligible pool for the block's selection period, with the local blocklist
+// applied, and accepts only if at least f+1 distinct block-bound +1 votes
+// verify. Votes are counted from the whole pool, not just the seated
+// committee, so f is the larger of the committee's and the fleet pool's: f
+// taken from the committee alone let ceil(n/3) votes from unseated pool
+// members pass while the pool may hold more faulty keys than that. f+1 over
+// the pool guarantees at least one honest signer under the BFT assumption, so
+// f colluding validator keys cannot finalize a block on their own.
+func relaxForTrustedSequencer(path string, res CertificateResult, err error, responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64) (CertificateResult, error) {
+	if !TrustSequencerCertificate {
+		return res, err
+	}
+	if err != nil || res.Reached {
+		return res, err
+	}
+	pool, perr := eligibleMembersUncappedForEpoch(EpochForHeight(height), false)
+	if perr != nil || len(pool) == 0 {
+		return res, err
+	}
+	// n is capped by the FLEET pool, not the blocklist-filtered one: capping
+	// by the filtered pool let a local blocklist lower f+1 and accept a block
+	// with fewer votes. The blocklist only decides whose votes count (CON-12).
+	fleet, ferr := FleetEligibleForEpoch(EpochForHeight(height), false)
+	if ferr != nil || len(fleet) == 0 {
+		return res, err
+	}
+	n := res.CommitteeSize
+	if n <= 0 {
+		n = committeeSizeLimit()
+	}
+	if n <= 0 || n > len(fleet) {
+		n = len(fleet)
+	}
+	need := (n-1)/3 + 1 // f+1
+	if floor := (len(fleet)-1)/3 + 1; floor > need {
+		need = floor
+	}
+	yes := countEligibleYes(responses, blockHashHex, consensusHashHex, height, pool, true)
+	if yes < need {
+		return res, err
+	}
+	out := CertificateResult{CommitteeSize: n, Threshold: ByzantineQuorum(n), YesVotes: yes, Reached: true}
+	log.Warn().Str("path", path).Uint64("height", height).
+		Int("pool_verified_yes", yes).Int("required_f_plus_1", need).Int("pool_size", len(pool)).
+		Int("verifier_yes", res.YesVotes).Int("verifier_threshold", res.Threshold).Int("verifier_committee", res.CommitteeSize).
+		Msg("certificate accepted on SEQUENCER TRUST (trust_sequencer_certificate): f+1 verified, 2f+1 quorum NOT re-verified on this node")
+	return out, nil
 }
 
 // countEligibleYes returns the number of distinct +1 voters that (a) produced a
@@ -358,7 +679,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, 
 // De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
 // by presenting the same key under several peer_ids, or several keys for one
 // peer_id.
-func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
+func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex, consensusHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
 	yes := 0
@@ -370,9 +691,35 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, h
 
 		// Prefer block-bound verification. Fall back to legacy only when
 		// legacy is still permitted.
-		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, vote) == nil
+		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, consensusHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
-			verified = BLS_Verifier.Verify(r, vote) == nil
+			if BLS_Verifier.Verify(r, vote) == nil {
+				verified = true
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
+				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote accepted (reject_legacy_votes is off)")
+			}
+		} else if !verified {
+			// reject_legacy_votes is ON: the vote is refused either way, but
+			// classify it so the metric still DETECTS a validator signing the
+			// legacy domain. Without this the counter is pinned at zero on
+			// every node that is not the sequencer, and a flat zero reads as
+			// "no legacy votes" when it means "not instrumented here".
+			//
+			// Bounded on purpose: the extra verification runs only for a peer
+			// already in the committee map. responses is attacker-supplied and
+			// has no length cap, so classifying every failure would sell a
+			// flood of garbage signatures a second BLS verification each.
+			//
+			// Key-bound on purpose: Verify checks the signature against the
+			// pubkey CARRIED IN THE RESPONSE, so without this the detector could
+			// be fired by anyone who names a committee peer_id and signs the
+			// legacy domain with a key of their own — blaming an innocent
+			// validator. Same binding rule as the accept path below: when the
+			// snapshot bound a key to this peer_id, the response must carry it.
+			if legacyDetectable(committee, r) && BLS_Verifier.Verify(r, vote) == nil {
+				metrics.ConsensusLegacyVotesTotal.WithLabelValues(metrics.LegacyVoteSitePoolTally).Inc()
+				log.Warn().Str("peer", r.PeerID).Msg("legacy (unbound) BLS vote detected and refused (reject_legacy_votes is on)")
+			}
 		}
 		if !verified {
 			log.Warn().Str("peer", r.PeerID).Msg("committee vote signature failed verification")
@@ -418,6 +765,20 @@ func normalizeBLSPub(s string) string {
 	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
 }
 
+// legacyDetectable reports whether a legacy-vote classification may run for
+// response r against committee (peer_id -> snapshot-bound bls_pub, "" when the
+// snapshot carried no binding). It is the membership + key-binding rule of the
+// accept path applied BEFORE the extra BLS verification, so the
+// consensus_legacy_votes_total detector only ever attributes a legacy
+// signature to the validator whose own key produced it.
+func legacyDetectable(committee map[string]string, r BLS_Signer.BLSresponse) bool {
+	boundKey, known := committee[r.PeerID]
+	if !known {
+		return false
+	}
+	return boundKey == "" || normalizeBLSPub(r.PubKey) == boundKey
+}
+
 // ---- Canonical body binding --------------------------------------------------
 //
 // The block generator (JMDT-Sequencer-Orchestrator internal/block/generator.go)
@@ -451,43 +812,27 @@ func RecomputeBlockHashFromTxs(txs []config.Transaction) common.Hash {
 // Merkle tree over the per-tx 32-byte hashes). Returns the "0x"-prefixed hex
 // root, matching the generator's string form.
 func RecomputeTxnsRoot(txs []config.Transaction) string {
-	if len(txs) == 0 {
-		return "0x" + strings.Repeat("0", 64)
-	}
-	level := make([][]byte, len(txs))
+	hashes := make([]common.Hash, len(txs))
 	for i := range txs {
-		level[i] = txs[i].Hash.Bytes()
+		hashes[i] = txs[i].Hash
 	}
-	if len(level) == 1 {
-		combined := make([]byte, 0, 64)
-		combined = append(combined, level[0]...)
-		combined = append(combined, level[0]...)
-		s := sha256.Sum256(combined)
-		return "0x" + hex.EncodeToString(s[:])
-	}
-	for len(level) > 1 {
-		if len(level)%2 == 1 {
-			level = append(level, level[len(level)-1])
-		}
-		next := make([][]byte, 0, len(level)/2)
-		for i := 0; i < len(level); i += 2 {
-			combined := make([]byte, 0, 64)
-			combined = append(combined, level[i]...)
-			combined = append(combined, level[i+1]...)
-			s := sha256.Sum256(combined)
-			next = append(next, s[:])
-		}
-		level = next
-	}
-	return "0x" + hex.EncodeToString(level[0])
+	return DB_OPs.TxnsRootOfHashes(hashes)
 }
 
 // checkBodyBinding recomputes the canonical BlockHash and TxnsRoot from the
 // received transactions and rejects any mismatch. This runs BEFORE
 // certificate verification so a certified hash cannot authorize a different
 // transaction set.
+//
+// Transactions-only, matching the orchestrator-submitted BlockHash. Consensus
+// fields are NOT folded into BlockHash (see Block/consensus_fields.go); they
+// travel as their own advisory fields, so this body binding stays a pure tx
+// check and cannot be broken by consensus-field changes.
 func checkBodyBinding(b *config.ZKBlock) *blockRejection {
-	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
+	// BlockHash is the orchestrator identity and is never the consensus-fields
+	// hash (see Block/consensus_fields.go): the transactions, plus the coinbase,
+	// zkvm address and timestamp from consensus.header_binding_from_height on.
+	wantHash := Security.ExpectedBlockHash(b, RecomputeBlockHashFromTxs(b.Transactions))
 	if b.BlockHash != wantHash {
 		return reject("body_mismatch",
 			"block %s: recomputed hash %s does not match transactions (body substituted?)",
@@ -507,16 +852,122 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 	return nil
 }
 
+// checkConsensusBinding verifies the SEPARATE consensus-fields digest. Unlike
+// checkBodyBinding (which binds BlockHash to transactions only), this binds the
+// consensus fields (see Security.consensusFieldsDigest for the exact preimage:
+// BlockNumber, PrevHash, Slot, Period, reveals, VdfProof, epochs, PrevAggCert,
+// CommitteeSnapshotHash, VdfParamsDigest, tx content hashes) via block.ConsensusHash.
+// FeeRecipients is NOT in that preimage; checkFeeRecipients recomputes it. This
+// runs BEFORE certificate verification so the cert's v4 signatures (which sign
+// over ConsensusHash) are checked against a confirmed-honest value, closing the
+// post-commit rewrite of Period and the other hashed fields.
+//
+// A zero ConsensusHash is REJECTED unconditionally (consensus_hash_missing); a
+// non-zero value MUST match the recomputed digest.
+func checkConsensusBinding(b *config.ZKBlock) *blockRejection {
+	if (b.ConsensusHash == common.Hash{}) {
+		// D-28: a missing ConsensusHash is REJECTED unconditionally, not just
+		// when Period != 0. The v3 consensus-fields preimage is unconditional
+		// (Security/consensus_fields_hash.go — the rollout flag that used to
+		// make an empty ConsensusHash a legitimate "pre-v4 block" case was
+		// removed before testnet launch), so every block attachAVCConsensusFields
+		// built carries a real ConsensusHash regardless of Period. Skipping
+		// here when Period == 0 was also the exact bypass that left
+		// getBlockDedupID/checkEquivocation's re-key onto ConsensusHash
+		// (above in blockPropagation.go) still collidable: two different
+		// forks could each simply omit ConsensusHash and share the same
+		// (zero) key, reproducing the identical-BlockHash collision this
+		// whole fix exists to close.
+		return reject("consensus_hash_missing",
+			"block %s: no ConsensusHash present (required — v3 preimage is unconditional)",
+			b.BlockHash.Hex())
+	}
+	want := Security.RecomputeBlockHashWithConsensusFields(b)
+	if b.ConsensusHash != want {
+		return reject("consensus_hash_mismatch",
+			"block %s: ConsensusHash %s does not match recomputed consensus fields %s (consensus field tampered?)",
+			b.BlockHash.Hex(), b.ConsensusHash.Hex(), want.Hex())
+	}
+	return nil
+}
+
+// CheckSyncedSlot is ThebeSync's slot rule: a block's slot is its block
+// number. The one exception is history from before slots were stamped: a
+// block may carry Slot 0 only when its parent does too, so a zero slot after
+// a slotted parent is still rejected. parentSlot is called only for a Slot-0
+// block, to read the already-applied parent.
+func CheckSyncedSlot(b *config.ZKBlock, parentSlot func() (uint64, error)) error {
+	if b == nil || b.Slot == b.BlockNumber {
+		return nil
+	}
+	if b.Slot == 0 {
+		ps, err := parentSlot()
+		if err != nil {
+			return fmt.Errorf("block %d has slot 0 and its parent's slot cannot be read: %w", b.BlockNumber, err)
+		}
+		if ps == 0 {
+			return nil
+		}
+		return fmt.Errorf("block %d has slot 0 after a parent at slot %d (want slot = block number)", b.BlockNumber, ps)
+	}
+	return fmt.Errorf("block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
+}
+
+// CheckSyncedPeriodBinding is ThebeSync's guard on a block's Period. The
+// committee that certifies a block is seated from the block's own Period
+// (RoundContextForBlock), so a synced block that claims a non-zero Period
+// must prove it through its ConsensusHash, exactly as checkConsensusBinding
+// does on the live receive path. Without it a sync peer could rewrite Period
+// (and so the slot accounting AdvanceOnCommit derives from it) on a block
+// whose certificate still verifies - always the case when every committee is
+// the whole pool.
+//
+// A Period above config.MaxPeriodAt is rejected outright, as on the live path.
+//
+// Period 0 blocks are left to the existing sync checks: history that predates
+// the persisted consensus fields cannot recompute its ConsensusHash, and no
+// block before the proposer's period counter carried a non-zero Period.
+func CheckSyncedPeriodBinding(b *config.ZKBlock) error {
+	if b == nil || b.Period == 0 {
+		return nil
+	}
+	if limit := config.MaxPeriodAt(b.BlockNumber); b.Period > limit {
+		return fmt.Errorf("block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, limit)
+	}
+	if rej := checkConsensusBinding(b); rej != nil {
+		return rej.err
+	}
+	return nil
+}
+
 // verifyBlockProof is the seam for ZK/STARK proof verification, invoked on the
 // block-receive path. Implement verification here as the prover matures.
 func verifyBlockProof(_ *config.ZKBlock) error { return nil }
 
 // ---- Equivocation detection --------------------------------------------------
 
+// seenHeightsCacheCapacity bounds the in-memory equivocation fast-path cache
+// (D-34). It never holds the only copy in practice — blockPropagation.go:121
+// auto-wires DBEquivocationStore on every node, so a miss falls through to
+// the durable store. If that wiring is ever removed, this cache becomes the
+// only copy and eviction loses first-seen state. Sized generously past any
+// plausible in-flight window; it exists to stop unbounded growth over a
+// long-lived process, not to bound recency tightly.
+const seenHeightsCacheCapacity = 100000
+
 var (
 	seenHeightsMu sync.Mutex
-	seenHeights   = make(map[uint64]string) // height -> first-seen block hash hex
+	seenHeights   = mustNewHeightCache(seenHeightsCacheCapacity) // height -> first-seen block hash hex
 )
+
+func mustNewHeightCache(size int) *lru.Cache[uint64, string] {
+	c, err := lru.New[uint64, string](size)
+	if err != nil {
+		// Unreachable: size is a positive compile-time constant.
+		panic(fmt.Sprintf("messaging: equivocation height cache: %v", err))
+	}
+	return c
+}
 
 // EquivocationStore persists the first-seen block hash per height so
 // equivocation detection survives a process restart. checkEquivocation
@@ -543,16 +994,32 @@ func SetEquivocationStore(s EquivocationStore) { equivocationStore = s }
 // DIFFERENT block hash was already seen at this height (a signed fork / double
 // proposal). It consults the durable store in addition to the in-memory
 // map, so a conflicting block at a height first seen BEFORE a restart is still
-// caught. Durable-store errors are non-fatal: it falls back to in-memory
-// (degraded) rather than stalling consensus, matching the linkage
-// fail-open-on-infra posture. Only fully-validated blocks reach here (called
-// last in validateRemoteBlock), so the map is populated only by validated blocks.
+// caught. Only fully-validated blocks reach here (called last in
+// validateRemoteBlock), so the map is populated only by validated blocks.
+//
+// BOTH STORE PATHS FAIL CLOSED (audit CON-08 read, CON-21 write). This is
+// deliberately NOT the linkage "fail-open-on-infra" posture, because the two
+// are not comparable: after a restart the in-memory seenHeights map is empty,
+// so the durable store is the ONLY equivocation defence there is. Degrading to
+// in-memory on a store error does not degrade detection, it removes it — and
+// silently, at exactly the moment the store is unhealthy.
+//
+// # Do not "simplify" this back to log-and-continue
+//
+// It was already fixed once and silently un-fixed once. 0167cd21 (read) and
+// 1cfcc76d (write) landed, then merge 524fe714 resolved this hunk to the
+// pre-fix side and restored the fail-open code. Both fix commits remained
+// ancestors of the branch, so every "is the fix merged?" check answered yes
+// for five weeks while the shipped binary had no equivocation defence on
+// either path. equivocation_fail_closed_test.go pins the behaviour STRINGS for
+// that reason: a merge graph cannot detect this class of revert, and a test
+// that asserts on behaviour can.
 func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	seenHeightsMu.Lock()
 	defer seenHeightsMu.Unlock()
 
 	// Fast path: already recorded in this session.
-	if prev, ok := seenHeights[number]; ok {
+	if prev, ok := seenHeights.Get(number); ok {
 		if prev != hashHex {
 			return reject("equivocation",
 				"conflicting block at height %d: already saw %s, now %s", number, prev, hashHex)
@@ -565,10 +1032,20 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 		prev, found, err := equivocationStore.FirstSeenHash(number)
 		switch {
 		case err != nil:
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable read failed; using in-memory only")
+			// Fail closed: after a restart the in-memory seenHeights map is
+			// empty, so the durable read is the ONLY equivocation defence. A
+			// read error must reject, not fall through to "first sighting" —
+			// matching linkageDecision's tip_unreadable (audit CON-08).
+			//
+			// rejectLocal, not reject: the sending peer did nothing wrong, OUR
+			// store is unhealthy. A plain reject would time them out for 30s,
+			// and since this fires for EVERY inbound block while the store is
+			// down, it would walk the whole peer set into timeout and
+			// self-partition the node.
+			return rejectLocal("equivocation_unreadable",
+				"durable equivocation read failed at height %d: %v (fail closed)", number, err)
 		case found:
-			seenHeights[number] = prev // warm the in-memory cache
+			seenHeights.Add(number, prev) // warm the in-memory cache
 			if prev != hashHex {
 				return reject("equivocation",
 					"conflicting block at height %d: already saw %s (durable), now %s", number, prev, hashHex)
@@ -578,13 +1055,22 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	}
 
 	// First sighting of this height (this session and durably). Record both.
-	seenHeights[number] = hashHex
 	if equivocationStore != nil {
 		if err := equivocationStore.RecordFirstSeen(number, hashHex); err != nil {
-			log.Warn().Err(err).Uint64("height", number).
-				Msg("equivocation: durable write failed; recorded in-memory only")
+			// Fail closed to match the hardened read (CON-08/CON-21): a failed
+			// durable write leaves a hole the fail-closed read cannot detect —
+			// a later read returns not-found and treats a conflicting block as
+			// a first sighting. Reject rather than record in-memory-only.
+			//
+			// rejectLocal for the same reason as the read path above: this is
+			// our storage failing, not the peer's block being bad.
+			return rejectLocal("equivocation_write_failed",
+				"durable equivocation write failed at height %d: %v (fail closed)", number, err)
 		}
 	}
+	// In-memory cache set only AFTER the durable write succeeds, so the two
+	// never disagree.
+	seenHeights.Add(number, hashHex)
 	return nil
 }
 
@@ -614,7 +1100,10 @@ func (DBEquivocationStore) RecordFirstSeen(height uint64, hashHex string) error 
 // authenticated local tip and the stored parent through these so the pure
 // linkage policy can be exercised in tests without a live DB.
 var (
-	readLocalTip      = func(ctx context.Context) (uint64, error) { return DB_OPs.GetLatestBlockNumber(ctx, nil) }
+	// The data-complete tip, not MAX(block_number): a store that failed after
+	// writing the block row leaves a row whose block was rolled back (D-858
+	// review B1). That block must be accepted again, not refused as stale.
+	readLocalTip      = func(context.Context) (uint64, error) { return DB_OPs.GetLatestDataCompleteBlock() }
 	readBlockByNumber = func(n uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, n) }
 )
 
@@ -638,6 +1127,10 @@ func requestCatchUp(fromBlock uint64) {
 	}
 }
 
+// RequestCatchUp is the exported form, for packages that detect a gap but
+// cannot import messaging (Vote: messaging imports it). Nil-safe like the rest.
+func RequestCatchUp(fromBlock uint64) { requestCatchUp(fromBlock) }
+
 // checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED.
 // It reads the authenticated local tip/parent and delegates the decision
 // to the pure linkageDecision. On a detected height gap it triggers authenticated
@@ -656,6 +1149,14 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 		// We are missing everything from our next-needed height up to this block
 		// (fresh node: from block 1). Trigger authenticated catch-up.
 		requestCatchUp(localTip + 1)
+	}
+	if rej == nil && parent != nil {
+		// Header binding (consensus.header_binding_from_height): a timestamp
+		// not before the parent's. Addresses and clock drift were checked by
+		// the committee before certifying (Security.CheckHeaderPolicy).
+		if err := Security.CheckHeaderOrder(b, parent.Timestamp); err != nil {
+			return reject("header_fields", "%v", err)
+		}
 	}
 	return rej
 }
@@ -716,6 +1217,29 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 		return reject("bad_parent",
 			"block %d prevHash %s != local tip %d hash %s",
 			b.BlockNumber, b.PrevHash.Hex(), localTip, parent.BlockHash.Hex())
+	}
+
+	// (Period cap) Nothing else bounds the proposer's choice of Period; see
+	// config.MaxPeriodAt.
+	if limit := config.MaxPeriodAt(b.BlockNumber); b.Period > limit {
+		return reject("period_too_high",
+			"block %d period %d exceeds the cap %d", b.BlockNumber, b.Period, limit)
+	}
+
+	// (Slot) A block's slot is its block number, whatever its Period
+	// (slot_store.go). A block stamped by the current proposer always has it.
+	// A legacy block (legacy follow mode) comes from the main-branch
+	// sequencer, which stamps no slot: it takes ThebeSync's rule instead
+	// (slot 0 only after a slot-0 parent), as it does when it arrives by
+	// catch-up.
+	if b.Slot != b.BlockNumber {
+		if !IsLegacyBlock(b) {
+			return reject("bad_slot",
+				"block %d carries slot %d (want slot = block number)", b.BlockNumber, b.Slot)
+		}
+		if err := CheckSyncedSlot(b, func() (uint64, error) { return parent.Slot, nil }); err != nil {
+			return reject("bad_slot", "%v", err)
+		}
 	}
 
 	// (State-root chain) The generator computes

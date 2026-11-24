@@ -1,0 +1,221 @@
+package Sequencer
+
+import (
+	"bytes"
+	"errors"
+	"testing"
+
+	"github.com/JupiterMetaLabs/avc/committee"
+	"github.com/JupiterMetaLabs/avc/randao"
+)
+
+func resetBootstrapState(t *testing.T) {
+	t.Helper()
+	resetBootstrapEpochs()
+	t.Cleanup(resetBootstrapEpochs)
+}
+
+// Two nodes with the same chain id, authority pin, seed and epoch MUST derive
+// the same bytes - that is the whole point. And any one input differing MUST
+// change them, or two networks could share a bootstrap committee schedule.
+func TestBootstrapEntropy_DeterministicAndDomainSeparated(t *testing.T) {
+	const pin = "1c79a531fc76abcdef"
+	a := BootstrapEntropy(8000800, pin, "", 0)
+	b := BootstrapEntropy(8000800, pin, "", 0)
+	if !bytes.Equal(a, b) {
+		t.Fatal("same inputs produced different bootstrap entropy")
+	}
+	if len(a) != 32 {
+		t.Fatalf("expected 32 bytes, got %d", len(a))
+	}
+	// pin comparison is case/space-insensitive (hex pins are pasted both ways)
+	if !bytes.Equal(a, BootstrapEntropy(8000800, "  1C79A531FC76ABCDEF ", "", 0)) {
+		t.Fatal("authority pin should be normalised (trim + lowercase) before hashing")
+	}
+	variants := [][]byte{
+		BootstrapEntropy(8000801, pin, "", 0),         // chain id
+		BootstrapEntropy(8000800, pin+"00", "", 0),    // pin
+		BootstrapEntropy(8000800, pin, "devnet-b", 0), // operator seed
+		BootstrapEntropy(8000800, pin, "", 1),         // epoch
+	}
+	for i, v := range variants {
+		if bytes.Equal(a, v) {
+			t.Fatalf("variant %d did not change the bootstrap entropy", i)
+		}
+	}
+}
+
+func TestPublishBootstrapEntropy_PublishesAllListedEpochsAndRecordsThem(t *testing.T) {
+	resetBootstrapState(t)
+	sink, err := committee.NewBeaconSource(committee.MinRetainedEpochs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// unsorted + duplicate on purpose
+	if err := publishBootstrapEntropy(sink, 8000800, "abc123", "", []uint64{1, 0, 1}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	for _, e := range []uint64{0, 1} {
+		if !sink.Has(e) {
+			t.Fatalf("sink should have bootstrap entropy for epoch %d", e)
+		}
+		if !IsBootstrapEpoch(e) {
+			t.Fatalf("epoch %d should be recorded as bootstrap", e)
+		}
+		got, err := sink.EpochEntropy(committee.EntropyEpoch(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, BootstrapEntropy(8000800, "abc123", "", e)) {
+			t.Fatalf("epoch %d: published bytes differ from BootstrapEntropy", e)
+		}
+	}
+	if IsBootstrapEpoch(2) || sink.Has(2) {
+		t.Fatal("epoch 2 was not listed and must not be bootstrapped")
+	}
+}
+
+func TestPublishBootstrapEntropy_RefusesWithoutAuthorityPin(t *testing.T) {
+	resetBootstrapState(t)
+	sink, _ := committee.NewBeaconSource(committee.MinRetainedEpochs)
+	err := publishBootstrapEntropy(sink, 8000800, "   ", "", []uint64{0})
+	if !errors.Is(err, ErrBootstrapNeedsAuthorityPin) {
+		t.Fatalf("expected ErrBootstrapNeedsAuthorityPin, got %v", err)
+	}
+	if sink.Has(0) || IsBootstrapEpoch(0) {
+		t.Fatal("nothing must be published or recorded on refusal")
+	}
+}
+
+func TestPublishBootstrapEntropy_EmptyListIsNoop(t *testing.T) {
+	resetBootstrapState(t)
+	sink, _ := committee.NewBeaconSource(committee.MinRetainedEpochs)
+	if err := publishBootstrapEntropy(sink, 8000800, "abc", "", nil); err != nil {
+		t.Fatalf("empty list must be a no-op, got %v", err)
+	}
+	if sink.Has(0) {
+		t.Fatal("nothing should be published for an empty list")
+	}
+}
+
+// A real seal for a bootstrapped epoch would Publish DIFFERENT entropy under
+// the same key, which BeaconSource refuses -> SealResult.Err -> boundary
+// block 503. onEpochFinalised must therefore not start a sealer for it.
+func TestOnEpochFinalised_SkipsSealerForBootstrapSuccessorEpoch(t *testing.T) {
+	withBeaconPrereqs(t)
+	resetVDFWiringState(t)
+	resetBootstrapState(t)
+	n := testFixtureModulus(t)
+	t.Setenv("JMDN_AVC_VDF_MODULUS_HEX", n.Text(16))
+	t.Setenv("JMDN_AVC_VDF_GROUP_NAME", "test-group")
+	t.Setenv("JMDN_AVC_VDF_DIFFICULTY_T", "2")
+	t.Setenv(allowUnpinnedModulusEnv, "1")
+	if installed, err := InstallAVCBeaconFromEnv(); err != nil || !installed {
+		t.Fatalf("install: installed=%v err=%v", installed, err)
+	}
+
+	// mark epoch 1 as bootstrap, then finalise epoch 0 (whose successor is 1)
+	bootstrapEpochsMu.Lock()
+	bootstrapEpochs[1] = struct{}{}
+	bootstrapEpochsMu.Unlock()
+	onEpochFinalised(0, randao.Seed{})
+
+	vdfSealersMu.Lock()
+	_, started := vdfSealers[1]
+	vdfSealersMu.Unlock()
+	if started {
+		t.Fatal("a sealer was started for a bootstrap epoch; its Publish would collide with the pinned bootstrap value")
+	}
+
+	// control: a non-bootstrap successor still gets a sealer
+	onEpochFinalised(1, randao.Seed{})
+	vdfSealersMu.Lock()
+	_, started = vdfSealers[2]
+	vdfSealersMu.Unlock()
+	if !started {
+		t.Fatal("expected a sealer for epoch 2 (not bootstrapped)")
+	}
+}
+
+// JMDN-V3-005: a bootstrap set whose span reaches the retention window gets
+// its earliest epoch(s) evicted by BeaconSource during the bootstrap publish
+// sequence itself - before the chain ever starts. This must be refused at
+// validation, not discovered later as ErrBeaconEpochUnavailable.
+func TestValidateBootstrapFitsRetention_RejectsSpanExceedingRetention(t *testing.T) {
+	epochs := make([]uint64, 0, 11)
+	for e := uint64(0); e <= 10; e++ {
+		epochs = append(epochs, e)
+	}
+	err := ValidateBootstrapFitsRetention(epochs, 6)
+	if err == nil {
+		t.Fatal("span of 10 with retain=6 must be rejected")
+	}
+	if !errors.Is(err, ErrBootstrapSpanExceedsRetention) {
+		t.Fatalf("want ErrBootstrapSpanExceedsRetention, got %v", err)
+	}
+}
+
+func TestValidateBootstrapFitsRetention_AcceptsSpanWithinRetention(t *testing.T) {
+	cases := [][]uint64{
+		{0},                // current actual configuration
+		{0, 1, 2, 3, 4, 5}, // span 5, retain 6: comfortably inside
+		{},                 // empty is always fine
+	}
+	for _, epochs := range cases {
+		if err := ValidateBootstrapFitsRetention(epochs, 6); err != nil {
+			t.Fatalf("epochs %v with retain=6 should be accepted, got %v", epochs, err)
+		}
+	}
+}
+
+// TestValidateBootstrapFitsRetention_Boundary pins the exact cutoff, which the
+// two tests above straddle without ever landing on.
+//
+// They test spans 0, 5 (accept) and 10 (reject) against retain=6. Every one of
+// those gives the same verdict under `>= retain` and under `> retain`, so the
+// pair passed identically against an operator that was off by one -- and it
+// was: the guard rejected span == retain, a configuration that actually works.
+//
+// The rule, from committee/beacon.go evictLocked: cutoff = newest-retain, and
+// entries are dropped when e < cutoff. So an epoch survives iff
+// e >= newest-retain, i.e. iff newest-e <= retain. At span == retain the
+// earliest epoch sits exactly ON the cutoff and is KEPT. Only span > retain
+// loses anything.
+//
+// Span 6 is therefore the only value that distinguishes the two operators, and
+// it is the one value neither existing test used.
+func TestValidateBootstrapFitsRetention_Boundary(t *testing.T) {
+	const retain = uint64(6)
+
+	// span == retain: the earliest epoch lands on the cutoff and survives.
+	// Verified against evictLocked: publishing 0..6 with retain=6 evicts nothing.
+	fits := []uint64{0, 1, 2, 3, 4, 5, 6}
+	if err := ValidateBootstrapFitsRetention(fits, retain); err != nil {
+		t.Fatalf("span %d with retain %d must be ACCEPTED (earliest epoch sits on the "+
+			"cutoff, evictLocked drops nothing) — rejecting it refuses a working genesis "+
+			"config: %v", fits[len(fits)-1]-fits[0], retain, err)
+	}
+
+	// span == retain+1: the earliest epoch falls below the cutoff and is evicted.
+	// Verified against evictLocked: publishing 0..7 with retain=6 evicts epoch 0.
+	overflows := []uint64{0, 1, 2, 3, 4, 5, 6, 7}
+	err := ValidateBootstrapFitsRetention(overflows, retain)
+	if err == nil {
+		t.Fatalf("span %d with retain %d must be REJECTED — epoch %d is evicted by the "+
+			"final bootstrap Publish, before the chain starts",
+			overflows[len(overflows)-1]-overflows[0], retain, overflows[0])
+	}
+	if !errors.Is(err, ErrBootstrapSpanExceedsRetention) {
+		t.Fatalf("want ErrBootstrapSpanExceedsRetention, got %v", err)
+	}
+}
+
+// Moved from beacon_bootstrap.go (test-only helper; golangci-lint runs with tests: false,
+// so it was flagged unused in non-test code).
+// resetBootstrapEpochs clears the recorded set. Test helper; production
+// installs once per process.
+func resetBootstrapEpochs() {
+	bootstrapEpochsMu.Lock()
+	bootstrapEpochs = map[uint64]struct{}{}
+	bootstrapEpochsMu.Unlock()
+}

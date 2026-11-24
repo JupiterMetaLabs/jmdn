@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "./proto";
+
+import "proto/mempool.proto";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MREService.LookupTransaction — non-destructive by-hash lookup
+// ─────────────────────────────────────────────────────────────────────────────
+// These messages mirror jmdt.proto.mre.v1.LookupTransaction{Request,Response}
+// in the Mempool-Routing-Engine repository, FIELD NUMBER FOR FIELD NUMBER.
+//
+// They are declared in this repo's local `proto` package rather than as a
+// vendored copy of mre/v1 because that is the established pattern here: the
+// wire format carries field numbers and types, not message names, so a
+// structurally identical message decodes correctly regardless of its declared
+// name. RoutingClient.LookupTransaction dials the real MRE method string
+// (/jmdt.proto.mre.v1.MREService/LookupTransaction) via conn.Invoke, exactly as
+// PeekPendingTransactions already does.
+//
+// If you change a field number here, change it in
+// Mempool-Routing-Engine/proto/mre/v1/mre.proto in the same release, or the
+// mapping silently drops the field.
+//
+// `Transaction` is reused from proto/mempool.proto, which is already field-
+// identical to MRE's jmdt.proto.common.v1.Transaction (hash=1 … s=17).
+
+// LookupTransactionRequest asks whether a hash is pending anywhere in the
+// mempool fleet. The hash is used verbatim by MRE, so send the canonical
+// lowercase 0x-prefixed form.
+message LookupTransactionRequest {
+  string hash = 1;
+}
+
+// LookupSource identifies which path inside MRE answered the lookup.
+enum LookupSource {
+  LOOKUP_SOURCE_UNSPECIFIED = 0;
+  // MRE's Postgres placement index (TxLookup) named a shard.
+  LOOKUP_SOURCE_PLACEMENT_INDEX = 1;
+  // MRE fanned out across all primary shard stores.
+  LOOKUP_SOURCE_FANOUT = 2;
+  // MRE served a previously conclusive miss from its negative cache.
+  LOOKUP_SOURCE_NEGATIVE_CACHE = 3;
+}
+
+// LookupTransactionResponse reports the outcome of a non-destructive lookup.
+//
+// found and degraded MUST be read together:
+//
+//   found=true                  -> pending on shard_id
+//   found=false, degraded=false -> CONCLUSIVE: not pending anywhere
+//   found=false, degraded=true  -> INCONCLUSIVE; a shard was unreachable,
+//                                  MRE's deadline expired, or its breaker was
+//                                  open. Never read this as "absent" and never
+//                                  as "pending".
+message LookupTransactionResponse {
+  bool found = 1;
+  // Populated only when found=true.
+  Transaction transaction = 2;
+  // Shard that answered; -1 when found=false.
+  int32 shard_id = 3;
+  // Node ID that answered; empty when found=false.
+  string node_id = 4;
+  LookupSource source = 5;
+  bool degraded = 6;
+  int32 shards_queried = 7;
+  int32 shards_failed = 8;
+  int64 duration_ms = 9;
+}

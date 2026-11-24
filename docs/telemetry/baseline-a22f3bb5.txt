@@ -1,0 +1,22 @@
+# telemetry baseline
+ref: a22f3bb5
+date: 2026-10-26T11:10:53Z
+
+metric                                        count
+------------------------------------------ --------
+zerolog calls                                   241
+zerolog files                                    36
+zap files (direct)                                3
+fmt.Print*                                      570
+fmt.Fprint*                                      50
+ctx.Background() in log calls                   433
+logger() accessor reads                        1376
+logger().Tracer( reads                           94
+NewAsyncLogger() sites                           51
+ion-importing files                             119
+span SetStatus calls                              0
+ion .Meter() calls                                0
+RecordError calls                               287
+//nolint:forbidigo exemptions                     0
+
+(sentinel: 857 files matched "^package " — regex engine OK)

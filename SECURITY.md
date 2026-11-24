@@ -37,7 +37,7 @@ We request a **90-day disclosure window** from initial report to allow adequate 
 - **Smart Contract Execution** — Contract deployment and state transitions
 - **Cryptographic Implementations** — Key generation, signing, hashing
 - **API Endpoints** — gRPC and HTTP API input validation and authentication
-- **ImmuDB Integration** — Database access controls and state integrity
+- **ThebeDB Storage** — BadgerDB canonical log, PostgreSQL projection, access controls and state integrity
 
 ### Out of Scope
 
@@ -80,7 +80,8 @@ Details and reward tiers will be published at [jmdt.io](https://jmdt.io) once th
 
 | Version | Supported |
 |---------|-----------|
-| v2.0.x | ✅ Active (latest: v2.0.0) |
+| v3 (pre-release, `v3base` branch) | ✅ Reports accepted |
+| v2.0.x | ✅ Until v3 is released |
 | v1.x   | ❌ No |
 
 ## Contact

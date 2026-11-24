@@ -24,6 +24,15 @@ import (
 // runs, so disabling is safe).
 var EnableBlockGossip = envOn("JMDN_BLOCK_GOSSIP", true)
 
+// FinalizeCertOnly makes the sequencer send committee members a certificate-only
+// finalize envelope (zkblock_cert: header + committee certificate, no proof)
+// instead of the full block, since they already hold the proposal from the vote
+// trigger; non-committee peers still receive the full block over gossip. Default
+// OFF; set JMDN_FINALIZE_CERT_ONLY=1 or consensus.flags.finalize_cert_only: true.
+// Safe on a mixed fleet (an older receiver ignores the unknown type and applies
+// the gossiped copy) but only effective once the committee runs this code.
+var FinalizeCertOnly = envOn("JMDN_FINALIZE_CERT_ONLY", false)
+
 // directBlockPropagationEnv is the env override for direct (p2p) block
 // propagation, evaluated at init for tooling/tests that never Load() settings.
 var directBlockPropagationEnv = envOn("JMDN_DIRECT_BLOCK_PROPAGATION", false)

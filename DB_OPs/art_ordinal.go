@@ -46,6 +46,7 @@ import (
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // ARTOrdinalMax is the exclusive upper bound of the sequencer-assigned ordinal
@@ -53,8 +54,11 @@ import (
 // GenerateARTNonce mints and are never treated as ordinals.
 const ARTOrdinalMax = uint64(1) << 40
 
-// artOrdinalKey is the main-DB key holding the NEXT unassigned ordinal.
-const artOrdinalKey = "art_ordinal_next"
+// artOrdinalKey is the sync-state KV key holding the NEXT unassigned ordinal.
+// Namespaced under "sync:" like AppliedAnchorKey; persisted via the ThebeDB
+// handle's GetSyncKV/PutSyncKV (the old "art_ordinal_next" main-DB key was an
+// ImmuDB-era Read/Update path that no longer persists — see the rewrite below).
+const artOrdinalKey = "sync:art_ordinal_next"
 
 // artOrdinalMu serializes read-reserve-write on the counter within this
 // process (the sequencer assigns from one goroutine, but apply-side floor
@@ -65,21 +69,18 @@ var artOrdinalMu sync.Mutex
 // key does not exist yet (ordinal space starts at 1; 0 is reserved as the
 // "no identity carried" sentinel that mergeAccountForWrite already preserves).
 func readARTOrdinalNext() (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := GetMainDBConnectionandPutBack(ctx)
+	h, err := getHandle(nil)
 	if err != nil {
-		return 0, fmt.Errorf("art_ordinal read: connection: %w", err)
-	}
-	defer PutMainDBConnection(conn)
-
-	raw, err := Read(conn, artOrdinalKey)
-	if err != nil {
-		if err == ErrNotFound || strings.Contains(err.Error(), "key not found") {
-			return 1, nil
-		}
 		return 0, fmt.Errorf("art_ordinal read: %w", err)
+	}
+	raw, err := h.GetSyncKV(artOrdinalKey)
+	if err != nil {
+		return 0, fmt.Errorf("art_ordinal read: %w", err)
+	}
+	if raw == nil {
+		// Never seeded (fresh chain) → ordinal space starts at 1. GetSyncKV
+		// returns (nil, nil) for an absent key, so this needs no error sentinel.
+		return 1, nil
 	}
 	var next uint64
 	if err := json.Unmarshal(raw, &next); err != nil {
@@ -89,6 +90,23 @@ func readARTOrdinalNext() (uint64, error) {
 		next = 1
 	}
 	return next, nil
+}
+
+// writeARTOrdinalNext persists the next-ordinal counter through the ThebeDB
+// sync-state KV (mirrors writeAnchorLocked). Callers hold artOrdinalMu.
+func writeARTOrdinalNext(v uint64) error {
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("art_ordinal write: %w", err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("art_ordinal encode: %w", err)
+	}
+	if err := h.PutSyncKV(artOrdinalKey, raw); err != nil {
+		return fmt.Errorf("art_ordinal write: %w", err)
+	}
+	return nil
 }
 
 // reserveARTOrdinals atomically reserves n consecutive ordinals and returns
@@ -108,7 +126,7 @@ func reserveARTOrdinals(n uint64) (uint64, error) {
 	if next+n >= ARTOrdinalMax {
 		return 0, fmt.Errorf("art_ordinal reserve: ordinal space exhausted (next=%d, n=%d)", next, n)
 	}
-	if err := Update(artOrdinalKey, next+n); err != nil {
+	if err := writeARTOrdinalNext(next + n); err != nil {
 		return 0, fmt.Errorf("art_ordinal reserve: persist %d: %w", next+n, err)
 	}
 	return next, nil
@@ -134,26 +152,21 @@ func BumpARTOrdinalFloor(floor uint64) error {
 	if floor <= next {
 		return nil
 	}
-	if err := Update(artOrdinalKey, floor); err != nil {
+	if err := writeARTOrdinalNext(floor); err != nil {
 		return fmt.Errorf("art_ordinal floor: persist %d: %w", floor, err)
 	}
 	return nil
 }
 
-// EnrichBlockAccountNonces populates block.AccountNonces with the canonical
-// ART nonce for every distinct sender and receiver in the block:
-//
-//   - account present in accountsdb → its stored nonce (apply-side ADOPT heals
-//     nodes holding a different value), and
-//   - account missing (this block creates it) → a freshly reserved ordinal,
-//     assigned in ascending-address order so the assignment is reproducible.
-//
-// SEQUENCER-ONLY, called between block validation and consensus start. The
-// field is advisory (not part of the canonical block hash), so enrichment does
-// not invalidate BlockHash. Fail-closed: any DB error aborts enrichment and
-// the caller must reject the block — proposing a block that creates accounts
-// WITHOUT carried identities would push every node back to local minting.
-func EnrichBlockAccountNonces(block *config.ZKBlock) error {
+// EnrichBlockAccountNoncesWithPredicted is EnrichBlockAccountNonces plus the
+// accounts the block's contract txs are PREDICTED to touch during EVM execution
+// (BlockProcessing.PredictContractCreatedAccounts: internal CALL{value}
+// recipients, SELFDESTRUCT beneficiaries, value-funded CREATE/CREATE2 children,
+// deployed contracts). Without them, an account first created inside the EVM has
+// no block-carried identity and the apply path cannot create it. They join the
+// SAME ordinal pass as senders/receivers, so existing accounts carry their stored
+// identity and new ones get the next monotonic ordinals, ascending-address order.
+func EnrichBlockAccountNoncesWithPredicted(block *config.ZKBlock, predicted []common.Address) error {
 	if block == nil {
 		return fmt.Errorf("enrich account nonces: nil block")
 	}
@@ -188,6 +201,32 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 	for i := range block.Transactions {
 		touch(block.Transactions[i].From)
 		touch(block.Transactions[i].To)
+		// Contract deployment (To == nil): the tx creates a NEW contract account at
+		// the CREATE-deterministic address crypto.CreateAddress(sender, tx.Nonce) —
+		// the same address the EVM computes at apply. Stamp it so it receives a
+		// canonical monotonic ART ordinal like any other new account; validators
+		// create the contract's ledger account from this carried identity (EVM P2).
+		if block.Transactions[i].To == nil && block.Transactions[i].From != nil {
+			ca := crypto.CreateAddress(*block.Transactions[i].From, block.Transactions[i].Nonce)
+			touch(&ca)
+		}
+	}
+	// Execution-touched accounts predicted by the sequencer's pre-consensus
+	// simulation (see EnrichBlockAccountNoncesWithPredicted).
+	for i := range predicted {
+		a := predicted[i]
+		touch(&a)
+	}
+	// Reward-split recipients (buddy staking rewards) are CREDITED at apply just
+	// like a transaction receiver, so a never-funded reward address needs a
+	// block-carried canonical ART identity too — otherwise it has nothing to be
+	// created from and the coinbase credit fails ("account must exist before
+	// transfer"). Stamped in the SAME ordinal pass so every node assigns identical
+	// nonces. Requires block.FeeRecipients to be populated before this runs
+	// (attachAVCConsensusFields, reordered ahead of the enrichment in Server.go).
+	for i := range block.FeeRecipients {
+		addr := block.FeeRecipients[i].Addr
+		touch(&addr)
 	}
 
 	nonces := make(map[common.Address]uint64, len(ordered))
@@ -205,7 +244,13 @@ func EnrichBlockAccountNonces(block *config.ZKBlock) error {
 			// Treat it as missing instead: assign a real ordinal, which apply-side
 			// adopt then propagates fleet-wide (including back onto this sequencer).
 			missing = append(missing, addr)
-		case err != nil && strings.Contains(err.Error(), "key not found"):
+		case err != nil && isNotFoundError(err):
+			// Never-seen address (e.g. a crypto.CreateAddress contract address, or
+			// any first-time receiver). SQL-backed reads surface this as "sql: no
+			// rows in result set", not "key not found" — the canonical helper
+			// matches all not-found shapes, so a genuinely-new account is treated
+			// as missing (assign an ordinal) instead of hitting the fail-closed
+			// default and rejecting the block.
 			missing = append(missing, addr)
 		default:
 			// Fail-closed: a transient DB error must not be read as "new account".

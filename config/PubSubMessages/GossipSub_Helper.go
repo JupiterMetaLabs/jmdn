@@ -7,8 +7,11 @@ import (
 
 	"gossipnode/config"
 
+	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	log "gossipnode/logging"
 )
 
 // A libp2p host must have exactly ONE GossipSub router: creating a second one
@@ -35,16 +38,20 @@ func (gps *GossipPubSub) InitGossipSub() error {
 	hostID := gps.Host.ID()
 	gossipSub, exists := sharedRouters[hostID]
 	if !exists {
-		// Initialize GossipSub instance with FloodPublish for reliable small-network propagation
-		// and PeerExchange to help nodes find each other
+		// Initialize GossipSub instance with FloodPublish for reliable small-network
+		// propagation. PeerExchange is deliberately OFF: with it on, the sequencer
+		// accreted twice as many peers as it has validators and fanned every 2+ MB
+		// block out to all of them. Peer discovery is the seed nodes' job.
 		var err error
 		gossipSub, err = pubsub.NewGossipSub(context.Background(), gps.Host,
 			pubsub.WithFloodPublish(true),
-			pubsub.WithPeerExchange(true),
 			// match the direct-stream cap or blocks >1 MiB (libp2p gossip
 			// default) silently skip gossip → fan-out degrades to direct+catch-up.
 			// Fleet-wide identical value required (peers reject mismatched sizes).
 			pubsub.WithMaxMessageSize(config.MaxBlockMessageBytes),
+			// Pinned, not left as a library default — msg.Sender's
+			// authenticity (l1auth.go, l1finality.go, subscriptionService.go) depends on it.
+			pubsub.WithMessageSignaturePolicy(pubsub.StrictSign),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create GossipSub: %w", err)
@@ -126,7 +133,11 @@ func (gps *GossipPubSub) Shutdown(ctx context.Context) error {
 		if topic != nil {
 			if err := topic.Close(); err != nil {
 				// Log but continue closing other topics
-				fmt.Printf("Warning: failed to close topic %s: %v\n", topicName, err)
+				ctx := context.Background()
+				logInstance, logErr := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+				if logErr == nil && logInstance != nil {
+					logInstance.GetNamedLogger().Warn(ctx, "Failed to close topic", ion.Err(err), ion.String("topic", topicName))
+				}
 			}
 		}
 		delete(gps.TopicsMap, topicName)

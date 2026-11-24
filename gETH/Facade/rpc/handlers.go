@@ -3,19 +3,27 @@ package rpc
 import (
 	"context"
 	"encoding/hex"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/config/settings"
+
+	log "gossipnode/logging"
+
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/JupiterMetaLabs/ion"
 
 	"encoding/json"
-	"log"
 
-	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/txstatus"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -24,56 +32,102 @@ type Handlers struct{ service Service.Service }
 
 func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: service} }
 
+// logRPCResponse marshals resp so its *json.RawMessage Result field prints
+// its actual contents. fmt.Sprintf("%+v", resp) printed Result's pointer
+// address instead (D-8) — the request side already avoided this with
+// json.Marshal above; this does the same for the response.
+func logRPCResponse(ctx context.Context, method string, resp Response) {
+	respJSON, _ := json.Marshal(resp)
+	logger().Info(ctx, "RPC Response", ion.String("method", method), ion.String("response", string(respJSON)))
+}
+
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
 	reqJSON, _ := json.Marshal(req)
-	log.Printf("⚡️RPC Request: %s", string(reqJSON))
+	logger().Info(ctx, "RPC Request", ion.String("request", string(reqJSON)))
 
 	switch req.Method {
 	case "web3_clientVersion":
 		v, err := handler.service.ClientVersion(ctx)
 		resp, _ := finish(req, v, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, err
+	case "solc_compile":
+		// Runs a solc process per call: off unless enabled, admin-only when on.
+		if err := adminMethodAllowed(ctx, req.Method, func(f settings.FeatureSettings) bool { return f.EnableSolcCompile }); err != nil {
+			return RespErr(req.ID, errMethodNotAvailable, err.Error()), nil
+		}
+		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
+		if len(req.Params) == 0 {
+			resp, _ := invalidParams(req, "missing params")
+			return resp, nil
+		}
+		var compileReq struct {
+			Source   string `json:"source"`
+			Optimize bool   `json:"optimize"`
+			Runs     uint32 `json:"runs"`
+		}
+		// Marshal the any type back to JSON and then unmarshal into our struct
+		paramJSON, _ := json.Marshal(req.Params[0])
+		if err := json.Unmarshal(paramJSON, &compileReq); err != nil {
+			resp, _ := invalidParams(req, "invalid params: "+err.Error())
+			return resp, nil
+		}
+		if compileReq.Runs == 0 {
+			compileReq.Runs = 200
+		}
+		result, err := handler.service.CompileSolidity(ctx, compileReq.Source, compileReq.Optimize, compileReq.Runs)
+		resp, _ := finish(req, result, err)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "net_version":
 		id, err := handler.service.ChainID(ctx)
 		resp, _ := finish(req, id.String(), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, err
+	case "eth_accounts", "eth_requestAccounts":
+		accounts, err := handler.service.Accounts(ctx)
+		resp, _ := finish(req, accounts, err)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 	case "eth_chainId":
 		id, err := handler.service.ChainID(ctx)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+id.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_blockNumber":
 		n, err := handler.service.BlockNumber(ctx)
 		resp, _ := finish(req, "0x"+n.Text(16), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	case "eth_getTransactionCount":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		block, _ := req.Params[1].(string)
+		if err := refuseFinalityTag(req.Method, block); err != nil {
+			resp, _ := invalidParams(req, err.Error())
+			return resp, nil
+		}
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
-		fmt.Println("Called RPC Call -- eth_getTransactionCount")
-		// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Debug(ctx, "Called RPC Call", ion.String("method", "eth_getTransactionCount"))
+		// logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getBlockByNumber":
@@ -82,10 +136,10 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// L1 commit data (L1TxHash != ""), not the absolute chain tip.
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
-		fmt.Println("req.Params: ", req.Params)
+		logger().Debug(ctx, "Request parameters", ion.String("method", "eth_getBlockByNumber"))
 		tag, _ := req.Params[0].(string)
 		full := false
 
@@ -114,130 +168,154 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			b, l1Err = handler.service.LatestL1CommitBlock(ctx)
 			if l1Err != nil {
 				resp, _ := finish(req, nil, l1Err)
-				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, l1Err
 			}
 			if b == nil {
 				resp, _ := finish(req, nil, nil) // no committed block found
-				log.Printf("📤 RPC Response: %s -> null (no L1-committed block found)", req.Method)
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", "null (no L1-committed block found)"))
 				return resp, nil
 			}
 		} else {
 			num, err := parseBlockTag(ctx, handler.service, tag)
 			if err != nil {
 				resp, _ := finish(req, nil, err)
-				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, err
 			}
 			var blockErr error
 			b, blockErr = handler.service.BlockByNumber(ctx, num, full)
 			if blockErr != nil {
 				resp, _ := finish(req, nil, blockErr)
-				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				logRPCResponse(ctx, req.Method, resp)
 				return resp, blockErr
 			}
 		}
 		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, nil
+
+	case "eth_getBlockByHash":
+		// params: [blockHash, fullTx(bool)]
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing block hash")
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+		hash, _ := req.Params[0].(string)
+		full := false
+		if len(req.Params) > 1 {
+			switch v := req.Params[1].(type) {
+			case bool:
+				full = v
+			case string:
+				full = strings.EqualFold(v, "true")
+			}
+		}
+		b, blockErr := handler.service.BlockByHash(ctx, hash, full)
+		if blockErr != nil || b == nil {
+			// Unknown/unmined hash → JSON-RPC result: null (per spec), not an error.
+			// Returning an error here makes MetaMask abort tx finalization and leave
+			// the tx perpetually "pending".
+			resp, _ := finish(req, nil, nil)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", "null (block not found)"))
+			return resp, nil
+		}
+		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getBalance":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "need address and block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		bal, err := handler.service.Balance(ctx, addr, num, "jmdt:metamask")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+bal.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 	case "eth_call":
-		// Log incoming payload for eth_call
-		// log.Printf("📥 eth_call payload: %+v", req.Params)
-		// if len(req.Params) < 1 {
-		// 	resp, _ := invalidParams(req, "missing call object")
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, nil
-		// }
-		// msg, err := toCallMsg(req.Params[0])
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// var num *big.Int
-		// if len(req.Params) > 1 {
-		// 	num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-		// 	if err != nil {
-		// 		resp, _ := finish(req, nil, err)
-		// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 		return resp, err
-		// 	}
-		// }
-		// out, err := handler.service.Call(ctx, msg, num)
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
-		// Explicitly disabled for security/compliance
-		resp := RespErr(req.ID, -32601, "eth_call disabled")
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, nil
-
-	case "eth_estimateGas":
 		if len(req.Params) < 1 {
-			resp, _ := invalidParams(req, "missing tx object")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			resp, _ := invalidParams(req, "missing call object")
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		msg, err := toCallMsg(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, err
+		}
+		var num *big.Int
+		if len(req.Params) > 1 {
+			if ferr := refuseFinalityTag(req.Method, mustString(req.Params[1])); ferr != nil {
+				resp, _ := invalidParams(req, ferr.Error())
+				return resp, nil
+			}
+			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+			if err != nil {
+				resp, _ := finish(req, nil, err)
+				logRPCResponse(ctx, req.Method, resp)
+				return resp, err
+			}
+		}
+		out, err := handler.service.Call(ctx, msg, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, nil
+
+	case "eth_estimateGas":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx object")
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+		msg, err := toCallMsg(req.Params[0])
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		g, err := handler.service.EstimateGas(ctx, msg)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+big.NewInt(int64(g)).Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
-
-	case "eth_gasPrice":
-		p, err := handler.service.GasPrice(ctx)
-		resp, _ := finish(req, "0x"+p.Text(16), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, err
 
 	case "eth_sendRawTransaction":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing raw tx")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		logger().Debug(ctx, "eth_sendRawTransaction received", ion.String("raw_tx_length", fmt.Sprintf("%d", len(raw))))
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	// Non-standard but widely used by explorers / wallets.
@@ -252,8 +330,9 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			resp, _ := invalidParams(req, "address must be a valid hex address")
 			return resp, nil
 		}
-		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
-		addr = strings.ToLower(addr)
+		// The ThebeDB SQL projection stores checksummed addresses
+		// (common.Address.Hex()); DB_OPs.*ByAddress normalise for us.
+		address := common.HexToAddress(addr)
 
 		page := 1
 		if len(req.Params) > 1 {
@@ -270,9 +349,20 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// JSON numbers arrive as float64 — int(v) on an out-of-range float is
 		// implementation-specific (could land anywhere), so clamp explicitly
 		// rather than trusting the post-conversion value alone.
-		const maxPage = 1_000_000
+		//
+		// maxPage was 1_000_000, which clamped the VALUE without bounding the
+		// COST: pagination is offset-based, so page 1,000,000 at the default 20
+		// per page asks the SQL projection to skip 20 million rows before
+		// returning any — the classic deep-pagination DoS, and an
+		// unauthenticated caller could ask for it. 10_000 pages is already far
+		// past any UI's reach while keeping the worst-case offset bounded.
+		// A caller that genuinely needs to walk that far should page by block
+		// range instead; a keyset/cursor API is the real fix and is not this
+		// change.
+		const maxPage = 10_000
 		if page > maxPage {
-			page = maxPage
+			resp, _ := invalidParams(req, fmt.Sprintf("page must be at most %d; narrow the query by block range instead of paging deeper", maxPage))
+			return resp, nil
 		}
 
 		limit := 20
@@ -291,18 +381,17 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		offset := (page - 1) * limit
 
 		// Look up total first and short-circuit out-of-range pages before
-		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
-		// the covering index) — a cheap request for page 1e6 shouldn't force
-		// an expensive scan just to come back empty.
+		// paying for an OFFSET skip-scan — a cheap request for page 1e6
+		// shouldn't force an expensive scan just to come back empty.
 		//
 		// NOTE: this count and the paginated query below are two separate
-		// SQLite reads, not one transaction, so `total` can be very slightly
-		// stale relative to the rows returned if a block lands in between.
+		// reads, not one transaction, so `total` can be very slightly stale
+		// relative to the rows returned if a block lands in between.
 		// Intentional — harmless for a UI paginator, not worth a transaction.
-		total, totalErr := txindex.CountByAddress(ctx, addr)
+		total, totalErr := DB_OPs.CountTransactionsByAddress(ctx, address)
 		if totalErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", totalErr))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		if offset < 0 || offset >= total {
@@ -317,18 +406,18 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 					"has_prev":     page > 1,
 				},
 			}, nil)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
-		refs, idxErr := txindex.QueryByAddressOffset(ctx, addr, offset, limit)
+		refs, idxErr := DB_OPs.TransactionRefsByAddress(ctx, address, offset, limit)
 		if idxErr != nil {
-			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			resp, _ := finish(req, nil, fmt.Errorf("transaction index unavailable: %w", idxErr))
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
-		// Hydrate each ref from ImmuDB by hash in parallel (bounded) — each
+		// Hydrate each ref by hash in parallel (bounded) — each
 		// fetch is an independent point lookup, page size is capped at 100.
 		const hydrationConcurrency = 10
 		txs := make([]any, len(refs))
@@ -337,7 +426,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		for i, ref := range refs {
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(i int, ref txindex.TxRef) {
+			go func(i int, ref DB_OPs.TxRef) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
@@ -368,91 +457,173 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 				"has_prev":     page > 1,
 			},
 		}, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getTransactionByHash":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		tx, err := handler.service.TxByHash(ctx, mustString(req.Params[0]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
+		if tx == nil {
+			// Unknown hash. eth_getTransactionByHash is specified to return
+			// null, not an error — an error makes wallets and libraries treat
+			// the call as a transport failure and retry, instead of concluding
+			// the transaction is not known. marshalTx would dereference tx, so
+			// this must short-circuit before it.
+			resp, _ := finish(req, nil, nil)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
 		resp, _ := finish(req, marshalTx(tx, handler.service.GetChainIDValue()), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, nil
+
+	case "jmdt_getTransactionStatus":
+		// Non-standard method, deliberately. Rich pending state cannot go on
+		// eth_getTransactionByHash (which has a fixed response shape) and MUST
+		// NOT go on eth_getTransactionReceipt (where a non-null receipt is read
+		// as proof of mining). jmdn already has non-standard precedent with
+		// eth_getTransactionsByAddress, so this fits the existing surface.
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx hash")
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+		hash := mustString(req.Params[0])
+		if hash == "" {
+			resp, _ := invalidParams(req, "tx hash must be a string")
+			return resp, nil
+		}
+
+		status, err := handler.service.TxStatus(ctx, hash)
+		if errors.Is(err, txstatus.ErrDisabled) {
+			// -32601 (method not found) rather than a server error: from the
+			// caller's point of view this node does not offer the method.
+			resp := RespErr(req.ID, -32601, "jmdt_getTransactionStatus is not enabled on this node")
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+
+		resp, _ := finish(req, marshalTxStatus(status), nil)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getTransactionReceipt":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		rcpt, err := handler.service.ReceiptByHash(ctx, mustString(req.Params[0]))
 		resp, _ := finish(req, rcpt, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, err
 
 	case "eth_getLogs":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing filter")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		q, err := toFilterQuery(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, err
+		}
+		// Resolve block tags ("latest", "earliest", "pending") and the EIP-234
+		// blockHash form to concrete numbers; toFilterQuery leaves them nil.
+		if err := resolveFilterRange(ctx, handler.service, req.Params[0], q); err != nil {
+			resp, _ := finish(req, nil, err)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		logs, err := handler.service.GetLogs(ctx, *q)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, marshalLogs(logs), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	case "eth_getCode":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing address")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		// The block tag is optional: some clients call eth_getCode(address) with
-		// no second param. parseBlockTag maps "" to "latest".
+		// no second param. parseBlockTag maps "" to "latest" (ported from main #132).
 		blockTag := ""
 		if len(req.Params) >= 2 {
 			blockTag = mustString(req.Params[1])
 		}
+		if ferr := refuseFinalityTag(req.Method, blockTag); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
+		}
 		num, err := parseBlockTag(ctx, handler.service, blockTag)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		code, err := handler.service.GetCode(ctx, addr, num)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, code, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
+
+	case "eth_getStorageAt":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and slot")
+			return resp, nil
+		}
+		address, _ := req.Params[0].(string)
+		slot, _ := req.Params[1].(string)
+		blockNum := "latest"
+		if len(req.Params) > 2 {
+			if b, ok := req.Params[2].(string); ok {
+				blockNum = b
+			}
+		}
+		if ferr := refuseFinalityTag(req.Method, blockNum); ferr != nil {
+			resp, _ := invalidParams(req, ferr.Error())
+			return resp, nil
+		}
+		result, err := handler.service.GetStorageAt(ctx, address, slot, blockNum)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "eth_gasPrice":
+		result, err := handler.service.GetGasPrice(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
 	case "eth_feeHistory":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
@@ -473,7 +644,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			blockCount = uint64(v)
 		default:
 			resp, _ := invalidParams(req, "invalid blockCount type")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, nil
 		}
 
@@ -481,7 +652,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 
@@ -506,11 +677,63 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logRPCResponse(ctx, req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, history, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
+		return resp, nil
+
+	case "jmdt_getCertifiedBlock":
+		// params: [height] (hex quantity or decimal number)
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing block height")
+			return resp, nil
+		}
+		height, perr := parseHeightParam(req.Params[0])
+		if perr != nil {
+			resp, _ := invalidParams(req, perr.Error())
+			return resp, nil
+		}
+		result, err := handler.service.CertifiedBlock(ctx, height)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "eth_maxPriorityFeePerGas":
+		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_listening":
+		result, err := handler.service.IsListening(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_peerCount":
+		result, err := handler.service.GetPeerCount(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "debug_traceTransaction":
+		// Re-executes a transaction with a tracer: off unless enabled,
+		// admin-only when on.
+		if err := adminMethodAllowed(ctx, req.Method, func(f settings.FeatureSettings) bool { return f.EnableDebugTrace }); err != nil {
+			return RespErr(req.ID, errMethodNotAvailable, err.Error()), nil
+		}
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx hash")
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, nil
+		}
+		txHash, _ := req.Params[0].(string)
+		result, err := handler.service.TraceTransaction(ctx, txHash)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logRPCResponse(ctx, req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, result, nil)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 
 	// txpool_content disabled for now — will be revisited in a future release.
@@ -531,7 +754,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logRPCResponse(ctx, req.Method, resp)
 		return resp, nil
 	}
 }
@@ -543,10 +766,21 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 	case "pending":
 		// map to latest for now; refine if you track pending state
 		return be.BlockNumber(ctx)
+	case "safe", "finalized":
+		// The highest block with a verified certificate and a certified child
+		// (docs/finality.md), never the head. "safe" is served the same,
+		// stronger answer rather than the head.
+		return be.FinalizedBlockNumber(ctx)
 	default:
 		if strings.HasPrefix(tag, "0x") {
-			n := new(big.Int)
-			n.SetString(tag[2:], 16)
+			// big.Int accepts a sign, so "0x-40000000" parses as a negative
+			// height; callers turn that into a huge uint64 range (eth_feeHistory
+			// allocated one entry per block of it). A height is a uint64, and a
+			// tag that does not parse is an error, not block 0.
+			n, ok := new(big.Int).SetString(tag[2:], 16)
+			if !ok || n.Sign() < 0 || !n.IsUint64() {
+				return nil, errors.New("invalid block number")
+			}
 			return n, nil
 		}
 		return nil, errors.New("unsupported block tag")
@@ -555,7 +789,7 @@ func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.In
 
 func finish(req Request, v any, err error) (Response, error) {
 	if err != nil {
-		return RespErr(req.ID, -32000, err.Error()), nil
+		return RespErr(req.ID, -32000, publicErrorMessage(context.Background(), err)), nil
 	}
 	return RespOK(req.ID, v), nil
 }
@@ -588,12 +822,14 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 		if to, ok := callObj["to"].(string); ok {
 			msg.To = to
 		}
-		if data, ok := callObj["data"].(string); ok {
-			if strings.HasPrefix(data, "0x") {
-				msg.Data, _ = hex.DecodeString(data[2:])
-			} else {
-				msg.Data, _ = hex.DecodeString(data)
-			}
+		// Calldata may arrive as "data" (legacy) or "input" (EIP-1474 wording;
+		// go-ethereum ≥ 1.13 ethclient, viem and ethers v6 send ONLY "input").
+		// Reading just "data" made those clients hit the contract's fallback()
+		// with empty calldata and revert. Use "input" when present, else "data".
+		if data, ok := callObj["input"].(string); ok && data != "" {
+			msg.Data, _ = hex.DecodeString(strings.TrimPrefix(data, "0x"))
+		} else if data, ok := callObj["data"].(string); ok {
+			msg.Data, _ = hex.DecodeString(strings.TrimPrefix(data, "0x"))
 		}
 		if value, ok := callObj["value"].(string); ok {
 			if strings.HasPrefix(value, "0x") {
@@ -636,6 +872,65 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 	return Types.CallMsg{}, errors.New("invalid call object")
 }
 
+// resolveFilterRange fills FromBlock/ToBlock for eth_getLogs from the raw
+// filter object: hex numbers are already parsed by toFilterQuery; this resolves
+// the tag forms ("latest", "pending", "earliest") and the mutually exclusive
+// EIP-234 "blockHash" form (from == to == that block). Defaults: fromBlock
+// "latest", toBlock "latest" — same as geth.
+func resolveFilterRange(ctx context.Context, be Service.Service, raw any, q *Types.FilterQuery) error {
+	obj, _ := raw.(map[string]any)
+	if bh, ok := obj["blockHash"].(string); ok && bh != "" {
+		blk, err := be.BlockByHash(ctx, bh, false)
+		if err != nil || blk == nil || blk.Header == nil {
+			return fmt.Errorf("blockHash %s not found", bh)
+		}
+		n := new(big.Int).SetUint64(blk.Header.Number)
+		q.FromBlock, q.ToBlock = n, new(big.Int).Set(n)
+		return nil
+	}
+	resolve := func(v any, cur *big.Int) (*big.Int, error) {
+		if cur != nil {
+			return cur, nil // hex already parsed
+		}
+		tag, _ := v.(string)
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "earliest":
+			return big.NewInt(0), nil
+		case "", "latest", "pending":
+			return be.BlockNumber(ctx)
+		case "safe", "finalized":
+			// Certified with a certified child (docs/finality.md), not the head.
+			return be.FinalizedBlockNumber(ctx)
+		}
+		return nil, fmt.Errorf("unsupported block tag %q", tag)
+	}
+	var err error
+	if q.FromBlock, err = resolve(obj["fromBlock"], q.FromBlock); err != nil {
+		return err
+	}
+	if q.ToBlock, err = resolve(obj["toBlock"], q.ToBlock); err != nil {
+		return err
+	}
+	return nil
+}
+
+// defaultMaxFilterAddresses is the compiled default for rpc.logs.max_addresses.
+// Public providers commonly allow 10-100 addresses per eth_getLogs filter.
+const defaultMaxFilterAddresses = 100
+
+// maxFilterAddresses returns the address-list cap in force. Config wins; a zero
+// or negative value falls back to the compiled default, so a malformed config
+// cannot remove the cap.
+func maxFilterAddresses() int {
+	if !settings.IsLoaded() {
+		return defaultMaxFilterAddresses
+	}
+	if n := settings.Get().RPC.Logs.MaxAddresses; n > 0 {
+		return n
+	}
+	return defaultMaxFilterAddresses
+}
+
 func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	// Parse filter object from JSON-RPC params
 	if filterObj, ok := p.(map[string]any); ok {
@@ -655,26 +950,67 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 				query.ToBlock = bigToBlock
 			}
 		}
-		if addresses, ok := filterObj["address"].([]any); ok {
-			query.Addresses = make([]string, len(addresses))
-			for i, addr := range addresses {
-				if addrStr, ok := addr.(string); ok {
-					query.Addresses[i] = addrStr
+		// "address" is a single string in most client libraries (ethers, viem,
+		// go-ethereum FilterQuery with one address) and an array otherwise.
+		//
+		// The list is deduplicated and capped. Each address is a separate index
+		// scan in logstore.GetLogs, and the result map deduplicates RESULTS but
+		// not SCANS — so listing one address N times cost N full scans of the
+		// same contract, from one unauthenticated request, multiplied again by
+		// the batch endpoint.
+		//
+		// Duplicates are collapsed on the PARSED address, not on the input
+		// string. The scan key is built downstream with common.HexToAddress
+		// (DB_OPs/BlockLogs.go filterQueryToStoreFilter), which left-pads short
+		// hex, tolerates a missing 0x and keeps only the last 20 bytes — so
+		// "0xa1", "a1" and "0xff..a1" are different strings but one contract.
+		// Keying the dedupe on the raw string let all of them through and cost
+		// a scan each, up to the cap. Malformed entries are rejected rather
+		// than silently folded onto the zero address, which is a real account.
+		switch a := filterObj["address"].(type) {
+		case string:
+			if a != "" {
+				if !common.IsHexAddress(a) {
+					return nil, fmt.Errorf("invalid address in filter: %q", a)
 				}
+				query.Addresses = []string{common.HexToAddress(a).Hex()}
+			}
+		case []any:
+			seen := make(map[string]struct{}, len(a))
+			for _, addr := range a {
+				addrStr, ok := addr.(string)
+				if !ok || addrStr == "" {
+					continue
+				}
+				if !common.IsHexAddress(addrStr) {
+					return nil, fmt.Errorf("invalid address in filter: %q", addrStr)
+				}
+				canonical := common.HexToAddress(addrStr).Hex()
+				if _, dup := seen[canonical]; dup {
+					continue
+				}
+				seen[canonical] = struct{}{}
+				query.Addresses = append(query.Addresses, canonical)
 			}
 		}
+		if limit := maxFilterAddresses(); len(query.Addresses) > limit {
+			return nil, fmt.Errorf("too many addresses in filter: %d, max %d", len(query.Addresses), limit)
+		}
+		// "topics" rows: string, array of strings, or null (wildcard → empty row).
 		if topics, ok := filterObj["topics"].([]any); ok {
 			query.Topics = make([][]string, len(topics))
 			for i, topic := range topics {
-				if topicArr, ok := topic.([]any); ok {
-					query.Topics[i] = make([]string, len(topicArr))
-					for j, t := range topicArr {
-						if topicStr, ok := t.(string); ok {
-							query.Topics[i][j] = topicStr
+				switch t := topic.(type) {
+				case []any:
+					for _, tt := range t {
+						if topicStr, ok := tt.(string); ok {
+							query.Topics[i] = append(query.Topics[i], topicStr)
 						}
 					}
-				} else if topicStr, ok := topic.(string); ok {
-					query.Topics[i] = []string{topicStr}
+				case string:
+					query.Topics[i] = []string{t}
+				default: // nil → wildcard
+					query.Topics[i] = nil
 				}
 			}
 		}
@@ -700,10 +1036,11 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 		"gasUsed":  "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
 
 		// State / receipts — all stored in ZKBlock, surfaced via BlockHeader
-		"stateRoot":    "0x" + hex.EncodeToString(b.Header.StateRoot),
-		"receiptsRoot": "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
-		"logsBloom":    "0x" + hex.EncodeToString(b.Header.LogsBloom),
-		"extraData":    "0x" + hex.EncodeToString(b.Header.ExtraData),
+		"stateRoot":        "0x" + hex.EncodeToString(b.Header.StateRoot),
+		"receiptsRoot":     "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
+		"transactionsRoot": "0x" + hex.EncodeToString(b.Header.TxnsRoot), // required by alloy/cast/viem
+		"logsBloom":        "0x" + hex.EncodeToString(b.Header.LogsBloom),
+		"extraData":        "0x" + hex.EncodeToString(b.Header.ExtraData),
 
 		// Miner / sequencer address (ZKVMAddr in ZKBlock → Miner in BlockHeader)
 		"miner": "0x" + hex.EncodeToString(b.Header.Miner),
@@ -759,6 +1096,53 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 	}
 
 	return result
+}
+
+// marshalTxStatus renders a resolved status for jmdt_getTransactionStatus.
+//
+// Field notes:
+//   - `status` is one of mined | queued | processing | failed | unknown.
+//   - `degraded` is the field a caller must not ignore. It means the resolver
+//     could not complete — a shard was unreachable, a deadline expired, a
+//     breaker was open. A degraded `unknown` is "we could not tell", NOT "this
+//     transaction does not exist", so a client should keep polling rather than
+//     conclude anything from it.
+//   - optional fields are omitted rather than emitted null, so a caller can tell
+//     "not applicable" from "known to be empty".
+func marshalTxStatus(res *txstatus.Result) map[string]any {
+	if res == nil {
+		// No result and no error should not happen, but if it does, the only
+		// safe rendering is an inconclusive unknown — never a clean one.
+		return map[string]any{
+			"status":   string(txstatus.StatusUnknown),
+			"source":   string(txstatus.SourceNone),
+			"degraded": true,
+			"detail":   "resolver returned no result",
+		}
+	}
+
+	out := map[string]any{
+		"hash":     res.Hash,
+		"status":   string(res.Status),
+		"source":   string(res.Source),
+		"degraded": res.Degraded,
+	}
+	if res.Detail != "" {
+		out["detail"] = res.Detail
+	}
+	if res.SubmittedAt != nil {
+		out["submitted_at"] = res.SubmittedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if res.MempoolNode != "" {
+		out["mempool_node"] = res.MempoolNode
+	}
+	if res.ShardID != nil {
+		out["shard_id"] = *res.ShardID
+	}
+	if res.Reason != "" {
+		out["reason"] = res.Reason
+	}
+	return out
 }
 
 func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
@@ -842,7 +1226,8 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 	}
 
 	// EIP-1559 fields (type 2)
-	if tx.Type == 2 {
+	switch tx.Type {
+	case 2:
 		maxFeeHex := "0x0"
 		if len(tx.MaxFeePerGas) > 0 {
 			maxFeeHex = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
@@ -856,7 +1241,7 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		result["accessList"] = []any{}
 		// yParity: recovery bit, same value as v for type 2 (0x0 or 0x1)
 		result["yParity"] = vHex
-	} else if tx.Type == 1 {
+	case 1:
 		result["accessList"] = []any{}
 		result["yParity"] = vHex
 	}
@@ -886,4 +1271,49 @@ func marshalLogs(logs []Types.Log) []map[string]any {
 		}
 	}
 	return result
+}
+
+// logger returns the ion logger instance for the Facade package
+func logger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Facade, "")
+	if err != nil {
+		return nil
+	}
+	return logInstance.GetNamedLogger()
+}
+
+// parseHeightParam reads a block height given as a hex quantity ("0x1a") or a
+// JSON number. Tags are not accepted: the caller asks about one height.
+func parseHeightParam(v any) (uint64, error) {
+	switch x := v.(type) {
+	case string:
+		if !strings.HasPrefix(x, "0x") {
+			return 0, errors.New("height must be a hex quantity or a number")
+		}
+		n, ok := new(big.Int).SetString(x[2:], 16)
+		if !ok || n.Sign() < 0 || !n.IsUint64() {
+			return 0, errors.New("invalid block height")
+		}
+		return n.Uint64(), nil
+	case float64:
+		if x < 0 || x != float64(uint64(x)) {
+			return 0, errors.New("invalid block height")
+		}
+		return uint64(x), nil
+	default:
+		return 0, errors.New("height must be a hex quantity or a number")
+	}
+}
+
+// refuseFinalityTag rejects the "finalized" and "safe" tags for methods that
+// serve the latest state whatever block is asked for (eth_call, eth_getCode,
+// eth_getTransactionCount, eth_getStorageAt). Those tags promise a certified
+// block (docs/finality.md); answering them with head state would claim that
+// promise for data that does not keep it.
+func refuseFinalityTag(method, tag string) error {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
+	case "safe", "finalized":
+		return fmt.Errorf("%s serves the latest state only; block tag %q is not supported", method, tag)
+	}
+	return nil
 }

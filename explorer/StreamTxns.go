@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/config"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,24 +21,6 @@ var streamRegistry = struct {
 	clients map[chan string]struct{}
 }{
 	clients: make(map[chan string]struct{}),
-}
-
-// BroadcastNewBlock sends new block data to all connected clients
-func BroadcastNewBlock(block *config.ZKBlock) {
-	event := StreamEvent{
-		EventType: "new_block",
-		Data:      block,
-	}
-	sendEventToClients(event)
-}
-
-// BroadcastNewTransaction sends new transaction data to all connected clients
-func BroadcastNewTransaction(tx *config.Transaction) {
-	event := StreamEvent{
-		EventType: "new_transaction",
-		Data:      tx,
-	}
-	sendEventToClients(event)
 }
 
 func sendEventToClients(event StreamEvent) {
@@ -63,9 +44,9 @@ func sendEventToClients(event StreamEvent) {
 }
 
 // streamBlocks handles SSE connections for block and transaction streaming
-func (s *ImmuDBServer) streamBlocks(c *gin.Context) {
+func (s *ExplorerServer) streamBlocks(c *gin.Context) {
 	// Create a channel for this client
-	messageChan := make(chan string)
+	messageChan := make(chan string, 64) // buffered so a brief non-parked read does not evict the client (audit API-02)
 
 	// Add this client to the registry
 	streamRegistry.Lock()
@@ -106,7 +87,13 @@ func (s *ImmuDBServer) streamBlocks(c *gin.Context) {
 		case <-notify:
 			// Client disconnected
 			return
-		case msg := <-messageChan:
+		case msg, ok := <-messageChan:
+			if !ok {
+				// Channel closed (client evicted as too-slow). Exit instead of
+				// busy-spinning on a closed channel emitting empty events until
+				// CloseNotify — which pinned a core per connection (audit API-02).
+				return
+			}
 			// Write to the ResponseWriter
 			c.SSEvent("message", msg)
 			c.Writer.Flush()

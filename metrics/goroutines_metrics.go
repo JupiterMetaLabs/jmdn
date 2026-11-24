@@ -8,6 +8,7 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 const (
@@ -72,10 +73,10 @@ func init() {
 func RegisterRuntimeCollectors() {
 	registerRuntimeCollectorsOnce.Do(func() {
 		// GoCollector provides: go_goroutines, go_threads, go_memstats_*, go_gc_duration_seconds, ...
-		_ = DefaultRegistry.Register(prometheus.NewGoCollector())
+		_ = DefaultRegistry.Register(collectors.NewGoCollector())
 
 		// ProcessCollector provides: process_cpu_seconds_total, process_resident_memory_bytes, ...
-		_ = DefaultRegistry.Register(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		_ = DefaultRegistry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	})
 }
 

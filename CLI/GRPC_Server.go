@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"time"
 
@@ -12,13 +13,9 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
-	"gossipnode/messaging"
 	"gossipnode/pkg/gatekeeper"
 
-	"github.com/ethereum/go-ethereum/common"
-
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -191,6 +188,15 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
+	// CodeQL go/incorrect-integer-conversion: doc.Nonce is uint64 (sourced via
+	// strconv.ParseUint in DB_OPs/backend/account.go's toStoreAccount) but the
+	// wire type (CLI/proto/Connection.proto: "int64 nonce = 5") is a fixed
+	// int64 - changing the wire type would break existing gRPC clients, so
+	// bound-check before the narrowing conversion instead, rather than let a
+	// value above MaxInt64 silently wrap negative.
+	if doc.Nonce > math.MaxInt64 {
+		return nil, status.Errorf(codes.Internal, "nonce %d for DID %q exceeds int64 range", doc.Nonce, doc.DIDAddress)
+	}
 	return &pb.DIDDocument{
 		Did:       doc.DIDAddress,
 		Type:      doc.AccountType,
@@ -203,38 +209,9 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 	}, nil
 }
 
+// PropagateDID is retired: accounts are created only by block application.
 func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
-	if req.Did == "" || req.PublicKey == "" {
-		return &pb.OperationResponse{Success: false, Message: "did and public_key are required"}, nil
-	}
-
-	addr := common.HexToAddress(req.PublicKey)
-
-	// GATED out-of-band creation (operator RPC): a manually created account exists
-	// on this node only, with a locally minted ART nonce. Accounts are created at
-	// block apply from the block-carried identity; JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1
-	// re-enables this path for emergencies.
-	if !DB_OPs.AllowLocalAccountCreate {
-		return &pb.OperationResponse{Success: false, Message: DB_OPs.ErrLocalAccountCreateDisabled.Error()}, nil
-	}
-
-	if err := DB_OPs.CreateAccount(nil, req.Did, addr, nil); err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to create account: %v", err)}, nil
-	}
-
-	doc, err := DB_OPs.GetAccount(nil, addr)
-	if err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to get account: %v", err)}, nil
-	}
-
-	// Balance is not taken from the request: it is owned by block processing
-	// and reconciliation, so a newly created account starts at zero.
-
-	if err := messaging.PropagateDID(s.handler.Node.Host, doc); err != nil {
-		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to propagate DID: %v", err)}, nil
-	}
-
-	return &pb.OperationResponse{Success: true, Message: "DID propagated successfully"}, nil
+	return nil, status.Error(codes.Unimplemented, "propagateDID is retired: an account is created by its first incoming transfer")
 }
 
 // Database Operations
@@ -343,14 +320,13 @@ func (s *CLIServer) GetTxIndexStatus(ctx context.Context, _ *emptypb.Empty) (*pb
 }
 
 // Helper function to convert database state
-func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *DB_OPs.DatabaseState) *pb.DatabaseState {
 	if state == nil {
 		return &pb.DatabaseState{}
 	}
 	return &pb.DatabaseState{
-		TxId:     state.TxId,
-		TxHash:   state.TxHash,
-		Database: state.Db,
+		TxId:   state.TxId,
+		TxHash: state.TxHash,
 	}
 }
 
@@ -365,11 +341,6 @@ func convertMetadataToString(metadata map[string]interface{}) string {
 		return "{}"
 	}
 	return string(jsonData)
-}
-
-// StartGRPCServer starts the gRPC server
-func StartGRPCServer(handler *CommandHandler, bindAddr string, port int) error {
-	return StartGRPCServerWithContext(context.Background(), handler, bindAddr, port)
 }
 
 // StartGRPCServerWithContext starts the gRPC server and gracefully stops it when ctx is cancelled.
@@ -411,7 +382,10 @@ func StartGRPCServerWithContext(ctx context.Context, handler *CommandHandler, bi
 
 	cliServer := NewCLIServer(handler, l)
 	cliServer.Register(grpcServer)
-	reflection.Register(grpcServer)
+	// Reflection lists every admin method; never on mainnet.
+	if settings.GRPCReflectionAllowed() {
+		reflection.Register(grpcServer)
+	}
 
 	l.Info(ctx, "gRPC server started")
 

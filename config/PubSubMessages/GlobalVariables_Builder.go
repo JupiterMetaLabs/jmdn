@@ -1,10 +1,13 @@
 package PubSubMessages
 
 import (
-	"fmt"
+	"context"
 	"sync"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	log "gossipnode/logging"
 )
 
 // < -- Singleton Pattern for gloabl variables -- >
@@ -41,15 +44,15 @@ func (st *SubscriptionTracker) MarkPeerAccepted(peerID peer.ID, role string) {
 		st.AcceptedPeers[peerID] = true
 		st.ActiveCount++
 		st.BuddyNodes[peerID] = role
-		fmt.Printf("=== SubscriptionTracker: Marked peer %s as accepted (role: %s, count: %d) ===\n", peerID, role, st.ActiveCount)
+		ctx := context.Background()
+		logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+		if err == nil && logInstance != nil {
+			logInstance.GetNamedLogger().Debug(ctx, "SubscriptionTracker: Marked peer as accepted",
+				ion.String("peer_id", peerID.String()),
+				ion.String("role", role),
+				ion.Int("count", st.ActiveCount))
+		}
 	}
-}
-
-// IsPeerAccepted checks if a peer is accepted
-func (st *SubscriptionTracker) IsPeerAccepted(peerID peer.ID) bool {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-	return st.AcceptedPeers[peerID]
 }
 
 // GetActiveCount returns the current active count
@@ -77,34 +80,6 @@ func (st *SubscriptionTracker) GetBuddyNodes() map[peer.ID]string {
 	return result
 }
 
-// GetMainPeers returns only the main peers
-func (st *SubscriptionTracker) GetMainPeers() []peer.ID {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	var mainPeers []peer.ID
-	for peerID, role := range st.BuddyNodes {
-		if role == "main" {
-			mainPeers = append(mainPeers, peerID)
-		}
-	}
-	return mainPeers
-}
-
-// GetBackupPeers returns only the backup peers
-func (st *SubscriptionTracker) GetBackupPeers() []peer.ID {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	var backupPeers []peer.ID
-	for peerID, role := range st.BuddyNodes {
-		if role == "backup" {
-			backupPeers = append(backupPeers, peerID)
-		}
-	}
-	return backupPeers
-}
-
 // Reset resets the tracker
 func (st *SubscriptionTracker) Reset() {
 	st.mutex.Lock()
@@ -124,7 +99,11 @@ func (globalvar *GlobalVariables) Set_PubSubNode(pubsub *BuddyNode) {
 
 func (globalvar *GlobalVariables) Get_PubSubNode() *BuddyNode {
 	if PubSub_BuddyNode == nil {
-		fmt.Println("PubSub_BuddyNode is nil - not initialized")
+		ctx := context.Background()
+		logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+		if err == nil && logInstance != nil {
+			logInstance.GetNamedLogger().Warn(ctx, "PubSub_BuddyNode is nil - not initialized")
+		}
 		return nil
 	}
 	return PubSub_BuddyNode

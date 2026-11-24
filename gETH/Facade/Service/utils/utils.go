@@ -141,11 +141,6 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 	return Txn
 }
 
-// Convert the address string to common.Address
-func ConvertAddress(address string) common.Address {
-	return common.HexToAddress(address)
-}
-
 // ConvertAddressCaseInsensitive converts address string to common.Address in a case-insensitive manner
 func ConvertAddressCaseInsensitive(address string) common.Address {
 	// Remove 0x prefix if present
@@ -161,16 +156,6 @@ func ConvertAddressCaseInsensitive(address string) common.Address {
 	return common.HexToAddress("0x" + addr)
 }
 
-// ConvertAddressCaseInsensitiveWithFallback tries case-insensitive conversion first, then falls back to exact match
-func ConvertAddressCaseInsensitiveWithFallback(address string) common.Address {
-	// First try case-insensitive conversion
-	normalized := ConvertAddressCaseInsensitive(address)
-
-	// For now, return the normalized version
-	// In a real implementation, we might need to try both and see which one works
-	return normalized
-}
-
 // Convert the balance string to big.Int
 func ConvertBalance(balance string) (*big.Int, error) {
 	balanceInt, status := new(big.Int).SetString(balance, 10)
@@ -180,37 +165,17 @@ func ConvertBalance(balance string) (*big.Int, error) {
 	return balanceInt, nil
 }
 
-// convertLogsToMap converts receipt logs to a map format suitable for JSON serialization
-func ConvertLogsToMap(logs []config.Log) []map[string]any {
-	logMaps := make([]map[string]any, len(logs))
-	for i, log := range logs {
-		topics := make([]string, len(log.Topics))
-		for j, topic := range log.Topics {
-			topics[j] = topic.Hex()
-		}
-
-		logMaps[i] = map[string]any{
-			"address":     log.Address.Hex(),
-			"topics":      topics,
-			"data":        fmt.Sprintf("%x", log.Data),
-			"blockNumber": fmt.Sprintf("%x", log.BlockNumber),
-			"blockHash":   log.BlockHash.Hex(),
-			"txHash":      log.TxHash.Hex(),
-			"txIndex":     fmt.Sprintf("%x", log.TxIndex),
-			"logIndex":    fmt.Sprintf("%x", log.LogIndex),
-			"removed":     log.Removed,
-		}
-	}
-	return logMaps
-}
-
 // Conversion
 func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
-	// First Compute the Receipts
-	Receipts, err := DB_OPs.GetReceiptsofBlock(nil, ZKBlock.BlockNumber)
-	if err != nil {
-		return Types.BlockHeader{}
-	}
+	// First Compute the Receipts.
+	//
+	// Built from the block already in hand. This used to call
+	// GetReceiptsofBlock(nil, ZKBlock.BlockNumber), re-reading from storage the
+	// very block it was passed — and that read, before the single-read rewrite,
+	// was itself one of N+1. Every caller of ConvertZKBlockToBlock holds a full
+	// block (ReadZKBlockByNumber / GetZKBlockByNumber / GetZKBlockByHash), so
+	// there is nothing to re-read.
+	Receipts := DB_OPs.ReceiptsOfStoredBlock(nil, &ZKBlock)
 
 	// Second Compute the Receipt hash
 	Receiptshash, err := utils.GenerateReceiptRoot(Receipts)
@@ -231,6 +196,7 @@ func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 		ParentHash:          ZKBlock.PrevHash.Bytes(),
 		StateRoot:           ZKBlock.StateRoot.Bytes(),
 		ReceiptsRoot:        Receiptshash,
+		TxnsRoot:            common.HexToHash(ZKBlock.TxnsRoot).Bytes(), // 32-byte txns trie root for eth_getBlock*
 		LogsBloom:           LogsBloom,
 		Miner:               ZKBlock.ZKVMAddr.Bytes(),
 		Number:              ZKBlock.BlockNumber,

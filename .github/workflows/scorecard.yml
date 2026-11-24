@@ -1,0 +1,95 @@
+name: Scorecard
+
+# OpenSSF Scorecard — a measured baseline for this repository's supply-chain
+# posture, rather than an opinion about it.
+#
+# WHY. Everything else in .github/ is a control we chose. Scorecard is the
+# scoreboard: it independently checks pinned dependencies, token permissions,
+# branch protection, dangerous workflow patterns, SAST coverage and more, and
+# gives each a number. It is how "are we best in class" gets an answer instead
+# of an argument. It also regresses loudly — if someone unpins an action or
+# widens a permission, the score drops.
+#
+# ADVISORY BY DESIGN. This never blocks a PR. Scorecard measures the repository
+# as a whole (including settings no PR author controls, like branch protection),
+# so a failing score is a backlog item for the maintainers, not a reason to
+# refuse someone's code.
+
+on:
+  # Scorecard needs the default branch; a branch_protection reading requires the
+  # repo-level view, so this runs on push to the release line and on a cadence,
+  # not on pull_request.
+  branch_protection_rule:
+  schedule:
+    # Weekly, Monday 05:00 UTC — before the working day, and offset from the
+    # 18:00 nightly so the two do not contend for runners.
+    #
+    # DORMANT UNTIL THIS FILE REACHES main. GitHub only schedules workflows from
+    # the DEFAULT branch, so while this lives on v3base the cron never fires and
+    # the push trigger below is what actually runs it. nightly.yml shows the
+    # same shape: 40 runs, all `push`, zero `schedule`.
+    - cron: "0 5 * * 1"
+  push:
+    branches: ["main", "v3base"]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-24.04
+    permissions:
+      # Needed to upload the results to the code-scanning dashboard.
+      security-events: write
+      # NO id-token: write. Scorecard runs as a Docker action whose container
+      # image upstream references by tag, not digest (gh actions-lock reports
+      # this and cannot fix it). Granting OIDC minting rights to a container we
+      # cannot pin is the wrong trade for a report, so publish_results is off
+      # below and the token is not requested.
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
+
+      # KNOWN RESIDUAL GAP. scorecard-action is a Docker action: the lockfile
+      # pins the ACTION's commit, but the action then runs a container image
+      # (ghcr.io/ossf/scorecard-action:v2.5.0) that upstream references by TAG,
+      # not by digest. `gh actions-lock` reports this and cannot fix it — the
+      # pin has to come from the action's maintainer. So this one step is pinned
+      # one level less tightly than everything else in this repo. Accepted
+      # because Scorecard is advisory and holds no secrets: its job permissions
+      # are read-only apart from the SARIF upload.
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Off, together with id-token: write above. The score still reaches
+          # the code-scanning dashboard via the SARIF upload below; what is given
+          # up is the public badge, which is not worth an OIDC token held by an
+          # unpinnable container.
+          publish_results: false
+
+      # Keep the raw result whatever the score, so a drop can be diffed against
+      # the previous week rather than re-run.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 30
+
+      # codeql-action publishes exact version tags only (its GitHub "releases"
+      # are codeql-bundle-* tags, which are a different thing) — there is no
+      # rolling @v4 to reference.
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: results.sarif

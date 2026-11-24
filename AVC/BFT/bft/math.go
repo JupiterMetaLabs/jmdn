@@ -1,20 +1,5 @@
 package bft
 
-// HasQuorum checks if vote counts meet 2/3 quorum requirement using integer math.
-// Returns true if yesVotes >= (2/3) * totalVotes
-// Formula: yes*3 >= total*2  (avoids floating point arithmetic)
-//
-// Examples:
-//   - HasQuorum(9, 13) = true  (9*3=27 >= 13*2=26)
-//   - HasQuorum(8, 13) = false (8*3=24 < 13*2=26)
-//   - HasQuorum(7, 10) = true  (7*3=21 >= 10*2=20)
-func HasQuorum(yes, total int) bool {
-	if total == 0 {
-		return false
-	}
-	return yes*QuorumDenominator >= total*QuorumNumerator
-}
-
 // QuorumThreshold calculates the minimum number of votes needed for 2/3 quorum.
 // Returns ceil((2/3) * total) using integer math.
 //

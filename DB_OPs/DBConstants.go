@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// Account ImmuClient constants
+// Accounts DB key constants
 
 const (
 	Prefix    = "address:"
 	DIDPrefix = "did:"
 )
 
-// Immuclient constants
+// Main DB key constants
 const (
 	DEFAULT_PREFIX_TX      = "tx:"
 	PREFIX_BLOCK           = "block:"
@@ -25,13 +25,13 @@ var LOKI_URL string
 
 // Logging constants
 const (
-	LOG_FILE        = "ImmuDB.log"
+	LOG_FILE        = "ThebeDB.log"
 	LOG_DIR         = "logs"
 	LOKI_BATCH_SIZE = 128 * 1024
 	LOKI_BATCH_WAIT = 1 * time.Second
 	LOKI_TIMEOUT    = 5 * time.Second
 	KEEP_LOGS       = true
-	TOPIC           = "ImmuDB_ImmuClient"
+	TOPIC           = "ThebeDB_DBOps"
 )
 
 // Custom errors
@@ -40,7 +40,7 @@ var (
 	ErrEmptyBatch      = errors.New("entries map cannot be empty")
 	ErrNilValue        = errors.New("value cannot be nil")
 	ErrNotFound        = errors.New("key not found")
-	ErrConnectionLost  = errors.New("connection to immudb lost")
+	ErrConnectionLost  = errors.New("database connection lost")
 	ErrPoolClosed      = errors.New("connection pool is closed")
 	ErrTokenExpired    = errors.New("authentication token expired")
 	ErrNoAvailableConn = errors.New("no available connections in pool")

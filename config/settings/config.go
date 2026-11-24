@@ -4,6 +4,8 @@
 package settings
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,6 +17,7 @@ type NodeConfig struct {
 	Ports        PortSettings       `mapstructure:"ports"`
 	Binds        BindSettings       `mapstructure:"binds"`
 	Database     DatabaseSettings   `mapstructure:"database"`
+	Thebe        ThebeConfig        `mapstructure:"thebe"`
 	Logging      LoggingSettings    `mapstructure:"logging"`
 	Features     FeatureSettings    `mapstructure:"features"`
 	Security     SecurityConfig     `mapstructure:"security"`
@@ -23,6 +26,306 @@ type NodeConfig struct {
 	FastSync     FastSyncSettings   `mapstructure:"fastsync"`
 	Selection    SelectionSettings  `mapstructure:"selection"`
 	Consensus    ConsensusSettings  `mapstructure:"consensus"`
+	Contracts    ContractsSettings  `mapstructure:"contracts"`
+	TxStatus     TxStatusSettings   `mapstructure:"tx_status"`
+	Checkpoint   CheckpointSettings `mapstructure:"checkpoint"`
+	Storage      StorageSettings    `mapstructure:"storage"`
+	Reputation   ReputationSettings `mapstructure:"reputation"`
+	RPC          RPCSettings        `mapstructure:"rpc"`
+}
+
+// RPCSettings bounds what one public JSON-RPC request may cost this node.
+//
+// WHY THESE LIVE HERE. Every limit below was a package-private Go const, so the
+// only way to change one was to recompile. That is the wrong posture for the
+// single surface this node exposes to the open internet (binds.facade defaults
+// to 0.0.0.0 and eth_rpc is AuthTypeNone): an operator who sees a query pattern
+// hurting the node cannot respond without a release, and an archive node and a
+// validator are forced to run the same numbers.
+//
+// FAIL CLOSED. A zero or negative value means "use the compiled default", never
+// "unlimited".
+//
+// THE UPGRADE IS NOT BEHAVIOUR-NEUTRAL. A node with no rpc: section gets the
+// defaults in DefaultConfig, and two of them are narrower than what shipped:
+//
+//	logs.max_block_span   10_000 -> 2_000   address-less spans of 2,001..10,000
+//	                                        blocks are now refused
+//	logs.max_scan_blocks  (new)      2_000   the address path gains an in-range
+//	                                        work budget it never had
+//	logs.max_addresses    (new)        100   the address list was uncapped
+//	batch.max_concurrency (new)          8   a batch ran fully in parallel
+//
+// logs.max_results (10_000) and batch.max_size (100) are unchanged. Operators
+// who need the old span back set rpc.logs.max_block_span: 10000.
+//
+// These are COST bounds, not correctness rules — no consensus behaviour depends
+// on them, so they may differ between nodes in a fleet.
+type RPCSettings struct {
+	Logs  RPCLogsSettings  `mapstructure:"logs" yaml:"logs"`
+	Batch RPCBatchSettings `mapstructure:"batch" yaml:"batch"`
+}
+
+// RPCLogsSettings bounds eth_getLogs.
+//
+// MaxBlockSpan and MaxResults are the two bounds that shipped as consts (10_000
+// each, chosen to match common public-RPC provider limits). MaxBlockSpan now
+// DEFAULTS TO 2_000 — see DefaultConfig for why — so an upgraded node with no
+// rpc: section serves a narrower range than before. MaxScanBlocks and
+// MaxAddresses are new bounds with no predecessor.
+//
+// MaxScanBlocks is the one that actually bounds WORK: the span is a block count, so
+// it says nothing about how much scanning a query causes, and MaxResults is only
+// reached once a log MATCHES — a filter that matches nothing never trips it. See
+// the refusal metric (metrics.RPCQueryRefusedCounter) before changing any of
+// them: "logs_span", "logs_results" and "logs_scan" say which bound is binding
+// and for whom.
+type RPCLogsSettings struct {
+	// MaxBlockSpan caps how many blocks an address-less query may cover.
+	MaxBlockSpan uint64 `mapstructure:"max_block_span" yaml:"max_block_span"`
+	// MaxResults caps how many logs any query may return.
+	MaxResults int `mapstructure:"max_results" yaml:"max_results"`
+	// MaxScanBlocks caps how many blocks a single query may actually touch,
+	// on BOTH paths. The address path walks a contract's whole history from
+	// block 0 and had no work limit of any kind before this.
+	MaxScanBlocks uint64 `mapstructure:"max_scan_blocks" yaml:"max_scan_blocks"`
+	// MaxAddresses caps how many contract addresses one query may filter on.
+	// Each address is a separate index scan, and the list was neither capped
+	// nor deduplicated — listing the same address N times cost N scans.
+	MaxAddresses int `mapstructure:"max_addresses" yaml:"max_addresses"`
+}
+
+// RPCBatchSettings bounds JSON-RPC batching.
+//
+// MaxSize shipped as a const (100; upstream geth's own default is 1000, so this
+// is already the conservative end). MaxConcurrency is new: the batch handler ran
+// every element in its own goroutine, so one HTTP request could put MaxSize
+// CPU-heavy calls on the scheduler at once. Bounding the fan-out is what stops a
+// single-request cost from being multiplied by the batch size.
+type RPCBatchSettings struct {
+	MaxSize        int `mapstructure:"max_size" yaml:"max_size"`
+	MaxConcurrency int `mapstructure:"max_concurrency" yaml:"max_concurrency"`
+}
+
+// CheckpointSettings controls committee-signed chain-head checkpoints — the
+// external cryptographic anchor for the ThebeDB canonical log (Option A in
+// docs/CHAIN-HEAD-ANCHOR-DESIGN.md). It is DEFAULT-OFF and additive: with
+// Enabled=false NOTHING changes at runtime — no boot integrity gate runs and the
+// sequencer signs no checkpoints, so an existing node is never affected.
+//
+// YAML:
+//
+//	checkpoint:
+//	  enabled: false
+//	  boot_fail_closed: true
+//	  cadence_blocks: 0
+//
+// Env: JMDN_CHECKPOINT_ENABLED, JMDN_CHECKPOINT_BOOT_FAIL_CLOSED,
+// JMDN_CHECKPOINT_CADENCE_BLOCKS.
+type CheckpointSettings struct {
+	// Enabled is the master switch. Default true. When false the boot gate is
+	// skipped entirely and no checkpoint is ever signed or stored.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// BootFailClosed only matters when Enabled=true. When true (default), a boot
+	// verification ERROR (a stored checkpoint whose signature or recomputed head
+	// fails, or a checkpoint below the floor) is fatal — the node refuses to
+	// start rather than serve a tampered or rolled-back log. When false
+	// (debug/rollout), the same error is logged and the node continues. A node
+	// with NO checkpoint and NO floor is never an error under either setting.
+	BootFailClosed bool `mapstructure:"boot_fail_closed" yaml:"boot_fail_closed"`
+
+	// CadenceBlocks controls how often the sequencer signs a checkpoint. 0 (the
+	// default) means "per selection epoch" (sign at each committee-epoch
+	// boundary via messaging.EpochForHeight). A non-zero N means "every N
+	// committed blocks". NOTE: with consensus.committee_epoch_blocks=0 (the
+	// shipped default) every height maps to epoch 0, so per-epoch cadence fires
+	// only at genesis — an operator enabling checkpoints should set a non-zero
+	// cadence_blocks (or a real committee_epoch_blocks).
+	CadenceBlocks uint64 `mapstructure:"cadence_blocks" yaml:"cadence_blocks"`
+
+	// FloorFile records the highest checkpoint this node has verified or
+	// created. At boot the latest stored checkpoint must be at or above it, so a
+	// rolled-back store or deleted checkpoint keys stop the node. It must live
+	// OUTSIDE thebe.kv_path; ideally on a different volume. Delete it only after
+	// a deliberate restore from an older snapshot. "" disables the floor.
+	FloorFile string `mapstructure:"floor_file" yaml:"floor_file"`
+
+	// MinSeq is an operator-pinned floor (canonical-log sequence). Set it only on
+	// a node that signs checkpoints: when > 0 a checkpoint of this node's own at
+	// or above it is required at boot, even with no floor file.
+	// Kept in the read-only config, it survives a whole-volume restore that
+	// rolls the floor file back with the store. The boot log prints the value
+	// to set after each successful verification.
+	MinSeq uint64 `mapstructure:"min_seq" yaml:"min_seq"`
+
+	// SignerBLSPub optionally pins the sequencer's BLS public key (hex).
+	// Checkpoints are verified against one key only, so committee changes
+	// cannot fail a genuine checkpoint at boot. Empty (the default): the node's
+	// own BLS key is used, with no operator step. Set it to also guard against
+	// the node's key file being replaced on disk; the boot log prints the
+	// key in use (signer_bls_pub).
+	SignerBLSPub string `mapstructure:"signer_bls_pub" yaml:"signer_bls_pub"`
+
+	// BackgroundFullVerify: after boot, a node whose log is not pruned also
+	// walks the whole log from seq 0 against its latest checkpoint, in the
+	// background. The boot gate itself only checks the records written since
+	// the floor checkpoint, so this is what still catches a change to older
+	// records. A mismatch is logged as an error. Default true.
+	BackgroundFullVerify bool `mapstructure:"background_full_verify" yaml:"background_full_verify"`
+}
+
+// LegacyFollowSettings configures legacy follow mode: a v3base node seeded from
+// a mainnet export keeps applying the blocks of the mainnet sequencer that
+// still runs the main branch, until the cutover to a v3base sequencer.
+//
+// A block at or below UntilHeight (every block while UntilHeight is 0) is a
+// legacy block. It is accepted only when delivered by MainSequencer's peer ID
+// (direct stream, gossip publisher, or ThebeSync served by it), after the
+// body, signature, linkage and equivocation checks; the v3-only checks
+// (ConsensusHash, committee anchor, v3 certificate, fee-recipient
+// recomputation) do not apply to it. Blocks above UntilHeight follow the
+// normal v3base rules. Temporary: remove after every node runs v3base.
+type LegacyFollowSettings struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+	// MainSequencer is the mainnet sequencer's full multiaddr, including
+	// /p2p/<peer id>, e.g. /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...
+	MainSequencer string `mapstructure:"main_sequencer" yaml:"main_sequencer"`
+	// UntilHeight is the last legacy block (cutover height - 1). 0 = open-ended.
+	UntilHeight uint64 `mapstructure:"until_height" yaml:"until_height"`
+	// CatchUpInterval is how often the node checks the main sequencer's tip and
+	// fetches missed blocks over ThebeSync (main must set fastsync.serve_v4).
+	CatchUpInterval time.Duration `mapstructure:"catch_up_interval" yaml:"catch_up_interval"`
+}
+
+// StorageSettings selects how much history this node keeps locally.
+//
+// Profile "full" (default) keeps the whole canonical log. Profile "light"
+// deletes canonical-log entries older than about LightKeepBlocks blocks,
+// cutting only below a checkpoint this node signed and verified, so the kept
+// log still verifies against it. Light is refused on the sequencer and needs
+// checkpoint.enabled and checkpoint.floor_file. The SQL projection (blocks,
+// transactions, proofs, accounts) is not pruned by this setting.
+type StorageSettings struct {
+	Profile string `mapstructure:"profile" yaml:"profile"`
+	// LightKeepBlocks: blocks of canonical log a light node keeps (minimum
+	// 1000). Pruning moves in checkpoint steps, so up to one checkpoint
+	// interval more is kept.
+	LightKeepBlocks uint64 `mapstructure:"light_keep_blocks" yaml:"light_keep_blocks"`
+	// PruneInterval: how often a light node checks for log to prune.
+	PruneInterval time.Duration `mapstructure:"prune_interval" yaml:"prune_interval"`
+}
+
+// Storage profiles.
+const (
+	StorageProfileFull  = "full"
+	StorageProfileLight = "light"
+	// MinLightKeepBlocks is the smallest storage.light_keep_blocks accepted.
+	MinLightKeepBlocks = 1000
+)
+
+// IsLight reports whether the light profile is selected.
+func (s StorageSettings) IsLight() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Profile), StorageProfileLight)
+}
+
+// ValidateStorage checks storage.* against the checkpoint settings it depends
+// on. isSequencer: this node is the block producer.
+func (c *NodeConfig) ValidateStorage(isSequencer bool) error {
+	p := strings.ToLower(strings.TrimSpace(c.Storage.Profile))
+	switch p {
+	case "", StorageProfileFull:
+		return nil
+	case StorageProfileLight:
+	default:
+		return fmt.Errorf("storage.profile %q: want %q or %q", c.Storage.Profile, StorageProfileFull, StorageProfileLight)
+	}
+	if isSequencer {
+		return fmt.Errorf("storage.profile light is not allowed on the sequencer: it must keep the full log")
+	}
+	if !c.Checkpoint.Enabled {
+		return fmt.Errorf("storage.profile light needs checkpoint.enabled: the log is pruned only below a signed checkpoint")
+	}
+	if strings.TrimSpace(c.Checkpoint.FloorFile) == "" {
+		return fmt.Errorf("storage.profile light needs checkpoint.floor_file: it anchors verification of the pruned log")
+	}
+	if c.Storage.LightKeepBlocks < MinLightKeepBlocks {
+		return fmt.Errorf("storage.light_keep_blocks %d is below the minimum %d", c.Storage.LightKeepBlocks, MinLightKeepBlocks)
+	}
+	if c.Storage.PruneInterval <= 0 {
+		return fmt.Errorf("storage.prune_interval must be positive")
+	}
+	return nil
+}
+
+// TxStatusSettings controls transaction-status resolution for transactions that
+// are not in a block: the local submit log, the MRE mempool lookup, and the
+// jmdt_getTransactionStatus RPC.
+//
+// Disabled by default. With Enabled=false:
+//   - no submit records are written,
+//   - jmdt_getTransactionStatus reports the feature as disabled,
+//   - eth_getTransactionByHash behaves exactly as before (an error for a hash
+//     that is not in a block).
+//
+// YAML:
+//
+//	tx_status:
+//	  enabled: true
+//	  submit_record_ttl: 30m
+//
+// Env: JMDN_TX_STATUS_ENABLED, JMDN_TX_STATUS_SUBMIT_RECORD_TTL, …
+type TxStatusSettings struct {
+	// Enabled turns the whole feature on. Default false.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// SubmitRecordTTL is how long a local submit record is kept. It must
+	// comfortably exceed the worst-case time-to-inclusion, or an in-flight
+	// transaction will report `unknown` instead of `processing` before it is
+	// mined. The sequencer polls the mempool on an interval and only builds a
+	// block once enough transactions are pending, so worst-case inclusion is
+	// far longer than intuition suggests — MEASURE it rather than trusting this
+	// default.
+	SubmitRecordTTL time.Duration `mapstructure:"submit_record_ttl" yaml:"submit_record_ttl"`
+	// SubmitRecordCapacity bounds the in-memory submit log.
+	SubmitRecordCapacity int `mapstructure:"submit_record_capacity" yaml:"submit_record_capacity"`
+
+	// MempoolTimeout bounds one MRE lookup. A status query must never block an
+	// RPC handler, so this stays small and expiry degrades to `unknown`.
+	MempoolTimeout time.Duration `mapstructure:"mempool_timeout" yaml:"mempool_timeout"`
+	// ChainTimeout bounds each chain-store read.
+	ChainTimeout time.Duration `mapstructure:"chain_timeout" yaml:"chain_timeout"`
+
+	// NegativeCacheTTL / NegativeCacheSize remember CONCLUSIVE unknowns so a
+	// burst of probes for nonexistent hashes does not become a burst of
+	// fleet-wide mempool scatter-gathers. Inconclusive answers are never
+	// cached. Keep the TTL short: a transaction submitted moments after a miss
+	// must not stay invisible.
+	NegativeCacheTTL  time.Duration `mapstructure:"negative_cache_ttl" yaml:"negative_cache_ttl"`
+	NegativeCacheSize int           `mapstructure:"negative_cache_size" yaml:"negative_cache_size"`
+
+	// RateLimitPerSec / RateLimitBurst cap the sustained status-lookup rate.
+	// This is load protection for the mempool fleet, not tuning: the JSON-RPC
+	// port is public and each miss amplifies into an N-shard fan-out.
+	RateLimitPerSec float64 `mapstructure:"rate_limit_per_sec" yaml:"rate_limit_per_sec"`
+	RateLimitBurst  int     `mapstructure:"rate_limit_burst" yaml:"rate_limit_burst"`
+
+	// BreakerFailureThreshold / BreakerCooldown stop calling an unresponsive
+	// mempool, so an outage does not add the full timeout to every request.
+	BreakerFailureThreshold int           `mapstructure:"breaker_failure_threshold" yaml:"breaker_failure_threshold"`
+	BreakerCooldown         time.Duration `mapstructure:"breaker_cooldown" yaml:"breaker_cooldown"`
+
+	// PendingTxByHash controls whether eth_getTransactionByHash may answer from
+	// the mempool. When true a queued transaction is returned with null
+	// blockHash/blockNumber/transactionIndex (the standard Ethereum pending
+	// representation) and an unknown hash returns null instead of an error.
+	// When false eth_getTransactionByHash is untouched.
+	//
+	// eth_getTransactionReceipt is NOT affected by this or any other setting
+	// here: a receipt must stay null until the transaction is in a block,
+	// because wallets read a non-null receipt as proof of mining and a
+	// synthesised status:0x0 renders as a FAILED transaction.
+	PendingTxByHash bool `mapstructure:"pending_tx_by_hash" yaml:"pending_tx_by_hash"`
 }
 
 // ConsensusSettings holds operator-controlled consensus policy.
@@ -40,6 +343,103 @@ type NodeConfig struct {
 //	    - "12D3KooW...badpeer2"
 //
 // Env (highest priority): JMDN_CONSENSUS_BLOCK_BUDDY (space-separated list).
+// EntropyBootstrapSettings closes the Stage-2 beacon's genesis gap.
+//
+// Epoch E's entropy-reveal committee is seeded from ENTROPY-E, which is
+// sealed from epoch E-1's reveals (messaging.SelectEntropyCommittee). The
+// first live epoch has no E-1, so without a published value nothing can
+// start: no committee, no reveals, no seal, and the epoch-boundary block
+// fails closed on the missing VDF proof. Epochs listed here get a
+// DETERMINISTIC bootstrap value published at install time
+// (Sequencer.BootstrapEntropy: SHA256 over a domain tag, the chain id, the
+// pinned seed-authority key, Seed, and the epoch), sealing for them is
+// skipped, and their boundary block carries no proof.
+//
+// CONSENSUS-CRITICAL and PINNED, not derived from when a node happened to
+// start: a node that restarts later must publish exactly the same set, or
+// its real seal for an epoch another node bootstrapped collides
+// (committee.BeaconSource.Publish refuses differing entropy) and the two
+// seat different committees. Bootstrap entropy is public and grindable by
+// construction - it only governs the listed epochs; real RANDAO+VDF
+// entropy takes over from the first epoch after them. Never list an epoch
+// that has already sealed real entropy on a live network.
+type EntropyBootstrapSettings struct {
+	// Epochs are entropy epochs (messaging.EpochForSlot: slot / 50) to seed.
+	// Empty => no bootstrap (the pre-existing fail-closed behaviour).
+	Epochs []uint64 `mapstructure:"epochs" yaml:"epochs"`
+	// Seed is optional extra material mixed into the bootstrap value. Must be
+	// identical on every node; it lets two devnets sharing a chain id and
+	// authority key still derive different bootstrap committees.
+	Seed string `mapstructure:"seed" yaml:"seed"`
+}
+
+// ConsensusFlags — YAML home for the consensus/committee feature flags.
+//
+// Precedence per key: legacy env var (if set, with its ORIGINAL parser) >
+// consensus.flags.<key> in jmdn.yaml > default. The defaults equal the
+// historical env defaults EXCEPT committee_v2 and agg_cert, which default ON
+// to match the testnet fleet (every node sets JMDN_COMMITTEE_V2=1 and
+// JMDN_AVC_AGG_CERT=1; the runbook requires them ON together fleet-wide). Applied by applyConsensusFlags (root package) right after
+// settings.Load, before any consensus component starts.
+//
+// Legacy env parsers (kept verbatim when the env var is set):
+//   - lenient:   unset → default; "0","false","no","off" (any case) → false; anything else → true
+//   - exactly-1: "1" → true; anything else (including "true") → false
+//   - not-0:     "0" → false; anything else (including "false","off") → true
+//
+// Consensus-critical flags must be identical fleet-wide; coordinate flips.
+type ConsensusFlags struct {
+	CommitteeSnapshotAnchor  bool `mapstructure:"committee_snapshot_anchor" yaml:"committee_snapshot_anchor"`     // JMDN_COMMITTEE_SNAPSHOT_ANCHOR, lenient, default off
+	CommitteeV2              bool `mapstructure:"committee_v2" yaml:"committee_v2"`                               // JMDN_COMMITTEE_V2, lenient, default ON (testnet fleet value)
+	RejectLegacyVotes        bool `mapstructure:"reject_legacy_votes" yaml:"reject_legacy_votes"`                 // JMDN_REJECT_LEGACY_VOTES, lenient, default on
+	EnforceCommitteeRegistry bool `mapstructure:"enforce_committee_registry" yaml:"enforce_committee_registry"`   // JMDN_ENFORCE_COMMITTEE_REGISTRY, lenient, default on
+	EnforceBlockLinkage      bool `mapstructure:"enforce_block_linkage" yaml:"enforce_block_linkage"`             // JMDN_ENFORCE_BLOCK_LINKAGE, lenient, default on
+	EnforceBodyBinding       bool `mapstructure:"enforce_body_binding" yaml:"enforce_body_binding"`               // JMDN_ENFORCE_BODY_BINDING, lenient, default on
+	AggCert                  bool `mapstructure:"agg_cert" yaml:"agg_cert"`                                       // JMDN_AVC_AGG_CERT, exactly-1, default ON (testnet fleet value)
+	EnforceSlotRecoveryGate  bool `mapstructure:"enforce_slot_recovery_gate" yaml:"enforce_slot_recovery_gate"`   // JMDN_ENFORCE_SLOT_RECOVERY_GATE, not-0, default on (both readers)
+	EnforceSyncGate          bool `mapstructure:"enforce_sync_gate" yaml:"enforce_sync_gate"`                     // JMDN_ENFORCE_SYNC_GATE, not-0, default on
+	EmitBlockBoundVotes      bool `mapstructure:"emit_block_bound_votes" yaml:"emit_block_bound_votes"`           // JMDN_EMIT_BLOCK_BOUND_VOTES, not-0, default on
+	ValidatorVoterSet        bool `mapstructure:"validator_voter_set" yaml:"validator_voter_set"`                 // JMDN_VALIDATOR_VOTER_SET, lenient, default on
+	ValidatorVoteIngest      bool `mapstructure:"validator_vote_ingest" yaml:"validator_vote_ingest"`             // JMDN_VALIDATOR_VOTE_INGEST, lenient, default on
+	EmitCommitteeBLS         bool `mapstructure:"emit_committee_bls" yaml:"emit_committee_bls"`                   // JMDN_EMIT_COMMITTEE_BLS, not-0, default on
+	AllowNewReceiverAccounts bool `mapstructure:"allow_new_receiver_accounts" yaml:"allow_new_receiver_accounts"` // JMDN_ALLOW_NEW_RECEIVER_ACCOUNTS, lenient, default on
+	BlockGossip              bool `mapstructure:"block_gossip" yaml:"block_gossip"`                               // JMDN_BLOCK_GOSSIP, lenient, default on
+	FinalizeCertOnly         bool `mapstructure:"finalize_cert_only" yaml:"finalize_cert_only"`                   // JMDN_FINALIZE_CERT_ONLY, lenient, default off
+	// TrustSequencerCertificate — TESTNET STOPGAP, fail-open. When on, a
+	// validator does NOT re-verify the 2f+1 committee quorum of a block it
+	// receives (live propagation, consensus broadcast, ThebeSync catch-up): the
+	// sequencer's commit decision is trusted once the certificate carries at
+	// least f+1 cryptographically valid block-bound +1 votes from eligible,
+	// non-blocklisted validators (so at least one honest validator signed it).
+	// A verifier error is never relaxed. The sequencer's OWN quorum gate is
+	// unaffected — it still needs 2f+1 votes before it commits. Exists only because an unanchored node
+	// cannot reproduce a past block's seated committee (six "3/5 over committee
+	// 7" incidents, 2026-10-13..15); turn it off once committee anchoring is
+	// active (consensus.committee_anchor_activation_height > 0): while it is
+	// on, a single valid vote passes, so the anchored committee check is not
+	// what decides acceptance. Compiled default is ON (testnet). Refused under
+	// production posture.
+	TrustSequencerCertificate bool   `mapstructure:"trust_sequencer_certificate" yaml:"trust_sequencer_certificate"` // JMDN_TRUST_SEQUENCER_CERT, lenient, default ON (testnet; refused in production)
+	VoteCRDTCompactK          uint64 `mapstructure:"vote_crdt_compact_k" yaml:"vote_crdt_compact_k"`                 // JMDN_VOTE_CRDT_COMPACT_K, base-10 uint, default 3 (floored at 2 by the consumer)
+}
+
+// ReputationSettings — YAML home for the reputation observer/push knobs that
+// used to be env-only. Same precedence rule as ConsensusFlags: a SET legacy
+// env var wins with its original parser.
+type ReputationSettings struct {
+	Observe             bool   `mapstructure:"observe" yaml:"observe"`                             // JMDN_REPUTATION_OBSERVE, lenient, default on
+	PushIntervalSeconds uint64 `mapstructure:"push_interval_seconds" yaml:"push_interval_seconds"` // JMDN_REPUTATION_PUSH_INTERVAL_SECONDS, uint, 0 = disabled
+	PushSuspend         bool   `mapstructure:"push_suspend" yaml:"push_suspend"`                   // JMDN_REPUTATION_PUSH_SUSPEND, not-0, default on
+	StorePath           string `mapstructure:"store_path" yaml:"store_path"`                       // JMDN_REPUTATION_STORE_PATH, path, default "" (in-memory)
+}
+
+// HeaderAddressRange is one entry of consensus.header_addresses.
+type HeaderAddressRange struct {
+	FromHeight uint64 `mapstructure:"from_height" yaml:"from_height"`
+	Coinbase   string `mapstructure:"coinbase" yaml:"coinbase"`
+	ZKVM       string `mapstructure:"zkvm" yaml:"zkvm"`
+}
+
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 
@@ -51,9 +451,188 @@ type ConsensusSettings struct {
 	// by any other key is rejected. Empty => snapshot verification cannot pin and
 	// the consumer stays disabled (fail-closed; no committee source).
 	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
+
+	// SequencerPinnedPeerID is the PINNED libp2p peer ID of this fleet's
+	// sequencer (D-26(d) / THEBE-AUDIT-HLD.md CON-03), distributed out-of-band
+	// (genesis/config) exactly like SeedAuthorityBLSPub above — the sequencer
+	// is a single, static, per-fleet identity with no rotation mechanism
+	// anywhere in this codebase, so a config-level pin, not a discovered
+	// value, is the correct source of truth.
+	//
+	// It is consumed as the authoritative UNION member alongside the
+	// authenticated committee snapshot for the vote-result-requester gate
+	// (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go:
+	// AuthorizedRequesterSet) — the set of peers a buddy node will BLS-sign a
+	// vote result for on request. Before this pin existed, that gate had no
+	// reliable authenticated source for "who is the sequencer" (the only
+	// available signals were self-declared and unauthenticated: a
+	// broadcast buddy list, or msg.SequencerID in a consensus message), so
+	// the gate could only fail open or risk rejecting the legitimate
+	// sequencer — this pin closes that gap.
+	//
+	// Empty => the requester gate's authorized set is committee-only, which
+	// risks rejecting the legitimate sequencer if it is not itself a
+	// resolvable committee member. production_posture.go's
+	// ValidateProductionConsensusPosture warns/fails on this being unset in
+	// a production posture — see that file.
+	//
+	// Optional when the seed signs the sequencer peer ID into the committee
+	// snapshot (v3): the node then learns it from the verified snapshot
+	// (internal/sequencerid). When set, this value wins and a disagreeing seed
+	// value is logged.
+	SequencerPinnedPeerID string `mapstructure:"sequencer_pinned_peer_id" yaml:"sequencer_pinned_peer_id"`
+	// SyncCertificateRequiredFrom is the first block height that catch-up sync
+	// requires to carry a committee certificate. 1 for a chain certified from
+	// genesis; the first certified height for a chain with an older,
+	// certificate-less prefix; 0 = not set (only the parent-carries-a-certificate
+	// rule applies). Required under production posture.
+	SyncCertificateRequiredFrom uint64 `mapstructure:"sync_certificate_required_from" yaml:"sync_certificate_required_from"`
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
+	//
+	// WALL CLOCK. It selects which committee SNAPSHOT the seed node serves. It
+	// must never be used to derive a selection seed - see CommitteeEpochBlocks.
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+
+	// CommitteeEpochBlocks is the selection-epoch length in BLOCKS, used by
+	// messaging.EpochForHeight to map a height to the epoch that is hashed into
+	// the committee seed.
+	//
+	// This is consensus-critical and must be identical network-wide: two nodes
+	// with different values derive different seeds for the same block, seat
+	// different committees, and reject each other's certificates. Change it only
+	// as a coordinated fleet-wide flip.
+	//
+	// 0 (the default) means "one epoch" - every height maps to epoch 0. That is
+	// correct for Stage 1, where the seed source is a fixed salt that ignores the
+	// epoch and the draw already rotates on height and prev_hash. Stage 2
+	// (RANDAO + VDF) keys its beacon on this epoch and needs a real value.
+	CommitteeEpochBlocks int64 `mapstructure:"committee_epoch_blocks" yaml:"committee_epoch_blocks"`
+
+	// RequirePinnedCommittee makes committee selection resolve its candidate pool
+	// from the FROZEN snapshot of the block's selection epoch, instead of reading
+	// the current one live (W1 pool pinning).
+	//
+	// Unpinned, the seed is derived from the block but the pool is not: two nodes
+	// resolving the pool either side of a membership change seat different
+	// committees and compute different n, hence different T = ceil(2n/3). Live
+	// that is a split; retroactively it means a synced node cannot re-derive the
+	// committee that already voted on an old block.
+	//
+	// FAIL CLOSED: with this set, an eligibility source that cannot serve a
+	// specific epoch returns messaging.ErrCommitteeNotPinned and the round is
+	// refused. Do NOT enable until the seed node can serve GetCommitteeSnapshot
+	// for a PAST epoch, or jmdn persists each epoch's snapshot with its signature.
+	//
+	// Also requires committee_epoch_blocks to be non-zero — at 0 every height maps
+	// to epoch 0, so "pin per epoch" pins all history to a single snapshot.
+	//
+	// Default false = today's behaviour, unchanged.
+	RequirePinnedCommittee bool `mapstructure:"require_pinned_committee" yaml:"require_pinned_committee"`
+
+	// CommitteeAnchorActivationHeight turns on the CHAIN-ANCHORED committee pool
+	// (W1 fix, messaging/committee_anchor.go). From this height on, every block
+	// whose number is a multiple of committee_epoch_blocks carries the seed's
+	// signed committee snapshot, bound by CommitteeSnapshotHash (itself covered
+	// by ConsensusHash); every block of the NEXT selection period draws its
+	// committee from that snapshot. The pool then comes from the chain, not from
+	// whenever a node happened to ask the seed, so every node - sequencer,
+	// buddies, validators, a node syncing later - derives the same committee.
+	//
+	// A FLEET-AGREED consensus parameter: every node must carry the same value,
+	// set in one coordinated upgrade, to a height the chain has not reached yet.
+	// Rounded up to a multiple of committee_epoch_blocks. 0 (the default) = off,
+	// today's behaviour unchanged. Requires committee_epoch_blocks > 0 and
+	// JMDN_COMMITTEE_SNAPSHOT_ANCHOR off (the older, unwired hash-only anchor).
+	CommitteeAnchorActivationHeight uint64 `mapstructure:"committee_anchor_activation_height" yaml:"committee_anchor_activation_height"`
+
+	// CompactCertificateFromHeight: from this block height on, a block's stored
+	// committee certificate is one aggregate BLS signature plus a signer bitmap
+	// over the chain-anchored pool (~150 B) instead of the full vote list
+	// (messaging/cert_compact.go). Applies only to blocks in anchored selection
+	// periods (committee_anchor_activation_height) and never to the parents of
+	// an entropy fallback window. A FLEET-AGREED parameter: every node must
+	// carry the same value, set to a height the chain has not reached yet,
+	// because the reward split is read from the stored certificate. 0 = off.
+	CompactCertificateFromHeight uint64 `mapstructure:"compact_certificate_from_height" yaml:"compact_certificate_from_height"`
+
+	// HeaderBindingFromHeight: from this block height on, BlockHash covers the
+	// coinbase, zkvm address and timestamp as well as the transactions, and
+	// ConsensusHash also covers them and FeeRecipients (Security/header_binding.go).
+	// A FLEET-AGREED parameter: every node and the orchestrator must carry the
+	// same value, set to a height the chain has not reached yet. 0 = off.
+	HeaderBindingFromHeight uint64 `mapstructure:"header_binding_from_height" yaml:"header_binding_from_height"`
+	// HeaderAddresses: the coinbase and zkvm addresses (the orchestrator's)
+	// every block must carry from HeaderBindingFromHeight on, as ranges by
+	// height so a change can be scheduled at a future height. Checked when a
+	// block is proposed and before voting. Required when
+	// HeaderBindingFromHeight is set: the first range must start at or below it.
+	HeaderAddresses []HeaderAddressRange `mapstructure:"header_addresses" yaml:"header_addresses"`
+	// BlockTimestampMaxFutureSeconds: how far past this node's clock a block's
+	// timestamp may be when it is proposed or voted on, from
+	// HeaderBindingFromHeight on. 0 = not checked.
+	BlockTimestampMaxFutureSeconds uint64 `mapstructure:"block_timestamp_max_future_seconds" yaml:"block_timestamp_max_future_seconds"`
+	// VotePeriodMinRoundSeconds and VotePeriodSlack bound how far a proposal's
+	// Period may run ahead of time at a height. This node votes ACCEPT for, or
+	// signs the vote result of, period p at height h only if
+	//
+	//	p <= VotePeriodSlack + seconds since this node first saw a proposal at h
+	//	                       / VotePeriodMinRoundSeconds
+	//
+	// A failed round takes at least this long, so honest retries stay inside
+	// the bound, while one proposal cannot jump straight to the period cap and
+	// leave every honest retry at the height refused. Local voting rule, not a
+	// fleet-agreed parameter. 0 for VotePeriodMinRoundSeconds turns the bound off.
+	VotePeriodMinRoundSeconds uint64 `mapstructure:"vote_period_min_round_seconds" yaml:"vote_period_min_round_seconds"`
+	// PeriodCapRaiseFromHeight: from this block height on, a block's Period
+	// may go up to config.MaxPeriod (2^20) instead of config.LegacyMaxPeriod
+	// (1024), so the cap is never a dead end after a high period is recorded
+	// at a height. A FLEET-AGREED parameter: every node must carry the same
+	// value, set to a height the chain has not reached yet. 0 = off.
+	PeriodCapRaiseFromHeight uint64 `mapstructure:"period_cap_raise_from_height" yaml:"period_cap_raise_from_height"`
+	VotePeriodSlack          uint64 `mapstructure:"vote_period_slack" yaml:"vote_period_slack"`
+	// NewRecipientGasFromHeight: from this block height on, this node's RPC
+	// rejects a plain transfer to a new recipient (no account, or one that has
+	// never held value or sent a transaction, e.g. DID-registered only) whose
+	// gas limit is below config.TransferGas + config.NewRecipientGas (46,000),
+	// and eth_estimateGas returns that limit. A used account, even drained to
+	// zero, needs only 21,000. Submission and estimation only: block
+	// validation does not check it. Set the same value on every RPC node, or the
+	// same transfer is accepted by one node and rejected by another. 0 = off.
+	NewRecipientGasFromHeight uint64 `mapstructure:"new_recipient_gas_from_height" yaml:"new_recipient_gas_from_height"`
+	// LegacyFollow makes this v3base node follow the mainnet sequencer that
+	// still runs the main branch during the migration (see LegacyFollowSettings).
+	LegacyFollow LegacyFollowSettings `mapstructure:"legacy_follow" yaml:"legacy_follow"`
+
+	// EVMUnstampedAccountRevertHeight activates the deterministic backstop for
+	// contract txs whose EXECUTION creates an account (internal CALL{value},
+	// SELFDESTRUCT beneficiary, value-funded CREATE/CREATE2 child) that carries no
+	// block-carried ART identity (messaging/BlockProcessing/contract_apply.go).
+	// From this height on such a tx is applied as an EVM REVERT (effects
+	// discarded, gas charged, nonce bumped, status-0 receipt) instead of failing
+	// and withholding the WHOLE block. The sequencer's pre-consensus prediction
+	// (PredictContractCreatedAccounts) stamps these accounts in the common case,
+	// so the backstop only fires when prediction could not see the account.
+	//
+	// A FLEET-AGREED consensus parameter: every node must carry the same value,
+	// set in one coordinated upgrade, to a height the chain has not reached yet.
+	// Below it (and at 0, the default) the legacy whole-block failure is kept.
+	EVMUnstampedAccountRevertHeight uint64 `mapstructure:"evm_unstamped_account_revert_height" yaml:"evm_unstamped_account_revert_height"`
+
+	// CommitteeStrictBoundary stops a node bridging an epoch CHANGE with a cached
+	// committee snapshot when the seed is unreachable.
+	//
+	// The snapshot freshness window is ±1 epoch, so just after an epoch boundary a
+	// node serving its cached previous-epoch set still passes freshness while a
+	// node that fetched successfully uses the new set — different sets, different
+	// n, different T, and each believes it is right. Bridging WITHIN an epoch is
+	// unaffected; that is what the cache is for.
+	//
+	// Trade: a stalled node rejoins cleanly, a split node does not. Becomes
+	// important once membership actually rotates per epoch.
+	//
+	// Default false = today's behaviour, unchanged.
+	CommitteeStrictBoundary bool `mapstructure:"committee_strict_boundary" yaml:"committee_strict_boundary"`
 
 	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
 	// consensus. The certificate verifier trims the eligible committee to this many
@@ -80,6 +659,35 @@ type ConsensusSettings struct {
 	//	consensus:
 	//	  p2p: 0
 	P2P int `mapstructure:"p2p" yaml:"p2p"`
+
+	// RewardAddress is this node operator's wallet (20-byte hex, 0x-prefixed).
+	// OPTIONAL: empty = the node participates in consensus but claims no gas-fee
+	// reward (its share redistributes to buddies that DO have an address).
+	// When set and registered at the seed, the binding is IMMUTABLE — a node
+	// cannot later switch to a different address (like peer_id / alias). One
+	// address may back many nodes. See docs/STAKING-REWARDS-DESIGN.md.
+	// Validated with common.IsHexAddress at boot (see ValidateRewardAddress).
+	RewardAddress string `mapstructure:"reward_address" yaml:"reward_address"`
+
+	// RewardSplitEnabled is the master switch for buddy staking rewards: when on,
+	// the sequencer populates ZKBlock.FeeRecipients from the block's cert signers
+	// (weighted by each bound reward address's parent-state balance) and EVERY
+	// node recomputes+validates that split on receive. Consensus-critical and
+	// must be identical network-wide — coordinate the flip. Default OFF = today's
+	// behaviour (empty FeeRecipients → single coinbase credit).
+	RewardSplitEnabled bool `mapstructure:"reward_split_enabled" yaml:"reward_split_enabled"`
+
+	// Flags are the consensus/committee rollout switches that used to be
+	// env-only (JMDN_* read at package init). Each key here has a legacy env
+	// alias; when that env var is SET it keeps its historical parser and wins,
+	// so existing env files behave exactly as before. YAML applies only when
+	// the env var is unset. See ConsensusFlags and jmdn_default.yaml.
+	Flags ConsensusFlags `mapstructure:"flags" yaml:"flags"`
+
+	// EntropyBootstrap pins the Stage-2 beacon's genesis entropy epochs; see
+	// EntropyBootstrapSettings. Only consulted when the beacon is installed
+	// (JMDN_AVC_VDF_* env), and requires SeedAuthorityBLSPub to be pinned.
+	EntropyBootstrap EntropyBootstrapSettings `mapstructure:"entropy_bootstrap" yaml:"entropy_bootstrap"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee
@@ -98,6 +706,24 @@ type SelectionSettings struct {
 	Salt     string `mapstructure:"salt"     yaml:"salt"`
 }
 
+// ContractsSettings controls the smart-contract / EVM execution layer.
+//
+// Enabled wires an execbridge.ContractExecutor into the block-apply path so
+// contract (Type-2 / deployment) transactions are executed during consensus
+// apply instead of falling through to a plain value transfer. Default TRUE
+// (operator decision 2026-08-19). With it on, contract txs execute during apply
+// and the P2.5 state-fingerprint HALT-on-divergence is active.
+// PRECONDITIONS the operator MUST ensure before running with this on:
+//   - the 2-node determinism gate has passed (deploy/call/payable → identical
+//     fingerprint/balances/receipts; a diverged node halts);
+//   - the fleet is homogeneous — every consensus node runs this binary with the
+//     flag on. A heterogeneously-flagged fleet, or any EVM-less (old) node,
+//     forks/breaks on contract blocks (some execute, some transfer). Set to false
+//     in jmdn.yaml to run a node dormant.
+type ContractsSettings struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+}
+
 // NodeSettings defines the identity of this node.
 type NodeSettings struct {
 	Alias string `mapstructure:"alias" yaml:"alias"`
@@ -110,33 +736,49 @@ type NetworkSettings struct {
 	Mempool           string `mapstructure:"mempool"            yaml:"mempool"`
 	Yggdrasil         bool   `mapstructure:"yggdrasil"          yaml:"yggdrasil"`
 	HeartbeatInterval int    `mapstructure:"heartbeat_interval" yaml:"heartbeat_interval"`
+
+	// Environment names which network this node is part of: "mainnet" or
+	// "testnet". This is a SAFETY GATE, not just metadata — Features.AvcValidation
+	// (the avc consensus-adapter rollout) refuses to run unless this is exactly
+	// "testnet", regardless of the AvcValidation.Enabled flag. Defaults to
+	// "mainnet" (see DefaultConfig) so an operator who never sets this field gets
+	// the safe behavior: the new validation path stays off everywhere until
+	// explicitly opted into on a testnet node. Empty or any other value is
+	// treated as "not testnet" (fail-closed), never as an implicit yes.
+	Environment string `mapstructure:"environment" yaml:"environment"`
 }
 
 // PortSettings groups all port/address assignments.
 type PortSettings struct {
-	API       int `mapstructure:"api"       yaml:"api"`
-	BlockGen  int `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       int `mapstructure:"cli"       yaml:"cli"`
-	DID       int `mapstructure:"did"       yaml:"did"`
-	Facade    int `mapstructure:"facade"    yaml:"facade"`
-	WS        int `mapstructure:"ws"        yaml:"ws"`
-	Metrics   int `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  int `mapstructure:"profiler"  yaml:"profiler"`
+	API        int `mapstructure:"api"       yaml:"api"`
+	BlockGen   int `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        int `mapstructure:"cli"       yaml:"cli"`
+	DID        int `mapstructure:"did"       yaml:"did"`
+	Facade     int `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug int `mapstructure:"thebe_debug" yaml:"thebe_debug"`
+	WS         int `mapstructure:"ws"        yaml:"ws"`
+	Geth       int `mapstructure:"geth"      yaml:"geth"`
+	Smart      int `mapstructure:"smart"     yaml:"smart"`
+	Metrics    int `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   int `mapstructure:"profiler"  yaml:"profiler"`
 }
 
 // BindSettings groups all bind address configurations.
 // Defaults: Admin ports = 127.0.0.1, Public ports = 0.0.0.0
 type BindSettings struct {
-	API       string `mapstructure:"api"       yaml:"api"`
-	BlockGen  string `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       string `mapstructure:"cli"       yaml:"cli"`
-	DID       string `mapstructure:"did"       yaml:"did"`
-	Facade    string `mapstructure:"facade"    yaml:"facade"`
-	WS        string `mapstructure:"ws"        yaml:"ws"`
-	Metrics   string `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
+	API        string `mapstructure:"api"       yaml:"api"`
+	BlockGen   string `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        string `mapstructure:"cli"       yaml:"cli"`
+	DID        string `mapstructure:"did"       yaml:"did"`
+	Facade     string `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug string `mapstructure:"thebe_debug" yaml:"thebe_debug"`
+	WS         string `mapstructure:"ws"        yaml:"ws"`
+	Geth       string `mapstructure:"geth"      yaml:"geth"`
+	Smart      string `mapstructure:"smart"     yaml:"smart"`
+	Metrics    string `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
 // RedisSettings controls the Redis connection used by the account sync worker.
@@ -149,20 +791,71 @@ type RedisSettings struct {
 	Password string `mapstructure:"password" yaml:"password"`
 }
 
+// ThebeConfig controls the ThebeDB storage backend (the node's only DB).
+type ThebeConfig struct {
+	Enabled    bool           `mapstructure:"enabled" yaml:"enabled"`         // default true — ThebeDB is the only storage backend
+	KVPath     string         `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
+	SQLDSN     string         `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
+	RedisURL   string         `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
+	StreamName string         `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
+	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
+	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
+	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+	// Pools are the task-wise Postgres connection budgets (DB_OPs/task_pools.go).
+	// Each task gets its own pool, so one task exhausting its budget cannot take
+	// connections from another. The sum must fit the server's max_connections.
+	Pools ThebePoolsConfig `mapstructure:"pools" yaml:"pools"`
+}
+
+// ThebePoolsConfig sizes each task's dedicated Postgres pool (max open
+// connections). Env: JMDN_THEBE_POOLS_WRITE / _READ / _SYNC.
+type ThebePoolsConfig struct {
+	// Write: ThebeDB engine — 2PC writes, outbox drain, contract-state reads.
+	Write int `mapstructure:"write" yaml:"write"`
+	// Read: process-wide reads — JSON-RPC, consensus apply, explorer, CLI.
+	Read int `mapstructure:"read" yaml:"read"`
+	// Sync: serving peers' FastSync/ThebeSync requests (account, block, header
+	// pages). Bounded small: sync is bulk, retried, and must never starve the rest.
+	Sync int `mapstructure:"sync" yaml:"sync"`
+}
+
+type ThebeCDCConfig struct {
+	Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
+	SlotName    string `mapstructure:"slot_name" yaml:"slot_name"`
+	Publication string `mapstructure:"publication" yaml:"publication"`
+	LogPath     string `mapstructure:"log_path" yaml:"log_path"`
+	DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
+	MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
+	// OmitColumns lists "table.column" (or "schema.table.column") entries
+	// whose values the event log records as "<omitted>" instead of their
+	// contents. Default: zk_proofs.stark_proof, the block's proof body, which
+	// is ~2x the proof size in hex and whose hash is in zk_proofs.proof_hash.
+	OmitColumns []string `mapstructure:"omit_columns" yaml:"omit_columns"`
+}
+
+// OmitColumnsByTable turns OmitColumns into the table -> columns map ThebeDB
+// takes. An entry splits at its LAST dot: "zk_proofs.stark_proof" is table
+// zk_proofs, "public.zk_proofs.stark_proof" is table public.zk_proofs.
+// Entries with no dot or an empty part are returned as invalid.
+func (c ThebeCDCConfig) OmitColumnsByTable() (map[string][]string, []string) {
+	out := make(map[string][]string)
+	var invalid []string
+	for _, e := range c.OmitColumns {
+		e = strings.TrimSpace(e)
+		i := strings.LastIndex(e, ".")
+		if i <= 0 || i == len(e)-1 {
+			invalid = append(invalid, e)
+			continue
+		}
+		out[e[:i]] = append(out[e[:i]], e[i+1:])
+	}
+	return out, invalid
+}
+
 // DatabaseSettings controls ImmuDB and Redis connection parameters.
 // Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
-	// ImmuDB connection — override to point at a separate immudb container.
-	Address string `mapstructure:"address" yaml:"address"`
-	Port    int    `mapstructure:"port"    yaml:"port"`
-
-	Username string        `mapstructure:"username"      yaml:"username"`
-	Password string        `mapstructure:"password"      yaml:"password"`
-	Redis    RedisSettings `mapstructure:"redis"         yaml:"redis"`
-
-	// TxIndexPath is the path to the SQLite address→tx index file.
-	// Defaults to "txindex.db" in the working directory if empty.
-	TxIndexPath string `mapstructure:"tx_index_path" yaml:"tx_index_path"`
+	Redis RedisSettings `mapstructure:"redis" yaml:"redis"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -220,6 +913,50 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+
+	// EnableSolcCompile exposes the solc_compile JSON-RPC method. Off by
+	// default; when on, callers must present the admin token.
+	EnableSolcCompile bool `mapstructure:"enable_solc_compile" yaml:"enable_solc_compile"`
+	// EnableDebugTrace exposes debug_traceTransaction. Off by default; when
+	// on, callers must present the admin token.
+	EnableDebugTrace bool `mapstructure:"enable_debug_trace" yaml:"enable_debug_trace"`
+	// GroupedApplyCommit commits consecutive value-transfer txs of a block
+	// together, writing each touched account once per group instead of once
+	// per tx. Final state is identical either way. On by default; set false to
+	// go back to one commit per tx.
+	GroupedApplyCommit bool `mapstructure:"grouped_apply_commit" yaml:"grouped_apply_commit"`
+
+	// AvcValidation controls the staged rollout of the avc-based consensus
+	// validator (consensus/adapters) alongside jmdn's existing
+	// Security.CheckZKBlockValidation. See AvcValidationSettings for the
+	// mode semantics and NetworkSettings.Environment for the testnet-only gate.
+	AvcValidation AvcValidationSettings `mapstructure:"avc_validation" yaml:"avc_validation"`
+}
+
+// AvcValidationSettings controls the staged rollout described in the A3
+// adapter work: shadow mode (compare, don't act) -> feature-flagged enforce
+// (per-node opt-in) -> full cutover (flip the default). Both stages are the
+// SAME code path here; "full cutover" is simply flipping this config's
+// default in DefaultConfig() once shadow mode has run clean for the agreed
+// period — no further code change needed for that step.
+//
+// SAFETY: even with Enabled=true, the validator only runs when
+// NetworkSettings.Environment == "testnet" (see EvaluateShadow in
+// consensus/adapters/shadow.go). This lets ops enable it per-node via yaml
+// without a redeploy, restricted to testnet nodes only, exactly matching the
+// "gradually enable on a few validators, testnet only" rollout plan.
+type AvcValidationSettings struct {
+	// Enabled is the master per-node switch. Default false — opt-in only.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// Mode is "shadow" (default/safe: run the new validator, log any
+	// disagreement with the legacy decision, but the legacy decision still
+	// determines the actual vote) or "enforce" (the new validator's verdict
+	// BECOMES the vote decision; an internal error in this mode fails closed
+	// — rejects the block — rather than silently falling back to legacy).
+	// Any value other than "enforce" (including empty/unrecognized) is
+	// treated as "shadow" — the safe default.
+	Mode string `mapstructure:"mode" yaml:"mode"`
 }
 
 // FastSyncSettings controls FastSync V2 behaviour for this node.
@@ -248,6 +985,13 @@ type FastSyncSettings struct {
 	// Requires enable_pulling=true. Never set on the sequencer.
 	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
 
+	// ServeLegacy registers the retired FastsyncV2 (/fastsync/v1 Merkle-bisection)
+	// SERVING handlers so legacy ImmuDB + old-FastSync nodes can still sync. Set
+	// TRUE only on the sequencer (the sole authoritative source legacy nodes pull
+	// from); new ThebeDB nodes use ThebeSync (/fastsync/v4) and leave this false.
+	// Independent of Enabled/EnablePulling — it is serve-only and never pulls.
+	ServeLegacy bool `mapstructure:"serve_legacy" yaml:"serve_legacy"`
+
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.
 	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
@@ -263,12 +1007,6 @@ type FastSyncSettings struct {
 	// Do NOT set this to localTip+1: if a previous catchup was partial,
 	// localTip may be ahead of gaps that would be silently skipped.
 	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
-
-	// ServeV4 registers read-only ThebeSync (/fastsync/v4/head and
-	// /fastsync/v4/getblocks) handlers so v3base nodes following this network
-	// during the migration can fetch blocks they missed. Serve-only; turn it on
-	// on the sequencer. Default false. Remove after the migration to v3base.
-	ServeV4 bool `mapstructure:"serve_v4" yaml:"serve_v4"`
 
 	// SyncCheckInterval is how often the SyncMonitor reports this node's Merkle
 	// root to the seednode and checks whether reconciliation is needed.

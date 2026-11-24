@@ -1,0 +1,529 @@
+// MODULE: DB_OPs/thebeprofile/schema.go
+// PURPOSE: Holds the PostgreSQL DDL migration for the JMDN ThebeDB projection schema.
+//          Returned verbatim by JMDNProfile.GetMigration() and executed once at startup.
+//          Phase 7: migrationSQL002 adds contract_receipts table (contract code/nonce/storage/meta live in KV).
+//
+// CORE DATA STRUCTURES:
+//   - migrationSQL: package-level string constant — read-only after compile.
+//     Size: static ~5KB SQL string. Never allocated at runtime.
+//   - migrationSQL002: Phase 7 contract_receipts table.
+//
+// TO MODIFY BEHAVIOR:
+//   - Add a new table: add a new migrationSQL00N constant + concatenate in GetMigration()
+//   - Rename a table: update DDL here + corresponding apply_<entity>.go + register in profile.go
+//
+// DO NOT:
+//   - Modify this constant at runtime (it is a const — compile-time only)
+//   - Add Go logic to this file; SQL DDL only
+//   - Use fmt.Sprintf to build SQL (injection risk, const handles it)
+
+package thebeprofile
+
+// migrationSQL is the complete PostgreSQL DDL for the JMDN blockchain projection schema.
+// Applied by ThebeDB at startup via GetMigration(). All statements use IF NOT EXISTS
+// for idempotency — safe to re-run on every node restart.
+//
+// Table creation order satisfies FK dependencies:
+//  1. accounts  2. blocks  3. snapshots  4. transactions  5. zk_proofs  6. l1_finality
+const migrationSQL = `
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000001_init_schema (UP)
+-- Applied by: JMDNProfile.GetMigration() via ThebeDB profile system
+--
+-- Storage model:
+--   accounts     → SQL mutable  (Create, Update, Read)
+--   blocks       → SQL append-only (Create, Read)
+--   snapshots    → SQL append-only (Create, Read)
+--   transactions → SQL append-only (Create, Read)
+--   zk_proofs    → SQL append-only (Create, Read)
+--   l1_finality  → SQL append-only (Create, Read)
+--
+-- Contract data (code, storage, nonces, meta, receipts) → ThebeDB KV store (BadgerDB)
+-- Defined in Phase 7 migration when KV key schema is confirmed.
+-- ================================================================
+
+-- ================================================================
+-- 1) accounts (SQL — Create Update Read)
+-- Mutable: balance and nonce change on every tx.
+-- DID address uniqueness enforced — one account per DID.
+-- balance_wei / nonce stored as VARCHAR(30) to avoid NUMERIC precision
+-- loss when round-tripping through Go's big.Int string conversion.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS accounts (
+    address      CHAR(42)     PRIMARY KEY,
+    did_address  TEXT         NOT NULL UNIQUE,
+    balance_wei  VARCHAR(30)  NOT NULL DEFAULT '0',
+    nonce        VARCHAR(30)  NOT NULL DEFAULT '0',
+    tx_nonce      BIGINT      NOT NULL DEFAULT 0,
+    tx_count_sent BIGINT      NOT NULL DEFAULT 0,
+    account_type SMALLINT     NOT NULL,
+    metadata     JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_updated_at
+    ON accounts(updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_did_address
+    ON accounts(did_address);
+
+-- Canonical-order index. Every account read keys on LOWER(address) (GetAccount,
+-- the fingerprint / FastSync listing order), which the address PRIMARY KEY
+-- cannot serve, so without this each GetAccount was a sequential scan and each
+-- listing page sorted the whole table. Also serves the keyset cursor
+-- (LOWER(address), address) > (...) in sqlListAccountsAfter.
+CREATE INDEX IF NOT EXISTS idx_accounts_address_lower
+    ON accounts(LOWER(address), address);
+
+-- FastSync AccountSync hydrates every 3,000-nonce page with
+-- WHERE nonce = ANY($1); without an index each page scanned the whole table.
+CREATE INDEX IF NOT EXISTS idx_accounts_nonce
+    ON accounts(nonce);
+
+-- updated_at is the LWW ordering key for the account upsert (apply_account.go:
+-- WHERE accounts.updated_at <= EXCLUDED.updated_at). The consensus apply path
+-- writes a DETERMINISTIC, block-derived updated_at (= block timestamp) so every
+-- node computes the same value for the same block. This trigger must therefore
+-- NOT clobber a caller-provided timestamp with wall-clock NOW() — doing so made
+-- updated_at node-local, which made the LWW gate reject a block's account updates
+-- on nodes that applied the block later than its embedded timestamp, causing
+-- fleet-wide P2.5 state-divergence halts (see
+-- docs/audit/CONSENSUS-STATE-DIVERGENCE-859-ROOT.md).
+--
+-- It remains a SAFETY NET only: a writer that leaves updated_at unset (epoch/zero)
+-- still gets NOW(), so no lazy writer regresses. A real, block-derived timestamp
+-- (any value after the unix epoch) is preserved untouched.
+CREATE OR REPLACE FUNCTION fn_accounts_set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.updated_at IS NULL OR NEW.updated_at <= to_timestamp(0) THEN
+        NEW.updated_at = NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_accounts_updated_at ON accounts;
+CREATE TRIGGER trg_accounts_updated_at
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION fn_accounts_set_updated_at();
+
+-- ================================================================
+-- 2) blocks (SQL — Append Only — Create Read)
+-- Immutable after write. UPDATE and DELETE are hard-blocked via RULEs.
+-- sig_v stored as BIGINT — int16 overflows for chainID > 16383 (EIP-155).
+-- block_hash, txs_root and state_root are not unique. A legacy block hash
+-- covers only the transactions, so a block that repeats an earlier block's
+-- transaction set carries the same block_hash and txs_root, and a block whose
+-- transactions change nothing leaves state_root as it was. The main chain has
+-- such blocks; a unique key would refuse to store them and leave a gap in the
+-- block heights. block_hash is indexed (lookup by hash); txs_root and
+-- state_root are not, since nothing looks them up.
+--
+-- A repeated transaction is stored once (transactions.tx_hash is the primary
+-- key, apply_transaction.go), under whichever block's projection writes it
+-- first, so a block can list fewer transactions than its txs_root covers.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS blocks (
+    block_number  BIGINT        PRIMARY KEY,
+    block_hash    CHAR(66)      NOT NULL,
+    parent_hash   CHAR(66)      NOT NULL,
+    timestamp     TIMESTAMPTZ   NOT NULL,
+    txs_root      CHAR(66)      NOT NULL,
+    state_root    CHAR(66)      NOT NULL,
+    logs_bloom    BYTEA,
+    coinbase_addr CHAR(42),
+    zkvm_addr     CHAR(42),
+    gas_limit     NUMERIC(78,0),
+    gas_used      NUMERIC(78,0),
+    status        SMALLINT      NOT NULL,
+    extra_data    JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_timestamp
+    ON blocks(timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_block_hash
+    ON blocks(block_hash);
+
+-- Databases created by earlier builds carry the unique keys; drop them.
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_block_hash_key;
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_txs_root_key;
+ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_state_root_key;
+
+-- Historical balance reconstruction (eth_getBalance at block N):
+-- WHERE LOWER(coinbase_addr)=LOWER($1) OR LOWER(zkvm_addr)=LOWER($1)
+CREATE INDEX IF NOT EXISTS idx_blocks_coinbase_lower
+    ON blocks(LOWER(coinbase_addr), block_number) WHERE coinbase_addr IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_blocks_zkvm_lower
+    ON blocks(LOWER(zkvm_addr), block_number) WHERE zkvm_addr IS NOT NULL;
+
+-- ================================================================
+-- 3) snapshots (SQL — Append Only — Create Read)
+-- One snapshot per block (1:1 FK to blocks).
+-- Transactions are owned by snapshots via FK in transactions table.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS snapshots (
+    block_number BIGINT       PRIMARY KEY,
+    block_hash   CHAR(66)     NOT NULL,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_snapshot_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_created_at
+    ON snapshots(created_at DESC);
+
+-- block_hash repeats with its block (see blocks above).
+CREATE INDEX IF NOT EXISTS idx_snapshots_block_hash
+    ON snapshots(block_hash);
+ALTER TABLE snapshots DROP CONSTRAINT IF EXISTS snapshots_block_hash_key;
+
+-- ================================================================
+-- 4) transactions (SQL — Append Only — Create Read)
+-- FK to snapshots (snapshot owns the tx set for a block).
+-- to_addr is NULLABLE — NULL means contract creation (no recipient).
+-- FK to accounts for from_addr and to_addr enforces referential integrity:
+--   accounts must exist before transactions referencing them are inserted.
+-- sig_v is BIGINT — covers EIP-155 v values for any chain ID.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS transactions (
+    tx_hash              CHAR(66)      PRIMARY KEY,
+    block_number         BIGINT        NOT NULL,
+    tx_index             SMALLINT      NOT NULL,
+    from_addr            CHAR(42)      NOT NULL,
+    to_addr              CHAR(42),                    -- NULL = contract creation
+    value_wei            NUMERIC(78,0) NOT NULL DEFAULT 0,
+    nonce                NUMERIC(78,0) NOT NULL,
+    type                 SMALLINT      NOT NULL DEFAULT 0,
+    gas_limit            VARCHAR(30),
+    gas_price_wei        VARCHAR(30),
+    max_fee_wei          VARCHAR(30),
+    max_priority_fee_wei VARCHAR(30),
+    gas_fee_wei          NUMERIC(78,0) NOT NULL DEFAULT 0,  -- recorded fee (sender debit; coinbase/zkvm split)
+    data                 BYTEA,
+    access_list          JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    sig_v                BIGINT        NOT NULL,
+    sig_r                CHAR(66)      NOT NULL,
+    sig_s                CHAR(66)      NOT NULL,
+    chain_id             VARCHAR(30),                 -- P10: decimal chain id; NULL/empty for pre-EIP-155 legacy
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_txn_snapshot
+        FOREIGN KEY (block_number) REFERENCES snapshots(block_number),
+    CONSTRAINT uq_txn_block_index
+        UNIQUE (block_number, tx_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_txn_block_number
+    ON transactions(block_number);
+
+CREATE INDEX IF NOT EXISTS idx_txn_from_addr
+    ON transactions(from_addr);
+
+CREATE INDEX IF NOT EXISTS idx_txn_to_addr
+    ON transactions(to_addr) WHERE to_addr IS NOT NULL;
+
+-- Composite index for GetLatestTransactionsByAddress query:
+-- SELECT ... WHERE from_addr=$1 OR to_addr=$1 ORDER BY block_number DESC, tx_index DESC LIMIT N
+CREATE INDEX IF NOT EXISTS idx_txn_from_block_desc
+    ON transactions(from_addr, block_number DESC, tx_index DESC);
+
+-- P10 (review): chain_id was never persisted, so a stored typed transaction lost
+-- its ChainID and a re-read block could not recompute its own block/consensus hash
+-- (merkle hashBlock folds tx.ChainID). Additive + idempotent: ADD COLUMN IF NOT
+-- EXISTS leaves every existing row untouched (NULL chain_id), so pre-change block
+-- rows round-trip byte-identically; only newly-stored txs carry the value.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS chain_id VARCHAR(30);
+
+CREATE INDEX IF NOT EXISTS idx_txn_to_block_desc
+    ON transactions(to_addr, block_number DESC, tx_index DESC)
+    WHERE to_addr IS NOT NULL;
+
+-- ================================================================
+-- 5) zk_proofs (SQL — Append Only — Create Read)
+-- One ZK proof per block (1:1 FK to blocks).
+-- proof_hash uniqueness enforced across the table.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS zk_proofs (
+    block_number BIGINT       PRIMARY KEY,
+    proof_hash   CHAR(66)     NOT NULL UNIQUE,
+    stark_proof  BYTEA        NOT NULL,
+    commitment   BYTEA,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_zkproof_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_zk_proofs_proof_hash
+    ON zk_proofs(proof_hash);
+
+-- ================================================================
+-- 6) l1_finality (SQL — Append Only — Create Read)
+-- confirmation is the L1 transaction hash or attestation identifier.
+-- block_numbers is an array of JMDN block numbers confirmed by this L1 tx.
+-- GIN indexes allow efficient containment queries:
+--   WHERE block_numbers @> ARRAY[42::bigint]
+-- ================================================================
+CREATE TABLE IF NOT EXISTS l1_finality (
+    confirmation    CHAR(66)     PRIMARY KEY,
+    l1_block_number BIGINT       NOT NULL DEFAULT 0,
+    block_numbers   BIGINT[]     NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    metadata        JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_created_at
+    ON l1_finality(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_block_numbers
+    ON l1_finality USING GIN(block_numbers);
+
+CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
+    ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
+
+-- ================================================================
+-- Append-only enforcement (DELETE = RULE, UPDATE = TRIGGER)
+-- Hard-block UPDATE and DELETE on every append-only table so the SQL
+-- projection cannot be mutated out from under the canonical KV log.
+-- These previously lived only in migrations/000001_init_schema.up.sql,
+-- which has no migration runner and never executed -- so they are declared
+-- here, in the DDL GetMigration() actually returns at startup.
+--
+-- WHY UPDATE USES A TRIGGER AND NOT A RULE -- load-bearing, not stylistic:
+-- PostgreSQL refuses INSERT ... ON CONFLICT against any table carrying an
+-- INSERT or UPDATE rule:
+--     INSERT with ON CONFLICT clause cannot be used with table
+--     that has INSERT or UPDATE rules
+-- Every projection insert in this package is an ON CONFLICT upsert
+-- (apply_block, apply_snapshot, apply_transaction, apply_zk_proof,
+-- apply_l1_finality), so an "ON UPDATE ... DO INSTEAD NOTHING" rule makes
+-- the node unbootable: the genesis block-0 seed fails and main.go fatals
+-- with "[genesis] block-0 seed failed -- refusing to boot". A DELETE rule
+-- does not affect the ON CONFLICT rewrite, so DELETE keeps using rules.
+--
+-- The DROP RULE statements are required, not defensive: GetMigration() has
+-- no version tracking and is executed verbatim on every startup, so any
+-- database created by a build that shipped the ON UPDATE rules still
+-- carries them. Deleting the statements from this DDL would leave existing
+-- volumes broken forever; the DROP makes recovery automatic on next boot.
+--
+-- 'accounts' is intentionally excluded -- it is the one mutable table.
+-- 'blocks' permits an extra_data-only amendment: BackfillAccountNonces
+-- (DB_OPs/backfill_account_nonces.go) retro-stamps
+-- extra_data.account_nonces onto blocks written before that advisory field
+-- was persisted. Every other blocks column, and every column of the other
+-- four tables, is immutable once written.
+--
+-- Every guard is ENABLE ALWAYS. At default enablement a trigger does not fire
+-- when session_replication_role = 'replica', and neither does a rule -- both
+-- mechanisms are bypassed identically by that session setting, which the DSN
+-- role (POSTGRES_USER is the cluster superuser) can set without any DDL.
+-- ENABLE ALWAYS closes it. Consequence: these guards also fire during logical
+-- replication apply and pg_restore, which run in replica mode. Those paths
+-- INSERT rather than UPDATE, so no conflict is expected -- but a restore is
+-- the thing to test if one is ever performed against a populated projection.
+--
+-- DROP RULE IF EXISTS / CREATE OR REPLACE FUNCTION / DROP TRIGGER IF EXISTS
+-- + CREATE TRIGGER + ALTER TABLE ENABLE ALWAYS are all idempotent, matching
+-- the IF NOT EXISTS style.
+-- PostgreSQL-only syntax; this projection schema is PostgreSQL-only.
+-- ================================================================
+
+-- Remove the ON UPDATE rules shipped by earlier builds. Without these the
+-- projection cannot upsert and the node cannot boot (see above).
+DROP RULE IF EXISTS rule_blocks_no_update ON blocks;
+DROP RULE IF EXISTS rule_snapshots_no_update ON snapshots;
+DROP RULE IF EXISTS rule_transactions_no_update ON transactions;
+DROP RULE IF EXISTS rule_zk_proofs_no_update ON zk_proofs;
+DROP RULE IF EXISTS rule_l1_finality_no_update ON l1_finality;
+
+-- Generic guard: any UPDATE is a bug. Fails loudly rather than silently
+-- swallowing the write the way DO INSTEAD NOTHING did.
+CREATE OR REPLACE FUNCTION jmdn_guard_append_only_update() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    RAISE EXCEPTION 'jmdn projection: %.% is append-only, UPDATE rejected',
+        TG_TABLE_SCHEMA, TG_TABLE_NAME
+        USING ERRCODE = 'restrict_violation';
+END
+$jmdn_guard$;
+
+-- blocks guard: extra_data may be amended (account-nonce backfill); every
+-- other column is immutable. Column-list agnostic by construction, so
+-- adding a blocks column does not silently widen what may be rewritten.
+CREATE OR REPLACE FUNCTION jmdn_guard_blocks_update() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    IF (to_jsonb(NEW) - 'extra_data') IS DISTINCT FROM (to_jsonb(OLD) - 'extra_data') THEN
+        RAISE EXCEPTION 'jmdn projection: blocks is append-only, only extra_data may be amended (block_number=%)',
+            OLD.block_number
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$jmdn_guard$;
+
+DROP TRIGGER IF EXISTS trg_blocks_no_update ON blocks;
+CREATE TRIGGER trg_blocks_no_update BEFORE UPDATE ON blocks
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_blocks_update();
+ALTER TABLE blocks ENABLE ALWAYS TRIGGER trg_blocks_no_update;
+
+DROP TRIGGER IF EXISTS trg_snapshots_no_update ON snapshots;
+CREATE TRIGGER trg_snapshots_no_update BEFORE UPDATE ON snapshots
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE snapshots ENABLE ALWAYS TRIGGER trg_snapshots_no_update;
+
+DROP TRIGGER IF EXISTS trg_transactions_no_update ON transactions;
+CREATE TRIGGER trg_transactions_no_update BEFORE UPDATE ON transactions
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE transactions ENABLE ALWAYS TRIGGER trg_transactions_no_update;
+
+DROP TRIGGER IF EXISTS trg_zk_proofs_no_update ON zk_proofs;
+CREATE TRIGGER trg_zk_proofs_no_update BEFORE UPDATE ON zk_proofs
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE zk_proofs ENABLE ALWAYS TRIGGER trg_zk_proofs_no_update;
+
+DROP TRIGGER IF EXISTS trg_l1_finality_no_update ON l1_finality;
+CREATE TRIGGER trg_l1_finality_no_update BEFORE UPDATE ON l1_finality
+    FOR EACH ROW EXECUTE FUNCTION jmdn_guard_append_only_update();
+ALTER TABLE l1_finality ENABLE ALWAYS TRIGGER trg_l1_finality_no_update;
+
+-- TRUNCATE is invisible to rules and to row-level triggers: "TRUNCATE blocks
+-- CASCADE" walked straight through the _no_delete rules and wiped blocks,
+-- snapshots, transactions, zk_proofs and contract_receipts. Only a
+-- statement-level BEFORE TRUNCATE trigger can intercept it, which is a guard
+-- the previous rule-based design could not express at all.
+CREATE OR REPLACE FUNCTION jmdn_guard_append_only_truncate() RETURNS trigger
+LANGUAGE plpgsql AS $jmdn_guard$
+BEGIN
+    RAISE EXCEPTION 'jmdn projection: %.% is append-only, TRUNCATE rejected',
+        TG_TABLE_SCHEMA, TG_TABLE_NAME
+        USING ERRCODE = 'restrict_violation';
+END
+$jmdn_guard$;
+
+DROP TRIGGER IF EXISTS trg_blocks_no_truncate ON blocks;
+CREATE TRIGGER trg_blocks_no_truncate BEFORE TRUNCATE ON blocks
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE blocks ENABLE ALWAYS TRIGGER trg_blocks_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_snapshots_no_truncate ON snapshots;
+CREATE TRIGGER trg_snapshots_no_truncate BEFORE TRUNCATE ON snapshots
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE snapshots ENABLE ALWAYS TRIGGER trg_snapshots_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_transactions_no_truncate ON transactions;
+CREATE TRIGGER trg_transactions_no_truncate BEFORE TRUNCATE ON transactions
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE transactions ENABLE ALWAYS TRIGGER trg_transactions_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_zk_proofs_no_truncate ON zk_proofs;
+CREATE TRIGGER trg_zk_proofs_no_truncate BEFORE TRUNCATE ON zk_proofs
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE zk_proofs ENABLE ALWAYS TRIGGER trg_zk_proofs_no_truncate;
+
+DROP TRIGGER IF EXISTS trg_l1_finality_no_truncate ON l1_finality;
+CREATE TRIGGER trg_l1_finality_no_truncate BEFORE TRUNCATE ON l1_finality
+    FOR EACH STATEMENT EXECUTE FUNCTION jmdn_guard_append_only_truncate();
+ALTER TABLE l1_finality ENABLE ALWAYS TRIGGER trg_l1_finality_no_truncate;
+
+-- DELETE stays on rules: a DELETE rule does not disable the ON CONFLICT
+-- rewrite, and DO INSTEAD NOTHING is the cheapest possible block.
+CREATE OR REPLACE RULE rule_blocks_no_delete AS
+    ON DELETE TO blocks DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_snapshots_no_delete AS
+    ON DELETE TO snapshots DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_transactions_no_delete AS
+    ON DELETE TO transactions DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_zk_proofs_no_delete AS
+    ON DELETE TO zk_proofs DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
+    ON DELETE TO l1_finality DO INSTEAD NOTHING;
+`
+
+// migrationSQL003 is the Phase 8 DDL for the contracts registry table.
+// Stores deployed-contract metadata (deployer, ABI, deploy block/tx) for
+// the ListContracts / GetContract registry queries. Code/storage/nonce/meta
+// live in KV — this table is query-index only.
+const migrationSQL003 = `
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000003_contract_registry (UP)
+-- Applied by: JMDNProfile.GetMigration() via ThebeDB profile system
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS contracts (
+    address          CHAR(42)      PRIMARY KEY,
+    deployer         CHAR(42)      NOT NULL,
+    name             TEXT          NOT NULL DEFAULT '',
+    abi              TEXT          NOT NULL DEFAULT '',
+    bytecode_hash    CHAR(66)      NOT NULL,
+    deploy_block     BIGINT        NOT NULL,
+    deploy_time      BIGINT        NOT NULL,
+    deploy_tx_hash   CHAR(66)      NOT NULL,
+    code_size        BIGINT        NOT NULL DEFAULT 0,
+    contract_type    TEXT          NOT NULL DEFAULT 'custom',
+    state            TEXT          NOT NULL DEFAULT 'active',
+    metadata         JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deployer
+    ON contracts(deployer);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deploy_block
+    ON contracts(deploy_block DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deploy_time
+    ON contracts(deploy_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_state
+    ON contracts(state);
+`
+
+// migrationSQL002 is the Phase 7 DDL for the contract_receipts table.
+// Contract code/nonce/storage/meta live in BadgerDB KV — not in SQL.
+// Applied via GetMigration() which concatenates all migration constants.
+const migrationSQL002 = `
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000002_contract_receipt (UP)
+-- Contract receipts in SQL for log filtering and block-level queries.
+-- Contract code/storage/nonce/meta live in KV (BadgerDB) — not here.
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS contract_receipts (
+    tx_hash          CHAR(66)      PRIMARY KEY,
+    block_number     BIGINT        NOT NULL,
+    tx_index         SMALLINT      NOT NULL,
+    status           SMALLINT      NOT NULL CHECK (status IN (0, 1)),
+    gas_used         NUMERIC(78,0) NOT NULL,
+    contract_address CHAR(42),
+    logs             JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    revert_reason    TEXT,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_contract_receipt_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_block_number
+    ON contract_receipts(block_number);
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_contract_address
+    ON contract_receipts(contract_address) WHERE contract_address IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_logs
+    ON contract_receipts USING GIN(logs);
+`

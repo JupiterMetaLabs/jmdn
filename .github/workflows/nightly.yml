@@ -1,0 +1,575 @@
+name: Nightly
+
+# The slow and the exhaustive checks live here, out of the PR gate.
+#
+# ci.yml (the "Quality Gate" required on every PR) is build + tidy + fmt + lint
+# only. Everything that is slow, needs the race detector, needs a build tag, or
+# depends on a daily-moving database (vulnerability DB) runs here.
+#
+# HOW THIS TRIGGERS
+#   * schedule — GitHub evaluates `schedule` ONLY against the workflow file on
+#       the repository's DEFAULT branch (main). Until this file is on main the
+#       cron never fires. Once it is, the run checks out and tests main (the
+#       `gate` job resolves the ref).
+#   * push to main (and v3base until it is retired) — every merge into the
+#       trunk gets the full suite.
+#   * workflow_dispatch — Actions -> Nightly -> "Run workflow": pick the branch
+#       that CONTAINS this file, type the ref to test. Always runs, even if the
+#       ref was already tested.
+#
+# SKIP WHEN NOTHING CHANGED
+#   The `gate` job resolves the ref to a commit and compares it with the commit
+#   the last SUCCESSFUL run tested for that same ref (stored as an artifact
+#   named tested-sha-<ref>). A scheduled run on an already-tested commit stops
+#   after the gate (~20 s of runner time). A failed run leaves no artifact, so
+#   the next night retries the same commit — intentional: it tells you whether
+#   the failure was a flake.
+#
+# FAILURE POLICY
+#   Vet, build and test jobs FAIL the run (deterministic; red nightlies must be
+#   noticed). Scanners keep continue-on-error because the vulnerability database
+#   and rule sets change daily and would otherwise go red with no code change.
+on:
+  schedule:
+    # 18:00 UTC = 23:30 IST, after the working day.
+    - cron: "0 18 * * *"
+  push:
+    branches: ["main", "v3base"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or SHA to check"
+        required: false
+        default: "main"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref_name || 'main' }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "1"
+  # Pin tool versions here so a nightly cannot change behaviour because a tool
+  # released overnight. Bump deliberately. golangci-lint must be a release
+  # built with the Go in go.mod or newer (v2.10.1, built with go1.26, refuses a
+  # module targeting 1.27). Keep equal to ci.yml's pin.
+  GOLANGCI_LINT_VERSION: v2.15.0
+  # sha256 of that release's install.sh — see ci.yml's install step.
+  GOLANGCI_LINT_INSTALLER_SHA256: 1022ddb4d87ed252350ed03fc9677e250a4ae95cc6bcd4658c2a20a8a23d390f
+  # staticcheck 2026.2.2 declares go 1.26.0 and is expected to refuse the 1.27
+  # module until a 1.27-built release ships; its step is informational.
+  STATICCHECK_VERSION: "2026.2.2"
+  DEADCODE_XTOOLS_VERSION: v0.52.0
+  GOVULNCHECK_VERSION: v1.9.0
+  GOSEC_VERSION: v2.30.0
+  # Trivy is installed from its release tarball and verified by sha256; see the
+  # note in docker.yml's env block for why no aquasecurity action is used.
+  TRIVY_VERSION: v0.76.2
+  TRIVY_SHA256_LINUX_AMD64: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+  # Every custom build tag in the tree. A tag-gated file is invisible to the
+  # default build, so anything it references can be deleted without the PR gate
+  # noticing (this happened in #250: -tags applygate stopped compiling).
+  # Keep in sync with: grep -rh '^//go:build' --include=*.go . | sort -u
+  ALL_TAGS: "applygate,sequencertest,pgtest"
+
+jobs:
+  # ── Resolve the ref and decide whether anything needs to run ────────────
+  gate:
+    name: Gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # to list previous runs and download their tested-sha artifact
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_REF: ${{ inputs.ref }}
+          PUSH_REF: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch) ref="${INPUT_REF:-main}" ;;
+            push)              ref="$PUSH_REF" ;;
+            *)                 ref="main" ;;     # schedule: always the trunk
+          esac
+          # Resolve to a commit without a checkout. Works for branch names and
+          # full/short SHAs that exist on origin.
+          sha=$(git ls-remote --quiet "https://github.com/${GITHUB_REPOSITORY}.git" "refs/heads/$ref" | cut -f1)
+          if [ -z "$sha" ]; then
+            sha="$ref" # not a branch: treat the input as a commit SHA
+          fi
+          echo "ref=$ref"  >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"  >> "$GITHUB_OUTPUT"
+          echo "Testing $ref @ $sha"
+
+      - name: Compare with the last successful run of this ref
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ steps.resolve.outputs.ref }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "manual run: always executes"; exit 0
+          fi
+          name="tested-sha-$(echo "$REF" | tr '/' '_')"
+          last=""
+          # Newest successful runs of this workflow, any trigger. The artifact
+          # name carries the ref, so a main-triggered schedule run and a push
+          # run both count as long as they tested the same ref.
+          for id in $(gh run list --workflow "${GITHUB_WORKFLOW}" --status success --limit 15 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -n "$name" -D /tmp/last 2>/dev/null; then
+              last=$(cat /tmp/last/sha); break
+            fi
+          done
+          if [ "$last" = "$SHA" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$REF is still at $SHA, already tested successfully — nothing to do."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "last tested: ${last:-<none>}; now: $SHA — running."
+          fi
+
+  # ── Compile + vet under every build-tag combination ─────────────────────
+  vet:
+    name: Vet (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: default,       tags: "" }
+          - { name: applygate,     tags: "applygate" }
+          - { name: sequencertest, tags: "sequencertest" }
+          - { name: pgtest,        tags: "pgtest" }
+          - { name: all-tags,      tags: "applygate,sequencertest,pgtest" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch Go modules (token visible to this step only)
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          # go.mod requires two private repos - ThebeDB and avc. See ci.yml for
+          # why this fails here rather than later in `go mod verify`.
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set. go.mod requires the private modules github.com/JupiterMetaLabs/ThebeDB and github.com/JupiterMetaLabs/avc. Set it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          export GOPRIVATE="github.com/JupiterMetaLabs/*"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${GO_MODULES_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+          go mod download
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      # `go build` covers non-test files; `go vet` additionally type-checks every
+      # _test.go, which is where tag-gated seams usually live.
+      - name: Build (tags=${{ matrix.tags || 'none' }})
+        run: go build -tags "${{ matrix.tags }}" ./...
+
+      - name: Vet (tags=${{ matrix.tags || 'none' }})
+        run: go vet -tags "${{ matrix.tags }}" ./...
+
+      # Analyzers go vet does not enable by default (all verified to exist in go1.26/1.27).
+      - name: Vet (extra analyzers)
+        run: |
+          go vet -tags "${{ matrix.tags }}" -atomic -bools -copylocks -loopclosure -lostcancel -nilfunc -printf -shift -unreachable -unsafeptr -unusedresult ./...
+
+  # ── Static analysis beyond the PR gate ──────────────────────────────────
+  static:
+    name: Static analysis
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The private-modules token is visible only inside the fetch step (see
+      # the note on the installer in ci.yml); it is never written to git config.
+      #
+      # The fetch is also pinned by CONTENT, not just by tag. A tag is a moving
+      # pointer — the same property the convention note at the top of ci.yml
+      # refuses to rely on for actions — so the version pin alone would not
+      # survive a repointed tag. install.sh then verifies the binary it
+      # downloads against the release's own checksums file.
+      #
+      # To bump: change GOLANGCI_LINT_VERSION, then
+      #   curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/<ver>/install.sh | sha256sum
+      # and put the result in GOLANGCI_LINT_INSTALLER_SHA256. Both move together
+      # or the step fails closed.
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        env:
+          VERSION: ${{ env.GOLANGCI_LINT_VERSION }}
+          INSTALLER_SHA256: ${{ env.GOLANGCI_LINT_INSTALLER_SHA256 }}
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/golangci-install.sh \
+            "https://raw.githubusercontent.com/golangci/golangci-lint/${VERSION}/install.sh"
+          echo "${INSTALLER_SHA256}  /tmp/golangci-install.sh" | sha256sum -c -
+          sh /tmp/golangci-install.sh -b "$(go env GOPATH)/bin" "${VERSION}"
+
+      - name: Fetch Go modules (token visible to this step only)
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          export GOPRIVATE="github.com/JupiterMetaLabs/*"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${GO_MODULES_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+          go mod download
+
+      # Same config as the PR gate, but with tests included and every build tag
+      # on, so tag-gated and test-only code is linted too.
+      - name: golangci-lint (tests + all tags)
+        run: golangci-lint run --tests --build-tags "${{ env.ALL_TAGS }}" --timeout 15m
+
+      # Telemetry convention backlog. The PR gate (ci.yml) blocks NEW violations
+      # diff-only; this counts what is still outstanding, so the burn-down is
+      # visible without anyone running a local scan. Informational by the same
+      # rule as the scanners below.
+      - name: Telemetry conventions (full tree, informational)
+        continue-on-error: true
+        run: |
+          golangci-lint run --config .golangci-telemetry.yml \
+            --tests --build-tags "${{ env.ALL_TAGS }}" --timeout 15m \
+            2>&1 | tee telemetry-backlog.txt || true
+          {
+            echo "### Telemetry convention backlog"
+            echo ""
+            echo "| rule | outstanding |"
+            echo "|---|---:|"
+            # Parse golangci-lint's own summary line ("* forbidigo: 3").
+            # grep -c would over-count: it matches the summary line itself, and
+            # every source line containing the linter name — including each
+            # //nolint:forbidigo exemption, so the error would grow with the
+            # manifest.
+            echo "| depguard (zerolog / zap imports) | $(sed -n 's/^\* depguard: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
+            echo "| forbidigo (print family, zerolog calls) | $(sed -n 's/^\* forbidigo: \([0-9]*\)$/\1/p' telemetry-backlog.txt || echo 0) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The full staticcheck suite is staged for the PR gate (see .golangci.yml);
+      # until then it runs here, informational.
+      - name: staticcheck (full SA/ST/S/QF suite)
+        continue-on-error: true
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }}
+          staticcheck -tags "${{ env.ALL_TAGS }}" ./...
+
+      # Unreachable-function inventory (RTA, tests as roots). Informational:
+      # a growing number is the signal to schedule the next cleanup PR.
+      - name: deadcode inventory
+        continue-on-error: true
+        run: |
+          go install golang.org/x/tools/cmd/deadcode@${{ env.DEADCODE_XTOOLS_VERSION }}
+          echo "== unreachable from any binary or test (default tags) =="
+          deadcode -test ./... | tee deadcode-default.txt
+          echo "== unreachable with every build tag on =="
+          deadcode -test -tags "${{ env.ALL_TAGS }}" ./... | tee deadcode-alltags.txt
+          echo "default: $(wc -l < deadcode-default.txt) functions; all-tags: $(wc -l < deadcode-alltags.txt) functions"
+
+      - name: Upload static-analysis reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: static-analysis
+          path: |
+            deadcode-*.txt
+            telemetry-backlog.txt
+          if-no-files-found: ignore
+
+  # ── Tests: every mode we care about, each as its own matrix leg ─────────
+  test:
+    name: Test (${{ matrix.name }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The nightly as it was: fast tests under the race detector.
+          - { name: short-race,          args: "-short -race" }
+          # Everything, including the slow tests, under the race detector.
+          - { name: full-race,           args: "-race -timeout 30m" }
+          # Order-dependence and flakiness: shuffle test order and run twice.
+          - { name: shuffle-x2,          args: "-short -shuffle=on -count=2" }
+          # Tag-gated seams. One leg per tag so a broken seam names itself in
+          # the job title.
+          - { name: tags-sequencertest,  args: "-short -race -tags sequencertest" }
+          - { name: tags-applygate,      args: "-short -race -tags applygate" }
+          - { name: tags-pgtest,         args: "-short -race -tags pgtest" }
+          - { name: tags-all,            args: "-short -race -tags applygate,sequencertest,pgtest" }
+          # Coverage profile as an artifact (plain run; -race skews timings).
+          - { name: coverage,            args: "-short -covermode=atomic -coverprofile=cover.out" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch Go modules (token visible to this step only)
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          export GOPRIVATE="github.com/JupiterMetaLabs/*"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${GO_MODULES_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+          go mod download
+
+      # -count=1 defeats the test cache so a nightly always executes.
+      # The full log is kept as an artifact; the summary printed here keeps the
+      # Actions page readable. The exit status is go test's own (pipefail).
+      - name: go test ${{ matrix.args }}
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -v ${{ matrix.args }} ./... 2>&1 \
+            | tee test-${{ matrix.name }}.log \
+            | grep -E '^(ok|FAIL|--- FAIL|panic:|WARNING: DATA RACE)' || true
+          # `|| true` protected the grep, not go test: re-derive the status from the log.
+          if grep -qE '^(FAIL|panic:|WARNING: DATA RACE)' test-${{ matrix.name }}.log; then
+            echo "::error::go test ${{ matrix.args }} reported failures — see artifact test-${{ matrix.name }}"
+            exit 1
+          fi
+
+      - name: Coverage summary
+        if: matrix.name == 'coverage'
+        run: go tool cover -func=cover.out | tail -1
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-${{ matrix.name }}
+          path: |
+            test-${{ matrix.name }}.log
+            cover.out
+          if-no-files-found: ignore
+
+  # ── Security scanners (daily-moving inputs: informational) ──────────────
+  security:
+    name: Security
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default,
+          # leaving it readable by every later step. Nothing here needs it.
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch Go modules (token visible to this step only)
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set."
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/JupiterMetaLabs/*" >> "$GITHUB_ENV"
+          export GOPRIVATE="github.com/JupiterMetaLabs/*"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${GO_MODULES_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+          go mod download
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      # Source mode reports only vulnerabilities REACHABLE from this code (the
+      # actionable list) and includes the stdlib of the toolchain in use.
+      - name: govulncheck (source, reachable only)
+        continue-on-error: true
+        run: govulncheck -tags "${{ env.ALL_TAGS }}" ./...
+
+      # Module scanning lists every vulnerable module in go.mod whether reachable
+      # or not.
+      #
+      # WAS BROKEN: this ran `govulncheck -mode=module ./...`, and govulncheck
+      # rejects both halves of that — `module` is a -scan level, not a -mode
+      # (-mode takes source/binary/extract), and module-only scanning accepts no
+      # package patterns. The step exited 2 on the flag before scanning anything,
+      # and continue-on-error meant nobody ever saw it. This check has therefore
+      # never run. Verified against govulncheck v1.9.0 on 2026-11-16.
+      - name: govulncheck (every module in go.mod)
+        continue-on-error: true
+        run: govulncheck -scan=module
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
+
+      - name: Run gosec
+        continue-on-error: true
+        run: |
+          gosec \
+            -severity medium \
+            -confidence medium \
+            -exclude-generated \
+            -exclude=G115 \
+            -tags "${{ env.ALL_TAGS }}" \
+            -fmt sarif -out gosec.sarif -stdout \
+            ./...
+
+      - name: Secret scan (gitleaks)
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      # Image scan lives here, not in ci.yml: its findings are Debian CVEs that
+      # no PR causes and no PR author can fix, and its verdict moves with
+      # Trivy's vulnerability database rather than with the commit. Nightly is
+      # the right cadence for "a fix became available, bump the base digest" —
+      # advisory like its siblings above, so a new CVE raises a report rather
+      # than breaking the branch.
+      - name: Build image
+        continue-on-error: true
+        env:
+          GO_MODULES_TOKEN: ${{ secrets.GO_MODULES_TOKEN }}
+        run: |
+          if [ -z "$GO_MODULES_TOKEN" ]; then
+            echo "::error::GO_MODULES_TOKEN is not set; the image build needs it for the private Go modules."
+            exit 1
+          fi
+          DOCKER_BUILDKIT=1 docker build \
+            --secret id=go_modules_token,env=GO_MODULES_TOKEN \
+            -t jmdn:nightly .
+
+      # Trivy from its release tarball, checked against the sha256 the release
+      # publishes — not aquasecurity/trivy-action. `gh actions-lock --verify`
+      # runs with the Actions GITHUB_TOKEN and the aquasecurity organization's
+      # IP allow list refuses runner IPs, so that action's pin can never be
+      # verified from CI. See the note in docker.yml's env block.
+      #
+      # To bump: change TRIVY_VERSION, then take the matching line from
+      #   https://github.com/aquasecurity/trivy/releases/download/<ver>/trivy_<ver>_checksums.txt
+      - name: Install Trivy ${{ env.TRIVY_VERSION }}
+        env:
+          VERSION: ${{ env.TRIVY_VERSION }}
+          SHA256: ${{ env.TRIVY_SHA256_LINUX_AMD64 }}
+        run: |
+          set -euo pipefail
+          tarball="trivy_${VERSION#v}_Linux-64bit.tar.gz"
+          curl -sSfL -o "/tmp/${tarball}" \
+            "https://github.com/aquasecurity/trivy/releases/download/${VERSION}/${tarball}"
+          echo "${SHA256}  /tmp/${tarball}" | sha256sum -c -
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "/tmp/${tarball}" -C "${HOME}/.local/bin" trivy
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+          "${HOME}/.local/bin/trivy" --version
+
+      # Advisory, like its siblings: a new CVE raises a report rather than
+      # breaking the branch. exit-code 0 and continue-on-error both say so.
+      - name: Image scan (trivy)
+        continue-on-error: true
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+                      --exit-code 0 --format sarif \
+                      --output trivy-image.sarif jmdn:nightly
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: security-reports
+          path: |
+            gosec.sarif
+            trivy-image.sarif
+          if-no-files-found: ignore
+
+  # ── Record what was tested, only when everything that can fail passed ───
+  record:
+    name: Record tested commit
+    needs: [gate, vet, static, test, security]
+    if: needs.gate.outputs.run == 'true' && success()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Write tested sha
+        env:
+          REF: ${{ needs.gate.outputs.ref }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          mkdir -p out && echo "$SHA" > out/sha
+          echo "name=tested-sha-$(echo "$REF" | tr '/' '_')" >> "$GITHUB_ENV"
+      - name: Upload tested sha
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ env.name }}
+          path: out/sha
+          retention-days: 30

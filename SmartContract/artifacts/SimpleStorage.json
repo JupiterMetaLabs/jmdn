@@ -1,0 +1,7 @@
+{
+  "bytecode": "0x6080604052348015600e575f5ffd5b50602a5f5560b780601e5f395ff3fe6080604052348015600e575f5ffd5b5060043610603a575f3560e01c806360fe47b114603e5780636d4ce63c14604f5780636d619daa146064575b5f5ffd5b604d6049366004606b565b5f55565b005b5f545b60405190815260200160405180910390f35b60525f5481565b5f60208284031215607a575f5ffd5b503591905056fea2646970667358221220bb9cdb57335774bd6bcf2282ad7bb061cd66f3bf62c1716823b216f89372e61d64736f6c63430008210033",
+  "abi": "[{\"inputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"constructor\"},{\"inputs\":[],\"name\":\"get\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"uint256\",\"name\":\"x\",\"type\":\"uint256\"}],\"name\":\"set\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"storedValue\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]",
+  "deployed_bytecode": "0x6080604052348015600e575f5ffd5b5060043610603a575f3560e01c806360fe47b114603e5780636d4ce63c14604f5780636d619daa146064575b5f5ffd5b604d6049366004606b565b5f55565b005b5f545b60405190815260200160405180910390f35b60525f5481565b5f60208284031215607a575f5ffd5b503591905056fea2646970667358221220bb9cdb57335774bd6bcf2282ad7bb061cd66f3bf62c1716823b216f89372e61d64736f6c63430008210033",
+  "name": "SimpleStorage",
+  "path": "/var/folders/mk/9dydvdvn7ldgkc8zfmkv95fh0000gn/T/contract-2239921622.sol"
+}

@@ -26,6 +26,16 @@ message ZKBlock {
     uint64 gas_limit = 15;
     uint64 gas_used = 16;
     uint64 block_number = 17;
+
+    // AVC consensus fields (M1/M2a) - see AVC-Architecture-End-to-End.md §8.
+    // randao_reveals is JSON-encoded []config.Reveal: hand-added without protoc
+    // available, so it rides as bytes rather than a proper nested message.
+    uint64 slot = 18;
+    uint64 period = 19;
+    bytes randao_reveals = 20;
+    bytes vdf_proof = 21;
+    uint64 seed_epoch = 22;
+    uint64 voting_snapshot_epoch = 23;
 }
 
 // Transaction message

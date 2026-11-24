@@ -2,17 +2,19 @@
 # bootstrap_sync.sh - JMDN Docker Bootstrap Sync
 #
 # Mirrors bootstrap.yml Ansible playbook for Docker deployments.
-# Runs ONCE — guarded by /opt/jmdn/data/.bootstrapped sentinel on the volume.
+# Runs ONCE — guarded by /opt/jmdn/.bootstrapped sentinel on the volume.
+#
+# The snapshot must be a ThebeDB-era node-state archive containing the
+# node's data directory (storage/ — BadgerDB KV + SQL projection, and DB/).
 #
 # Flow (matches ansible task order):
 #   1. List + download multipart files and checksums.md5 from GCS (public HTTP)
 #   2. Normalise checksums (strip GCS paths → local basenames) and verify
 #   3. Backup existing data → /opt/jmdn/backup/data_<timestamp>
-#   4. Clear immudb identity/state files
-#   5. cat parts* | tar -xzf - into sandbox
-#   6. Auto-discover real data root (parent dir of systemdb/)
-#   7. Move to /opt/jmdn/data, fix permissions, clean up
-#   8. Write sentinel
+#   4. cat parts* | tar -xzf - into sandbox
+#   5. Auto-discover real data root (parent dir of ${DATA_MARKER}/)
+#   6. Move to /opt/jmdn, fix permissions, clean up
+#   7. Write sentinel
 #
 # Env overrides:
 #   GCS_BUCKET     GCS bucket name          (default: jmdn-bootstrap)
@@ -20,9 +22,21 @@
 #                  (world-readable; fetched over public HTTP)
 #   PARTS_PREFIX   Part filename prefix     (default: data-patched.part)
 #   CHECKSUM_FILE  Checksum filename        (default: checksums.md5)
+#   DATA_MARKER    Dir name marking the data root inside the archive
+#                  (default: storage — the ThebeDB store directory)
+#   SNAPSHOT_SHA256  REQUIRED. SHA-256 of the full archive (all parts
+#                  concatenated in order), published by JupiterMeta through a
+#                  channel other than the bucket. The MD5 manifest comes from
+#                  the same bucket as the parts, so it only detects corruption;
+#                  this pin is what authenticates the snapshot.
+#   ALLOW_UNVERIFIED_SNAPSHOT=1  Skip the SHA-256 pin (dev only).
 #
-# To force a re-sync (delete sentinel from the immudb-data volume):
-#   docker run --rm -v jmdn_immudb-data:/data alpine rm -f /data/.bootstrapped
+# Exit codes: 0 done or already bootstrapped; 3 skipped because no
+# SNAPSHOT_SHA256 was provided (the node then syncs from peers); other non-zero
+# on failure.
+#
+# To force a re-sync (delete sentinel from the jmdn-state volume):
+#   docker run --rm -v jmdn_jmdn-state:/data alpine rm -f /data/.bootstrapped
 #   docker compose run --rm jmdn-bootstrap
 
 set -euo pipefail
@@ -35,18 +49,18 @@ GCS_BUCKET="${GCS_BUCKET:-jmdn-bootstrap}"
 GCS_PREFIX="${GCS_PREFIX:-bootstrap-26072026}"
 PARTS_PREFIX="${PARTS_PREFIX:-data-patched.part}"
 CHECKSUM_FILE="${CHECKSUM_FILE:-checksums.md5}"
-# UID:GID the immudb container runs as. Override if your immudb image differs.
-IMMUDB_UID="${IMMUDB_UID:-3322}"
+DATA_MARKER="${DATA_MARKER:-storage}"
+# UID:GID the jmdn process runs as (see Dockerfile useradd). Override if yours differs.
+JMDN_UID="${JMDN_UID:-3322}"
 
 BASE_DIR="/opt/jmdn"
-DATA_DIR="${BASE_DIR}/data"
+DATA_DIR="${BASE_DIR}"
 WORK_DIR="${BASE_DIR}/bootstrap_tmp"
 # BACKUP_BASE is on the container's writable layer (not a named volume).
 # It exists only for the duration of this bootstrap run — not persistent storage.
-# Its purpose is to clear DATA_DIR before extraction, with a safety copy in-flight.
-BACKUP_BASE="${BASE_DIR}/backup"
-IMMUDB_STATE_DIR="${BASE_DIR}/.immudb_state"
-SENTINEL="${DATA_DIR}/.bootstrapped"
+# Its purpose is to clear the data dirs before extraction, with a safety copy in-flight.
+BACKUP_BASE="/tmp/jmdn_backup"
+SENTINEL="${BASE_DIR}/.bootstrapped"
 
 GCS_HTTP="https://storage.googleapis.com"
 GCS_API="${GCS_HTTP}/storage/v1/b/${GCS_BUCKET}/o"
@@ -62,6 +76,19 @@ fi
 
 log "First run detected — starting bootstrap sync."
 
+SNAPSHOT_SHA256="${SNAPSHOT_SHA256:-}"
+if [ -z "$SNAPSHOT_SHA256" ]; then
+    if [ "${ALLOW_UNVERIFIED_SNAPSHOT:-}" = "1" ]; then
+        log "WARNING: ALLOW_UNVERIFIED_SNAPSHOT=1 — the snapshot is NOT authenticated."
+    else
+        log "No SNAPSHOT_SHA256 provided — skipping snapshot bootstrap; the node will sync from peers."
+        log "Set SNAPSHOT_SHA256 to the published hash of the archive to use the snapshot."
+        exit 3
+    fi
+elif ! [[ "$SNAPSHOT_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    die "SNAPSHOT_SHA256 must be 64 hex characters."
+fi
+
 # ── Ensure services are stopped ───────────────────────────
 # If running on a live system, immudb will hold file locks on the data directory.
 # We must stop it (and jmdn which depends on it) before manipulating data.
@@ -72,7 +99,7 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 # ── Ensure required tools ─────────────────────────────────
-for tool in curl wget awk md5sum tar python3; do
+for tool in curl wget awk md5sum sha256sum tar python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not found."
 done
 
@@ -127,25 +154,45 @@ awk '{n=split($2,a,"/"); print $1 "  " a[n]}' \
     || die "Checksum verification failed — aborting to prevent corrupt data."
 log "Checksums OK."
 
-# ── Backup existing data ──────────────────────────────────
-if [ -d "$DATA_DIR" ] && [ "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
-    TIMESTAMP=$(date -u '+%Y%m%dT%H%M%S')
-    BACKUP_DIR="${BACKUP_BASE}/data_${TIMESTAMP}"
-    log "Backing up existing data → $BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
-    # DATA_DIR may be a Docker volume mount point — cannot mv the directory
-    # itself (Device or resource busy). Move contents instead.
-    find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$BACKUP_DIR/" \;
-    
-    # Prune old backups (keep only the 1 most recent) to prevent disk bloat
-    log "Pruning old backups (keeping 1)..."
-    ls -1dt "${BACKUP_BASE}"/data_* 2>/dev/null | tail -n +2 | xargs -r rm -rf
+# ── Authenticate the archive against the pinned hash ──────
+if [ -n "$SNAPSHOT_SHA256" ]; then
+    log "Verifying archive SHA-256 against SNAPSHOT_SHA256..."
+    # shellcheck disable=SC2086
+    actual=$(cat "$WORK_DIR"/${PARTS_PREFIX}* | sha256sum | awk '{print $1}')
+    if [ "${actual,,}" != "${SNAPSHOT_SHA256,,}" ]; then
+        die "Archive SHA-256 ${actual} does not match SNAPSHOT_SHA256 — refusing to install."
+    fi
+    log "Archive SHA-256 OK."
 fi
 
-# ── Clear immudb identity/state files ────────────────────
-log "Clearing immudb identity and state files..."
-rm -f "${IMMUDB_STATE_DIR}"/.identity-* 2>/dev/null || true
-rm -f "${IMMUDB_STATE_DIR}"/.state-*    2>/dev/null || true
+# ── Inspect archive members before extracting ─────────────
+# Reject absolute paths, parent-directory components and links: the archive
+# is extracted as root and only chain data may come out of it.
+log "Checking archive members..."
+# shellcheck disable=SC2086
+bad=$(cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -tvzf - \
+    | awk '{ type=substr($1,1,1); name=$6; for (i=7;i<=NF;i++) name=name" "$i;
+             if (type=="l" || type=="h" || name ~ /^\// || name ~ /(^|\/)\.\.(\/|$)/) print }' \
+    | head -n 5) || die "Could not list archive members."
+if [ -n "$bad" ]; then
+    die "Archive contains links or unsafe paths, e.g.: ${bad}"
+fi
+
+# ── Backup existing data ──────────────────────────────────
+# Only the chain-data dirs are cleared — config/ and certs/ are left in place.
+for d in storage DB; do
+    if [ -d "${DATA_DIR}/${d}" ] && [ "$(ls -A "${DATA_DIR}/${d}" 2>/dev/null)" ]; then
+        TIMESTAMP=$(date -u '+%Y%m%dT%H%M%S')
+        BACKUP_DIR="${BACKUP_BASE}/data_${TIMESTAMP}/${d}"
+        log "Backing up existing ${d}/ → $BACKUP_DIR"
+        mkdir -p "$BACKUP_DIR"
+        find "${DATA_DIR}/${d}" -mindepth 1 -maxdepth 1 -exec mv {} "$BACKUP_DIR/" \;
+    fi
+done
+
+# Prune old backups (keep only the 1 most recent) to prevent disk bloat
+log "Pruning old backups (keeping 1)..."
+ls -1dt "${BACKUP_BASE}"/data_* 2>/dev/null | tail -n +2 | xargs -r rm -rf
 
 # ── Extract into sandbox ──────────────────────────────────
 # Mirrors ansible: cat parts* | tar -xzf - -C sandbox
@@ -154,17 +201,17 @@ log "Extracting parts into sandbox: $SANDBOX"
 mkdir -p "$SANDBOX"
 
 # shellcheck disable=SC2086
-cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -xzf - -C "$SANDBOX" \
+cat "$WORK_DIR"/${PARTS_PREFIX}* | tar -xzf - -C "$SANDBOX" --no-same-owner --no-same-permissions \
     || die "Extraction failed."
 
 # ── Auto-discover real data root ──────────────────────────
-# Mirrors ansible: find systemdb dir → its parent is the real data root
-log "Discovering data root (searching for systemdb/)..."
-REAL_DATA_DIR=$(find "$SANDBOX" -type d -name "systemdb" 2>/dev/null \
+# Mirrors ansible: find ${DATA_MARKER} dir → its parent is the real data root
+log "Discovering data root (searching for ${DATA_MARKER}/)..."
+REAL_DATA_DIR=$(find "$SANDBOX" -type d -name "$DATA_MARKER" 2>/dev/null \
     | head -n 1 | xargs -I{} dirname {})
 
 if [ -z "$REAL_DATA_DIR" ] || [ "$REAL_DATA_DIR" = "." ]; then
-    die "Could not find systemdb in extracted sandbox. Check snapshot integrity."
+    die "Could not find ${DATA_MARKER}/ in extracted sandbox. Check snapshot integrity (must be a ThebeDB-era snapshot)."
 fi
 log "Data root found: $REAL_DATA_DIR"
 
@@ -173,23 +220,42 @@ log "Moving data to $DATA_DIR..."
 # DATA_DIR always exists as a Docker volume mount point — `mv src dst` when
 # dst exists as a directory would move src *into* dst, giving the wrong path.
 # Move contents of REAL_DATA_DIR into DATA_DIR instead.
-find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
+# Only the chain-data directories are installed. Anything else in the archive
+# (config/, certs/, scripts) is discarded so a snapshot can never replace the
+# node's configuration or keys.
+moved=0
+for d in storage DB; do
+    if [ -d "${REAL_DATA_DIR}/${d}" ]; then
+        rm -rf "${DATA_DIR:?}/${d}"
+        mv "${REAL_DATA_DIR}/${d}" "${DATA_DIR}/${d}"
+        moved=1
+    fi
+done
+[ "$moved" = 1 ] || die "Snapshot contains no storage/ or DB/ directory."
 rm -rf "${BASE_DIR}/data_tmp"
 
-# ── Fix ownership AND modes ───────────────────────────────
-# Bootstrap runs as root → extracted files are root-owned. tar also preserves
-# the modes stored in the snapshot, which have been observed READ-ONLY (files
-# 0555, dirs 0555). chown alone is NOT enough: immudb runs as
-# IMMUDB_UID:IMMUDB_UID and opens its tx log O_RDWR, so a missing owner write
-# bit makes it crash-loop with
-#   "permission denied: open .../systemdb/tx/00000000.tx"
-# EVEN AFTER a correct chown. Fix both — set ownership, then restore owner
-# write (dirs need x to traverse; files need rw for the append-only tx log).
-# jmdn connects via gRPC and never mounts this directory.
-log "Setting ownership of $DATA_DIR to $IMMUDB_UID:$IMMUDB_UID and restoring owner write..."
-chown -R "${IMMUDB_UID}:${IMMUDB_UID}" "$DATA_DIR"
-find "$DATA_DIR" -type d -exec chmod u+rwx {} +
-find "$DATA_DIR" -type f -exec chmod u+rw  {} +
+# The checkpoint floor describes the store that was just replaced. Every node
+# keeps one, and the boot check would treat the restored store as a rollback.
+# The node starts a new floor once it signs a checkpoint of the restored log.
+FLOOR_FILE="${CHECKPOINT_FLOOR_FILE:-${BASE_DIR}/checkpoint-floor.json}"
+if [ -f "$FLOOR_FILE" ]; then
+    rm -f "$FLOOR_FILE"
+    log "Removed checkpoint floor $FLOOR_FILE (store replaced by the snapshot)."
+fi
+
+# ── Fix permissions ───────────────────────────────────────
+# Bootstrap runs as root → extracted files are root-owned. Snapshot tarballs
+# have also been observed READ-ONLY (0555): restore owner write as well —
+# BadgerDB/ThebeDB need rw on their store (main's hardening, retargeted from
+# the immudb tx log to the Thebe chain-data dirs).
+log "Setting ownership of chain data to $JMDN_UID:$JMDN_UID and restoring owner write..."
+for d in storage DB; do
+    if [ -d "${DATA_DIR}/${d}" ]; then
+        chown -R "${JMDN_UID}:${JMDN_UID}" "${DATA_DIR}/${d}"
+        find "${DATA_DIR}/${d}" -type d -exec chmod u+rwx {} +
+        find "${DATA_DIR}/${d}" -type f -exec chmod u+rw  {} +
+    fi
+done
 
 # ── Clean up work directory ───────────────────────────────
 log "Cleaning up work directory..."

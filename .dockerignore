@@ -123,3 +123,9 @@ storage/thebe-kv/
 
 # ── CI / quality tooling config ────────────────────────────────────────────────
 sonar-project.properties
+
+# SEC (audit B-01): never copy committee BLS keypairs into a build layer.
+# Nodes generate/load these at runtime (config/bls.json / JMDN_BLS_KEY_FILE).
+config/bls.json
+**/bls.json
+bls.json

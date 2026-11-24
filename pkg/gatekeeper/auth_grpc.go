@@ -81,11 +81,11 @@ func (i *GrpcMiddleware) enforcePolicy(ctx context.Context, serviceName string) 
 	}
 
 	// Authentication
-	return i.authenticate(ctx, policy, peerInfo)
+	return i.authenticate(ctx, serviceName, policy, peerInfo)
 }
 
 // authenticate verifies credentials based on AuthType
-func (i *GrpcMiddleware) authenticate(ctx context.Context, policy settings.Policy, peerInfo *peer.Peer) error {
+func (i *GrpcMiddleware) authenticate(ctx context.Context, serviceName string, policy settings.Policy, peerInfo *peer.Peer) error {
 	// Case A: No Auth Required
 	if policy.AuthType == settings.AuthTypeNone {
 		return nil
@@ -124,7 +124,7 @@ func (i *GrpcMiddleware) authenticate(ctx context.Context, policy settings.Polic
 	}
 
 	// Delegate to shared token validation
-	if _, err := ValidateAuthHeader(tokens[0], policy, i.config); err != nil {
+	if _, err := ValidateAuthHeader(tokens[0], serviceName, policy, i.config); err != nil {
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
 

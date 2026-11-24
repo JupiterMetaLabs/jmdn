@@ -181,20 +181,6 @@ func getFunctionGoroutinesCount(localManager *types.LocalManager) map[string]int
 	return functionCounts
 }
 
-func (g *groMetrics) Build(detailed bool) {
-	builder := g.getAppManagers().getLocalManagers().getLocalmanagerRoutinesCount().getAllGoroutinesCount().getWaitGroupCount()
-
-	if detailed {
-		// Print all metrics in pretty tables
-		builder.printAllMetrics()
-	} else {
-		// Non-detailed: only print summary, wait groups, and function names
-		builder.printSummary()
-		builder.printWaitGroups()
-		builder.printFunctionNames()
-	}
-}
-
 // BuildToBuffer builds metrics and writes them to a buffer for atomic printing
 func (g *groMetrics) BuildToBuffer(detailed bool, buf *bytes.Buffer) {
 	builder := g.getAppManagers().getLocalManagers().getLocalmanagerRoutinesCount().getAllGoroutinesCount().getWaitGroupCount()
@@ -208,30 +194,6 @@ func (g *groMetrics) BuildToBuffer(detailed bool, buf *bytes.Buffer) {
 		builder.printWaitGroupsToBuffer(buf)
 		builder.printFunctionNamesToBuffer(buf)
 	}
-}
-
-// printAllMetrics prints all collected metrics in formatted tables
-func (g *groMetrics) printAllMetrics() {
-	fmt.Println("\n" + strings.Repeat("=", 80))
-	fmt.Println("GRO METRICS REPORT")
-	fmt.Println(strings.Repeat("=", 80))
-
-	// 1. App Managers
-	g.printAppManagers()
-
-	// 2. Local Managers with Goroutine Counts
-	g.printLocalManagers()
-
-	// 3. Wait Groups
-	g.printWaitGroups()
-
-	// 4. Function Names with Goroutine Counts
-	g.printFunctionNames()
-
-	// 5. Total Summary
-	g.printSummary()
-
-	fmt.Println(strings.Repeat("=", 80) + "\n")
 }
 
 // printAllMetricsToBuffer prints all collected metrics to a buffer
@@ -258,22 +220,6 @@ func (g *groMetrics) printAllMetricsToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "%s\n\n", strings.Repeat("=", 80))
 }
 
-func (g *groMetrics) printAppManagers() {
-	fmt.Println("\n📱 APP MANAGERS")
-	fmt.Println(strings.Repeat("-", 80))
-	if g.app.appManagerCount == 0 {
-		fmt.Println("  No app managers found")
-		return
-	}
-
-	fmt.Printf("  Total App Managers: %d\n", g.app.appManagerCount)
-	for i, appManager := range g.app.appManagers {
-		if appManager != nil {
-			fmt.Printf("  [%d] %s\n", i+1, appManager.GetAppName())
-		}
-	}
-}
-
 func (g *groMetrics) printAppManagersToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "\n📱 APP MANAGERS\n")
 	fmt.Fprintf(buf, "%s\n", strings.Repeat("-", 80))
@@ -288,37 +234,6 @@ func (g *groMetrics) printAppManagersToBuffer(buf *bytes.Buffer) {
 			fmt.Fprintf(buf, "  [%d] %s\n", i+1, appManager.GetAppName())
 		}
 	}
-}
-
-func (g *groMetrics) printLocalManagers() {
-	fmt.Println("\n🏠 LOCAL MANAGERS & GOROUTINE COUNTS")
-	fmt.Println(strings.Repeat("-", 80))
-
-	if g.local.localManagerCount == 0 {
-		fmt.Println("  No local managers found")
-		return
-	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Local Manager", "Goroutines"})
-	table.SetBorder(true)
-	table.SetColumnSeparator("│")
-	table.SetCenterSeparator("│")
-	table.SetRowSeparator("─")
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-
-	for _, localManager := range g.local.localManagers {
-		if localManager == nil {
-			continue
-		}
-		localName := localManager.GetLocalName()
-		routineCount := g.local.localmanagerRoutines[localName]
-		table.Append([]string{localName, fmt.Sprintf("%d", routineCount)})
-	}
-
-	table.Render()
-	fmt.Println()
 }
 
 func (g *groMetrics) printLocalManagersToBuffer(buf *bytes.Buffer) {
@@ -352,32 +267,6 @@ func (g *groMetrics) printLocalManagersToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "\n")
 }
 
-func (g *groMetrics) printWaitGroups() {
-	fmt.Println("\n⏳ WAIT GROUPS")
-	fmt.Println(strings.Repeat("-", 80))
-
-	if len(g.goroutines.waitGroups) == 0 {
-		fmt.Println("  No wait groups found")
-		return
-	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Local Manager", "Wait Groups"})
-	table.SetBorder(true)
-	table.SetColumnSeparator("│")
-	table.SetCenterSeparator("│")
-	table.SetRowSeparator("─")
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-
-	for localName, count := range g.goroutines.waitGroups {
-		table.Append([]string{localName, fmt.Sprintf("%d", count)})
-	}
-
-	table.Render()
-	fmt.Println()
-}
-
 func (g *groMetrics) printWaitGroupsToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "\n⏳ WAIT GROUPS\n")
 	fmt.Fprintf(buf, "%s\n", strings.Repeat("-", 80))
@@ -404,32 +293,6 @@ func (g *groMetrics) printWaitGroupsToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "\n")
 }
 
-func (g *groMetrics) printFunctionNames() {
-	fmt.Println("\n🔧 FUNCTION NAMES & GOROUTINE COUNTS")
-	fmt.Println(strings.Repeat("-", 80))
-
-	if len(g.goroutines.functionNames) == 0 {
-		fmt.Println("  No function names found")
-		return
-	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Function Name", "Goroutines"})
-	table.SetBorder(true)
-	table.SetColumnSeparator("│")
-	table.SetCenterSeparator("│")
-	table.SetRowSeparator("─")
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-
-	for functionName, count := range g.goroutines.functionNames {
-		table.Append([]string{functionName, fmt.Sprintf("%d", count)})
-	}
-
-	table.Render()
-	fmt.Println()
-}
-
 func (g *groMetrics) printFunctionNamesToBuffer(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "\n🔧 FUNCTION NAMES & GOROUTINE COUNTS\n")
 	fmt.Fprintf(buf, "%s\n", strings.Repeat("-", 80))
@@ -454,29 +317,6 @@ func (g *groMetrics) printFunctionNamesToBuffer(buf *bytes.Buffer) {
 
 	table.Render()
 	fmt.Fprintf(buf, "\n")
-}
-
-func (g *groMetrics) printSummary() {
-	fmt.Println("\n📊 SUMMARY")
-	fmt.Println(strings.Repeat("-", 80))
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Metric", "Count"})
-	table.SetBorder(true)
-	table.SetColumnSeparator("│")
-	table.SetCenterSeparator("│")
-	table.SetRowSeparator("─")
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-
-	table.Append([]string{"Total App Managers", fmt.Sprintf("%d", g.app.appManagerCount)})
-	table.Append([]string{"Total Local Managers", fmt.Sprintf("%d", g.local.localManagerCount)})
-	table.Append([]string{"Total Goroutines", fmt.Sprintf("%d", g.goroutines.goroutinesCount)})
-	table.Append([]string{"Total Functions", fmt.Sprintf("%d", len(g.goroutines.functionNames))})
-	table.Append([]string{"Total Wait Groups", fmt.Sprintf("%d", len(g.goroutines.waitGroups))})
-
-	table.Render()
-	fmt.Println()
 }
 
 func (g *groMetrics) printSummaryToBuffer(buf *bytes.Buffer) {

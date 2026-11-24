@@ -1,0 +1,446 @@
+package Sequencer
+
+// Stage F of the M4 pipeline (AVC-M4-Entropy-Reveal-Pipeline-Design.md §F) —
+// constructs the network's real *beacon.Pipeline and installs it (Stage E's
+// SetVDFPipeline, messaging's SetBeaconSource, and the Stage-D->E hook), so
+// entropy actually gets sealed and published instead of only being wired.
+//
+// # Why this reads two parameters from the environment instead of supplying them
+//
+// A live Pipeline needs a VDF group (avc/vdf.Group — in practice an RSA
+// modulus of UNKNOWN factorisation) and a difficulty T (the sequential-
+// squaring count calibrated to the target VDF delay, ~1200-1410s per
+// VDF-Implementation-Handoff.md §0). Both are explicitly, repeatedly flagged
+// in the underlying packages as values that must NOT be invented by
+// whoever is wiring the code up:
+//
+//   - avc/vdf.go's own package doc: "Do NOT generate [N] yourself with
+//     crypto/rsa. You would hold the trapdoor... This package cannot stop
+//     you doing it and will not detect it" — and NewRSAGroup's doc comment
+//     names, specifically, an earlier real incident in this exact repo
+//     where a fabricated/misremembered "RSA-2048" value was hard-coded and
+//     was wrong (753 digits reproduced from memory, where RSA-2048 is 617)
+//     while still passing every mechanical check ValidateModulus can run.
+//   - VDF-Implementation-Handoff.md §0: "T is derived from T_vdf via
+//     vdf.Calibrate, run on the slowest hardware in the actual validator
+//     fleet — UNVERIFIED: this session does not know the fleet's slowest
+//     node spec... do not guess a number."
+//
+// So this file does not pin a VALUE. It reads both from the environment,
+// validates everything it mechanically can, and — if anything required is
+// missing — installs NOTHING and leaves the network exactly where it is
+// today: Stage 1 (salt-based) committee selection, no entropy-committee
+// selection, Finalise()/Seal() code-complete but never actually invoked with
+// a live pipeline. That is a deliberate, safe default, not a gap to close by
+// filling it with a placeholder number.
+//
+// What it DOES pin, since 2026-08-25, is which values are acceptable. The
+// modulus now goes through vdf.NewPinnedRSAGroup (see buildVDFGroup below),
+// which requires the group name to match a provenance record in avc/vdf's
+// registry and the modulus to match that record's verified digest. Supplying
+// an unpinned modulus is refused unless the operator explicitly opts out.
+// This does not — cannot — verify that nobody knows N's factorisation; it
+// closes the realistic failure, which is the wrong number being supplied by
+// convenience or by accident.
+//
+// # What to set, when ready
+//
+//	JMDN_AVC_VDF_MODULUS_HEX     required — the group modulus N, hex, no 0x prefix
+//	JMDN_AVC_VDF_GROUP_NAME      required — MUST name an entry in avc/vdf's pinned
+//	                             registry (e.g. "rsa-2048-frc"); run
+//	                             `go run ./cmd/vdfpin -list` in the avc repo to see it
+//	JMDN_AVC_VDF_DIFFICULTY_T    required — positive uint64, the PINNED squaring count
+//	                             from an offline vdf.Calibrate run on the slowest
+//	                             fleet hardware — never computed here at startup,
+//	                             per vdf.go's own "never call it at runtime" warning
+//	JMDN_AVC_VDF_MODULUS_BITS    optional — expected bit length; checked via
+//	JMDN_AVC_VDF_MODULUS_DIGITS  optional — expected decimal digits; both must be set
+//	                             together to enable vdf.ValidateChallengeShape.
+//	                             Redundant once the modulus is pinned, since the
+//	                             registry record carries its own dimensions and
+//	                             NewPinnedRSAGroup enforces them unconditionally
+//	JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS
+//	                             optional — proceed with a modulus that has no pinned
+//	                             provenance. Logs a security finding on EVERY startup.
+//	                             For local and testnet use, or a ceremony output not
+//	                             yet added to the registry. Never set on mainnet
+//	JMDN_AVC_BEACON_RETAIN_EPOCHS optional — default committee.MinRetainedEpochs (3)
+//
+// The provenance guarantee itself still has to come from how N was obtained
+// (an RSA Factoring Challenge modulus diffed against a primary source, or a
+// multi-party ceremony). What changed is that this code now refuses to run
+// until somebody has recorded that they did it.
+import (
+	"errors"
+	"fmt"
+	"math/big"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/JupiterMetaLabs/avc/beacon"
+	"github.com/JupiterMetaLabs/avc/committee"
+	"github.com/JupiterMetaLabs/avc/vdf"
+	"github.com/rs/zerolog/log"
+
+	"gossipnode/config/settings"
+	"gossipnode/messaging"
+)
+
+// allowUnpinnedModulusEnv is the deliberate, loud escape hatch from pinned
+// provenance. It exists for two legitimate cases - a local/testnet modulus,
+// and the output of a future multi-party ceremony that has not yet been
+// added to avc/vdf's registry - and for nothing else.
+//
+// It is a separate variable rather than a value of the existing ones so that
+// running unpinned is always an explicit act. An operator cannot reach it by
+// misconfiguring a modulus, and a developer cannot reach it by copying a
+// working local setup into production without noticing what they copied.
+const allowUnpinnedModulusEnv = "JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS"
+
+// ErrUnpinnedModulusInProduction: JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS was set
+// on a production node. JMDN-V3-006 — an unpinned modulus's trust level is
+// unknown by definition, which this override exists to waive; that is never
+// acceptable in production regardless of chain id, and was previously
+// stopped only by the comment above ("Do not set it on mainnet"), not by
+// code.
+var ErrUnpinnedModulusInProduction = errors.New("entropy: unpinned VDF modulus override is refused in production posture")
+
+// ErrPartialVDFConfig: some, but not all, of the three required Stage-2
+// variables are set. Treated as a misconfiguration, never as "Stage 1".
+var ErrPartialVDFConfig = errors.New("entropy: JMDN_AVC_VDF_MODULUS_HEX, JMDN_AVC_VDF_GROUP_NAME and JMDN_AVC_VDF_DIFFICULTY_T must be all set or all unset")
+
+// buildVDFGroup constructs the VDF group, preferring pinned provenance.
+//
+// Default path: vdf.NewPinnedRSAGroup, which requires the group name to name
+// a registry entry, the modulus to match that entry's published dimensions,
+// AND the modulus to match the entry's pinned digest. A wrong-but-plausible
+// modulus passes ValidateModulus and can be made to pass the shape check;
+// only the digest distinguishes the number somebody actually verified
+// against a primary source from one that merely looks right. This repository
+// has already shipped such a value once - see avc/vdf.NewRSAGroup's doc
+// comment - which is why the strict path is the default rather than an
+// option.
+//
+// Escape hatch: with JMDN_AVC_VDF_ALLOW_UNPINNED_MODULUS set, falls back to
+// the unpinned vdf.NewRSAGroup and logs an error on EVERY startup naming
+// exactly what is unverified. Not a warning: a node running consensus
+// entropy on an unverified modulus is a standing security finding, and the
+// log line should read like one every time somebody looks.
+//
+// Neither path can verify that nobody knows the modulus's factorisation.
+// That is not a gap in this function - it is not decidable from N, by
+// anything, ever. What pinning guarantees is narrower and achievable: that
+// the modulus in use is the exact number the team deliberately chose.
+func buildVDFGroup(n *big.Int, groupName string) (vdf.Group, error) {
+	// D-35: VALUE-keyed chain policy, FIRST, on every path.
+	//
+	// This must precede all three construction paths below, and it must key on
+	// the modulus rather than the name. The name-keyed check inside
+	// newNetworkPinnedRSAGroup is only reached when lookupNetworkPin(groupName)
+	// hits, so before this line a restricted modulus supplied under any other
+	// name — rsa-2048-frc, which is a real registry entry with an EMPTY digest —
+	// missed the lookup, skipped the guard, and installed via the unpinned
+	// override on ANY chain. See enforceModulusChainPolicy for the full trace.
+	if err := enforceModulusChainPolicy(n); err != nil {
+		return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", err)
+	}
+
+	group, pinnedErr := vdf.NewPinnedRSAGroup(n, groupName)
+	if pinnedErr == nil {
+		log.Info().Str("group", groupName).
+			Msg("entropy: VDF modulus matches its pinned provenance digest")
+		return group, nil
+	}
+
+	// Second path: a pin owned by THIS node distribution (Sequencer/vdf_network_pins.go).
+	// The library registry only carries generically-sourced moduli; network-specific
+	// ones — a testnet's throwaway — are pinned here with identical semantics. A
+	// name listed there is fully pinned: a matching modulus installs without the
+	// override, and a mismatching one is refused outright (the override below
+	// waives only the LIBRARY digest, never a network pin — a known name with the
+	// wrong N is exactly the wrong-but-plausible case pinning exists to catch).
+	if rec, known := lookupNetworkPin(groupName); known {
+		group, netErr := newNetworkPinnedRSAGroup(n, groupName)
+		if netErr != nil {
+			return nil, fmt.Errorf("entropy: refusing to install the AVC beacon: %w", netErr)
+		}
+		log.Warn().Str("group", groupName).Str("source", rec.Source).
+			Msg("entropy: VDF modulus matches a jmdn NETWORK pin (not the avc library registry). " +
+				rec.Note)
+		return group, nil
+	}
+
+	if strings.TrimSpace(os.Getenv(allowUnpinnedModulusEnv)) == "" {
+		return nil, fmt.Errorf("entropy: refusing to install the AVC beacon with an unpinned VDF modulus: %w\n\n"+
+			"If this is a local or testnet modulus, or a ceremony output not yet added to "+
+			"avc/vdf's registry, set %s=1 to proceed - it will log a security finding on "+
+			"every startup. Do not set it on mainnet",
+			pinnedErr, allowUnpinnedModulusEnv)
+	}
+
+	if isProductionPosture() {
+		return nil, fmt.Errorf("%w: refusing an unpinned VDF modulus even though %s is set — "+
+			"an unpinned modulus's trust level is unknown by definition, which is never "+
+			"acceptable in production (security.strict_posture or network.environment=mainnet)",
+			ErrUnpinnedModulusInProduction, allowUnpinnedModulusEnv)
+	}
+
+	// The override waives the DIGEST, not every provenance check. If the name
+	// is one the registry knows, its published dimensions are still known and
+	// still enforced here — vdf.NewRSAGroup below runs ValidateModulus only,
+	// so without this a modulus of visibly the wrong size would be accepted
+	// under a name that documents exactly what size it should be.
+	if rec, known := vdf.LookupProvenance(groupName); known {
+		if shapeErr := vdf.ValidateChallengeShape(n, rec.Bits, rec.Digits); shapeErr != nil {
+			return nil, fmt.Errorf("entropy: %s is set, but the modulus does not have the "+
+				"published dimensions of %q (%d bits, %d digits): %w. The override waives the "+
+				"pinned-digest requirement, not the shape of a modulus whose name is known",
+				allowUnpinnedModulusEnv, rec.Name, rec.Bits, rec.Digits, shapeErr)
+		}
+	}
+
+	group, err := vdf.NewRSAGroup(n, groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	digest, _ := vdf.ModulusDigest(n)
+	log.Error().
+		Str("group", groupName).
+		Str("modulus_sha256", digest).
+		Int("modulus_bits", n.BitLen()).
+		Str("override", allowUnpinnedModulusEnv).
+		Str("refused_because", pinnedErr.Error()).
+		Msg("entropy: SECURITY - running with an UNPINNED VDF modulus. Nobody has verified " +
+			"this number against a primary source, so it cannot be distinguished from a " +
+			"wrong-but-plausible value, and if its factorisation is known to anyone they can " +
+			"evaluate the VDF instantly and steer committee selection. Acceptable on a " +
+			"testnet; never on mainnet")
+
+	return group, nil
+}
+
+// ErrBeaconNeedsAnchoring refuses to install the Stage-2 beacon without
+// committee anchoring (consensus.committee_anchor_activation_height). From the
+// chain's entropy cut-over on, RANDAO reveals are BLS signatures verified
+// under each member's snapshot-bound key, and only a chain-anchored pool gives
+// every node the same keys; without it no epoch from the cut-over on could
+// take a reveal and every one would fall back.
+var ErrBeaconNeedsAnchoring = errors.New("entropy: the Stage-2 beacon requires committee anchoring (consensus.committee_anchor_activation_height)")
+
+// ErrBeaconNeedsAggCert refuses to install the Stage-2 beacon without
+// aggregate certificates (consensus.flags.agg_cert / JMDN_AVC_AGG_CERT=1). An
+// epoch that cannot mix - a member withheld, or no anchored pool yet - takes
+// the fallback seed, which folds the committed blocks' aggregate certificates.
+// Without them the fallback never completes ("fallback deadline exceeded"),
+// no entropy is sealed, and the chain stops at the next epoch boundary.
+var ErrBeaconNeedsAggCert = errors.New("entropy: the Stage-2 beacon requires aggregate certificates (consensus.flags.agg_cert / JMDN_AVC_AGG_CERT=1)")
+
+// beaconAnchoringEnabled and beaconAggCertEnabled report the two
+// prerequisites. Variables only so install tests, which load no settings, can
+// turn them on.
+var (
+	beaconAnchoringEnabled = messaging.CommitteeAnchoringEnabled
+	beaconAggCertEnabled   = func() bool { return messaging.AggCertEnabled }
+)
+
+// vdfCutoverEpoch is the first epoch sealed with the fixed VDF rule (A-1,
+// messaging/entropy_cutover.go). A variable only so tests can place it.
+var vdfCutoverEpoch = messaging.VDFCutoverEpoch
+
+func checkRevealAnchoring(anchoring bool) error {
+	if !anchoring {
+		return ErrBeaconNeedsAnchoring
+	}
+	return nil
+}
+
+func checkBeaconAggCert(aggCert bool) error {
+	if !aggCert {
+		return ErrBeaconNeedsAggCert
+	}
+	return nil
+}
+
+// InstallAVCBeaconFromEnv builds and installs the Stage-2 beacon pipeline
+// from environment configuration, if and only if every required value is
+// present and passes validation.
+//
+// installed=false, err=nil is the expected, common case: not configured
+// yet, nothing changes, the node stays on Stage 1. err is returned only
+// when a value IS present but fails validation (bad hex; a modulus that is
+// even, prime, too small, or has a small factor; a zero difficulty) —
+// deliberately loud, since silently ignoring a bad-but-present value would
+// be far worse than refusing to start Stage 2.
+//
+// Call once at node startup, after settings.Load() and before the
+// consensus loop starts.
+func InstallAVCBeaconFromEnv() (installed bool, err error) {
+	modulusHex := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_MODULUS_HEX"))
+	groupName := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_GROUP_NAME"))
+	difficultyStr := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_DIFFICULTY_T"))
+
+	// A2: "not all three set" used to mean Stage 1 regardless of how many of
+	// the three were present. Two of three set is a misconfiguration, not a
+	// deliberate Stage-1 choice — treat it as an error like every other
+	// invalid value below, not as the same silent fallback as zero set.
+	set := 0
+	for _, v := range []string{modulusHex, groupName, difficultyStr} {
+		if v != "" {
+			set++
+		}
+	}
+	switch set {
+	case 0:
+		log.Info().Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) not configured — staying on Stage 1 (salt-based) committee selection")
+		return false, nil
+	case 3:
+		// fall through to validation below
+	default:
+		return false, ErrPartialVDFConfig
+	}
+
+	n, ok := new(big.Int).SetString(modulusHex, 16)
+	if !ok {
+		return false, errors.New("entropy: JMDN_AVC_VDF_MODULUS_HEX is not valid hexadecimal")
+	}
+
+	bitsStr := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_MODULUS_BITS"))
+	digitsStr := strings.TrimSpace(os.Getenv("JMDN_AVC_VDF_MODULUS_DIGITS"))
+	if bitsStr != "" && digitsStr != "" {
+		bits, e1 := strconv.Atoi(bitsStr)
+		digits, e2 := strconv.Atoi(digitsStr)
+		if e1 != nil || e2 != nil {
+			return false, errors.New("entropy: JMDN_AVC_VDF_MODULUS_BITS/DIGITS must be integers")
+		}
+		if shapeErr := vdf.ValidateChallengeShape(n, bits, digits); shapeErr != nil {
+			return false, shapeErr
+		}
+	}
+
+	group, err := buildVDFGroup(n, groupName)
+	if err != nil {
+		return false, err
+	}
+
+	difficulty, err := strconv.ParseUint(difficultyStr, 10, 64)
+	if err != nil || difficulty == 0 {
+		return false, errors.New("entropy: JMDN_AVC_VDF_DIFFICULTY_T must be a positive uint64")
+	}
+
+	// D-46a — reject an oversized T at install time, the same place D-39
+	// already refuses a divergent-from-pinned one. This exists for the
+	// UNPINNED case: a network-pinned group's T is already locked to an
+	// exact value by the check below, but a custom/unpinned group accepts
+	// any positive T with no upper bound today, and Start's own per-epoch
+	// deadline (vdf_sealer.go, vdfSealerDeadlineMultiple x
+	// messaging.TargetVDFDelay) only bounds how long ONE evaluation runs,
+	// not whether the chosen T was ever reasonable. maxVDFDifficultyTCeiling
+	// is set two orders of magnitude above the largest value pinned today
+	// (rsa-2048-testnet-ephemeral, T=476510) — generous enough for a real,
+	// deliberately-calibrated production T, while still refusing an
+	// obviously-wrong value (a typo, a copy-paste of the wrong unit) before
+	// it ever reaches a goroutine.
+	if difficulty > maxVDFDifficultyTCeiling {
+		return false, fmt.Errorf("%w: JMDN_AVC_VDF_DIFFICULTY_T=%d exceeds the configured ceiling %d",
+			ErrVDFDifficultyExceedsCeiling, difficulty, uint64(maxVDFDifficultyTCeiling))
+	}
+
+	// D-39 — T is a chain parameter, not a per-host env var. For a network-pinned
+	// group the fleet's T is pinned alongside its modulus; refuse a divergent
+	// per-host value, which is otherwise silent on the node that is wrong (it
+	// rejects every honest peer's proof AND publishes divergent entropy into its
+	// own sink, seating a committee no peer agrees with).
+	if pinnedT, ok := pinnedDifficultyFor(groupName); ok && difficulty != pinnedT {
+		return false, fmt.Errorf("%w: group %q pins T=%d, but JMDN_AVC_VDF_DIFFICULTY_T=%d",
+			ErrVDFDifficultyNotChainPinned, groupName, pinnedT, difficulty)
+	}
+
+	// D-39/D-54 — bind group ‖ modulus digest ‖ T into one fleet-checked identity
+	// and publish it, for the boundary-block stamp (Block/consensus_fields.go)
+	// and the adoption-path comparison (messaging.VerifyAndAcceptVDFProof).
+	// buildVDFGroup already validated the modulus, so ModulusDigest cannot fail.
+	modDigest, mdErr := vdf.ModulusDigest(n)
+	if mdErr != nil {
+		return false, fmt.Errorf("entropy: computing VDF modulus digest for the fleet identity: %w", mdErr)
+	}
+	messaging.SetLocalVDFIdentity(messaging.VDFIdentityDigest(groupName, modDigest, difficulty))
+	log.Warn().Str("group", groupName).Str("modulus_sha256", modDigest).Uint64("difficulty_t", difficulty).
+		Str("vdf_identity", messaging.LocalVDFIdentity()).
+		Msg("entropy: VDF fleet identity computed (group ‖ modulus ‖ T) — boundary blocks carry it and adopters compare it (D-39/D-54)")
+
+	retain := uint64(committee.MinRetainedEpochs)
+	if retainStr := strings.TrimSpace(os.Getenv("JMDN_AVC_BEACON_RETAIN_EPOCHS")); retainStr != "" {
+		r, rErr := strconv.ParseUint(retainStr, 10, 64)
+		if rErr != nil {
+			return false, errors.New("entropy: JMDN_AVC_BEACON_RETAIN_EPOCHS must be a positive uint64")
+		}
+		retain = r
+	}
+
+	sink, err := committee.NewBeaconSource(retain)
+	if err != nil {
+		return false, err
+	}
+
+	// Genesis bootstrap (beacon_bootstrap.go): publish the config-pinned
+	// ENTROPY-E values BEFORE the sink becomes the active beacon, so the very
+	// first SelectEntropyCommittee / SeedSourceFor call already sees them.
+	if settings.IsLoaded() {
+		cfg := settings.Get()
+		eb := cfg.Consensus.EntropyBootstrap
+		if len(eb.Epochs) > 0 {
+			if err := ValidateBootstrapFitsRetention(eb.Epochs, retain); err != nil {
+				return false, err
+			}
+			if err := publishBootstrapEntropy(sink, uint64(cfg.Network.ChainID), cfg.Consensus.SeedAuthorityBLSPub, eb.Seed, eb.Epochs); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	// A-2: from the entropy cut-over on, reveals are BLS signatures verified
+	// under each member's snapshot-bound key, and only a chain-anchored pool
+	// gives every node the same keys. Refuse to install rather than run a
+	// beacon that can never take a reveal after the cut-over.
+	if err := checkRevealAnchoring(beaconAnchoringEnabled()); err != nil {
+		return false, err
+	}
+	if err := checkBeaconAggCert(beaconAggCertEnabled()); err != nil {
+		return false, err
+	}
+	// A-1: entropy from vdfCutoverEpoch() on is sealed and verified with the
+	// fixed VDF rule (one output per input). Earlier epochs keep the legacy
+	// functions only so existing history still verifies; a chain not listed in
+	// entropyCutoverByChain has no such epochs.
+	pipeline, err := beacon.NewWithCutover(group, difficulty, sink, vdfCutoverEpoch())
+	if err != nil {
+		return false, err
+	}
+
+	// Restore entropy this node finalised before its last restart, BEFORE the
+	// sink is published to the rest of the process.
+	//
+	// A failure here is FATAL to installation rather than a warning: the only
+	// way it fails is a conflicting durable value, which means this node once
+	// accepted an entropy value that disagrees with what it holds now. Seating
+	// committees from that is worse than not starting Stage 2.
+	if restored, rerr := messaging.RehydrateBeaconFromDisk(sink); rerr != nil {
+		return false, fmt.Errorf("entropy: refusing to install the AVC beacon — restoring persisted "+
+			"epoch entropy failed after %d epoch(s): %w", restored, rerr)
+	}
+
+	messaging.SetBeaconSource(sink)
+	SetVDFPipeline(pipeline)
+	InstallEpochFinalisedHook()
+	// Receive side. Installed with the pipeline it depends on, so a node can
+	// never end up able to SEAL but not to ADOPT — the asymmetry that made
+	// every non-proposing node pay a full local evaluation.
+	InstallVDFProofAcceptor()
+
+	log.Warn().Str("group", groupName).Uint64("difficulty_t", difficulty).Uint64("retain_epochs", retain).
+		Msg("entropy: AVC beacon (Stage 2 RANDAO+VDF) INSTALLED — committee selection now depends on genuine RANDAO+VDF entropy once published; the genesis/bootstrap gap documented in messaging.SelectEntropyCommittee still applies until a first entropy value exists for the network's earliest epoch")
+
+	return true, nil
+}

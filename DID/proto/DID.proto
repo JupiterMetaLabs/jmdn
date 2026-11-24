@@ -22,6 +22,9 @@ service DIDService {
 message RegisterDIDRequest {
   string did = 1;
   string public_key = 2;
+  // EIP-191 personal_sign by public_key over the DIDRegistrationMessage text
+  // (hex, 65 bytes). Proves the caller controls the address being registered.
+  string signature = 3;
 }
 
 message RegisterDIDResponse {

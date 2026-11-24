@@ -33,7 +33,8 @@ ports:
   api: 8090        # Explorer HTTP API (internal monitoring — see Security below)
   blockgen: 0      # Disabled — sequencer only
   blockgrpc: 0     # Disabled — sequencer only
-  cli: 15053       # CLI admin (localhost only — see binds below)
+  cli: 0           # CLI admin — disabled: it has no authentication. Enable only for
+                   # local maintenance (e.g. 15053) and keep binds.cli on 127.0.0.1.
   did: 15052       # DID service
   facade: 8545     # Ethereum JSON-RPC
   ws: 8546         # WebSocket RPC
@@ -54,17 +55,7 @@ binds:
 
 # ── 5. Database ──────────────────────────────────────────────────────────────
 database:
-  # Docker: address "immudb" is the Docker internal DNS name for the immudb container.
-  # Bare-metal: change to "localhost" (or wherever immudb runs).
-  address: "immudb"
-  port: 3322
-  username: "immudb"
-
-  # ImmuDB password.
-  # Docker Compose: leave blank — compose passes IMMUDB_PASSWORD from .env directly
-  # to jmdn via JMDN_DATABASE_PASSWORD (Viper env > yaml). Set only for bare-metal.
-  password: ""
-
+  # ThebeDB is embedded (BadgerDB KV + SQL projection) — no address/credentials.
   redis:
     # Docker: "redis:6379" — the Redis container's Docker DNS name and port.
     # Bare-metal: "127.0.0.1:6379"
@@ -74,6 +65,52 @@ database:
     # Docker Compose: leave blank — compose passes REDIS_PASSWORD from .env directly
     # to jmdn via JMDN_DATABASE_REDIS_PASSWORD (Viper env > yaml). Set only for bare-metal.
     password: ""
+
+# ── ThebeDB ──────────────────────────────────────────────────────────────────
+# The node's storage backend (BadgerDB KV + Postgres projection).
+# Docker Compose: DSN is injected via THEBE_SQL_DSN env (postgres service DNS).
+# Bare-metal: point at the Postgres provisioned by Scripts/setup_postgres.sh.
+thebe:
+  enabled: true
+  kv_path: "./storage/thebe-kv"
+  # SEC-04: sslmode=require (no cleartext SQL). Postgres must have TLS enabled;
+  # for a non-TLS local DB, override THEBE_SQL_DSN with sslmode=disable.
+  # No password is shipped: put it in the DSN here or in THEBE_SQL_DSN.
+  sql_dsn: "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require"  # Env: THEBE_SQL_DSN
+  cdc:
+    # CDC is the append-only trace of the SQL projection: Postgres is a projection
+    # that can be mutated or rebuilt, and this DuckDB event log is what makes it
+    # replayable (ThebeDB docs/documentation/eventlog.md). Keep it on. The
+    # replication slot's WAL is capped by Postgres max_slot_wal_keep_size (2GB in
+    # the install scripts); jmdn warns at boot if the slot is inactive, lagging
+    # or invalidated.
+    enabled: true
+    slot_name: thebe_eventlog
+    publication: thebe_pub
+    omit_columns:                     # table.column values the event log stores as "<omitted>"
+      - zk_proofs.stark_proof         # proof body (hash stays in zk_proofs.proof_hash)
+
+# ── Chain-head checkpoints ───────────────────────────────────────────────────
+# Every node signs checkpoints of its own log with its own BLS key and checks
+# them at boot. Keep floor_file outside thebe.kv_path.
+checkpoint:
+  enabled: true
+  boot_fail_closed: true
+  cadence_blocks: 0
+  floor_file: "/opt/jmdn/checkpoint-floor.json"
+  min_seq: 0
+  signer_bls_pub: ""                 # optional pin; empty = node key
+  background_full_verify: true       # re-walk the whole log in the background after boot
+
+# ── Storage ──────────────────────────────────────────────
+# full: keep the whole canonical log (sequencer and full nodes).
+# light: keep about light_keep_blocks blocks of canonical log, pruned below a
+# checkpoint this node signed. Not allowed on the sequencer; needs
+# checkpoint.enabled and checkpoint.floor_file. Does not prune SQL data.
+storage:
+  profile: full
+  light_keep_blocks: 10000             # minimum 1000
+  prune_interval: 10m
 
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:
@@ -117,16 +154,19 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false
+  enable_solc_compile: false # solc_compile JSON-RPC; requires security.admin_token when on
+  enable_debug_trace: false  # debug_traceTransaction; requires security.admin_token when on
+  grouped_apply_commit: true # commit a block's value transfers together; false = one commit per tx
 
 # ── 8. FastSync ──────────────────────────────────────────────────────────────
 fastsync:
-  enabled: true
+  enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships
   enable_pulling: true     # This node pulls state from peers on sync.
   enable_catchup: true     # SyncMonitor auto-reconciles when seednode reports divergence.
   sync_timeout: "100m"     # Allow long syncs — exchange nodes may start from a cold snapshot.
   sync_check_interval: "10m"
 
-  # REQUIRED if you used bootstrap_sync.sh to seed immudb.
+  # REQUIRED if you used bootstrap_sync.sh to seed the node state.
   # Set to the block number of the bootstrap snapshot tip + 1.
   # JupiterMeta will provide the exact value for the current snapshot alongside
   # the bootstrap download. Setting to 0 is safe but causes a full genesis scan
@@ -147,6 +187,11 @@ security:
   #   JMDN_SECURITY_JWT_SECRET=<value>
   explorer_api_key: ""     # REQUIRED — token for Explorer API access (see explorer_api below)
   jwt_secret: ""           # REQUIRED — JWT signing secret
+  # Bearer token for admin-only operations: POST /sync/reconcile, the
+  # /consensus/* recovery endpoints (round-ledger clear, block-apply halt
+  # status and clear), and solc_compile / debug_traceTransaction when enabled
+  # under features. Empty = those operations are refused.
+  admin_token: ""
 
   # ── Rate Limiting ────────────────────────────────────────────────────────
   # Layer 1: Global per-IP cap across all services.
@@ -187,3 +232,17 @@ security:
     # Mempool — TLS-only, no auth required.
     mempool_service:
       tls: false
+
+# ── 10. Consensus ────────────────────────────────────────────────────────────
+# This node applies every block, so it must carry the same fleet-agreed
+# consensus heights as the validators. Keys not listed keep their defaults.
+consensus:
+  # From this height on, a contract transaction whose execution creates an
+  # account that carries no block-stamped identity is applied as a status-0
+  # revert (gas charged, no other effect) instead of failing its whole block.
+  # While 0, such a block fails after its earlier transactions have committed,
+  # and the node stops applying blocks until it is resynced
+  # (docs/block-apply-halt.md). Fleet-agreed: the same value on every node that
+  # applies blocks (sequencer, validators, RPC and exchange nodes), a height
+  # not yet reached, set in one coordinated restart. 0 = off.
+  evm_unstamped_account_revert_height: 0

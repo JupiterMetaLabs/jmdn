@@ -15,16 +15,16 @@ const (
 	MainLM = "local:main"
 
 	// Sequencer/Triggers/Triggers.go
-	SequencerTriggerLocal   = "local:sequencer:trigger"
-	SequencerConsensusLocal = "local:sequencer:consensus"
-	SeedLocal               = "local:seed"
-	PubsubSubscribeLocal    = "local:pubsub:subscription"
-	PubsubPublishLocal      = "local:pubsub:publish"
-	PubsubChannelLocal      = "local:pubsub:channel"
-	NodeLocal               = "local:node"
-	MessagingLocal          = "local:messaging"
-	DIDPropagationLocal     = "local:did:propagation"
-	BroadcastLocal          = "local:direct:msg"
+	SequencerTriggerLocal    = "local:sequencer:trigger"
+	SequencerConsensusLocal  = "local:sequencer:consensus"
+	SeedLocal                = "local:seed"
+	PubsubSubscribeLocal     = "local:pubsub:subscription"
+	PubsubPublishLocal       = "local:pubsub:publish"
+	PubsubChannelLocal       = "local:pubsub:channel"
+	NodeLocal                = "local:node"
+	MessagingLocal           = "local:messaging"
+	ContractPropagationLocal = "local:contract:propagation"
+	BroadcastLocal           = "local:direct:msg"
 
 	BlockPropagationLocal = "local:block:propagation"
 
@@ -68,6 +68,11 @@ const (
 	DIDThread         = "thread:did"
 	ShutdownThread    = "thread:shutdown"
 	BlockPollerThread = "thread:block:poller"
+
+	CheckpointFullVerifyThread = "thread:checkpoint:full:verify"
+	LightLogPrunerThread       = "thread:storage:light:prune"
+	LegacyFollowThread         = "thread:sync:legacy:follow"
+
 	StartupSyncThread = "thread:startup:sync"
 
 	// SequencerTriggerThread   = "thread:sequencer:trigger"
@@ -89,10 +94,10 @@ const (
 	YGGMessageCleanerThread = "thread:messaging:yggdrasil:cleaner"
 	MessageYggdrasilThread  = "thread:messaging:yggdrasil"
 
-	DIDStoreThread             = "thread:did:store"
-	DIDPropagationThread       = "thread:did:propagation"
-	DIDForwardThread           = "thread:did:forward"
-	DIDPropagationStreamThread = "thread:did:propagation:stream"
+	ContractStoreThread             = "thread:contract:store"
+	ContractPropagationThread       = "thread:contract:propagation"
+	ContractForwardThread           = "thread:contract:forward"
+	ContractPropagationStreamThread = "thread:contract:propagation:stream"
 
 	MessageCleanerThread   = "thread:messaging:cleaner"
 	MessageBroadcastThread = "thread:messaging:broadcast"
@@ -127,6 +132,7 @@ const (
 	SeedThread = "thread:seed"
 
 	BlockGRPCServerThread      = "thread:block:grpc:server"
+	SmartContractThread        = "thread:smart:contract"
 	SubmitRawTransactionThread = "thread:block:submit:raw:transaction"
 
 	ConnectionPoolThread = "thread:connection:pool"
@@ -172,6 +178,7 @@ var (
 	// Waitgroup for the node manager
 	NodeManagerWG                    = "waitgroup:node:manager"
 	DIDForwardWG                     = "waitgroup:did:forward"
+	ContractForwardWG                = "waitgroup:contract:forward"
 	MessageBroadcastWG               = "waitgroup:messaging:broadcast"
 	VoteBroadcastWG                  = "waitgroup:messaging:vote:broadcast"
 	BroadcastBlockWG                 = "waitgroup:messaging:block:broadcast"

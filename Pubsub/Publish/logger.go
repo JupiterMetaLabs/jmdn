@@ -2,13 +2,15 @@ package Publish
 
 import (
 	log "gossipnode/logging"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // Zero allocation logger - its already allocated in the asynclogger
-func logger() *log.Logging {
-	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.Publish, "")
+func logger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Publish, "")
 	if err != nil {
 		return nil
 	}
-	return logger
+	return logInstance.GetNamedLogger()
 }

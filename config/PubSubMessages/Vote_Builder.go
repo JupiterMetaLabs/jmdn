@@ -8,16 +8,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-func NewVoteBuilder(vote *Vote) *Vote {
-	if vote != nil {
-		return &Vote{
-			Vote:      vote.Vote,
-			BlockHash: vote.BlockHash,
-		}
-	}
-	return &Vote{}
-}
-
 func (vote *Vote) SetVote(voteInput int8) *Vote {
 	vote.Vote = voteInput
 	return vote

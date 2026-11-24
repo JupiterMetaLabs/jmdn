@@ -21,9 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	fastsync_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-
-	"gossipnode/internal/merkle"
 	"gossipnode/seednode"
 )
 
@@ -48,6 +45,30 @@ type SyncStatus struct {
 	SequencerRoot []byte
 	GoodPeers     []PeerInfo
 	Message       string
+
+	// HeadAuthenticated reports whether SequencerHead came from a source this
+	// node can hold accountable — today, the seednode. FALSE for a reporter
+	// that infers the head from unauthenticated peer chatter.
+	//
+	// It exists because SequencerHead has two consumers with very different
+	// trust requirements, and one of them is on the consensus path:
+	//
+	//   - the propagation-lag filter in runCheckOpts only needs a rough "how
+	//     far behind might I be"; a wrong answer costs a needless catch-up.
+	//   - main.go's SetConsensusSyncGate feeds it to
+	//     MessagePassing.GateDecision, which ABSTAINS from voting once the gap
+	//     exceeds MaxConsensusLagBlocks (2). A wrong answer there removes this
+	//     node from quorum.
+	//
+	// Publishing an unauthenticated head to the second consumer would let a
+	// single peer claiming localHead+3 silently pull a validator out of
+	// consensus. So the head is still reported — the lag filter needs it — and
+	// this flag tells the gate not to act on it.
+	//
+	// Any new consumer making a SAFETY or PARTICIPATION decision from
+	// SequencerHead must check this flag. Consumers that only tune sync
+	// behaviour need not.
+	HeadAuthenticated bool
 }
 
 // PeerInfo is a stripped-down peer record sufficient for dialling.
@@ -66,10 +87,17 @@ type SeedReporter interface {
 // ReconcileFunc is called when the seednode says this node is out of sync.
 type ReconcileFunc func(ctx context.Context, goodPeers []PeerInfo) error
 
-// blockTimer is an optional interface for Fix 2 (propagation guard).
-// sync_struct in DB_OPs/Nodeinfo implements this; stubs may omit it.
-// If the type-assert fails the guard is silently skipped.
-type blockTimer interface {
+// ChainReporter supplies the periodic sync-report inputs from the local chain.
+// The host node implements it over its block store (see thebesync.ChainReporter).
+// The reported root is a 32-byte cumulative commitment identical across honest
+// nodes at the same height — the tip block's StateRoot
+// (StateRoot_n = Keccak256(StateRoot_{n-1} || BlockHash_n)) — an O(1) read that
+// replaces the retired O(N) Merkle-tree-over-block-hashes fingerprint.
+type ChainReporter interface {
+	// TipState returns the local tip height and its 32-byte state root.
+	TipState(ctx context.Context) (head uint64, root []byte, err error)
+	// LastBlockReceivedAt is the propagation-guard signal (Fix 2); a zero time
+	// disables the guard for that cycle.
 	LastBlockReceivedAt() time.Time
 }
 
@@ -101,9 +129,14 @@ func (a *seednodeAdapter) ReportBlockState(ctx context.Context, blockHead uint64
 	return &SyncStatus{
 		IsSynced:      st.IsSynced,
 		SequencerHead: st.SequencerHead,
-		SequencerRoot: st.SequencerRoot,
-		GoodPeers:     peers,
-		Message:       st.Message,
+		// The seednode is an accountable source: its head is signed-record
+		// backed and comes from one place, not from whichever peer answers
+		// highest. This is the only reporter allowed to vouch for the head, and
+		// therefore the only one whose head may drive the consensus vote gate.
+		HeadAuthenticated: true,
+		SequencerRoot:     st.SequencerRoot,
+		GoodPeers:         peers,
+		Message:           st.Message,
 	}, nil
 }
 
@@ -121,15 +154,18 @@ type Status struct {
 	LastCheckedAt time.Time `json:"last_checked_at"`
 	Error         string    `json:"error,omitempty"`
 	// Fix 3, 5: observable state for ops/alerting
-	ConsecutiveOutOfSync int           `json:"consecutive_out_of_sync"`
-	SeednodeUnreachable  bool          `json:"seednode_unreachable"`
-	CurrentInterval      time.Duration `json:"current_interval"`
+	ConsecutiveOutOfSync int  `json:"consecutive_out_of_sync"`
+	SeednodeUnreachable  bool `json:"seednode_unreachable"`
+	// HeadAuthenticated mirrors SyncStatus.HeadAuthenticated — see that field.
+	// Any consumer gating CONSENSUS PARTICIPATION on SequencerHead must require
+	// this; a peer-sampled head is not accountable and must not decide voting.
+	HeadAuthenticated bool          `json:"head_authenticated"`
+	CurrentInterval   time.Duration `json:"current_interval"`
 }
 
 // Monitor runs the periodic sync-check loop.
 type Monitor struct {
-	blockInfo    fastsync_types.BlockInfo
-	fingerprint  *merkle.Fingerprinter
+	reporter     ChainReporter
 	seedClient   SeedReporter
 	baseInterval time.Duration
 
@@ -171,15 +207,31 @@ type Monitor struct {
 	// Fix 6: adaptive interval — written under runMu, read in Start goroutine
 	currentInterval  time.Duration
 	immediateRecheck atomic.Bool
+
+	// Asynchronous trigger coalescing (RequestCheck / RequestGapCatchUp).
+	// checkQueued / gapQueued are set while a run of that kind is waiting to
+	// start, so any number of signals collapse into at most one waiting run
+	// per kind. triggerMu serializes the triggered runs and guards
+	// lastTriggered, which spaces them at least triggerCooldown apart.
+	checkQueued     atomic.Bool
+	gapQueued       atomic.Bool
+	triggerMu       sync.Mutex
+	lastTriggered   time.Time
+	triggerCooldown time.Duration
 }
+
+// defaultTriggerCooldown is the minimum spacing between two event-triggered
+// checks. Each one costs a seednode round trip and may start a reconcile, and
+// the events that cause them arrive from the network.
+const defaultTriggerCooldown = 2 * time.Second
 
 // New creates a Monitor with production defaults.
 //
-//	blockInfo     — NodeInfo adapter (call NodeInfo.NewSyncStruct())
+//	reporter      — ChainReporter over the local chain (thebesync.ChainReporter{})
 //	seedReporter  — SeedReporter (use NewSeednodeReporter or a test stub)
 //	checkInterval — base reporting interval; 0 or < 1 min → 10 min default
 func New(
-	blockInfo fastsync_types.BlockInfo,
+	reporter ChainReporter,
 	seedReporter SeedReporter,
 	checkInterval time.Duration,
 ) *Monitor {
@@ -187,8 +239,7 @@ func New(
 		checkInterval = defaultBaseInterval
 	}
 	return &Monitor{
-		blockInfo:                  blockInfo,
-		fingerprint:                merkle.NewFingerprinter(merkle.DefaultFullRebuildEvery),
+		reporter:                   reporter,
 		seedClient:                 seedReporter,
 		baseInterval:               checkInterval,
 		currentInterval:            checkInterval,
@@ -197,7 +248,52 @@ func New(
 		propagationToleranceBlocks: defaultPropagationToleranceBlocks,
 		seednodeGracePeriod:        defaultSeednodeGracePeriod,
 		rootCtx:                    context.Background(),
+		triggerCooldown:            defaultTriggerCooldown,
 	}
+}
+
+// RequestCheck asks for a TriggerCheck without blocking the caller. Repeated
+// requests while one is already waiting are dropped, so a burst of signals
+// costs at most one waiting goroutine plus the run in progress.
+func (m *Monitor) RequestCheck() {
+	m.requestRun(&m.checkQueued, func(ctx context.Context) { m.TriggerCheck(ctx) })
+}
+
+// RequestGapCatchUp is the non-blocking, coalesced form of TriggerGapCatchUp.
+// Gap signals come from blocks and vote requests received before their
+// certificate is checked, so the caller must not be able to multiply work by
+// sending many of them.
+func (m *Monitor) RequestGapCatchUp() {
+	m.requestRun(&m.gapQueued, func(ctx context.Context) { m.TriggerGapCatchUp(ctx) })
+}
+
+func (m *Monitor) requestRun(queued *atomic.Bool, run func(context.Context)) {
+	if !queued.CompareAndSwap(false, true) {
+		return // a run of this kind is already waiting; it will see the latest state
+	}
+	go func() {
+		m.mu.RLock()
+		ctx := m.rootCtx
+		m.mu.RUnlock()
+
+		m.triggerMu.Lock()
+		defer m.triggerMu.Unlock()
+		if wait := m.triggerCooldown - time.Since(m.lastTriggered); wait > 0 {
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				queued.Store(false)
+				return
+			case <-t.C:
+			}
+		}
+		// Clear before running: a signal that arrives during the run must
+		// queue a fresh one, since the run may already have read its state.
+		queued.Store(false)
+		m.lastTriggered = time.Now()
+		run(ctx)
+	}()
 }
 
 // WithOutOfSyncThreshold overrides the consecutive out-of-sync threshold.
@@ -230,8 +326,27 @@ func (m *Monitor) GetStatus() Status {
 }
 
 // TriggerCheck performs an immediate sync check. Safe to call concurrently.
+// The propagation guard applies: if this node stored a block within the last
+// blockPropagationWindow the check is skipped (see runCheck).
 func (m *Monitor) TriggerCheck(ctx context.Context) Status {
-	return m.runCheck(ctx)
+	return m.runCheckOpts(ctx, true)
+}
+
+// TriggerCheckAfterApply is TriggerCheck WITHOUT the propagation guard. It is
+// the entry point for the event-driven seednode head push (seed_blockhead_push.go),
+// which fires ~750ms after this node stored a block — i.e. always inside the
+// 30s guard window. Routed through TriggerCheck, that push skipped itself on
+// every single block, so the seednode learned a node's head only from the
+// 1–30 min periodic timer. Observed on the testnet: sequencer at 822, seednode
+// still holding 821 eight minutes later, every validator's gap check reading
+// "local=820 seq=821 delta=1" and dismissing a real gap as propagation lag.
+//
+// The guard exists to avoid reporting a stale root while a block is mid-write
+// on a node that RECEIVED it; the after-apply push runs after the write is
+// durable (LatestBlockAdvanceHook fires under latestBlockMu, after the store),
+// so there is no stale root to protect against here.
+func (m *Monitor) TriggerCheckAfterApply(ctx context.Context) Status {
+	return m.runCheckOpts(ctx, false)
 }
 
 // Start launches the background loop. Returns error if called twice.
@@ -287,30 +402,61 @@ func (m *Monitor) Start(ctx context.Context) error {
 	return nil
 }
 
-// runCheck executes one full sync cycle. Serialised by runMu.
+// runCheck executes one full sync cycle with the propagation guard. Serialised by runMu.
 func (m *Monitor) runCheck(ctx context.Context) Status {
+	return m.runCheckOpts(ctx, true)
+}
+
+// runCheckOpts is runCheck with the propagation guard switchable. guard=false is
+// used only by TriggerCheckAfterApply, whose caller has just finished storing a
+// block and needs the seednode to learn the new head now.
+func (m *Monitor) runCheckOpts(ctx context.Context, guard bool) Status {
+	return m.runCheckFull(ctx, guard, false)
+}
+
+// TriggerGapCatchUp is the entry point for an EXPLICIT gap signal — the receive
+// path saw a block beyond next-expected, or the vote path refused a proposal as
+// non-contiguous. Unlike TriggerCheck it bypasses the propagation guard, the
+// propagation-lag tolerance and the consecutive-report threshold: the caller has
+// already proven the gap, so "delta=1 is probably in flight" no longer applies.
+//
+// Testnet 2026-10-13: a single missed broadcast (1762) left every validator at
+// 1761 while the sequencer sat at 1762. Every validator rejected 1763 as
+// non-contiguous, so the sequencer could never get 2 ahead, and every gap
+// signal was routed through TriggerCheck whose delta<=1 filter dismissed it.
+// Permanent stall from one dropped block; this is the escape hatch.
+func (m *Monitor) TriggerGapCatchUp(ctx context.Context) Status {
+	return m.runCheckFull(ctx, false, true)
+}
+
+// forcedReconcile is the pure decision behind TriggerGapCatchUp: an explicit gap
+// signal with the sequencer ahead reconciles immediately, regardless of the
+// propagation-lag tolerance. Kept separate so it can be unit-tested.
+func forcedReconcile(m *Monitor, head, seqHead uint64, forced bool) bool {
+	return forced && seqHead > head
+}
+
+func (m *Monitor) runCheckFull(ctx context.Context, guard bool, forced bool) Status {
 	m.runMu.Lock()
 	defer m.runMu.Unlock()
 
 	// Fix 2: propagation guard — if a block was written recently, skip this cycle.
 	// The node may be mid-propagation; reporting a stale root causes a false out-of-sync.
-	if bt, ok := m.blockInfo.(blockTimer); ok {
-		last := bt.LastBlockReceivedAt()
-		if !last.IsZero() {
-			if since := time.Since(last); since < m.blockPropagationWindow {
-				log.Printf("[syncmonitor] skipping check — block received %v ago (propagation window %v)",
-					since.Round(time.Millisecond), m.blockPropagationWindow)
-				return m.getStatusLocked()
-			}
+	last := m.reporter.LastBlockReceivedAt()
+	if guard && !last.IsZero() {
+		if since := time.Since(last); since < m.blockPropagationWindow {
+			log.Printf("[syncmonitor] skipping check — block received %v ago (propagation window %v)",
+				since.Round(time.Millisecond), m.blockPropagationWindow)
+			return m.getStatusLocked()
 		}
 	}
 
 	start := time.Now()
 
-	// ── 1. Build local Merkle root (incremental — folds only new blocks) ──────
-	result, err := m.fingerprint.Compute(ctx, m.blockInfo)
+	// ── 1. Read local tip height + cumulative StateRoot (O(1), Thebe-native) ──
+	head, root, err := m.reporter.TipState(ctx)
 	if err != nil {
-		log.Printf("[syncmonitor] Merkle build failed: %v", err)
+		log.Printf("[syncmonitor] tip-state read failed: %v", err)
 		st := Status{
 			Error:           err.Error(),
 			LastCheckedAt:   time.Now(),
@@ -321,7 +467,7 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 	}
 
 	// ── 2. Report to seednode ─────────────────────────────────────────────────
-	syncSt, err := m.seedClient.ReportBlockState(ctx, result.Head, result.Root[:])
+	syncSt, err := m.seedClient.ReportBlockState(ctx, head, root)
 	if err != nil {
 		// Fix 5: seednode grace period — short outages keep IsSynced=true;
 		// extended unreachability flips SeednodeUnreachable and clears IsSynced.
@@ -335,8 +481,8 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 				m.consecutiveSeednodeErrors, m.seednodeGracePeriod, err)
 		}
 		st := Status{
-			LocalHead:            result.Head,
-			MerkleRoot:           hex.EncodeToString(result.Root[:]),
+			LocalHead:            head,
+			MerkleRoot:           hex.EncodeToString(root),
 			IsSynced:             !unreachable,
 			SeednodeUnreachable:  unreachable,
 			ConsecutiveOutOfSync: m.consecutiveOutOfSync,
@@ -357,14 +503,15 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 	}
 
 	st := Status{
-		LocalHead:       result.Head,
-		MerkleRoot:      hex.EncodeToString(result.Root[:]),
-		SequencerHead:   syncSt.SequencerHead,
-		SequencerRoot:   hex.EncodeToString(syncSt.SequencerRoot),
-		GoodPeers:       goodPeerIDs,
-		Message:         syncSt.Message,
-		LastCheckedAt:   time.Now(),
-		CurrentInterval: m.currentInterval,
+		LocalHead:         head,
+		MerkleRoot:        hex.EncodeToString(root),
+		SequencerHead:     syncSt.SequencerHead,
+		HeadAuthenticated: syncSt.HeadAuthenticated,
+		SequencerRoot:     hex.EncodeToString(syncSt.SequencerRoot),
+		GoodPeers:         goodPeerIDs,
+		Message:           syncSt.Message,
+		LastCheckedAt:     time.Now(),
+		CurrentInterval:   m.currentInterval,
 	}
 
 	if syncSt.IsSynced {
@@ -379,10 +526,20 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 		// Fix 4: block-delta filter — a small head gap is almost certainly
 		// propagation lag (block in flight), not a genuine divergence.
 		seqHead := syncSt.SequencerHead
-		if seqHead > result.Head && seqHead-result.Head <= m.propagationToleranceBlocks {
-			delta := seqHead - result.Head
+		if forcedReconcile(m, head, seqHead, forced) {
+			log.Printf("[syncmonitor] explicit gap signal: local=%d seq=%d delta=%d — reconciling now (tolerance/threshold bypassed)",
+				head, seqHead, seqHead-head)
+			st.IsSynced = false
+			m.consecutiveOutOfSync = m.outOfSyncThreshold
+			st.ConsecutiveOutOfSync = m.consecutiveOutOfSync
+			m.triggerReconcile(syncSt.GoodPeers)
+			m.setStatus(st)
+			return st
+		}
+		if seqHead > head && seqHead-head <= m.propagationToleranceBlocks {
+			delta := seqHead - head
 			log.Printf("[syncmonitor] propagation lag: local=%d seq=%d delta=%d ≤ %d — not counting as divergence",
-				result.Head, seqHead, delta, m.propagationToleranceBlocks)
+				head, seqHead, delta, m.propagationToleranceBlocks)
 			st.IsSynced = true
 			st.Message = fmt.Sprintf("propagation lag: behind by %d block(s)", delta)
 			m.setStatus(st)
@@ -397,7 +554,7 @@ func (m *Monitor) runCheck(ctx context.Context) Status {
 		m.adjustInterval(false)
 
 		log.Printf("[syncmonitor] out of sync (%d/%d consecutive), head=%d seq=%d",
-			m.consecutiveOutOfSync, m.outOfSyncThreshold, result.Head, seqHead)
+			m.consecutiveOutOfSync, m.outOfSyncThreshold, head, seqHead)
 
 		if m.consecutiveOutOfSync >= m.outOfSyncThreshold {
 			m.triggerReconcile(syncSt.GoodPeers)

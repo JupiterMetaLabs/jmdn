@@ -1,0 +1,171 @@
+package evm
+
+import (
+	"context"
+	"fmt"
+	"math/big"
+	"time"
+
+	"gossipnode/helper"
+
+	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/params"
+	"github.com/holiman/uint256"
+)
+
+// EVMExecutor manages EVM execution
+type EVMExecutor struct {
+	ChainConfig *params.ChainConfig
+	VMConfig    vm.Config
+}
+
+var canTransferFn vm.CanTransferFunc = func(db vm.StateDB, addr common.Address, amount *uint256.Int) bool {
+	balance := db.GetBalance(addr)
+	return balance.Cmp(amount) >= 0
+}
+
+// transferFn implements vm.TransferFunc. The trailing *params.Rules parameter was
+// added in go-ethereum v1.17.5; it is unused here because JMDT activates no fork
+// whose transfer semantics differ.
+var transferFn vm.TransferFunc = func(db vm.StateDB, sender, recipient common.Address, amount *uint256.Int, _ *params.Rules) {
+	db.SubBalance(sender, amount, tracing.BalanceChangeTransfer)
+	db.AddBalance(recipient, amount, tracing.BalanceChangeTransfer)
+}
+
+// NewEVMExecutor creates a new EVM execution environment
+func NewEVMExecutor(chainID int) *EVMExecutor {
+	return &EVMExecutor{
+		ChainConfig: NewChainConfig(chainID), // Use the properly configured ChainConfig
+		VMConfig:    NewVMConfig(),           // Use the properly configured VMConfig
+	}
+}
+
+// DeployContract deploys a smart contract
+func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, code []byte, value *big.Int, gasLimit uint64) (*ExecutionResult, error) {
+	// Create initial EVM instance
+	value256, overflow := helper.ConvertBigToUint256(value)
+	if overflow {
+		return nil, fmt.Errorf("Overflow occurred during value conversion")
+	}
+
+	blockCtx := vm.BlockContext{
+		CanTransfer: canTransferFn,
+		Transfer:    transferFn,
+		GetHash:     GetHashFn,
+		Coinbase:    common.Address{},
+		BlockNumber: new(big.Int).SetUint64(1),
+		Time:        uint64(time.Now().UTC().Unix()),
+		Difficulty:  big.NewInt(0),
+		GasLimit:    30_000_000,
+		Random:      new(common.Hash),       // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
+		BaseFee:     big.NewInt(1000000000), // 1 gwei - must be non-zero for EIP-1559
+	}
+
+	// Try to update with real blockchain info
+	if err := UpdateBlockContext(&blockCtx); err != nil {
+		// Log the error but continue with default values
+		if l := evmLogger(); l != nil {
+			l.Warn(context.Background(), "UpdateBlockContext failed, using defaults", ion.String("err", err.Error()))
+		}
+	}
+
+	// Rest of the function remains the same...
+	txCtx := vm.TxContext{
+		Origin:   caller,
+		GasPrice: uint256.NewInt(0),
+	}
+
+	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
+	evm.SetTxContext(txCtx)
+
+	// Execute the deployment code.
+	// NOTE: The contract address is derived from crypto.CreateAddress(caller, current_nonce)
+	// BEFORE the nonce is incremented.  We increment AFTER Create so that all callers
+	// (deploy_contract.go, handlers.go, etc.) can predict the deployed address using the
+	// nonce they read before calling DeployContract — no off-by-one adjustments needed.
+	// go-ethereum v1.17.5 takes and returns vm.GasBudget rather than uint64. The
+	// second argument is StateGas, which must stay 0 for a chain that does not
+	// activate Amsterdam — it is only ever non-zero under EIP-8037/8038.
+	ret, contractAddr, gasResult, err := evm.Create(caller, code, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
+
+	// NOTE: go-ethereum's evm.Create already increments the caller nonce inside
+	// create() before deriving the address. A manual SetNonce here was a DOUBLE
+	// bump — the caller nonce advanced by 2 per deploy, so every deployment after
+	// the first computed a mismatched CREATE address and failed with "contract
+	// address collision". Do NOT re-add it.
+
+	// Check for gas overflow before calculating gasUsed
+	if leftOverGas > gasLimit {
+		return &ExecutionResult{
+			ReturnData:   ret,
+			GasUsed:      0,
+			Error:        fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit),
+			ContractAddr: contractAddr,
+		}, fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit)
+	}
+
+	result := &ExecutionResult{
+		ReturnData:   ret,
+		GasUsed:      gasLimit - leftOverGas,
+		Error:        err,
+		ContractAddr: contractAddr,
+	}
+
+	return result, err
+}
+
+// ExecuteContract executes a function on a deployed contract
+func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, contractAddr common.Address,
+	input []byte, value *big.Int, gasLimit uint64) (*ExecutionResult, error) {
+
+	value256, overflow := helper.ConvertBigToUint256(value)
+	if overflow {
+		return nil, fmt.Errorf("Overflow occurred during value conversion")
+	}
+
+	// Create EVM instance
+	blockCtx := vm.BlockContext{
+		CanTransfer: canTransferFn,
+		Transfer:    transferFn,
+		GetHash:     GetHashFn,
+		Coinbase:    common.Address{},
+		BlockNumber: new(big.Int).SetUint64(1),
+		Time:        uint64(time.Now().UTC().Unix()),
+		Difficulty:  big.NewInt(0),
+		GasLimit:    gasLimit,
+		Random:      new(common.Hash), // NEW-8/EVM-29: non-nil -> post-merge -> Shanghai (fork parity with the apply path)
+		BaseFee:     big.NewInt(0),
+	}
+	// Try to update with real blockchain info
+	if err := UpdateBlockContext(&blockCtx); err != nil {
+		// Log the error but continue with default values
+		if l := evmLogger(); l != nil {
+			l.Warn(context.Background(), "UpdateBlockContext failed, using defaults", ion.String("err", err.Error()))
+		}
+	}
+
+	txCtx := vm.TxContext{
+		Origin:   caller,
+		GasPrice: uint256.NewInt(0),
+	}
+
+	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
+	evm.SetTxContext(txCtx)
+
+	// Call the contract. go-ethereum v1.17.5 takes and returns vm.GasBudget; the
+	// StateGas argument stays 0 (non-Amsterdam chain).
+	ret, gasResult, err := evm.Call(caller, contractAddr, input, vm.NewGasBudget(gasLimit, 0), value256)
+	leftOverGas := gasResult.RegularGas
+
+	result := &ExecutionResult{
+		ReturnData: ret,
+		GasUsed:    gasLimit - leftOverGas,
+		Error:      err,
+	}
+
+	return result, err
+}

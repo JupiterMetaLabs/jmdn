@@ -85,11 +85,8 @@ func Start(ctx context.Context, gps *PubSubMessages.GossipPubSub) {
 			log.Debug().Err(err).Msg("[BlockGossip] unmarshal gossiped block failed")
 			return
 		}
-		sender := "gossip"
-		if s := gm.Sender.String(); s != "" {
-			sender = "gossip:" + s
-		}
-		messaging.HandleGossipedBlockMessage(bm, sender)
+		// gm.Sender is the gossipsub publisher (msg.GetFrom(), StrictSign).
+		messaging.HandleGossipedBlockMessageFrom(bm, gm.Sender)
 	}
 	if err := Subscriber.Subscribe(ctx, gps, config.PubSub_BlockPropagation, handler); err != nil {
 		log.Error().Err(err).Msg("[BlockGossip] subscribe failed — gossip block propagation inactive on this node")

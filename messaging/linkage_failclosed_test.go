@@ -16,15 +16,15 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// blkAt builds a block at num that follows the slot rule (slot = block number).
 func blkAt(num uint64, prev common.Hash) *config.ZKBlock {
-	return &config.ZKBlock{BlockNumber: num, PrevHash: prev, BlockHash: common.BytesToHash([]byte{byte(num)})}
+	return &config.ZKBlock{BlockNumber: num, Slot: num, PrevHash: prev, BlockHash: common.BytesToHash([]byte{byte(num)})}
 }
 
 // distinct, VALID, non-zero hashes (HexToHash on non-hex text silently yields
 // the zero hash, which would make unequal-looking values compare equal).
 var (
-	hashTip   = common.BytesToHash([]byte{0xaa})
-	hashWrong = common.BytesToHash([]byte{0xbb})
+	hashTip = common.BytesToHash([]byte{0xaa})
 )
 
 func TestLinkageDecision(t *testing.T) {
@@ -77,6 +77,7 @@ func TestBadStateRootRejected(t *testing.T) {
 	}
 	b := &config.ZKBlock{
 		BlockNumber: 21,
+		Slot:        21,
 		PrevHash:    parent.BlockHash,
 		BlockHash:   common.HexToHash("0xchild"),
 		StateRoot:   common.HexToHash("0xbogus"), // does not chain from parent
@@ -84,6 +85,46 @@ func TestBadStateRootRejected(t *testing.T) {
 	rej := linkageDecision(b, 20, nil, parent, nil)
 	if rej == nil || rej.reason != "bad_stateroot" {
 		t.Fatalf("want bad_stateroot, got %v", rej)
+	}
+}
+
+// TestSlotRule covers the slot axis on the live path: a block's slot is its
+// block number whatever its Period, with no exception (every live block is
+// stamped by the current proposer), and the Period cap is checked first.
+func TestSlotRule(t *testing.T) {
+	parent := &config.ZKBlock{BlockNumber: 30, BlockHash: hashTip, Slot: 30}
+	child := func(slot, period uint64) *config.ZKBlock {
+		b := blkAt(31, hashTip)
+		b.Slot, b.Period = slot, period
+		return b
+	}
+	cases := []struct {
+		name       string
+		b          *config.ZKBlock
+		wantReason string
+	}{
+		{"first attempt: slot = height", child(31, 0), ""},
+		{"retry at period 2 keeps slot = height", child(31, 2), ""},
+		{"retry that moved the slot (old rule)", child(33, 2), "bad_slot"},
+		{"slot one ahead", child(32, 0), "bad_slot"},
+		{"slot behind", child(30, 0), "bad_slot"},
+		{"slot 0 on a live block", child(0, 0), "bad_slot"},
+		{"period at the cap", child(31, config.LegacyMaxPeriod), ""},
+		{"period above the cap is rejected first", child(31, config.LegacyMaxPeriod+1), "period_too_high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rej := linkageDecision(tc.b, 30, nil, parent, nil)
+			if tc.wantReason == "" {
+				if rej != nil {
+					t.Fatalf("expected accept, got %s: %v", rej.reason, rej.err)
+				}
+				return
+			}
+			if rej == nil || rej.reason != tc.wantReason {
+				t.Fatalf("reason=%v, want %s", rej, tc.wantReason)
+			}
+		})
 	}
 }
 

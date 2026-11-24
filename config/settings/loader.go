@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -36,24 +37,105 @@ func Load() (*NodeConfig, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("reading config file: %w", err)
 		}
+		fmt.Println("No configuration file found, using defaults and environment variables")
+	} else {
+		fmt.Printf("Configuration loaded from: %s\n", v.ConfigFileUsed())
 	}
 
 	// 6. Environment variables (Highest priority after flags)
 	v.SetEnvPrefix("JMDN")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
+	// Explicitly support non-prefixed Thebe env vars.
+	if err := v.BindEnv("thebe.sql_dsn", "THEBE_SQL_DSN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_SQL_DSN: %w", err)
+	}
+	if err := v.BindEnv("thebe.redis_url", "THEBE_REDIS_URL"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_REDIS_URL: %w", err)
+	}
+	if err := v.BindEnv("thebe.stream_name", "THEBE_STREAM_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_STREAM_NAME: %w", err)
+	}
+	if err := v.BindEnv("thebe.max_len", "THEBE_MAX_LEN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_MAX_LEN: %w", err)
+	}
+	if err := v.BindEnv("thebe.group_name", "THEBE_GROUP_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_GROUP_NAME: %w", err)
+	}
 
 	// Bind the selection secrets to their explicit, documented env var names
 	// (these differ from the auto-derived JMDN_SELECTION_* names, so bind them
 	// directly). BindEnv with explicit names bypasses the prefix.
 	_ = v.BindEnv("selection.mnemonic", "JMDN_NODE_SELECTION_MNEMONIC")
 	_ = v.BindEnv("selection.salt", "JMDN_NETWORK_SALT")
+	// AutomaticEnv does not reach these through Unmarshal — bind explicitly so
+	// JMDN_SECURITY_ENABLED=false actually disables the gatekeeper (TLS/auth). Without
+	// this, services stay TLS even when the env/partial-yaml says disabled.
+	_ = v.BindEnv("security.enabled", "JMDN_SECURITY_ENABLED")
+
+	// AutomaticEnv does not reach nested keys through Unmarshal, so every
+	// tx_status key is bound explicitly — otherwise JMDN_TX_STATUS_ENABLED=true
+	// would silently do nothing and the feature would appear broken rather than
+	// off. Same reason as the security.enabled bind above.
+	for key, env := range map[string]string{
+		"tx_status.enabled":                   "JMDN_TX_STATUS_ENABLED",
+		"tx_status.submit_record_ttl":         "JMDN_TX_STATUS_SUBMIT_RECORD_TTL",
+		"tx_status.submit_record_capacity":    "JMDN_TX_STATUS_SUBMIT_RECORD_CAPACITY",
+		"tx_status.mempool_timeout":           "JMDN_TX_STATUS_MEMPOOL_TIMEOUT",
+		"tx_status.chain_timeout":             "JMDN_TX_STATUS_CHAIN_TIMEOUT",
+		"tx_status.negative_cache_ttl":        "JMDN_TX_STATUS_NEGATIVE_CACHE_TTL",
+		"tx_status.negative_cache_size":       "JMDN_TX_STATUS_NEGATIVE_CACHE_SIZE",
+		"tx_status.rate_limit_per_sec":        "JMDN_TX_STATUS_RATE_LIMIT_PER_SEC",
+		"tx_status.rate_limit_burst":          "JMDN_TX_STATUS_RATE_LIMIT_BURST",
+		"tx_status.breaker_failure_threshold": "JMDN_TX_STATUS_BREAKER_FAILURE_THRESHOLD",
+		"tx_status.breaker_cooldown":          "JMDN_TX_STATUS_BREAKER_COOLDOWN",
+		"tx_status.pending_tx_by_hash":        "JMDN_TX_STATUS_PENDING_TX_BY_HASH",
+
+		// Public JSON-RPC cost bounds. Bound explicitly for the same reason as
+		// tx_status above: AutomaticEnv does not reach nested keys through
+		// Unmarshal, so JMDN_RPC_LOGS_MAX_BLOCK_SPAN would be silently ignored.
+		"rpc.logs.max_block_span":   "JMDN_RPC_LOGS_MAX_BLOCK_SPAN",
+		"rpc.logs.max_results":      "JMDN_RPC_LOGS_MAX_RESULTS",
+		"rpc.logs.max_scan_blocks":  "JMDN_RPC_LOGS_MAX_SCAN_BLOCKS",
+		"rpc.logs.max_addresses":    "JMDN_RPC_LOGS_MAX_ADDRESSES",
+		"rpc.batch.max_size":        "JMDN_RPC_BATCH_MAX_SIZE",
+		"rpc.batch.max_concurrency": "JMDN_RPC_BATCH_MAX_CONCURRENCY",
+		// Chain-head checkpoint feature. Bound explicitly for the
+		// same reason as tx_status/security: AutomaticEnv does not reach nested
+		// keys through Unmarshal, so JMDN_CHECKPOINT_ENABLED=true would silently
+		// do nothing otherwise.
+		"checkpoint.enabled":          "JMDN_CHECKPOINT_ENABLED",
+		"checkpoint.boot_fail_closed": "JMDN_CHECKPOINT_BOOT_FAIL_CLOSED",
+		"checkpoint.cadence_blocks":   "JMDN_CHECKPOINT_CADENCE_BLOCKS",
+		// Buddy staking rewards (default-off). Same nested-key reason.
+		"consensus.reward_address":       "JMDN_CONSENSUS_REWARD_ADDRESS",
+		"consensus.reward_split_enabled": "JMDN_CONSENSUS_REWARD_SPLIT_ENABLED",
+		// Authenticated committee snapshot source. Required by the SEQUENCER to
+		// wire the reward-address source (Sequencer/consensus_statemachine.go gates
+		// both eligibility and reward wiring on seed_authority_bls_pub != "" &&
+		// seednode != ""). Without these, reward_split_enabled fails every block
+		// closed ("reward-address source not configured"). Same nested-key reason
+		// as above — AutomaticEnv does not reach nested keys through Unmarshal.
+		"consensus.seed_authority_bls_pub": "JMDN_CONSENSUS_SEED_AUTHORITY_BLS_PUB",
+		"network.seednode":                 "JMDN_NETWORK_SEEDNODE",
+		// The epoch-clock divisor MUST equal the seed's (unix/seconds). A mismatch
+		// makes jmdn compute a different "current epoch" than the seed signed the
+		// snapshot under, so the ±1 freshness check rejects every snapshot ("stale
+		// committee snapshot: epoch X not within ±1 of current epoch Y"). Nested
+		// key, so it needs an explicit BindEnv like the others.
+		"consensus.committee_epoch_seconds": "JMDN_CONSENSUS_COMMITTEE_EPOCH_SECONDS",
+	} {
+		if err := v.BindEnv(key, env); err != nil {
+			return nil, fmt.Errorf("binding %s: %w", env, err)
+		}
+	}
 
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
+	normalizeThebeConfig(&cfg)
 
 	// 7. Generic Map Merge for Services
 	// Fix Viper's map unmarshaling bug: it replaces map values entirely instead of deep merging.
@@ -108,6 +190,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("network.mempool", d.Network.Mempool)
 	v.SetDefault("network.yggdrasil", d.Network.Yggdrasil)
 	v.SetDefault("network.heartbeat_interval", d.Network.HeartbeatInterval)
+	// Registered so JMDN_NETWORK_ENVIRONMENT reaches it (AutomaticEnv only
+	// covers keys viper already knows).
+	v.SetDefault("network.environment", d.Network.Environment)
 
 	// Ports
 	v.SetDefault("ports.api", d.Ports.API)
@@ -116,7 +201,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ports.cli", d.Ports.CLI)
 	v.SetDefault("ports.did", d.Ports.DID)
 	v.SetDefault("ports.facade", d.Ports.Facade)
+	v.SetDefault("ports.thebe_debug", d.Ports.ThebeDebug)
 	v.SetDefault("ports.ws", d.Ports.WS)
+	v.SetDefault("ports.geth", d.Ports.Geth)
+	v.SetDefault("ports.smart", d.Ports.Smart)
 	v.SetDefault("ports.metrics", d.Ports.Metrics)
 	v.SetDefault("ports.profiler", d.Ports.Profiler)
 
@@ -127,18 +215,29 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.cli", d.Binds.CLI)
 	v.SetDefault("binds.did", d.Binds.DID)
 	v.SetDefault("binds.facade", d.Binds.Facade)
+	v.SetDefault("binds.thebe_debug", d.Binds.ThebeDebug)
 	v.SetDefault("binds.ws", d.Binds.WS)
+	v.SetDefault("binds.geth", d.Binds.Geth)
+	v.SetDefault("binds.smart", d.Binds.Smart)
 	v.SetDefault("binds.metrics", d.Binds.Metrics)
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 
 	// Database
-	v.SetDefault("database.address", d.Database.Address)
-	v.SetDefault("database.port", d.Database.Port)
-	v.SetDefault("database.username", d.Database.Username)
-	v.SetDefault("database.password", d.Database.Password)
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
-	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)
+
+	// Thebe
+	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
+	v.SetDefault("thebe.kv_path", d.Thebe.KVPath)
+	v.SetDefault("thebe.sql_dsn", d.Thebe.SQLDSN)
+	v.SetDefault("thebe.redis_url", d.Thebe.RedisURL)
+	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
+	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
+	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
+	v.SetDefault("thebe.pools.write", d.Thebe.Pools.Write)
+	v.SetDefault("thebe.pools.read", d.Thebe.Pools.Read)
+	v.SetDefault("thebe.pools.sync", d.Thebe.Pools.Sync)
+	v.SetDefault("thebe.cdc.omit_columns", d.Thebe.CDC.OmitColumns)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -177,18 +276,23 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.use_legacy_bft", d.Features.UseLegacyBFT)
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
+	v.SetDefault("features.enable_solc_compile", d.Features.EnableSolcCompile)
+	v.SetDefault("features.enable_debug_trace", d.Features.EnableDebugTrace)
+	v.SetDefault("features.grouped_apply_commit", d.Features.GroupedApplyCommit)
 
 	// FastSync
+	v.SetDefault("contracts.enabled", d.Contracts.Enabled)
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
 	v.SetDefault("fastsync.enable_pulling", d.FastSync.EnablePulling)
 	v.SetDefault("fastsync.enable_catchup", d.FastSync.EnableCatchup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.catch_up_from_block", d.FastSync.CatchUpFromBlock)
-	v.SetDefault("fastsync.serve_v4", d.FastSync.ServeV4)
 	v.SetDefault("fastsync.sync_check_interval", d.FastSync.SyncCheckInterval)
 
 	// Security
 	v.SetDefault("security.enabled", d.Security.Enabled)
+	v.SetDefault("security.strict_posture", d.Security.StrictPosture)
+	v.SetDefault("security.allow_unprotected_txs", d.Security.AllowUnprotectedTxs)
 	v.SetDefault("security.cert_dir", d.Security.CertDir)
 	v.SetDefault("security.ip_cache_size", d.Security.IPCacheSize)
 	v.SetDefault("security.global_rate_limit", d.Security.GlobalRateLimit)
@@ -198,6 +302,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.trusted_clients", d.Security.TrustedClients)
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+	v.SetDefault("security.admin_token", d.Security.AdminToken)
 
 	// Register defaults for all predefined Security Services so Viper can pick up ENV overrides
 	for svcName, policy := range d.Security.Services {
@@ -219,9 +324,59 @@ func setDefaults(v *viper.Viper) {
 	// Consensus
 	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
 	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
+	v.SetDefault("consensus.sequencer_pinned_peer_id", d.Consensus.SequencerPinnedPeerID)
+	v.SetDefault("consensus.sync_certificate_required_from", d.Consensus.SyncCertificateRequiredFrom)
 	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
+	v.SetDefault("consensus.committee_epoch_blocks", d.Consensus.CommitteeEpochBlocks)
+	v.SetDefault("consensus.require_pinned_committee", d.Consensus.RequirePinnedCommittee)
+	v.SetDefault("consensus.committee_anchor_activation_height", d.Consensus.CommitteeAnchorActivationHeight)
+	v.SetDefault("consensus.compact_certificate_from_height", d.Consensus.CompactCertificateFromHeight)
+	v.SetDefault("consensus.header_binding_from_height", d.Consensus.HeaderBindingFromHeight)
+	v.SetDefault("consensus.header_addresses", d.Consensus.HeaderAddresses)
+	v.SetDefault("consensus.block_timestamp_max_future_seconds", d.Consensus.BlockTimestampMaxFutureSeconds)
+	v.SetDefault("consensus.vote_period_min_round_seconds", d.Consensus.VotePeriodMinRoundSeconds)
+	v.SetDefault("consensus.vote_period_slack", d.Consensus.VotePeriodSlack)
+	v.SetDefault("consensus.period_cap_raise_from_height", d.Consensus.PeriodCapRaiseFromHeight)
+	v.SetDefault("consensus.new_recipient_gas_from_height", d.Consensus.NewRecipientGasFromHeight)
+	v.SetDefault("consensus.legacy_follow.enabled", d.Consensus.LegacyFollow.Enabled)
+	v.SetDefault("consensus.legacy_follow.main_sequencer", d.Consensus.LegacyFollow.MainSequencer)
+	v.SetDefault("consensus.legacy_follow.until_height", d.Consensus.LegacyFollow.UntilHeight)
+	v.SetDefault("consensus.legacy_follow.catch_up_interval", d.Consensus.LegacyFollow.CatchUpInterval)
+	v.SetDefault("consensus.evm_unstamped_account_revert_height", d.Consensus.EVMUnstampedAccountRevertHeight)
+	v.SetDefault("consensus.committee_strict_boundary", d.Consensus.CommitteeStrictBoundary)
 	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 	v.SetDefault("consensus.p2p", d.Consensus.P2P)
+	v.SetDefault("consensus.reward_address", d.Consensus.RewardAddress)
+	v.SetDefault("consensus.reward_split_enabled", d.Consensus.RewardSplitEnabled)
+	// Consensus flags (YAML home for the former env-only switches). Registering
+	// them also makes the viper-derived JMDN_CONSENSUS_FLAGS_<KEY> env names
+	// work; the LEGACY names (JMDN_COMMITTEE_V2 etc.) are honoured by
+	// applyConsensusFlags with their original parsers and take precedence.
+	f := d.Consensus.Flags
+	v.SetDefault("consensus.flags.committee_snapshot_anchor", f.CommitteeSnapshotAnchor)
+	v.SetDefault("consensus.flags.committee_v2", f.CommitteeV2)
+	v.SetDefault("consensus.flags.reject_legacy_votes", f.RejectLegacyVotes)
+	v.SetDefault("consensus.flags.enforce_committee_registry", f.EnforceCommitteeRegistry)
+	v.SetDefault("consensus.flags.enforce_block_linkage", f.EnforceBlockLinkage)
+	v.SetDefault("consensus.flags.enforce_body_binding", f.EnforceBodyBinding)
+	v.SetDefault("consensus.flags.agg_cert", f.AggCert)
+	v.SetDefault("consensus.flags.enforce_slot_recovery_gate", f.EnforceSlotRecoveryGate)
+	v.SetDefault("consensus.flags.enforce_sync_gate", f.EnforceSyncGate)
+	v.SetDefault("consensus.flags.emit_block_bound_votes", f.EmitBlockBoundVotes)
+	v.SetDefault("consensus.flags.validator_voter_set", f.ValidatorVoterSet)
+	v.SetDefault("consensus.flags.validator_vote_ingest", f.ValidatorVoteIngest)
+	v.SetDefault("consensus.flags.emit_committee_bls", f.EmitCommitteeBLS)
+	v.SetDefault("consensus.flags.allow_new_receiver_accounts", f.AllowNewReceiverAccounts)
+	v.SetDefault("consensus.flags.block_gossip", f.BlockGossip)
+	v.SetDefault("consensus.flags.trust_sequencer_certificate", f.TrustSequencerCertificate)
+	v.SetDefault("consensus.flags.finalize_cert_only", f.FinalizeCertOnly)
+	v.SetDefault("consensus.flags.vote_crdt_compact_k", f.VoteCRDTCompactK)
+
+	// Reputation
+	v.SetDefault("reputation.observe", d.Reputation.Observe)
+	v.SetDefault("reputation.push_interval_seconds", d.Reputation.PushIntervalSeconds)
+	v.SetDefault("reputation.push_suspend", d.Reputation.PushSuspend)
+	v.SetDefault("reputation.store_path", d.Reputation.StorePath)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)
@@ -234,6 +389,40 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("orchestrator.api_key", d.Orchestrator.APIKey)
 	v.SetDefault("orchestrator.http_timeout", d.Orchestrator.HTTPTimeout)
 	v.SetDefault("orchestrator.max_attempts", d.Orchestrator.MaxAttempts)
+
+	// Transaction status resolution (default-off)
+	v.SetDefault("tx_status.enabled", d.TxStatus.Enabled)
+	v.SetDefault("tx_status.submit_record_ttl", d.TxStatus.SubmitRecordTTL)
+	v.SetDefault("tx_status.submit_record_capacity", d.TxStatus.SubmitRecordCapacity)
+	v.SetDefault("tx_status.mempool_timeout", d.TxStatus.MempoolTimeout)
+	v.SetDefault("tx_status.chain_timeout", d.TxStatus.ChainTimeout)
+	v.SetDefault("tx_status.negative_cache_ttl", d.TxStatus.NegativeCacheTTL)
+	v.SetDefault("tx_status.negative_cache_size", d.TxStatus.NegativeCacheSize)
+	v.SetDefault("tx_status.rate_limit_per_sec", d.TxStatus.RateLimitPerSec)
+	v.SetDefault("tx_status.rate_limit_burst", d.TxStatus.RateLimitBurst)
+	v.SetDefault("tx_status.breaker_failure_threshold", d.TxStatus.BreakerFailureThreshold)
+	v.SetDefault("tx_status.breaker_cooldown", d.TxStatus.BreakerCooldown)
+	v.SetDefault("tx_status.pending_tx_by_hash", d.TxStatus.PendingTxByHash)
+	v.SetDefault("rpc.logs.max_block_span", d.RPC.Logs.MaxBlockSpan)
+	v.SetDefault("rpc.logs.max_results", d.RPC.Logs.MaxResults)
+	v.SetDefault("rpc.logs.max_scan_blocks", d.RPC.Logs.MaxScanBlocks)
+	v.SetDefault("rpc.logs.max_addresses", d.RPC.Logs.MaxAddresses)
+	v.SetDefault("rpc.batch.max_size", d.RPC.Batch.MaxSize)
+	v.SetDefault("rpc.batch.max_concurrency", d.RPC.Batch.MaxConcurrency)
+
+	// Chain-head checkpoint (committee-signed anchor).
+	v.SetDefault("checkpoint.enabled", d.Checkpoint.Enabled)
+	v.SetDefault("checkpoint.boot_fail_closed", d.Checkpoint.BootFailClosed)
+	v.SetDefault("checkpoint.cadence_blocks", d.Checkpoint.CadenceBlocks)
+	v.SetDefault("checkpoint.floor_file", d.Checkpoint.FloorFile)
+	v.SetDefault("checkpoint.min_seq", d.Checkpoint.MinSeq)
+	v.SetDefault("checkpoint.signer_bls_pub", d.Checkpoint.SignerBLSPub)
+	v.SetDefault("checkpoint.background_full_verify", d.Checkpoint.BackgroundFullVerify)
+
+	// Storage
+	v.SetDefault("storage.profile", d.Storage.Profile)
+	v.SetDefault("storage.light_keep_blocks", d.Storage.LightKeepBlocks)
+	v.SetDefault("storage.prune_interval", d.Storage.PruneInterval)
 }
 
 // mergeStructs merges src into dest generically.
@@ -249,4 +438,31 @@ func mergeStructs[T any](dest, src T) T {
 		}
 	}
 	return dest
+}
+
+func normalizeThebeConfig(cfg *NodeConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Thebe.StreamName = strings.TrimSpace(cfg.Thebe.StreamName)
+	if cfg.Thebe.StreamName == "" {
+		cfg.Thebe.StreamName = "thebedb.events"
+	}
+	cfg.Thebe.GroupName = strings.TrimSpace(cfg.Thebe.GroupName)
+	if cfg.Thebe.GroupName == "" {
+		cfg.Thebe.GroupName = "projector"
+	}
+	if cfg.Thebe.MaxLen <= 0 {
+		cfg.Thebe.MaxLen = 1000
+	}
+}
+
+// VotePeriodPace returns the consensus.vote_period_* bound as (minimum round
+// duration, slack), with the compiled defaults when no config is loaded.
+func VotePeriodPace() (time.Duration, uint64) {
+	c := DefaultConfig().Consensus
+	if IsLoaded() {
+		c = Get().Consensus
+	}
+	return time.Duration(c.VotePeriodMinRoundSeconds) * time.Second, c.VotePeriodSlack
 }

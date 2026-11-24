@@ -3,6 +3,7 @@ package gatekeeper
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -13,6 +14,7 @@ var (
 	errAuthRequired  = errors.New("authorization token required")
 	errInvalidFormat = errors.New("invalid token format: expected 'Bearer <token>'")
 	errInvalidToken  = errors.New("invalid token")
+	errMTLSRequired  = errors.New("mTLS client certificate required")
 )
 
 // parseBearer splits a raw Authorization header into scheme + token.
@@ -33,7 +35,7 @@ func validateJWT(tokenString string, secret string) (jwt.MapClaims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(secret), nil
-	})
+	}, jwt.WithExpirationRequired())
 	if err != nil {
 		return nil, err
 	}
@@ -45,4 +47,10 @@ func validateJWT(tokenString string, secret string) (jwt.MapClaims, error) {
 		return nil, errInvalidToken
 	}
 	return claims, nil
+}
+
+// hasVerifiedClientCert reports whether an HTTP request arrived over TLS with a
+// client certificate that verified against the configured CA.
+func hasVerifiedClientCert(r *http.Request) bool {
+	return r != nil && r.TLS != nil && len(r.TLS.VerifiedChains) > 0
 }

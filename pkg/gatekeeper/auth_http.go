@@ -1,6 +1,7 @@
 package gatekeeper
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -39,6 +40,22 @@ func NewNetHTTPMiddleware(cfg *settings.SecurityConfig, rl Limiter, l *ion.Ion) 
 		ipExtractor: NewIPExtractor(cfg),
 		logger:      l,
 	}
+}
+
+// ClientIP returns the client IP for r using the configured proxy trust rules.
+func (m *NetHTTPMiddleware) ClientIP(r *http.Request) string {
+	return m.ipExtractor.GetClientIPFromRequest(r)
+}
+
+// AllowRequest charges one request from clientIP against serviceName's
+// limits. Long-lived connections (WebSocket) use it per message, since the
+// middleware itself only sees the upgrade request. Returns true when
+// limiting is disabled.
+func (m *NetHTTPMiddleware) AllowRequest(ctx context.Context, serviceName, clientIP string) bool {
+	if m == nil || m.rateLimiter == nil || (m.config != nil && !m.config.Enabled) {
+		return true
+	}
+	return m.rateLimiter.Allow(ctx, serviceName, clientIP)
 }
 
 // Wrap returns an http.Handler that enforces security policy for the given service,
@@ -89,18 +106,30 @@ func (m *NetHTTPMiddleware) enforcePolicy(r *http.Request, serviceName string) e
 	}
 
 	// Authentication
-	return m.authenticate(r, policy)
+	return m.authenticate(r, serviceName, policy)
 }
 
 // authenticate validates credentials based on the policy's AuthType.
-func (m *NetHTTPMiddleware) authenticate(r *http.Request, policy settings.Policy) error {
+func (m *NetHTTPMiddleware) authenticate(r *http.Request, serviceName string, policy settings.Policy) error {
 	if policy.AuthType == settings.AuthTypeNone {
+		return nil
+	}
+
+	// mTLS: a verified client certificate is required. Without TLS on the
+	// listener this can never pass — fail closed rather than fall through.
+	if policy.AuthType == settings.AuthTypeMTLS {
+		if !hasVerifiedClientCert(r) {
+			return errMTLSRequired
+		}
+		return nil
+	}
+	if policy.AuthType == settings.AuthTypeHybrid && hasVerifiedClientCert(r) {
 		return nil
 	}
 
 	if policy.AuthType == settings.AuthTypeToken || policy.AuthType == settings.AuthTypeHybrid {
 		authHeader := r.Header.Get("Authorization")
-		_, err := ValidateAuthHeader(authHeader, policy, m.config)
+		_, err := ValidateAuthHeader(authHeader, serviceName, policy, m.config)
 		return err
 	}
 

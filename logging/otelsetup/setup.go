@@ -27,7 +27,17 @@ var (
 // Note: This function uses sync.Once to ensure initialization only happens once.
 func Setup(logDir string, logFileName string) (*ion.Ion, []ion.Warning, error) {
 	initOnce.Do(func() {
-		logCfg := settings.Get().Logging
+		// Unit tests and standalone tools reach this through package logger()
+		// helpers without ever calling settings.Load(). Logging must be
+		// self-sufficient there: fall back to the compiled-in defaults instead
+		// of tripping settings.Get()'s init-order panic. Production still
+		// loads settings in main() before any logging, so this branch is
+		// test/tool-only. settings.Get() keeps its panic for every other
+		// consumer — this guard is deliberately scoped to log setup.
+		logCfg := settings.DefaultConfig().Logging
+		if settings.IsLoaded() {
+			logCfg = settings.Get().Logging
+		}
 
 		// Build Ion configuration from unified settings
 		cfg := ion.Default()

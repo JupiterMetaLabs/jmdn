@@ -15,45 +15,74 @@ func DefaultConfig() NodeConfig {
 			Alias: "",
 		},
 		Network: NetworkSettings{
-			ChainID:           8000800,
+			ChainID:           8000800, // JMDT testnet. Mainnet (7000700) is set explicitly by the shipped YAML profiles.
 			SeedNode:          "",
 			Mempool:           "",
 			Yggdrasil:         true,
 			HeartbeatInterval: 10,
+			// Fail-safe default: an operator who never sets this gets "mainnet",
+			// which keeps Features.AvcValidation off regardless of its own
+			// Enabled flag (see AvcValidationSettings doc comment).
+			Environment: "mainnet",
 		},
 		Ports: PortSettings{
-			API:       0, // disabled
-			BlockGen:  0, // disabled
-			BlockGRPC: 0, // disabled
-			CLI:       0, // disabled
-			DID:       15052,
-			Facade:    8545,
-			WS:        8546,
+			API:        0, // disabled
+			BlockGen:   0, // disabled
+			BlockGRPC:  0, // disabled
+			CLI:        0, // disabled
+			DID:        15052,
+			Facade:     8545,
+			ThebeDebug: 19090,
+			WS:         8546,
+			Geth:       15054,
+			Smart:      15056,
 
 			Metrics:  0, // disabled
 			Profiler: 0, // disabled
 		},
 		Binds: BindSettings{
-			API:       "0.0.0.0",   // Public data access
-			BlockGen:  "127.0.0.1", // Admin - Block generation
-			BlockGRPC: "0.0.0.0",   // P2P - Block propagation
-			CLI:       "127.0.0.1", // Admin - CLI control
-			DID:       "0.0.0.0",   // Identity Service
-			Facade:    "0.0.0.0",   // Public RPC
-			WS:        "0.0.0.0",   // Public WS
-			Metrics:   "127.0.0.1", // Metrics scraping (usually internal network)
-			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
+			API:        "127.0.0.1", // Explorer/data API; expose deliberately via YAML
+			BlockGen:   "127.0.0.1", // Admin - Block generation
+			BlockGRPC:  "127.0.0.1", // Block ingest gRPC (orchestrator); no auth by default
+			CLI:        "127.0.0.1", // Admin - CLI control
+			DID:        "127.0.0.1", // Identity service; no auth by default
+			Facade:     "0.0.0.0",   // Public RPC
+			ThebeDebug: "127.0.0.1", // Internal debug APIs
+			WS:         "0.0.0.0",   // Public WS
+			Geth:       "127.0.0.1", // Internal gRPC
+			Smart:      "127.0.0.1", // Internal gRPC
+			Metrics:    "127.0.0.1", // Metrics scraping (usually internal network)
+			Profiler:   "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			Address:     "localhost", // override via JMDN_DATABASE_ADDRESS for a separate immudb container
-			Port:        3322,        // override via JMDN_DATABASE_PORT
-			Username:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_USERNAME
-			Password:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_PASSWORD
-			TxIndexPath: "./DB/txindex.db",
 			Redis: RedisSettings{
-				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
-				Password: "jmdnredissync",  // optional: set if Redis requires authentication
+				URL: "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				// SEC-04: no baked default secret. Set via jmdn.yaml or
+				// JMDN_DATABASE_REDIS_PASSWORD to match the Redis --requirepass.
+				Password: "",
 			},
+		},
+		Thebe: ThebeConfig{
+			// ThebeDB is the node's only storage backend post ImmuDB removal —
+			// enabled by default. DSN matches the Postgres provisioned by
+			// Scripts/install_services.sh / setup_postgres.sh (host port 5430).
+			Enabled: true,
+			KVPath:  "./storage/thebe-kv",
+			// SEC-04: require TLS by default (no cleartext SQL transport). The
+			// Postgres this points at MUST have TLS enabled; for a non-TLS local/
+			// dev DB, override THEBE_SQL_DSN with sslmode=disable explicitly.
+			// No password is compiled in: supply it via THEBE_SQL_DSN or
+			// thebe.sql_dsn (see DefaultDBCredentialInUse).
+			SQLDSN:     "postgres://jmdn@127.0.0.1:5430/jmdn?sslmode=require",
+			RedisURL:   "",
+			StreamName: "",
+			MaxLen:     1000,
+			GroupName:  "",
+			// Write keeps the pre-split ThebeDB default (PG_MAX_OPEN_CONNS=10).
+			// 10+10+4 = 24 per node, well inside Postgres' default 100.
+			Pools: ThebePoolsConfig{Write: 10, Read: 10, Sync: 4},
+			// The event log keeps the proof hash, not the proof body.
+			CDC: ThebeCDCConfig{OmitColumns: []string{"zk_proofs.stark_proof"}},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
@@ -86,13 +115,25 @@ func DefaultConfig() NodeConfig {
 			},
 		},
 		Features: FeatureSettings{
-			UseLegacyBFT: false,
-			GROTrack:     false,
+			UseLegacyBFT:       false,
+			GROTrack:           false,
+			GroupedApplyCommit: true,
+			// Off by default everywhere; opt in per-node via yaml, and only takes
+			// effect on a node whose Network.Environment is "testnet".
+			AvcValidation: AvcValidationSettings{
+				Enabled: false,
+				Mode:    "shadow",
+			},
 		},
 		FastSync: FastSyncSettings{
-			Enabled:           true,
+			// DISABLED pending the ThebeDB FastSync redesign (log-shipping model).
+			// The current ImmuDB-era protocol is turned off fleet-wide; flip back
+			// to true when the new engine lands. Serving + syncing + SyncMonitor
+			// are all gated by this one flag.
+			Enabled:           false,
 			EnablePulling:     true,
 			EnableCatchup:     false,
+			ServeLegacy:       false, // set true ONLY on the sequencer (legacy ImmuDB nodes)
 			SyncTimeout:       10 * time.Minute,
 			CatchUpFromBlock:  0,
 			SyncCheckInterval: 10 * time.Minute,
@@ -110,17 +151,247 @@ func DefaultConfig() NodeConfig {
 		//     identical network-wide, so it carries a stable default. Override
 		//     per-network via config/env if you want isolation between networks.
 		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
+		// Contract execution ENABLED by default. The cycle-5 blockers that drove the
+		// temporary default-off have landed: deploy double-nonce fixed (single-use
+		// deploy gone), fingerprint reader is node-independent (ORDER BY LOWER(address)),
+		// tx.GasLimit is bounded on ingress (config.MaxTxGasLimit), non-deterministic
+		// state-read/commit errors fail the block closed (not a silent revert), and
+		// receipts persist via the gateway 2PC path. With this ON, contract txs execute
+		// during apply and the P2.5 HALT-on-divergence is fleet-wide — so run a
+		// HOMOGENEOUS fleet: a heterogeneously-flagged or EVM-less member will fork.
+		// Residual (tracked): NEW-2 commit-before-fold — a successful exec commits
+		// contract state before FoldContractExecution, with no undo on a fold reject.
+		Contracts: ContractsSettings{Enabled: true},
 		// Consensus policy: empty block_buddy blocklist by default (no peer is
 		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
 		// Committee-source: no pinned authority by default (consumer disabled
 		// / fail-closed until an operator pins the seed authority key); epoch clock
 		// defaults to the seed's 3600s.
 		Consensus: ConsensusSettings{
-			BlockBuddy:            nil,
-			SeedAuthorityBLSPub:   "",
-			CommitteeEpochSeconds: 3600,
-			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
-			P2P:                   1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
+			BlockBuddy:                  nil,
+			SeedAuthorityBLSPub:         "",
+			SequencerPinnedPeerID:       "", // D-26(d)/CON-03: no pin by default; see config.go doc comment.
+			SyncCertificateRequiredFrom: 0,  // set per network; required under production posture
+			CommitteeEpochSeconds:       3600,
+			// Selection-epoch length in BLOCKS (messaging.EpochForHeight).
+			//
+			// SET TO 1 (2026-08-27, operator decision): every height is its own
+			// selection epoch, so the buddy-selection validator pool is frozen
+			// PER BLOCK rather than per multi-block epoch. A validator that
+			// registers between block N and N+1 is eligible for N+1's draw
+			// instead of waiting for an epoch boundary. Consensus-critical and
+			// must be identical network-wide - see config.go.
+			//
+			// !! REVISIT BEFORE STAGE-2 (RANDAO+VDF) BEACON INSTALL !!
+			// config.go's own contract for this field is "Stage 2 keys its
+			// beacon on this epoch", and messaging.SeedSourceFor does
+			// beacon.Has(epoch) with THIS epoch value. At 1, epoch == height,
+			// so a beacon that stores entropy under 50-slot entropy epochs
+			// (messaging.EpochForSlot, N=50) will miss on essentially every
+			// lookup and silently fall back to SaltSource - the wrong-entropy
+			// bug, not a loud failure. The fix is to split committee.SeedInput
+			// into EntropyEpoch (slot-based) and the selection period
+			// (block-based); until that lands, a non-zero value is only safe
+			// while the beacon is NOT installed (i.e. JMDN_AVC_VDF_MODULUS_HEX /
+			// JMDN_AVC_VDF_DIFFICULTY_T unset - see Sequencer.InstallAVCBeaconFromEnv).
+			// The avc-a3 merge brings that beacon in-tree, so keeping 1 would be
+			// the silent wrong-entropy fallback described above. The default is
+			// therefore 0 ("one epoch": EpochForHeight returns 0 for every
+			// height), which the Stage-1 SeedSource ignores - the safe,
+			// test-guarded default (TestEpochIsDerivedFromTheBlockNotTheClock).
+			// Activating a real block-based epoch length is a deliberate,
+			// network-wide coordinated change - which is what the value below
+			// now is. 20 blocks: the pool refreshes often enough that a newly
+			// registered validator waits at most 20 blocks to become eligible,
+			// while the seed still stores only one frozen snapshot per 20
+			// blocks. MUST stay > 0 while RequirePinnedCommittee is true:
+			// EpochForHeight returns 0 when this is 0, and the seed reads epoch
+			// 0 as its "current epoch" sentinel, so every pinned read then fails
+			// the exact-epoch check (committee_snapshot_client.go) and committee
+			// selection halts fleet-wide.
+			//
+			// BREAKING — CONSENSUS-AFFECTING DEFAULT, changed 0 -> 20.
+			// Spelling out the consequence the paragraph above only implies:
+			// this value is the DENOMINATOR of EpochForHeight (height / N), and
+			// the epoch it yields selects the committee. Two nodes running
+			// different values compute different epochs for the SAME height and
+			// therefore seat DIFFERENT COMMITTEES — they will reject each
+			// other's blocks. Nothing overrides this from YAML or env in any
+			// deployment in this fleet today, so the compiled default governs
+			// and a binary carrying a different one is a fork, not a
+			// misconfiguration.
+			//
+			// Rollout: rebuild and restart the WHOLE fleet together. There is
+			// no gradual cutover and no flag to stage it behind — the
+			// coordination has to happen outside the code. A rolling restart
+			// across binaries built either side of this change splits the
+			// network for the duration of the roll.
+			CommitteeEpochBlocks: 20,
+			// W1 pool pinning: ON. Every node resolving a block asks the seed
+			// for the snapshot frozen for THAT SelectionPeriod (height/20)
+			// rather than "whatever is current", so all nodes selecting the same
+			// block/round draw from byte-identical pool bytes and a validator
+			// join/leave cannot move the committee mid-round. Requires a seed
+			// that can serve a past epoch (jmns GetCommitteeSnapshot does) and a
+			// non-zero committee_epoch_blocks above.
+			//
+			// NOTE: per-block / per-round committee ROTATION does NOT come from
+			// these two values - it comes from Height+Period inside
+			// committee.DeriveSeed - and only becomes visible once the eligible
+			// pool is LARGER than max_validators; below that CommitteeFor seats
+			// everyone (avc/committee/select.go).
+			//
+			// TEMPORARILY REVERTED TO false. Turning this on halts the chain at
+			// genesis: EpochForHeight(h) = h/20 is 0 for heights 0-19, and the
+			// seed's wire protocol reserves epoch==0 to mean "serve the current
+			// epoch" (seedNodes gorm_jmns_service.go:148-150). The seed therefore
+			// answers with its wall-clock epoch (unix/300) and the exact-match
+			// check in committee_snapshot_client.go:90 correctly refuses it, so
+			// block 1 can never seat a committee. Only period 0 collides; periods
+			// >= 1 resolve correctly, but the chain cannot reach block 20 to get
+			// there. Re-enable once the sentinel collision is fixed.
+			RequirePinnedCommittee: false,
+			// Chain-anchored committee pool (W1). 0 = off. See config.go.
+			CommitteeAnchorActivationHeight: 0,
+			CompactCertificateFromHeight:    0,
+			HeaderBindingFromHeight:         0,
+			BlockTimestampMaxFutureSeconds:  15,
+			VotePeriodMinRoundSeconds:       1,
+			PeriodCapRaiseFromHeight:        0,
+			NewRecipientGasFromHeight:       0,
+			VotePeriodSlack:                 16,
+			LegacyFollow:                    LegacyFollowSettings{CatchUpInterval: 30 * time.Second},
+			EVMUnstampedAccountRevertHeight: 0,
+			// Boundary bridging: permissive, as today. See config.go.
+			CommitteeStrictBoundary: false,
+			MaxValidators:           7, // must match config.MaxMainPeers (the voting committee size); never 0
+			P2P:                     1, // 1 = direct p2p + gossip (default, resilient); set 0 for gossip-only
+			// Buddy staking rewards: OPTIONAL address (empty = no reward claim),
+			// master switch OFF by default. See docs/STAKING-REWARDS-DESIGN.md.
+			RewardAddress:      "",
+			RewardSplitEnabled: false,
+			// Legacy env defaults, except CommitteeV2 and AggCert which are ON:
+			// the testnet fleet runs JMDN_COMMITTEE_V2=1 / JMDN_AVC_AGG_CERT=1 on
+			// every node and the runbook requires them ON together fleet-wide —
+			// a node that forgot the env line silently ran the old path, which
+			// is the failure mode default-on removes. (2026-10-14, /etc/jmdn/jmdn-seq.env)
+			Flags: ConsensusFlags{
+				CommitteeSnapshotAnchor:   false,
+				CommitteeV2:               true,
+				RejectLegacyVotes:         true,
+				EnforceCommitteeRegistry:  true,
+				EnforceBlockLinkage:       true,
+				EnforceBodyBinding:        true,
+				AggCert:                   true,
+				EnforceSlotRecoveryGate:   true,
+				EnforceSyncGate:           true,
+				EmitBlockBoundVotes:       true,
+				ValidatorVoterSet:         true,
+				ValidatorVoteIngest:       true,
+				EmitCommitteeBLS:          true,
+				AllowNewReceiverAccounts:  true,
+				BlockGossip:               true,
+				TrustSequencerCertificate: false,
+				FinalizeCertOnly:          false, // committee gets header+certificate instead of the full block; needs the whole committee on this build
+				VoteCRDTCompactK:          3,
+			},
+		},
+		Reputation: ReputationSettings{
+			Observe:             true,
+			PushIntervalSeconds: 300, // reputationPushDefaultIntervalSeconds
+			PushSuspend:         true,
+			StorePath:           "",
+		},
+		// Public JSON-RPC cost bounds. Every value here is the one that
+		// previously shipped as a Go const, so a node that sets no rpc: section
+		// behaves exactly as it did before — EXCEPT for the two that had no
+		// const to inherit, noted below.
+		RPC: RPCSettings{
+			Logs: RPCLogsSettings{
+				// Both were logstore's maxLogBlockSpan / maxLogResults. The
+				// 2_000 matches Alchemy's default range and replaces the 10_000
+				// this shipped with (#169), which was the generous end of what
+				// providers allow and was never derived from this node's cost.
+				// Raise it per node for one that serves an indexer, with
+				// rpc_query_refused_total as the evidence.
+				MaxBlockSpan: 2_000,
+				MaxResults:   10_000,
+				// NEW BOUND. Set equal to MaxBlockSpan so the address-less
+				// path is unchanged: it can already touch at most MaxBlockSpan
+				// blocks, so this never fires there. What it does bound is the
+				// ADDRESS path, which walks a contract's entire history and
+				// had no work limit at all. A query that exceeds it is refused
+				// with a clear error rather than silently costing the node a
+				// full-history scan.
+				MaxScanBlocks: 2_000,
+				// Public providers commonly allow 10-100 addresses per query. 100
+				// is the permissive end: enough for an indexer watching a protocol's
+				// whole contract set, while bounding the per-request scan count.
+				MaxAddresses: 100,
+			},
+			Batch: RPCBatchSettings{
+				// Was the maxBatchSize const.
+				MaxSize: 100,
+				// NEW BOUND. Previously every element of a batch ran at once,
+				// so MaxSize was also the concurrency. 8 keeps batching useful
+				// for cheap calls while stopping one request from putting 100
+				// scans on the scheduler. Raise it on a machine with cores to
+				// spare; it bounds fan-out, not throughput.
+				MaxConcurrency: 8,
+			},
+		},
+		// Transaction-status resolution: DEFAULT-OFF, so the RPC surface behaves
+		// exactly as it does today until an operator opts in. The numbers below
+		// only take effect once Enabled=true.
+		TxStatus: TxStatusSettings{
+			Enabled: false,
+			// 30m is a placeholder, not a measurement. The sequencer polls the
+			// mempool on an interval and only builds a block once enough
+			// transactions are pending, so real worst-case inclusion must be
+			// measured on the target network before this is trusted. Too short
+			// and an in-flight transaction reports `unknown`; too long and a
+			// dropped transaction reports `processing` for longer than it should.
+			SubmitRecordTTL:      30 * time.Minute,
+			SubmitRecordCapacity: 100_000,
+			// Small on purpose: this bounds how long a status query can hold an
+			// RPC handler waiting on the mempool. Expiry degrades to `unknown`.
+			MempoolTimeout: 400 * time.Millisecond,
+			ChainTimeout:   2 * time.Second,
+			// Short TTL: only CONCLUSIVE unknowns are cached, but a hash
+			// submitted moments after a miss must not stay invisible for long.
+			NegativeCacheTTL:  2 * time.Second,
+			NegativeCacheSize: 16_384,
+			// Load protection for the mempool fleet, not tuning — the JSON-RPC
+			// port is public and each chain-store miss amplifies into a
+			// fleet-wide fan-out.
+			RateLimitPerSec:         50,
+			RateLimitBurst:          100,
+			BreakerFailureThreshold: 5,
+			BreakerCooldown:         5 * time.Second,
+			// Off even when the feature is on: serving pending transactions from
+			// eth_getTransactionByHash changes what an existing client sees, so
+			// it is a second, separate opt-in.
+			PendingTxByHash: false,
+		},
+		// Signed chain-head checkpoints: ON. The block producer signs one per
+		// committee epoch with its own BLS key (or signer_bls_pub) and raises the
+		// floor file. Every node runs the boot gate against its own key; a node
+		// with no checkpoint of its own and no floor boots as before.
+		// cadence_blocks 0 = per-epoch (see CheckpointSettings). The floor path
+		// matches the YAML templates; a relative path would depend on the
+		// working directory.
+		Checkpoint: CheckpointSettings{
+			Enabled:        true,
+			BootFailClosed: true,
+			CadenceBlocks:  0,
+			FloorFile:      "/opt/jmdn/checkpoint-floor.json",
+
+			BackgroundFullVerify: true,
+		},
+		Storage: StorageSettings{
+			Profile:         StorageProfileFull,
+			LightKeepBlocks: 10000,
+			PruneInterval:   10 * time.Minute,
 		},
 	}
 }

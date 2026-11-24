@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -24,17 +25,19 @@ type EnhancedPublisherMetrics struct {
 
 // EnhancedPublisher represents an enhanced message publisher
 type EnhancedPublisher struct {
-	topic   *pubsub.Topic
-	metrics *EnhancedPublisherMetrics
-	gps     *PubSubMessages.GossipPubSub
+	topic     *pubsub.Topic
+	topicName string // retained for re-join on closed-topic errors
+	metrics   *EnhancedPublisherMetrics
+	gps       *PubSubMessages.GossipPubSub
 }
 
 // NewEnhancedPublisher creates a new EnhancedPublisher instance
-func NewEnhancedPublisher(topic *pubsub.Topic, gps *PubSubMessages.GossipPubSub) *EnhancedPublisher {
+func NewEnhancedPublisher(topicName string, topic *pubsub.Topic, gps *PubSubMessages.GossipPubSub) *EnhancedPublisher {
 	return &EnhancedPublisher{
-		topic:   topic,
-		metrics: &EnhancedPublisherMetrics{},
-		gps:     gps,
+		topic:     topic,
+		topicName: topicName,
+		metrics:   &EnhancedPublisherMetrics{},
+		gps:       gps,
 	}
 }
 
@@ -86,13 +89,14 @@ func PublishEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 
 	// Use enhanced publishing if GossipSub is available
 	if gps.GossipSubPS != nil {
-		// Get or join the topic first
-		topic, err := gps.GetOrJoinTopic(topic)
+		// Get or join the topic — use a separate variable to avoid shadowing
+		// the `topic` string parameter above.
+		joinedTopic, err := gps.GetOrJoinTopic(topic)
 		if err != nil {
 			return fmt.Errorf("failed to get or join topic: %w", err)
 		}
 
-		enhancedPublisher := NewEnhancedPublisher(topic, gps)
+		enhancedPublisher := NewEnhancedPublisher(topic, joinedTopic, gps)
 		return enhancedPublisher.publishWithRetry(context.Background(), messageBytes, 3)
 	} else {
 		// Fall back to custom gossip
@@ -103,7 +107,9 @@ func PublishEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 	return nil
 }
 
-// publishWithRetry publishes a message with retry logic
+// publishWithRetry publishes a message with retry logic.
+// On "topic is closed" errors it evicts the stale handle and re-joins the
+// topic immediately — exponential backoff is pointless against a dead handle.
 func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes []byte, maxRetries int) error {
 	var lastErr error
 
@@ -112,8 +118,18 @@ func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes 
 			lastErr = err
 			log.Printf("⚠️ Publish attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
 
+			// A closed topic will never self-recover — evict and re-join.
+			if strings.Contains(err.Error(), "closed") && ep.gps != nil && ep.topicName != "" {
+				_ = ep.gps.CloseTopic(ep.topicName) // remove stale handle from cache
+				if fresh, joinErr := ep.gps.GetOrJoinTopic(ep.topicName); joinErr == nil {
+					ep.topic = fresh
+					log.Printf("🔄 Re-joined topic %q after closed error, retrying immediately", ep.topicName)
+					continue // retry at once with the live handle
+				}
+			}
+
 			if attempt < maxRetries {
-				// Exponential backoff
+				// Exponential backoff for transient (non-closed) errors
 				backoff := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 				select {
 				case <-ctx.Done():
@@ -138,94 +154,4 @@ func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes 
 
 	atomic.AddInt64(&ep.metrics.PublishErrors, 1)
 	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
-}
-
-// PublishBatchEnhanced publishes multiple messages in a batch
-func PublishBatchEnhanced(gps *PubSubMessages.GossipPubSub, topicName string, messages []*PubSubMessages.Message, metadata map[string]string) error {
-	if gps.GossipSubPS == nil {
-		return fmt.Errorf("batch publishing requires GossipSub")
-	}
-
-	// Get or join the topic first
-	topic, err := gps.GetOrJoinTopic(topicName)
-	if err != nil {
-		return fmt.Errorf("failed to get or join topic: %w", err)
-	}
-
-	enhancedPublisher := NewEnhancedPublisher(topic, gps)
-	return enhancedPublisher.publishBatch(context.Background(), messages, metadata)
-}
-
-// publishBatch publishes multiple messages in a batch
-func (ep *EnhancedPublisher) publishBatch(ctx context.Context, messages []*PubSubMessages.Message, metadata map[string]string) error {
-	var errors []error
-	successCount := int64(0)
-	totalBytes := int64(0)
-
-	for i, message := range messages {
-		// Create message
-		messageGossip := &PubSubMessages.GossipMessage{
-			ID:        fmt.Sprintf("%s-%d", ep.gps.Host.ID().String(), ep.gps.MessageID),
-			Topic:     "", // Will be set by caller
-			Data:      message,
-			Sender:    message.GetSender(),
-			Timestamp: time.Now().UTC().Unix(),
-			TTL:       30,
-			Metadata:  metadata,
-		}
-		ep.gps.MessageID++
-
-		// Serialize message
-		messageBytes, err := json.Marshal(messageGossip.Data)
-		if err != nil {
-			errors = append(errors, fmt.Errorf("message[%d] marshal error: %w", i, err))
-			continue
-		}
-
-		// Publish message
-		if err := ep.topic.Publish(ctx, messageBytes); err != nil {
-			errors = append(errors, fmt.Errorf("message[%d] publish error: %w", i, err))
-			atomic.AddInt64(&ep.metrics.PublishErrors, 1)
-		} else {
-			successCount++
-			totalBytes += int64(len(messageBytes))
-		}
-	}
-
-	// Update metrics for successful publishes only
-	if successCount > 0 {
-		atomic.AddInt64(&ep.metrics.MessagesPublished, successCount)
-		atomic.AddInt64(&ep.metrics.BytesPublished, totalBytes)
-		atomic.StoreInt64(&ep.metrics.lastPublishTime, time.Now().UTC().UnixNano())
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("batch publish: %d/%d succeeded, %d failed: %v",
-			successCount, len(messages), len(errors), errors)
-	}
-
-	log.Printf("📤 Published batch of %d messages (%d bytes)", len(messages), totalBytes)
-	return nil
-}
-
-// GetMetrics returns current publisher metrics (thread-safe)
-func (ep *EnhancedPublisher) GetMetrics() EnhancedPublisherMetrics {
-	lastPubNano := atomic.LoadInt64(&ep.metrics.lastPublishTime)
-
-	return EnhancedPublisherMetrics{
-		MessagesPublished: atomic.LoadInt64(&ep.metrics.MessagesPublished),
-		PublishErrors:     atomic.LoadInt64(&ep.metrics.PublishErrors),
-		lastPublishTime:   lastPubNano,
-		BytesPublished:    atomic.LoadInt64(&ep.metrics.BytesPublished),
-	}
-}
-
-// GetThroughput calculates messages per second (thread-safe)
-func (ep *EnhancedPublisher) GetThroughput(duration time.Duration) float64 {
-	messages := atomic.LoadInt64(&ep.metrics.MessagesPublished)
-	seconds := duration.Seconds()
-	if seconds == 0 {
-		return 0
-	}
-	return float64(messages) / seconds
 }

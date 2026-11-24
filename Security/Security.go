@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -54,6 +55,17 @@ func rebuildSignerCache() {
 }
 
 // SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
+// ExpectedChainID returns a copy of the node's configured chain ID, or nil when
+// it has not been set.
+func ExpectedChainID() *big.Int {
+	signerMu.RLock()
+	defer signerMu.RUnlock()
+	if expectedChainID == nil {
+		return nil
+	}
+	return new(big.Int).Set(expectedChainID)
+}
+
 func SetExpectedChainID(id int) {
 	signerMu.Lock()
 	defer signerMu.Unlock()
@@ -112,30 +124,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		attribute.String("block_hash", zkBlock.BlockHash.Hex()),
 	)
 
-	// Get connections ONCE for all transaction validations
-	// This reduces connection usage from N×2 to just 2 per block validation
-	ctx, cancelConn := context.WithTimeout(traceCtx, 60*time.Second)
-	defer cancelConn()
-
-	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get accounts connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get accounts connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutAccountsConnection(accountsConn)
-
-	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get main DB connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get main DB connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBConn)
+	// Connections managed by global ThebeDB handle — no pool acquisition needed.
 
 	/*
 		// Load all the accounts into the cache
@@ -151,7 +140,11 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// Collect all unique addresses from transactions
 	accountsSet := DB_OPs.NewAccountsSet()
-	for _, tx := range zkBlock.Transactions {
+	for i := range zkBlock.Transactions {
+		tx := &zkBlock.Transactions[i]
+		if err := CheckTransactionShape(tx); err != nil {
+			return false, fmt.Errorf("transaction %d: %w", i, err)
+		}
 		accountsSet.Add(*tx.From)
 		if tx.To != nil {
 			accountsSet.Add(*tx.To)
@@ -159,7 +152,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	}
 
 	// Load all accounts into the cache at once — fail-closed on error.
-	if err := security_cache.LoadAccounts(txValidationCtx, accountsConn, accountsSet); err != nil {
+	if err := security_cache.LoadAccounts(txValidationCtx, nil, accountsSet); err != nil {
 		txValidationSpan.RecordError(err)
 		txValidationSpan.End()
 		span.RecordError(err)
@@ -177,7 +170,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		)
 
 		// Pass SecurityCache instead of accountsConn
-		status, err := allChecksWithConn(&tx, security_cache, mainDBConn, txSpanCtx)
+		status, err := allChecksWithConn(&tx, security_cache, nil, txSpanCtx)
 		if err != nil {
 			txSpan.RecordError(err)
 			txSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -218,14 +211,18 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	)
 	txValidationSpan.End()
 
-	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// 2. Block-hash binding, matching the orchestrator's submitted BlockHash:
+	// Keccak256 over the concatenation of each tx hash, and from
+	// consensus.header_binding_from_height on that hash plus the coinbase,
+	// zkvm address and timestamp (ExpectedBlockHash, header_binding.go).
+	// BlockHash is never the consensus-fields hash: consensus fields are bound
+	// by ConsensusHash (see Block/consensus_fields.go).
 	_, hashCheckSpan := tracer.Start(traceCtx, "Security.CheckZKBlockValidation.validateBlockHash")
-	// First compute the hash of all transaction's hashes
 	transactionHashes := make([][]byte, len(zkBlock.Transactions))
 	for i, tx := range zkBlock.Transactions {
 		transactionHashes[i] = tx.Hash.Bytes()
 	}
-	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
+	transactionHashesHash := ExpectedBlockHash(zkBlock, crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{})))
 	hashCheckSpan.SetAttributes(
 		attribute.String("computed_hash", transactionHashesHash.Hex()),
 		attribute.String("provided_hash", zkBlock.BlockHash.Hex()),
@@ -265,6 +262,9 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 // This is a backward-compatible wrapper for standalone transaction validation.
 // For batch validation (e.g., ZKBlock), use allChecksWithConn for better performance.
 func AllChecks(tx *config.Transaction) (bool, error) {
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
+	}
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -282,10 +282,14 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	startTime := time.Now().UTC()
 
 	if tx != nil {
+		toAttr := "<contract creation>"
+		if tx.To != nil {
+			toAttr = tx.To.Hex()
+		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", tx.To.Hex()),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -330,7 +334,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	}
 
 	// Fail-closed: a DB error here must not be mistaken for "account not found".
-	if err := security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet); err != nil {
+	if err := security_cache.LoadAccounts(loggerCtx, nil, accountsSet); err != nil {
 		span.RecordError(err)
 		logger().Error(traceCtx, "Failed to load accounts into security cache", err,
 			ion.String("function", "Security.AllChecks"))
@@ -345,6 +349,21 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	// created at BLOCK APPLY on every node from the block-carried identity
 	// stamped by the sequencer (DB_OPs.EnrichBlockAccountNonces) — one canonical
 	// identity, no propagation dependency, no DB write for rejected txs.
+	// Submission-only policy (not applied to block validation, so history that
+	// predates it still verifies): no replayable unprotected signatures, and a
+	// bounded nonce gap. Read the committed nonce before allChecksWithConn,
+	// which advances the cached value.
+	if err := checkSubmissionPolicy(tx, security_cache); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "submission_policy_rejected"))
+		return false, err
+	}
+	if err := checkSubmissionNewRecipientGas(ctx, tx, security_cache); err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "new_recipient_gas"))
+		return false, err
+	}
+
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
 
 	duration := time.Since(startTime).Seconds()
@@ -368,7 +387,10 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 // allChecksWithConn validates a transaction using provided database connections.
 // This internal function enables connection reuse for batch validation (e.g., ZKBlock).
 // Connection lifecycle is managed by the caller.
-func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, mainDBConn *config.PooledConnection, traceCtx context.Context) (bool, error) {
+func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, _ *config.PooledConnection, traceCtx context.Context) (bool, error) {
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
+	}
 	loggerCtx, cancel := context.WithCancel(traceCtx)
 	defer cancel()
 
@@ -387,24 +409,15 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
-	if mainDBConn == nil || mainDBConn.Client == nil {
-		err := errors.New("main DB connection is nil or invalid")
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().Error(spanCtx, "Main DB connection is nil or invalid", err,
-			ion.String("function", "Security.allChecksWithCache"))
-		return false, err
-	}
-
 	if tx != nil {
-		toAddr := "nil" // contract deployment
+		toAttr := "<contract creation>"
 		if tx.To != nil {
-			toAddr = tx.To.Hex()
+			toAttr = tx.To.Hex()
 		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", toAddr),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -641,7 +654,7 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		span.SetAttributes(attribute.String("to_address", tx.To.Hex()))
 	}
 
-	// To is nil for contract deployments — only require From + signature fields.
+	// tx.To is intentionally nil for contract creation transactions; do not require it here.
 	if tx.From == nil || tx.V == nil || tx.R == nil || tx.S == nil {
 		err := errors.New("transaction missing required signature fields (From, V, R, or S)")
 		span.RecordError(err)
@@ -861,8 +874,8 @@ func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 // Returns (true,nil) only when every present numeric field is non-negative and
 // (for present EIP-1559 fields) MaxPriorityFee <= MaxFee.
 func CheckTransactionValues(tx *config.Transaction) (bool, error) {
-	if tx == nil {
-		return false, fmt.Errorf("nil transaction")
+	if err := CheckTransactionShape(tx); err != nil {
+		return false, err
 	}
 	// Value: nil is treated as zero elsewhere (parseTransaction); a present value
 	// must be non-negative.
@@ -883,7 +896,27 @@ func CheckTransactionValues(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("max_priority_fee %s exceeds max_fee %s",
 			tx.MaxPriorityFee.String(), tx.MaxFee.String())
 	}
+	// Ingress gas bound (anti-DoS): reject a declared GasLimit above the block gas
+	// limit. Without this an attacker sets a huge GasLimit and burns CPU fleet-wide
+	// for a trivial fee. Fixed constant → fleet-uniform validity (see config.MaxTxGasLimit).
+	if tx.GasLimit > config.MaxTxGasLimit {
+		return false, fmt.Errorf("gas_limit %d exceeds max %d", tx.GasLimit, config.MaxTxGasLimit)
+	}
 	return true, nil
+}
+
+// CheckTransactionShape rejects a transaction missing a field every validation
+// and apply path dereferences: the transaction itself and its sender. Call it
+// before touching tx.From on any ingress path (RPC submission, block and
+// proposal validation).
+func CheckTransactionShape(tx *config.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if tx.From == nil {
+		return fmt.Errorf("transaction %s has no sender (from)", tx.Hash.Hex())
+	}
+	return nil
 }
 
 // ethTxFromConfig reconstructs the go-ethereum transaction from a
@@ -930,18 +963,34 @@ func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 	return common.BytesToHash(crypto.Keccak256(buf))
 }
 
-// CheckBlockHash recomputes the block hash from transaction CONTENTS and compares
-// it to block.BlockHash. Returns (true,nil) only on match. Call on the block
-// receive path so a block cannot claim a BlockHash that does not correspond to
-// the transactions it actually carries, independent of whether the
-// per-transaction tx.Hash fields were pre-verified.
+// CheckBlockHash recomputes the block hash and compares it to block.BlockHash.
+// Returns (true,nil) only on match. Call on the block receive path so a block
+// cannot claim a BlockHash that does not correspond to what it actually
+// carries.
+//
+// Transactions are bound by CONTENTS (Keccak256 over each transaction's
+// content hash), independent of whether the per-transaction tx.Hash fields
+// were pre-verified. From consensus.header_binding_from_height on, the
+// coinbase, zkvm address and timestamp are bound too (ExpectedBlockHash).
+//
+// BlockHash is the orchestrator's transactions-only identity. The consensus
+// fields are bound by a SEPARATE field, ConsensusHash, which the v4 vote signs
+// (Block/consensus_fields.go, Security/consensus_fields_hash.go). The former
+// JMDN_M2B_HASH switch that once chose between the two formulas was removed
+// (D-40). See the inline comment in the body.
 func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")
 	}
-	want := RecomputeBlockHashFromContents(block.Transactions)
+	// BlockHash is the orchestrator identity (transactions, plus coinbase, zkvm
+	// address and timestamp from consensus.header_binding_from_height on) and is
+	// never the consensus-fields hash — consensus fields are bound in their own advisory
+	// fields, not by mutating BlockHash (see Block/consensus_fields.go). M2b's
+	// six-field binding, if activated, must live in a SEPARATE ConsensusHash the
+	// vote domain signs, not here.
+	want := ExpectedBlockHash(block, RecomputeBlockHashFromContents(block.Transactions))
 	if block.BlockHash != want {
-		return false, fmt.Errorf("block hash mismatch: recomputed %s from tx contents, block claims %s",
+		return false, fmt.Errorf("block hash mismatch: recomputed %s, block claims %s",
 			want.Hex(), block.BlockHash.Hex())
 	}
 	return true, nil
@@ -1054,4 +1103,44 @@ func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 		ion.Float64("duration", duration),
 		ion.String("function", "Security.checkTransactionHash"))
 	return true, nil
+}
+
+// MaxSubmissionNonceGap is how far ahead of the sender's committed nonce a
+// submitted transaction's nonce may be. A transaction applied with a gap moves
+// the account past every nonce in between, so an unbounded gap lets an old
+// signed transaction with a high nonce strand all of the sender's lower ones.
+const MaxSubmissionNonceGap = 64
+
+// allowUnprotectedTxs controls whether submitted legacy transactions may use
+// pre-EIP-155 (chain-less, v = 27/28) signatures. Off by default: such a
+// signature is valid on every chain, so one signed for another network can be
+// replayed here. Set with SetAllowUnprotectedTxs.
+var allowUnprotectedTxs atomic.Bool
+
+// SetAllowUnprotectedTxs enables or disables submission of pre-EIP-155
+// signed legacy transactions.
+func SetAllowUnprotectedTxs(allow bool) { allowUnprotectedTxs.Store(allow) }
+
+// IsUnprotectedLegacyTx reports whether tx is a legacy transaction signed
+// without a chain ID (v = 27 or 28).
+func IsUnprotectedLegacyTx(tx *config.Transaction) bool {
+	if tx == nil || tx.Type != types.LegacyTxType || tx.V == nil || !tx.V.IsUint64() {
+		return false
+	}
+	v := tx.V.Uint64()
+	return v == 27 || v == 28
+}
+
+// checkSubmissionPolicy applies the rules that hold for newly submitted
+// transactions only.
+func checkSubmissionPolicy(tx *config.Transaction, cache *SecurityCache) error {
+	if IsUnprotectedLegacyTx(tx) && !allowUnprotectedTxs.Load() {
+		return fmt.Errorf("transaction %s is signed without a chain ID (pre-EIP-155); re-sign it for this chain", tx.Hash.Hex())
+	}
+	if cache != nil && tx != nil && tx.From != nil {
+		if acct := cache.GetAccount(*tx.From); acct != nil && tx.Nonce > acct.TxNonce+MaxSubmissionNonceGap {
+			return fmt.Errorf("nonce %d is too far ahead of the account nonce %d (max gap %d)", tx.Nonce, acct.TxNonce, MaxSubmissionNonceGap)
+		}
+	}
+	return nil
 }

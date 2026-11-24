@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"gossipnode/internal/roundlock"
+	"gossipnode/internal/saferun"
 
 	"syscall"
 	"time"
@@ -17,43 +24,67 @@ import (
 	"gossipnode/config/GRO"
 	"gossipnode/shutdown"
 
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
+	thebeconfig "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	Structs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Block"
-	"gossipnode/CA/ImmuDB_CA"
+	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
-	"gossipnode/DB_OPs/txindex"
+	"gossipnode/DB_OPs/backend"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/contractDB"
+	"gossipnode/DB_OPs/logstore"
+	"gossipnode/DB_OPs/thebegateway"
+	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
+	"gossipnode/SmartContract"
+	"gossipnode/SmartContract/evmexec"
+	"gossipnode/Vote"
 	"gossipnode/blockgossip"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
+	"gossipnode/consensushash"
 	"gossipnode/explorer"
+	"gossipnode/gETH"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/sequencerid"
 	"gossipnode/internal/syncmonitor"
-	"gossipnode/internal/thebesyncserve"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/profiler"
 	"gossipnode/seednode"
+	seedcommittee "gossipnode/seednode/committee"
+	"gossipnode/thebesync"
+
+	ion "github.com/JupiterMetaLabs/ion"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -92,15 +123,15 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncerV2 *FastsyncV2.FastsyncV2
-	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
-	globalPubSub *Pubsub.StructGossipPubSub
+	// legacyFastsyncServer retains the FastsyncV2 /fastsync/v1 serving engine when
+	// serve_legacy=true (sequencer only), keeping its stream handlers alive.
+	// Write-only by design (held for lifetime, never read).
+	legacyFastsyncServer *FastsyncV2.FastsyncV2 //nolint:unused // retained on purpose, see comment
 )
 
 // Global connection pools
 var (
-	mainDBPool     *config.ConnectionPool // Main database connection pool
-	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
+	cas *cassata.Cassata
 )
 
 func initGlobalGRO() {
@@ -109,7 +140,10 @@ func initGlobalGRO() {
 
 	// Ensure global manager is initialized before we mutate metadata.
 	if _, err := GRO.GlobalGRO.Init(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize global GRO manager")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to initialize global GRO manager", err)
+		}
+		os.Exit(1)
 	}
 
 	// Set the global shutdown timeout to 10 seconds.
@@ -117,7 +151,10 @@ func initGlobalGRO() {
 		orchestratorGlobal.SET_SHUTDOWN_TIMEOUT,
 		10*time.Second,
 	); err != nil {
-		log.Fatal().Err(err).Msg("Failed to set GRO shutdown timeout metadata")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to set GRO shutdown timeout metadata", err)
+		}
+		os.Exit(1)
 	}
 }
 
@@ -127,81 +164,92 @@ func initAppandLocalGRO() {
 	// Also pull up new app manager - main for the main package
 	err = GRO.EagerLoading()
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to eager load GRO")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to eager load GRO", err)
+		}
+		os.Exit(1)
 	}
 
 	MainAM = GRO.GetApp(GRO.MainAM)
 
 	MainLM, err = MainAM.NewLocalManager(GRO.MainLM)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create local manager")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to create local manager", err)
+		}
+		os.Exit(1)
 	}
 }
 
-func StartFacadeServer(bindAddr string, port int, chainID int, mon *syncmonitor.Monitor) {
+func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPort int, chainID int, smartRPC int, mon *syncmonitor.Monitor) {
 	if MainLM == nil {
-		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "MainLM not initialized. Call initAppandLocalGRO() first", nil)
+		}
+		os.Exit(1)
 	}
 
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
-		log.Info().Msg("Starting facade server")
+		if logger := mainLogger(); logger != nil {
+			logger.Info(ctx, "Starting facade server")
+		}
 
-		handler := rpc.NewHandlers(Service.NewService(chainID))
+		handler := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 		httpServer := rpc.NewHTTPServer(handler)
+		if cas != nil {
+			httpServer = httpServer.WithCassata(cas)
+		}
 		if mon != nil {
 			httpServer.WithSyncMonitor(mon)
 		}
 
+		if debugPort > 0 {
+			debugAddr := fmt.Sprintf("%s:%d", debugBindAddr, debugPort)
+			go func() {
+				if err := httpServer.ServeDebugWithContext(ctx, debugAddr); err != nil {
+					if logger := mainLogger(); logger != nil {
+						logger.Error(ctx, "Facade debug server stopped", err, ion.String("addr", debugAddr))
+					}
+				}
+			}()
+		}
+
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
-			log.Error().Err(err).Str("addr", addr).Msg("Facade server stopped")
+			if logger := mainLogger(); logger != nil {
+				logger.Error(ctx, "Facade server stopped", err, ion.String("addr", addr))
+			}
 			return fmt.Errorf("facade server failed: %w", err)
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.FacadeThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.FacadeThread))
+		}
 	}
 }
 
-func StartWSServer(bindAddr string, port int, chainID int) {
+func StartWSServer(bindAddr string, port int, chainID int, smartRPC int) {
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
-		log.Info().Msg("Starting WSServer")
+		if logger := mainLogger(); logger != nil {
+			logger.Info(ctx, "Starting WSServer")
+		}
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 
-		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
+		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID, smartRPC))
 		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("%s:%d", bindAddr, port)); err != nil {
-			log.Error().Err(err).Msg("Failed to start WSServer")
+			if logger := mainLogger(); logger != nil {
+				logger.Error(ctx, "Failed to start WSServer", err)
+			}
 			return fmt.Errorf("WSServer failed: %w", err)
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.WSServerThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.WSServerThread))
+		}
 	}
-}
-
-// GetMainDBPool returns the global main database connection pool
-func GetMainDBPool() *config.ConnectionPool {
-	if mainDBPool == nil {
-		log.Fatal().Msg("Main DB pool not initialized. Call initMainDBPool first")
-	}
-	return mainDBPool
-}
-
-// GetAccountsDBPool returns the global accounts database connection pool
-func GetAccountsDBPool() *config.ConnectionPool {
-	if accountsDBPool == nil {
-		log.Fatal().Msg("Accounts DB pool not initialized. Call initAccountsDBPool first")
-	}
-	return accountsDBPool
-}
-
-// GetGlobalPubSub returns the global PubSub instance
-func GetGlobalPubSub() *Pubsub.StructGossipPubSub {
-	if globalPubSub == nil {
-		log.Warn().Msg("Global PubSub not initialized - PubSub features may be limited")
-	}
-	return globalPubSub
 }
 
 // formatTimestamp formats a time.Time as "DD-MM-YYYY HH:MM:SS" (readable format)
@@ -210,6 +258,29 @@ func formatTimestamp(t time.Time) string {
 	// Convert UTC to local time
 	localTime := t.Local()
 	return localTime.Format("02-01-2006 15:04:05")
+}
+
+func maskDSN(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	if u.User != nil {
+		username := u.User.Username()
+		if username != "" {
+			u.User = url.UserPassword(username, "***")
+		} else {
+			u.User = url.UserPassword("***", "***")
+		}
+	}
+	return u.String()
+}
+
+func maskRedisURL(raw string) string {
+	return maskDSN(raw)
 }
 
 // runCommand executes a CLI command via gRPC to the running service
@@ -261,12 +332,12 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
+		fmt.Println("  propagatedid                      - (retired) an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
-		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
+		fmt.Println("  rebuildrange <from> <to>          - (retired) see rebuildindex")
+		fmt.Println("  txindexstatus                     - (retired) reports READY + chain head; lookups use the ThebeDB SQL projection")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -404,26 +475,8 @@ func runCommand(command string, args []string, grpcPort int) {
 		}
 
 	case "propagatedid":
-		if len(args) < 2 {
-			fmt.Println("Usage: jmdn -cmd propagatedid <did> <public_key> [balance]")
-			os.Exit(1)
-		}
-		balance := "0"
-		if len(args) >= 3 {
-			balance = args[2]
-		}
-		resp, err := client.PropagateDID(args[0], args[1], balance)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		if resp.Success {
-			fmt.Printf("Success: %s\n", resp.Message)
-		} else {
-			fmt.Printf("Error: %s\n", resp.Message)
-			os.Exit(1)
-		}
-
+		fmt.Println("propagatedid is retired: an account is created by its first incoming transfer") //nolint:forbidigo // CLI output: retired-command notice for the operator.
+		os.Exit(1)
 	case "fastsync", "fastsyncv2", "firstsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
@@ -538,7 +591,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		if resp.Ready {
 			state = "READY"
 		}
-		fmt.Printf("txindex status: %s — last indexed block: %d\n", state, resp.LastIndexedBlock)
+		fmt.Printf("txindex status: %s — chain head: %d\n", state, resp.LastIndexedBlock)
 
 	case "accountsync":
 		if len(args) < 1 {
@@ -589,49 +642,40 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
-		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
-		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
-		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  rebuildindex                      - (retired) tx-address index replaced by the ThebeDB SQL projection")
+		fmt.Println("  rebuildrange <from> <to>          - (retired) see rebuildindex")
+		fmt.Println("  txindexstatus                     - (retired) reports READY + chain head; lookups use the ThebeDB SQL projection")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }
 
 func StartAPIServer(ctx context.Context, address string) error {
-	// Create ImmuDB API server
-	server, err := explorer.NewImmuDBServer()
+	// Create Explorer API server
+	server, err := explorer.NewExplorerServer()
 	if err != nil {
-		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
+		return fmt.Errorf("failed to create Explorer API server: %w", err)
 	}
 
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockPollerThread, func(ctx context.Context) error {
 		explorer.StartBlockPoller(ctx, server, 7*time.Second)
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.BlockPollerThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockPollerThread))
+		}
 	}
 
-	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Starting Explorer API server", ion.String("address", address))
+	}
 	return server.StartWithContext(ctx, address)
 }
 
 // Update this function:
 func startDIDServer(ctx context.Context, h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		//Debugging
-		fmt.Println("Failed to get DID database client", err)
-
-		log.Warn().Err(err).Msg("Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.")
-		// We'll continue with a standalone server
-	} else {
-		//Debugging
-		// fmt.Println("Got DID database client successfully", didDBClient)
-
-		log.Info().Msg("DID propagation initialized successfully")
-	}
-	// Start the DID server with our existing client
-	return DID.StartDIDServerWithContext(ctx, h, address, didDBClient)
+	mainLogger().Info(context.Background(), "DID propagation initialized successfully")
+	return DID.StartDIDServerWithContext(ctx, h, address, nil)
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
@@ -642,62 +686,50 @@ func initYggdrasilMessaging(ctx context.Context) {
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
-// Initialize main database connection pool
-func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, password string) error {
-	poolingConfig := &config.PoolingConfig{
-		DBAddress:  config.DBAddress,
-		DBPort:     config.DBPort,
-		DBName:     config.DBName,
-		DBUsername: username,
-		DBPassword: password,
-	}
-
-	// Initialize the global pool
-	config.InitGlobalPoolWithLoki(poolingConfig)
-
-	mainDBPool = config.GetGlobalPool(logger_ctx)
-
-	// Also initialize the DB_OPs main pool
-	fmt.Println("Initializing DB_OPs main pool...")
-	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki, username, password); err != nil {
-		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
-	}
-	fmt.Println("DB_OPs main pool initialized successfully")
-
-	log.Info().Str("database", config.DBName).Msg("Main database connection pool initialized")
-	return nil
-}
-
-// Initialize accounts database connection pool
-func initAccountsDBPool() error {
-	// Use the DB_OPs package to initialize the accounts pool
-	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPool(); err != nil {
-		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
-	}
-
-	log.Info().Str("database", config.AccountsDBName).Msg("Accounts database connection pool initialized")
-	return nil
-}
-
-// initFastsyncV2 initializes the FastSync V2 service.
-// ctx is the node's top-level shutdown context — it governs the lifetime of
-// server-side network handler goroutines inside the engine.
-func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
+// slotStoreRecoveryGetTip reads this node's own latest LOCALLY committed
+// block, for messaging.RecoverSlotStoreAtStartup / EnsureSlotStoreRecovered
+// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 — the slot-restart
+// fail-closed fix). Requires ThebeDB (DB_OPs.SetGlobalHandle already called
+// by the caller) — see the cfg.Thebe.Enabled branch at this function's call
+// site for the legacy-DB fallback.
+//
+// Returns messaging.ErrNoCommittedBlock (wrapped) when this node's local
+// chain has no committed block at all — surfaced as sql.ErrNoRows from the
+// underlying SQL MAX(block_number) lookup (DB_OPs/thebegateway/reader.go's
+// sqlGetLatestBlock) and identified by errors.Is, which %w-wrapping preserves
+// through every layer between here and that query (backend -> cache decorator
+// -> DB_OPs shim). That is a legitimate state (true network genesis, or a
+// brand-new/not-yet-synced node), never treated as a read failure. Any other
+// error is returned as-is, so the caller fails closed rather than guessing.
+func slotStoreRecoveryGetTip() (*config.ZKBlock, error) {
+	ctx := context.Background()
+	height, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
-		return nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("slot recovery: %w", messaging.ErrNoCommittedBlock)
+		}
+		return nil, fmt.Errorf("slot recovery: reading latest local block number: %w", err)
 	}
-	log.Info().Msg("FastsyncV2 service initialized")
-	return fs
+	blk, err := DB_OPs.GetZKBlockByNumber(nil, height)
+	if err != nil {
+		return nil, fmt.Errorf("slot recovery: reading locally committed block %d: %w", height, err)
+	}
+	return blk, nil
 }
 
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 	fmt.Println("Initializing PubSub system...")
 
+	// NOTE: three places register a handler for config.BuddyNodesMessageProtocol
+	// (node.NewNode, Pubsub.NewGossipPubSub via initPubSub, MessagePassing.NewBuddyNode)
+	// and libp2p keeps only the latest one. Between boot and the first
+	// NewBuddyNode call the custom gossip handler owns the protocol; afterwards
+	// the buddy handler does, and gossip-format messages on it (the custom-gossip
+	// fallback in Publisher.Publish, and the currently unused AVC/BFT adapter)
+	// are dropped. Live votes use SubmitMessageProtocol and consensus pubsub uses
+	// libp2p GossipSub topics, so neither depends on which handler wins. Route both
+	// formats through one handler before relying on either path.
 	// Create a protocol ID for PubSub (using the consensus channel name as protocol)
 	pubSubProtocol := config.BuddyNodesMessageProtocol
 
@@ -725,17 +757,17 @@ func main() {
 	profilerPort := flag.String("profiler", "", "Port for Go profiler (pprof) (empty disables profiler server)")
 	grotrack := flag.Bool("grotrack", false, "Track GRO goroutines in Prometheus/Grafana (requires -metrics)")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
-	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
+	apiPort := flag.Int("api", 0, "Run Explorer API on specified port (0 = disabled)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	blockgRPC := flag.Int("blockgrpc", 0, "Run Block gRPC server on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDPort := flag.Int("did", 15052, "DID gRPC server port")
+	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
 	gETHFacade := flag.Int("facade", 8545, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
+	smartRPC := flag.Int("smart", 15056, "Smart Contract gRPC server address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
-	immudbUsername := flag.String("immudb-user", "", "ImmuDB username")
-	immudbPassword := flag.String("immudb-pass", "", "ImmuDB password")
 	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
@@ -759,6 +791,10 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", cfgErr)
 		os.Exit(1)
 	}
+	// consensus.flags.* / reputation.* from YAML. Must run before any consensus
+	// component (and before ValidateProductionConsensusPosture) reads the
+	// package-level flag variables. A SET legacy env var still wins.
+	applyConsensusFlags(cfg)
 
 	// Apply CLI flag overrides (only flags explicitly passed on command line)
 	flag.Visit(func(f *flag.Flag) {
@@ -789,16 +825,16 @@ func main() {
 			cfg.Ports.CLI = *cliGRPC
 		case "did":
 			cfg.Ports.DID = *DIDPort
+		case "geth":
+			cfg.Ports.Geth = *gETHgRPC
 		case "facade":
 			cfg.Ports.Facade = *gETHFacade
 		case "ws":
 			cfg.Ports.WS = *gETHWSServer
+		case "smart":
+			cfg.Ports.Smart = *smartRPC
 		case "chainID":
 			cfg.Network.ChainID = *chainID
-		case "immudb-user":
-			cfg.Database.Username = *immudbUsername
-		case "immudb-pass":
-			cfg.Database.Password = *immudbPassword
 		case "explorer-api-key":
 			cfg.Security.ExplorerAPIKey = *explorerAPIKey
 		case "jwt-secret":
@@ -810,18 +846,99 @@ func main() {
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
 
-	// ImmuDB address/port — override package-level vars so all callers
-	// (ConnectionPool, fastsync, DB_OPs) pick up the config value without
-	// needing individual changes. Defaults: localhost:3322 (embedded).
-	// Override via JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT to use an
-	// external immudb container.
-	if cfg.Database.Address != "" {
-		config.DBAddress = cfg.Database.Address
+	// SEC-03: security posture check. Warn loudly for every gatekeeper HTTP
+	// service left unauthenticated on a public (non-loopback) bind; when
+	// security.strict_posture is set, REFUSE to boot (fail closed).
+	for _, v := range cfg.InsecurePublicServices() {
+		// NEW-5: surface v.Reason so the remedy matches the ACTUAL violation.
+		// "security.enabled=false" → enable security; "auth_type=none" → set
+		// token/mtls; "public RPC with no rate limit" → set a rate limit (the RPC
+		// is intentionally unauthenticated). The old hardcoded
+		// message told operators to token-gate the JSON-RPC, which is wrong for the
+		// rate-limit case.
+		log.Warn().
+			Str("service", v.Service).
+			Str("bind", v.Bind).
+			Str("reason", v.Reason).
+			Msg("SEC-03: insecure gatekeeper service on a public bind — remediate per 'reason' (security.enabled=false → set security.enabled: true; auth_type=none → set auth_type token/mtls; no rate limit → set a rate limit), restrict the bind to loopback, or enable security.strict_posture to fail closed")
 	}
-	if cfg.Database.Port > 0 {
-		config.DBPort = cfg.Database.Port
+	if err := cfg.ValidateEnvironment(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
+	if !cfg.ProductionPosture() {
+		log.Warn().
+			Str("environment", cfg.Network.Environment).
+			Int("chain_id", cfg.Network.ChainID).
+			Msg("production safety locks are OFF (network.environment is not mainnet and security.strict_posture is false): fail-open consensus flags and unauthenticated public services are only warned about")
+	}
+	if err := cfg.ValidateSecurityPosture(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	if cfg.DefaultDBCredentialInUse() {
+		log.Warn().Msg("thebe.sql_dsn uses a publicly known default password — set a unique Postgres password")
+	}
+	if err := cfg.ValidateDBCredentials(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	// Buddy staking rewards: the reward address is optional, but a NON-empty one
+	// must be well-formed (a malformed address would be silently padded by
+	// common.HexToAddress and could mis-credit rewards). Fail closed at boot.
+	if err := cfg.ValidateRewardAddress(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	// Push the validated reward address into the seednode package (which does not
+	// import config/settings) so it is stamped onto — and signed into — the peer
+	// record when this node registers with the seed. Empty = no reward claim.
+	seednode.SetRewardAddress(cfg.Consensus.RewardAddress)
+	// Reward-split safety has no boot-time flag coupling. On the gossip receive
+	// path (messaging.validateRemoteBlock) checkFeeRecipients recomputes
+	// FeeRecipients from the stored parent block's certificate and rejects a
+	// mismatch; FeeRecipients is NOT part of the ConsensusHash preimage, so that
+	// recompute is its only defence there. (D-40: the former JMDN_M2B_HASH gate
+	// checked nothing and was removed.)
+
+	// SEC-03 (consensus extension): in a production posture, REFUSE to boot if
+	// any fail-open consensus hardening flag has been disabled. "Production" here
+	// = strict_posture set OR mainnet environment. The flags default ON; this
+	// only fires when an operator explicitly turned one off (e.g. via a
+	// JMDN_* env var) on a production node. Fail-closed by design.
+	productionPosture := messaging.IsProductionPosture()
+	if err := messaging.ValidateProductionConsensusPosture(productionPosture); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+	if w := messaging.PeriodCapWarning(); w != "" {
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", w) //nolint:forbidigo // CLI output: boot warning printed before the logger is up, like the posture refusal above.
+	}
+	// W1: chain-anchored committee pool preconditions (committee_anchor.go).
+	if err := messaging.ValidateCommitteeAnchorConfig(); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
+	// D-858 finding 4 (#154 empty-pin liveness trap): fail hard at boot — on every
+	// node, not only in production posture — when committee-v2 is enabled but the
+	// sequencer authority pin is empty, which would silently wedge finalization
+	// (every seated validator refuses the sequencer, WARN-only). See
+	// messaging.ValidateCommitteeV2Pin. No-op with the flag off (default).
+	if err := messaging.ValidateCommitteeV2Pin(messaging.CommitteeV2Enabled, cfg.Consensus.SeedAuthorityBLSPub); err != nil {
+		fmt.Printf("Refusing to start: %v\n", err)
+		os.Exit(1)
+	}
+
+	log.Info().
+		Bool("enabled", cfg.Thebe.Enabled).
+		Str("kv_path", cfg.Thebe.KVPath).
+		Str("sql_dsn", maskDSN(cfg.Thebe.SQLDSN)).
+		Str("redis_url", maskRedisURL(cfg.Thebe.RedisURL)).
+		Str("stream_name", cfg.Thebe.StreamName).
+		Int64("max_len", cfg.Thebe.MaxLen).
+		Str("group_name", cfg.Thebe.GroupName).
+		Msg("Resolved Thebe config")
 
 	// Chain ID global initialization — must happen before any Security validation.
 	// Setting this globally here (rather than only inside Block/Server.go, gated behind
@@ -834,6 +951,15 @@ func main() {
 		os.Exit(1)
 	}
 	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
+	Security.SetAllowUnprotectedTxs(cfg.Security.AllowUnprotectedTxs)
+	headerBinding, hbErr := headerBindingFromSettings(cfg.Consensus)
+	if hbErr != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", hbErr) //nolint:forbidigo // CLI output: fatal boot error printed before exit; the logger is not up yet.
+		os.Exit(1)
+	}
+	Security.SetHeaderBinding(headerBinding)
+	config.SetPeriodCapRaiseFrom(cfg.Consensus.PeriodCapRaiseFromHeight)
+	config.SetNewRecipientGasFrom(cfg.Consensus.NewRecipientGasFromHeight)
 	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first
@@ -845,9 +971,11 @@ func main() {
 	messaging.StartBroadcastCleanup()
 
 	var nodeManager *node.NodeManager
-	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
-		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
-		log.Fatal()
+	if err := tlsca.EnsureTLSAssets(".immudb_state"); err != nil {
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to ensure TLS assets", err)
+		}
+		os.Exit(1)
 	}
 	// fmt.Println("ImmuDB TLS assets generated.")
 
@@ -869,7 +997,9 @@ func main() {
 			cfg.Ports.Metrics,
 		)
 	} else if cfg.Features.GROTrack {
-		log.Warn().Msg("grotrack enabled but metrics port is not set; GRO tracking disabled")
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), "grotrack enabled but metrics port is not set; GRO tracking disabled")
+		}
 	}
 
 	// Start profiler server only when a profiler port is explicitly set (> 0).
@@ -889,7 +1019,9 @@ func main() {
 	}
 
 	// Log version on startup
-	log.Info().Str("version", version.String()).Msg("Starting JMDN node")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Starting JMDN node", ion.String("version", version.String()))
+	}
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -922,26 +1054,21 @@ func main() {
 
 			// 2. Shutdown profiler concurrently with other cleanups (with timeout)
 			if profilerServer != nil {
-				log.Info().Msg("Shutting down profiler server...")
+				if logger := mainLogger(); logger != nil {
+					logger.Info(ctx, "Shutting down profiler server...")
+				}
 				// Give it 5 seconds to finish active profiles/requests
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer shutdownCancel()
 				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
-					log.Error().Err(err).Msg("Profiler server forced to shutdown")
+					if logger := mainLogger(); logger != nil {
+						logger.Error(ctx, "Profiler server forced to shutdown", err)
+					}
 				} else {
-					log.Info().Msg("Profiler server stopped gracefully")
+					if logger := mainLogger(); logger != nil {
+						logger.Info(ctx, "Profiler server stopped gracefully")
+					}
 				}
-			}
-
-			// 3. Stop the tx-address index: refuse new async work, cancel any
-			// in-flight catchup/rebuild, and close both SQLite pools. Must run
-			// before the process exits — nothing else does this today, and an
-			// unclosed sql.DB leaks its connections/WAL file handles.
-			log.Info().Msg("Shutting down transaction address index...")
-			if err := txindex.Shutdown(); err != nil {
-				log.Error().Err(err).Msg("txindex shutdown reported an error")
-			} else {
-				log.Info().Msg("Transaction address index stopped")
 			}
 
 			// 4. Delegate final shutdown to the centralized handler
@@ -963,101 +1090,353 @@ func main() {
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.ShutdownThread).Msg("Failed to start GRO goroutine")
-	}
-
-	// Initialize database connection pools FIRST
-	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(logger_ctx, false, cfg.Database.Username, cfg.Database.Password); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
-	}
-	fmt.Println("Main database pool initialized successfully")
-
-	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
-	// and starts the background worker — it returns immediately. The (possibly
-	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
-	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
-	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
-	// getAddressTransactions return a "still syncing" / 503 error rather than
-	// an ImmuDB-scan fallback, which no longer exists (see PR history).
-	txIndexPath := cfg.Database.TxIndexPath
-	if txIndexPath == "" {
-		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
-	}
-	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
-		// Only Open() (disk/permissions) failures land here — catchup failures
-		// are logged asynchronously by the background goroutine.
-		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
-	} else {
-		fmt.Println("Transaction address index starting (background catchup in progress)")
-	}
-
-	if err := initAccountsDBPool(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
-	}
-
-	// Explorer stats account/DID counter. The stats API used to scan immudb
-	// (CountAccounts, O(n)) on every request; instead the count is maintained in
-	// the txindex sqlite. Increments are applied asynchronously so the
-	// account-write path never blocks on the sqlite counter.
-	DB_OPs.SetAccountCreatedHook(func(delta int) {
-		go func() {
-			if err := txindex.IncrAccountCount(context.Background(), int64(delta)); err != nil {
-				log.Debug().Err(err).Int("delta", delta).Msg("[stats] account counter increment failed")
-			}
-		}()
-	})
-	// One-time seed: indexing the existing DIDs/accounts is a one-shot activity.
-	// Only run the expensive immudb Count if the counter has never been seeded;
-	// once present it is maintained by the increments above. Runs in a goroutine
-	// so a first-boot seed never delays startup, and retries with backoff: the
-	// immudb Count over the accounts prefix can exceed the default 30s on a large
-	// DB or under load, so the seed uses a long per-attempt deadline and keeps
-	// retrying until it succeeds (or the node shuts down).
-	go func() {
-		if _, seeded, err := txindex.GetAccountCount(context.Background()); err != nil {
-			log.Debug().Err(err).Msg("[stats] account counter unavailable; skipping one-time seed")
-			return
-		} else if seeded {
-			return // already indexed once — keep incrementing
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ShutdownThread))
 		}
-		backoff := 30 * time.Second
-		for attempt := 1; ; attempt++ {
-			// Re-check: another path (e.g. a manual reseed) may have seeded it.
-			if _, seeded, _ := txindex.GetAccountCount(context.Background()); seeded {
-				return
+	}
+
+	// Captured ThebeDB canonical KV handle, used AFTER the committee-eligibility
+	// source is wired to run the chain-head checkpoint boot gate + signing hook
+	// (config checkpoint.*). nil unless ThebeDB is enabled; the checkpoint block
+	// below no-ops when nil, so this changes nothing when the feature is off.
+	var checkpointKV kv.Store
+
+	// Initialize ThebeDB + JMDN profile only when feature-flagged.
+	if cfg.Thebe.Enabled {
+		fmt.Fprintf(os.Stderr, "thebedb: init — kv_path=%s dsn=%s\n", cfg.Thebe.KVPath, maskDSN(cfg.Thebe.SQLDSN))
+
+		reg := profile.NewRegistry()
+		reg.Register(thebeprofile.NewJMDNProfile())
+
+		kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: kv store init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "thebedb: kv store OK")
+
+		// Task-wise Postgres pools (DB_OPs/task_pools.go): write / read / sync each
+		// get their own *sql.DB and budget, so peer-sync serving cannot exhaust the
+		// connections JSON-RPC and block apply need (accountsdb-pool-exhaustion RCA).
+		// The write pool replaces thebeSql.NewSQLEngine's internal pool (same
+		// open+ping), now sized by thebe.pools.write instead of PG_MAX_OPEN_CONNS.
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		writeDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskWrite, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Write})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: sql engine init failed: %v\n", err)
+			os.Exit(1)
+		}
+		readDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskRead, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Read})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: read pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		syncDB, err := DB_OPs.OpenTaskDB(poolCtx, DB_OPs.TaskSync, cfg.Thebe.SQLDSN, DB_OPs.TaskPoolOptions{MaxOpen: cfg.Thebe.Pools.Sync})
+		if err != nil {
+			poolCancel()
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: sync pool init failed: %v\n", err)
+			os.Exit(1)
+		}
+		poolTotal := cfg.Thebe.Pools.Write + cfg.Thebe.Pools.Read + cfg.Thebe.Pools.Sync
+		if berr := DB_OPs.CheckServerConnectionBudget(poolCtx, writeDB, poolTotal); berr != nil {
+			// Warn, not fatal: the check cannot see other clients' real usage, and
+			// pools open lazily — but a shortfall means a task can hit "too many
+			// connections" under load.
+			fmt.Fprintf(os.Stderr, "WARN thebedb: %v — lower thebe.pools.* or raise Postgres max_connections\n", berr)
+		}
+		poolCancel()
+		defer readDB.Close()
+		defer syncDB.Close()
+		fmt.Fprintf(os.Stderr, "thebedb: task pools OK — write=%d read=%d sync=%d (total %d)\n",
+			cfg.Thebe.Pools.Write, cfg.Thebe.Pools.Read, cfg.Thebe.Pools.Sync, poolTotal)
+		metrics.RegisterDBTaskPools(func() []metrics.DBTaskPoolSample {
+			stats := DB_OPs.TaskPoolStats()
+			out := make([]metrics.DBTaskPoolSample, len(stats))
+			for i, st := range stats {
+				out[i] = metrics.DBTaskPoolSample{Task: string(st.Task), MaxOpen: st.MaxOpen, Stats: st.Stats}
 			}
-			// Long per-attempt deadline — this runs off the request path.
-			n, err := DB_OPs.CountAccountsWithTimeout(5 * time.Minute)
-			if err == nil {
-				if serr := txindex.SetAccountCount(context.Background(), int64(n)); serr != nil {
-					log.Warn().Err(serr).Msg("[stats] failed to persist seeded account/DID count")
-				} else {
-					log.Info().Int("count", n).Int("attempt", attempt).Msg("[stats] account/DID counter seeded (one-time)")
-					return
+			return out
+		})
+
+		sqlEngine := thebeSql.NewSQLEngineFromDB(writeDB)
+		fmt.Fprintln(os.Stderr, "thebedb: sql engine OK")
+
+		db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: db init failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
+		defer db.Close()
+
+		// Capture the canonical KV handle for the chain-head checkpoint boot gate
+		// + signing hook wired later (after the committee-eligibility source is
+		// available). db.KV is the same kv.Store the checkpoint funcs operate on.
+		checkpointKV = db.KV
+
+		// Wire CDC if enabled.
+		// IMPORTANT: pass cfg.Thebe.SQLDSN (direct Postgres DSN), never PgBouncer —
+		// logical replication is session-level and breaks over transaction pooling.
+		if cfg.Thebe.CDC.Enabled {
+			omit, badOmit := cfg.Thebe.CDC.OmitColumnsByTable()
+			if len(badOmit) > 0 {
+				fmt.Fprintf(os.Stderr, "FATAL thebedb: thebe.cdc.omit_columns entries must be table.column: %v\n", badOmit) //nolint:forbidigo // CLI output: fatal boot error printed before exit, like the cdc-start failure below; the logger may not be up yet.
+				if logger := mainLogger(); logger != nil {
+					logger.Error(context.Background(), "thebedb: thebe.cdc.omit_columns entries must be table.column — refusing to start",
+						fmt.Errorf("invalid entries: %v", badOmit))
 				}
+				os.Exit(1)
+			}
+			cdcCfg := thebeconfig.CDC{
+				Enabled:     true,
+				SlotName:    cfg.Thebe.CDC.SlotName,
+				Publication: cfg.Thebe.CDC.Publication,
+				LogPath:     cfg.Thebe.CDC.LogPath,
+				DLQPath:     cfg.Thebe.CDC.DLQPath,
+				MaxLagBytes: cfg.Thebe.CDC.MaxLagBytes,
+				OmitColumns: omit,
+			}
+			if err := db.StartCDC(cdcCfg, cfg.Thebe.SQLDSN); err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL thebedb: cdc start failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "thebedb: CDC pipeline running")
+		}
+
+		// Report the CDC slot when it is inactive, lagging or invalidated, any
+		// other replication slot nothing reads, and an unlimited slot WAL cap.
+		// Postgres keeps every WAL segment behind a slot until the cap, so a
+		// stalled or forgotten slot grows until the disk fills. Warn only.
+		reportReplicationSlots(writeDB, cfg.Thebe.CDC.Enabled, cfg.Thebe.CDC.SlotName, cfg.Thebe.CDC.MaxLagBytes)
+
+		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
+		cas = cassata.New(db, zap.NewNop())
+
+		// EVM contract execution (audit EVM-01 wiring). Registered ONLY when
+		// cfg.Contracts.Enabled; default-off leaves execbridge on its no-op so the
+		// apply path is byte-identical (non-breaking). The executor reads balances
+		// from the local committed ledger (deterministic, EVM-A16) and returns value
+		// deltas for the centralized fold (config.FoldContractExecution).
+		if cfg.Contracts.Enabled {
+			// Derive hasCode from the SAME persistent repo passed to Register — its
+			// GetCode reads cas.KV() (the store deploys commit to and eth_getCode
+			// reads). The old contractDB.HasCode read a process-wide sharedKVStore
+			// singleton that is never set (SetSharedKVStore has zero callers), so it
+			// always returned false → IsContractTx gated every CALL (To != nil) onto
+			// the value-transfer path and the EVM never ran for contract calls
+			// (deploys bypass hasCode, which is why only deploys worked).
+			contractRepo := contractDB.NewKVStateRepository(cas.KV(), cas)
+			evmexec.Register(
+				cfg.Network.ChainID,
+				DB_OPs.ContractAccountSource{},
+				contractRepo,
+				func(addr common.Address) bool {
+					code, err := contractRepo.GetCode(context.Background(), addr)
+					if err != nil {
+						// EVM-A16 fail-closed: a GENUINE code-read error must NOT degrade a
+						// contract CALL onto the plain value-transfer path (silent chain
+						// split). The repo maps absence to (nil, nil), so err != nil is a
+						// real backend failure. Report presence=true to route the tx to the
+						// EVM apply path, where the SAME contractRepo is read again by
+						// ContractDB.getCode: it re-hits this error, sets the sticky lazy
+						// dbErr, and the executor's DBError() check aborts the block.
+						return true
+					}
+					return len(code) > 0
+				},
+			)
+			// Give the RPC read path (eth_call / eth_estimateGas via
+			// contractDB.InitializeStateDB) the SAME ledger balance source as the
+			// apply path. Without this it read balances from the DID service, which
+			// has no record for contract addresses → address(this).balance == 0 in
+			// every simulation (see SetSharedAccountSource).
+			contractDB.SetSharedAccountSource(DB_OPs.ContractAccountSource{})
+			// P4: fold contract state into the P2.5 fingerprint so the
+			// halt-on-divergence check covers contract storage, not just accounts.
+			kvStore := cas.KV()
+			DB_OPs.SetContractFoldHook(func(f *consensushash.StateFingerprinterV1) error {
+				return contractDB.FoldAllContracts(kvStore, f)
+			})
+			mainLogger().Info(context.Background(), "EVM contract execution ENABLED — execbridge executor + state-fingerprint contract fold registered")
+		}
+
+		// Construct the ThebeGateway (2PC writes + outbox retry) backing the
+		// process-wide handle factory below. (The legacy ThebeShadowWriter hook
+		// was removed with DualDB — migration Phase 7.)
+		outbox, err := thebegateway.NewOutboxStore(cfg.Thebe.KVPath + "/outbox.db")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: outbox store init failed: %v\n", err)
+			os.Exit(1)
+		}
+		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
+
+		// Drain the outbox: any 2PC write failure is enqueued as a WAL row and
+		// MUST be retried by this worker — without it, failed writes are
+		// recorded and then never replayed (silent permanent write loss under
+		// DB pressure; review finding R2).
+		outboxWorker := thebegateway.NewOutboxWorker(outbox, gw, 5*time.Second)
+		outboxWorker.Start()
+		defer outboxWorker.Stop()
+
+		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
+		// writing a missing snapshot does not un-skip tx rows that already exhausted
+		// their retries, so reproject resets those exhausted entries and this worker
+		// then drains them.
+		DB_OPs.SetOutboxRequeuer(outbox.RequeueExhausted)
+
+		// Wire the process-wide ThebeHandle: writes via the gateway (2PC SQL+KV),
+		// reads via the reader (SQL).
+		// Reads go to the READ task pool, not the write engine's pool.
+		reader := thebegateway.NewThebeReader(readDB, db.KV, nil)
+		// EVM event logs: KV-backed store so eth_getLogs works (it returned
+		// "LogWriter not configured" while this was nil) and so the apply path
+		// can index logs at commit time (BlockProcessing.applyContractTx).
+		logStore := logstore.New(db.KV)
+		// eth_getLogs cost bounds from config (rpc.logs.*). The package cannot
+		// import config/settings without an import cycle, so they are injected
+		// here, before any listener accepts traffic. A zero or negative value
+		// keeps the compiled default, so a node with no rpc: section is
+		// unchanged.
+		logstore.SetLimits(
+			cfg.RPC.Logs.MaxBlockSpan,
+			cfg.RPC.Logs.MaxResults,
+			cfg.RPC.Logs.MaxScanBlocks,
+		)
+		logSpan, logResults, logScan := logstore.Limits()
+		mainLogger().Info(context.Background(), "eth_getLogs cost bounds",
+			ion.Uint64("max_block_span", logSpan),
+			ion.Int("max_results", logResults),
+			ion.Uint64("max_scan_blocks", logScan))
+		thebeHandleBackend := backend.New(gw, reader, logStore)
+		// SYNC task handle: identical backend over the sync pool. Peer-sync serving
+		// paths select it with DB_OPs.TaskConn(DB_OPs.TaskSync); writes made through
+		// it still go via the gateway (write pool).
+		syncReader := thebegateway.NewThebeReader(syncDB, db.KV, nil)
+		DB_OPs.SetTaskHandle(DB_OPs.TaskSync, backend.NewComposite(backend.New(gw, syncReader, logStore), nil))
+		// Also wire the process-wide ThebeHandle used by DB_OPs shim functions
+		// (GetLatestBlockNumber, GetBlock, etc.) which call getHandle() directly
+		// without going through a PooledConnection.
+		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
+
+		// Per-round signing records (buddy block results, and this node's
+		// ACCEPT votes) live in the sync-state KV, so a restart cannot be
+		// used to sign a different block at a round already signed.
+		roundlock.Default.SetStore(DB_OPs.ConsensusLockStore{}, "roundlock:")
+		roundlock.Votes.SetStore(DB_OPs.ConsensusLockStore{}, "votelock:")
+		// The time each height was first proposed, so the period bound does
+		// not restart at a restart (roundlock.Pace).
+		roundlock.DefaultPace.SetStore(DB_OPs.ConsensusLockStore{}, "pacelock:")
+		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
+
+		// Finish any tx apply that was interrupted by the previous shutdown
+		// before anything can process blocks against that state.
+		if recovered, rerr := DB_OPs.RecoverPendingTxApply(); rerr != nil {
+			log.Fatal().Err(rerr).Msg("thebedb: interrupted tx apply could not be completed; refusing to start")
+		} else if recovered != "" {
+			log.Warn().Str("tx_hash", recovered).Msg("thebedb: completed tx apply interrupted by previous shutdown")
+		}
+
+		// One-shot ThebeSync backfill: retro-stamp ZKBlock.AccountNonces onto blocks
+		// written before that advisory field was persisted, so catch-up can create
+		// new accounts (contract deploys, first-time receivers) from historical
+		// blocks. Reads each touched account's canonical immutable identity from the
+		// accounts store — RUN ON THE SEQUENCER (the catch-up source). Idempotent;
+		// SQL-projection only. Unset the env after it reports complete.
+		if os.Getenv("JMDN_BACKFILL_ACCOUNT_NONCES") == "1" {
+			bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			upd, skip, berr := DB_OPs.BackfillAccountNonces(bctx, db.SQL.GetDB())
+			bcancel()
+			if berr != nil {
+				log.Error().Err(berr).Int("updated", upd).Int("skipped", skip).Msg("[backfill] account-nonce backfill FAILED — some blocks still unstampable")
 			} else {
-				log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", backoff).
-					Msg("[stats] one-time account/DID count seed failed; retrying")
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 10*time.Minute {
-				backoff *= 2
+				log.Info().Int("updated", upd).Int("skipped", skip).Msg("[backfill] account-nonce backfill complete")
+				fmt.Fprintf(os.Stderr, "backfill: account_nonces stamped on %d block(s), %d skipped\n", upd, skip)
 			}
 		}
-	}()
+
+		// One-shot reprojection repair (F / D-64). Set JMDN_REPROJECT_RANGE=<from>-<to>
+		// to rebuild the SQL projection for a block range whose snapshots/transactions
+		// were lost to the pre-D-64 catch-up gap. Each present block is re-stored via
+		// the idempotent StoreZKBlock chain, which writes the missing `snapshots` FK
+		// parent; the outbox worker then drains that block's pending transaction rows.
+		// Replaces the manual psql snapshot-insert procedure (TESTNET-RUNBOOK §5c).
+		// Idempotent and safe on healthy blocks; unset the env once it reports complete.
+		if rng := strings.TrimSpace(os.Getenv("JMDN_REPROJECT_RANGE")); rng != "" {
+			fromStr, toStr, ok := strings.Cut(rng, "-")
+			from, e1 := strconv.ParseUint(strings.TrimSpace(fromStr), 10, 64)
+			to, e2 := strconv.ParseUint(strings.TrimSpace(toStr), 10, 64)
+			if !ok || e1 != nil || e2 != nil {
+				log.Error().Str("range", rng).Msg("[reproject] invalid JMDN_REPROJECT_RANGE (want <from>-<to>, e.g. 822-835) — skipping")
+			} else if n, rerr := DB_OPs.ReprojectRange(from, to); rerr != nil {
+				log.Error().Err(rerr).Uint64("from", from).Uint64("to", to).Int("reprojected", n).Msg("[reproject] range repair FAILED")
+			} else {
+				log.Info().Uint64("from", from).Uint64("to", to).Int("reprojected", n).Msg("[reproject] range repair complete — outbox will drain pending tx rows")
+			}
+		}
+
+		// One-shot tx_count_sent reconciliation (C, opt-in). Set
+		// JMDN_RECONCILE_TXCOUNT=1 to compare every account's stored counter (a
+		// fingerprint field) against the transactions projection and log any
+		// disagreement — the early warning for the D-64/D-66 drift. Read-only, but it
+		// scans accounts ⋈ transactions, so it is opt-in rather than a default-boot cost.
+		if os.Getenv("JMDN_RECONCILE_TXCOUNT") == "1" {
+			rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			mis, rcerr := DB_OPs.LogTxCountReconciliation(rctx, db.SQL.GetDB())
+			rcancel()
+			if rcerr != nil {
+				log.Error().Err(rcerr).Msg("[reconcile] tx_count_sent reconciliation failed")
+			} else if mis > 0 {
+				log.Warn().Int("mismatches", mis).Msg("[reconcile] tx_count_sent disagrees with the projection — see stderr; repair with JMDN_REPROJECT_RANGE")
+			} else {
+				log.Info().Msg("[reconcile] tx_count_sent matches the transactions projection")
+			}
+		}
+
+		// Genesis allocation (bootstrap / 2-node determinism gate). If
+		// JMDN_GENESIS_ALLOC names a JSON {"0xADDR":"balanceWei"} file, seed those
+		// accounts now — before any block is produced or applied — so the fleet's
+		// pre-genesis baseline is identical. No-op when the env var is unset.
+		// Requires JMDN_ALLOW_LOCAL_ACCOUNT_CREATE=1; idempotent; deterministic
+		// (the P2.5 state fingerprint excludes ART ordinals + volatile timestamps).
+		// FAIL CLOSED: a partial/failed genesis seed produces a divergent pre-genesis
+		// baseline, which (with contracts enabled) lands the fleet in the P2.5 halt
+		// path. Refuse to boot rather than run with a wrong baseline. This only fires
+		// when JMDN_GENESIS_ALLOC is set — unset is a no-op (0, nil) and never fatal.
+		if n, gErr := DB_OPs.SeedGenesisFromEnv(context.Background()); gErr != nil {
+			log.Fatal().Err(gErr).Msg("[genesis] allocation seed failed — refusing to boot with a divergent baseline")
+		} else if n > 0 {
+			log.Info().Int("accounts", n).Msg("[genesis] allocation seeded")
+		}
+
+		// Genesis BLOCK (devnet/bootstrap): on a fresh chain, write an empty block 0
+		// so "latest"-anchored reads (eth_getBalance, explorer, the orchestrator's
+		// balance validation) resolve and the first produced block links to a real
+		// parent. Only when JMDN_GENESIS_ALLOC is set (i.e. this is a seeded devnet) —
+		// production chains get their blocks from the sequencer and must not synthesize
+		// a genesis block. Idempotent (no-op once any block exists).
+		if strings.TrimSpace(os.Getenv("JMDN_GENESIS_ALLOC")) != "" {
+			if created, gbErr := DB_OPs.SeedGenesisBlockIfEmpty(context.Background()); gbErr != nil {
+				log.Fatal().Err(gbErr).Msg("[genesis] block-0 seed failed — refusing to boot")
+			} else if created {
+				log.Info().Msg("[genesis] block 0 written (fresh chain)")
+			}
+		}
+	}
+
+	// Address→transaction lookups and the explorer's account/transaction
+	// totals are served directly by the ThebeDB SQL projection (written
+	// synchronously by the gateway at block apply). The former SQLite
+	// tx-address index and its hand-maintained account counter were retired.
 
 	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
 	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
-	// immediately, decoupling callers from the ~15 s ImmuDB commit latency.
-	// The worker drains the stream and writes batches to ImmuDB asynchronously.
+	// immediately, decoupling callers from synchronous DB commit latency.
+	// The worker drains the stream and writes batches to ThebeDB asynchronously.
 	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
 	if cfg.Database.Redis.URL == "" {
-		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts/BatchUpdateAccounts will fall back to synchronous direct ImmuDB writes (slower, ~15s commit latency per call, no async queue); set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL to enable the async Redis-backed path")
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts/BatchUpdateAccounts will fall back to synchronous direct ThebeDB writes (no async queue); set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL to enable the async Redis-backed path")
 	} else {
 		redisClient := redis.NewClient(&redis.Options{
 			Addr:     cfg.Database.Redis.URL,
@@ -1078,6 +1457,122 @@ func main() {
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
 
+	// Fallback-window parameter sanity check (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md,
+	// "Fallback window" section, item 3 of the 2026-08-24 verification pass).
+	// FallbackFoldBufferB/FallbackFoldMaxSlotOffset are compiled-in constants,
+	// not per-node config, but nothing enforced them against §7.2's liveness
+	// rule at startup — this is that missing wiring, same "built the checker,
+	// never called it" shape the SlotStore recovery gap (item 8) had. A
+	// failure here means N/K/B/MaxOffset cannot satisfy the liveness bound
+	// M4-1 already found broken once, so this hard-exits rather than
+	// failing closed-but-running: unlike a per-node recovery failure, a bad
+	// build affects every node identically and there is nothing to recover
+	// into. No cfg/node dependency, so it can run this early.
+	if err := messaging.ValidateFallbackWindowParams(); err != nil {
+		log.Fatal().Err(err).Msg("fallback window: N/K/B/MaxOffset are not a usable liveness-safe combination (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md, Fallback window section)")
+	}
+
+	// VDF proof-recovery deadline D (messaging/entropy_vdf_deadline.go).
+	// VDFProofRecoveryDeadlineSlots is a compiled-in constant exactly like
+	// B/MaxOffset above, so it hard-exits for the same reason: an out-of-range
+	// D is identical on every node and there is nothing to recover into.
+	//
+	// It has to be checked HERE because it cannot be detected at the point of
+	// use. D = 0 produces a deadline that never fires, and D > N-K produces one
+	// that fires before the mix for that epoch can exist — in both cases the
+	// mechanism looks alive and simply never helps anyone.
+	if err := messaging.ValidateVDFRecoveryParams(); err != nil {
+		log.Fatal().Err(err).Msg("entropy: VDFProofRecoveryDeadlineSlots is out of range for the current N/K — the proof-recovery deadline would either never fire or fire before any proof can exist (messaging/entropy_vdf_deadline.go)")
+	}
+
+	// VDF timing self-consistency (messaging/vdf_timing_params.go, Architecture
+	// §10 decision 12b) — same "built the checker, never called it" shape as
+	// the fallback-window check directly above, and the same reason to
+	// hard-exit: a bad T_vdf/N/K/s_min/S combination is a build defect
+	// identical on every node, not a per-node recovery case.
+	if err := messaging.ValidateVDFTimingParams(); err != nil {
+		log.Fatal().Err(err).Msg("VDF timing: T_vdf/N/K/s_min are not a bias-resistant, live combination (§10 decision 12b)")
+	}
+
+	// Slot-restart fail-closed recovery (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md
+	// item 8). MUST run here, BEFORE node.NewNode() below: that call creates
+	// the libp2p host and registers its stream handlers, which is what lets a
+	// live commit hook (broadcast.go's HandleBroadcastStream path,
+	// blockPropagation.go's receive-and-store path) ever fire
+	// DefaultSlotStore.AdvanceOnCommit. Running recovery before the host
+	// exists means no such hook can possibly race an unseeded SlotStore —
+	// the ordering here is the actual race-freedom guarantee, not any lock
+	// inside RecoverSlotStoreAtStartup itself.
+	if cfg.Thebe.Enabled {
+		// Entropy restart recovery (messaging/entropy_recovery.go): pause epoch
+		// DECISIONS from here — before node.NewNode() can deliver a block — until
+		// RunEntropyStartupRecovery below has replayed the stored reveals and
+		// certificates. Blocks arriving meanwhile are still folded. The replay
+		// call always disarms; a timer disarms as a last resort.
+		messaging.ArmEntropyRecovery(messaging.DefaultEntropyRecoveryArmTimeout)
+
+		if err := messaging.RecoverSlotStoreAtStartup(slotStoreRecoveryGetTip); err != nil {
+			fmt.Printf("⚠️  slot recovery failed — this node will NOT vote or propose until this is resolved: %v\n", err)
+			log.Error().Err(err).Msg("slot recovery: startup recovery failed — consensus participation blocked (fail-closed, docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8)")
+		} else {
+			fmt.Println("✅ slot/epoch clock recovered from local committed history")
+
+			// NOTE (D-37): the fallback aggregate-store rebuild used to run HERE
+			// and was a guaranteed no-op. It needs the committee-eligibility
+			// source, which is not wired until after node.NewNode() below, so
+			// every block it replayed failed verification and it always
+			// returned 0 — while logging up to 512 "parent certificate failed
+			// verification" errors that look like tampering. It now runs after
+			// that wiring; search for RecoverAggSigStoreAtStartup.
+		}
+	} else {
+		// No ThebeDB means no ExtraData persistence (DB_OPs/backend/block.go's
+		// Slot/Period write only exists on that path), so there is nothing to
+		// recover from and no way to detect a stale post-restart slot on this
+		// configuration. Marking ready preserves this legacy path's
+		// pre-existing (unprotected) behavior instead of permanently blocking
+		// consensus on a fleet that predates ThebeDB — this fix's scope is the
+		// ThebeDB-backed path, and that scoping is disclosed loudly rather
+		// than silently applied.
+		log.Warn().Msg("slot recovery: ThebeDB disabled — slot/epoch clock cannot be recovered from storage; running without restart protection (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8 is scoped to the ThebeDB-backed path)")
+		messaging.MarkSlotStoreReady()
+	}
+	// Wire the vote-side gate (AVC/BuddyNodes/MessagePassing/consensus_sync_gate.go)
+	// to the same readiness state — injected rather than imported directly to
+	// avoid an import cycle (messaging -> Vote -> MessagePassing already
+	// exists); see SetSlotStoreReadyFn's doc.
+	MessagePassing.SetSlotStoreReadyFn(messaging.SlotStoreReady)
+	// Vote-CRDT read path's committee source (Stage 3.5 of
+	// docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md). Lives in package Structs (not
+	// MessagePassing) because Structs is the actual caller (Stage 4's
+	// ProcessVotesFromCRDT in AVC/BuddyNodes/MessagePassing/Structs/Utils.go)
+	// and MessagePassing -> Structs already exists, so Structs ->
+	// MessagePassing would be an import cycle.
+	// Flag-switched (JMDN_COMMITTEE_V2): off -> messaging.AuthorizedCommittee,
+	// byte-identical to the previous wiring; on -> the uncapped pool that
+	// SelectCommittee seats from, so the buddy's tally and the sequencer's
+	// certification stop resolving membership from two independent sources.
+	// Rollback is turning the flag off; see messaging/authorized_committee_tally.go.
+	Structs.SetAuthorizedCommitteeFn(messaging.AuthorizedCommitteeForTally)
+	// W1: per-height tally source - the chain-anchored pool of the tallied
+	// block's selection period once anchoring is active; otherwise identical
+	// to the line above.
+	Structs.SetAuthorizedCommitteeForHeightFn(messaging.AuthorizedCommitteeForTallyAtHeight)
+	// "Count every validator's vote in the buddy tally again" LLD: the VOTER
+	// set a buddy counts votes from (every eligible validator, uncapped), as
+	// distinct from the committee-seat set wired above (who may sign a buddy
+	// RESULT). Flag-switched (JMDN_VALIDATOR_VOTER_SET): off -> falls back to
+	// the committee wiring above, byte-identical to the previous behaviour.
+	// Rollback is turning the flag off; see messaging/authorized_voters_tally.go.
+	Structs.SetAuthorizedVotersForHeightFn(messaging.AuthorizedVotersForTallyAtHeight)
+	// Vote-ingest voter set: whose votes a node may STORE (and so republish by
+	// CRDT sync). The fleet-agreed pool, without the local block_buddy filter
+	// the tally source above applies; see messaging/authorized_voters_tally.go.
+	Structs.SetIngestVotersForHeightFn(messaging.FleetVotersForIngestAtHeight)
+	// Vote-ingest height window: a received vote may be at most
+	// Structs.MaxVoteHeightAhead past this node's committed tip.
+	Structs.SetCommittedTipFn(messaging.CommittedTip)
+
 	// Start the node
 	fmt.Println("Creating libp2p node...")
 	n, err := node.NewNode(logger_ctx)
@@ -1092,6 +1587,74 @@ func main() {
 	messaging.SetHostInstance(n.Host)
 	profiler.RegisterHost(n.Host)
 
+	// AVC M4 Decision A — install this node's peer ID so it can produce RANDAO
+	// reveals when it is drawn onto an entropy committee (Architecture §4.3).
+	// Without this, ProduceRevealForEpoch has no identity, so this node is
+	// counted as withheld in every epoch it is seated for, taking the whole
+	// epoch to fallback under Rule 1.
+	//
+	// Before the chain's entropy cut-over (messaging/entropy_cutover.go) the
+	// reveal is an Ed25519 signature with this libp2p key; from the cut-over it
+	// is a BLS signature under the node's committee BLS key (A-2), and the
+	// libp2p key only proves the peer ID is this node's own.
+	//
+	// Non-fatal on failure. A node that cannot install an identity still
+	// validates, votes and commits normally; it simply cannot contribute
+	// entropy — so this must never stop startup.
+	if selfPriv := n.Host.Peerstore().PrivKey(n.Host.ID()); selfPriv == nil {
+		fmt.Println("⚠️  no private key in the peerstore for this host — RANDAO reveals disabled for this node")
+	} else if idErr := messaging.SetNodeIdentity(selfPriv, n.Host.ID().String()); idErr != nil {
+		fmt.Printf("⚠️  could not install AVC M4 reveal identity: %v\n", idErr)
+	} else {
+		fmt.Println("✅ AVC M4 reveal identity installed")
+	}
+
+	// AVC M4 Stage F — install the RANDAO+VDF beacon (Stage 2 committee
+	// entropy) if it has been genuinely configured via env (see
+	// Sequencer/beacon_install.go's header for why the two required crypto
+	// parameters, the VDF group modulus and the calibrated difficulty T,
+	// are read from environment rather than pinned in code).
+	//
+	// A2: Stage 1 now means NO VDF env at all. Anything else that fails to
+	// install — partial config, invalid value, or a production-posture
+	// refusal — stops the node. Block/consensus_fields.go's boundary-slot
+	// check (A1) is gated on whether this process actually installed a
+	// pipeline, not on a separate flag; before that fix, a node whose
+	// install failed here kept running on Stage 1 while every peer whose
+	// beacon DID install stayed on Stage 2 — different committee-selection
+	// entropy from what the operator configured, with one log line as the
+	// only signal. Refusing to start is the whole point of this check.
+	// D-48: beaconInstalled also gates messaging.HandleVDFProofRequestStream
+	// (node/node.go's VDFProofRequestProtocol registration) below, via
+	// messaging.SetVDFBeaconInstalled — hoisted out of the if/else-if chain
+	// so that call sees the same value regardless of which branch ran.
+	var beaconInstalled bool
+	var beaconErr error
+	if beaconInstalled, beaconErr = Sequencer.InstallAVCBeaconFromEnv(); beaconErr != nil {
+		reason := "Stage-2 configuration present but invalid"
+		if errors.Is(beaconErr, Sequencer.ErrTrapdooredGroupInProduction) ||
+			errors.Is(beaconErr, Sequencer.ErrUnpinnedModulusInProduction) {
+			reason = "production-posture VDF refusal"
+		}
+		if l := mainLogger(); l != nil {
+			l.Error(ctx, "entropy: refusing to start rather than silently running Stage 1", beaconErr,
+				ion.String("reason", reason))
+		}
+		os.Exit(1)
+	} else if beaconInstalled {
+		if l := mainLogger(); l != nil {
+			l.Info(ctx, "entropy: AVC beacon (Stage 2 RANDAO+VDF) installed")
+		}
+	}
+	// D-48: gate the VDF-proof pull responder (messaging.HandleVDFProofRequestStream)
+	// on whether the beacon is actually installed, not a separate on/off flag —
+	// there is nothing for it to serve, and no reason for it to do the
+	// per-request KV read at all, on a node that never installed Stage 2.
+	// A misconfigured-but-non-fatal beacon (the beaconErr!=nil, non-exit branch
+	// above) leaves beaconInstalled at its zero value (false), so this call
+	// sees the correct state for every branch above, including that one.
+	messaging.SetVDFBeaconInstalled(beaconInstalled)
+
 	// Initialize the listener node for handling submit message protocol
 	// This sets up the SubmitMessageProtocol handler for vote submission
 	listener := MessagePassing.NewListenerNode(logger_ctx, n.Host, Sequencer.NewResponseHandler())
@@ -1101,7 +1664,7 @@ func main() {
 	globalPubSub, err := initPubSub(n)
 	if err != nil {
 		fmt.Printf("Failed to initialize PubSub system: %v\n", err)
-		log.Error().Err(err).Msg("Failed to initialize PubSub system")
+		mainLogger().Error(context.Background(), "Failed to initialize PubSub system", err)
 		// Continue without PubSub - some features may be limited
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
@@ -1129,68 +1692,215 @@ func main() {
 		}()
 	}
 
-	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
-	}
-	defer func() {
-		if mainDBClient != nil {
-			DB_OPs.PutMainDBConnection(mainDBClient)
+	// Legacy pool-client acquisition removed: storage goes through the
+	// process-wide ThebeHandle (DB_OPs.SetGlobalHandle above); helpers
+	// take a nil conn and resolve getHandle(nil) internally.
+
+	// Legacy follow mode (migration from main): keep this node applying the
+	// mainnet sequencer's blocks until the cutover. See messaging/legacy_follow.go.
+	if cfg.Consensus.LegacyFollow.Enabled {
+		follower, lerr := thebesync.NewLegacyFollower(n.Host, cfg.Consensus.LegacyFollow)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: %v\n", lerr) //nolint:forbidigo // CLI output: fatal boot error printed before exit; the logger may not be up yet.
+			os.Exit(1)
 		}
-	}()
-
-	// Debugging
-	// fmt.Println("Getting accounts database connection from pool")
-
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
-	}
-
-	// Debugging
-	// fmt.Println("Got accounts database connection from pool", didDBClient)
-
-	defer func() {
-		if didDBClient != nil {
-			DB_OPs.PutAccountsConnection(didDBClient)
+		messaging.SetLegacyCatchUpNudge(follower.Nudge)
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.LegacyFollowThread, func(ctx context.Context) error {
+			follower.Run(ctx)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL legacy follow: could not start: %v\n", err) //nolint:forbidigo // CLI output: fatal boot error printed before exit.
+			os.Exit(1)
 		}
-	}()
-
-	// Migration to v3base: serve the read-only ThebeSync (/fastsync/v4)
-	// protocols so v3base nodes following this network can catch up on blocks
-	// they missed. Serve-only, never writes. Enable on the sequencer only.
-	if cfg.FastSync.ServeV4 {
-		v4 := &thebesyncserve.Server{Provider: thebesyncserve.Provider{}}
-		n.Host.SetStreamHandler(thebesyncserve.HeadProtocol, v4.HeadHandler)
-		n.Host.SetStreamHandler(thebesyncserve.GetBlocksProtocol, v4.GetBlocksHandler)
-		log.Info().Msg("[FastSync] serving /fastsync/v4 (read-only) for v3base nodes")
+		if logger := mainLogger(); logger != nil {
+			logger.Info(context.Background(), "[legacy-follow] following the main-branch sequencer",
+				ion.String("main_sequencer", cfg.Consensus.LegacyFollow.MainSequencer),
+				ion.Uint64("until_height", cfg.Consensus.LegacyFollow.UntilHeight))
+		}
 	}
 
-	// fastsync V1 retired — FastsyncV2 only.
-	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
-	} else {
-		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	// Sync engine: ThebeSync (FastSync v4). FastsyncV2 is retired — serving is via
+	// the thebesync handlers registered in node.go, catch-up via thebesync.CatchUp.
+	if !cfg.FastSync.Enabled {
+		log.Info().Msg("[Sync] disabled by config — sync monitor not started")
 	}
 
-	// SeedMonitor: every node with fastsync enabled reports its Merkle root to the
+	// Legacy interop: register the retired FastsyncV2 (/fastsync/v1) SERVING
+	// handlers so legacy ImmuDB + old-FastSync nodes can still pull. Set
+	// serve_legacy=true ONLY on the sequencer — the sole authoritative source
+	// legacy nodes sync from. Serve-only: this path never pulls. The engine object
+	// is retained so its stream handlers stay live for the node's lifetime.
+	if cfg.FastSync.ServeLegacy {
+		if legacyServer, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, cfg.FastSync.SyncTimeout); err != nil {
+			log.Error().Err(err).Msg("[FastSync-legacy] failed to register /fastsync/v1 serving handlers")
+		} else {
+			legacyFastsyncServer = legacyServer
+			log.Info().Msg("[FastSync-legacy] serving /fastsync/v1 for legacy ImmuDB nodes (sequencer)")
+		}
+	}
+
+	// SeedMonitor: every node with sync enabled reports its Merkle root to the
 	// seednode periodically (outbound only, no DB writes ever).
 	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
 	// enable_pulling guards CLI pull commands and the reconcile path independently.
+	// Stage 6 (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md §8): register the vote-CRDT
+	// compaction hook unconditionally, BEFORE the sync-monitor wiring below,
+	// which is gated behind FastSync.Enabled + a configured seed node + a
+	// live seednode client + syncMonitor.Start succeeding — any one of which
+	// failing must not also silently disable compaction. Compaction bounds
+	// THIS node's own vote-CRDT memory growth and has nothing to do with
+	// whether it talks to a seednode. If the sync-monitor block below does
+	// start successfully, it composes with this hook rather than overwriting
+	// it (DB_OPs.SetLatestBlockAdvanceHook holds exactly one function).
+	voteCompactionHook := startVoteCRDTCompactionHook(ctx)
+	DB_OPs.SetLatestBlockAdvanceHook(voteCompactionHook)
+	// A tip read that found a stored, applied block above the recorded tip
+	// (its latest_block and applied-anchor writes both failed) reports here.
+	DB_OPs.SetTipRepairHook(func(from, to uint64, recordErr error) {
+		logger := mainLogger()
+		if logger == nil {
+			return
+		}
+		if recordErr != nil {
+			logger.Error(context.Background(), "data-complete tip repaired, but the latest_block marker could not be written", recordErr,
+				ion.Uint64("recorded_tip", from), ion.Uint64("repaired_tip", to))
+			return
+		}
+		logger.Warn(context.Background(), "data-complete tip repaired over stored, applied blocks",
+			ion.Uint64("recorded_tip", from), ion.Uint64("repaired_tip", to))
+	})
+
+	// Phase A4.2 (docs/A4-REPUTATION-WEIGHTING-PLAN.md): push observed
+	// reputation to the seed as peer.Weights, independently of FastSync/the
+	// sync monitor, for the same reason compaction is registered
+	// unconditionally above — this has nothing to do with whether this node
+	// pulls from a seed for sync. Only meaningful when a seed is configured;
+	// startReputationSeedPusher itself no-ops (with a log line) on a nil
+	// client, and PushReputationWeights no-ops per-tick on every node that
+	// isn't the sequencer. See seednode/sequencer_reputation_push.go's PHASE
+	// A4.2 CAVEAT for what this does and does not guarantee today.
+	if cfg.Network.SeedNode != "" {
+		if reputationSeedClient, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
+			log.Error().Err(err).Msg("[ReputationPush] failed to create seednode client — reputation push disabled")
+		} else {
+			startReputationSeedPusher(ctx, reputationSeedClient)
+		}
+	} else {
+		log.Warn().Msg("[ReputationPush] cfg.network.seed_node not set — reputation push disabled")
+	}
+
 	var syncMonitor *syncmonitor.Monitor
-	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
+	if cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
-			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
+			// Fallback fix: no seednode configured means the periodic
+			// syncmonitor.Monitor below (which needs a SeedReporter) never got
+			// built here, and before this branch nothing else periodic ran
+			// either — catch-up only fired REACTIVELY, from
+			// messaging.checkLinkage's height-gap detection on a NEWLY
+			// ARRIVED block. A node whose block delivery silently stalled
+			// (peers stopped forwarding, its own subscription died, a brief
+			// partition) had no path back, because the very mechanism meant
+			// to notice needed a block to arrive to run at all. Peer
+			// connectivity heartbeats (node/nodemanager.go) do not help
+			// either — they check the connection, never whether blocks are
+			// still flowing over it.
+			//
+			// thebesync.PeerReporter closes that gap by sampling connected
+			// peers directly for their head instead of a seednode, so this
+			// reuses the SAME Monitor and all of its existing hardening
+			// (jitter, propagation guard, consecutive threshold, adaptive
+			// interval, single-flight reconcile) — only the reporter differs.
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — using peer-sampled fallback (no seednode)")
+
+			reporter := thebesync.PeerReporter{Host: n.Host}
+			syncMonitor = syncmonitor.New(thebesync.ChainReporter{}, reporter, cfg.FastSync.SyncCheckInterval)
+
+			// Only wire reconciliation on non-sequencer nodes, exactly as the
+			// seednode-backed branch below does: the sequencer sets
+			// enable_catchup=false — it is authoritative and never catches up
+			// from peers.
+			if cfg.FastSync.EnableCatchup {
+				syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+					if len(peers) == 0 {
+						return fmt.Errorf("[ReconcileFunc-peer] peer sample returned no good peers")
+					}
+					// Tip before any attempt, so a CatchUp that returns without
+					// applying anything can be told from one that advanced us.
+					tipBefore, _, tipErr := thebesync.ChainReporter{}.TipState(rctx)
+					for _, p := range peers {
+						if len(p.Multiaddrs) == 0 {
+							log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer has no multiaddrs, skipping")
+							continue
+						}
+						targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+						log.Info().
+							Str("peer", p.PeerID).
+							Str("addr", targetMultiaddr).
+							Msg("[ReconcileFunc-peer] attempting catchup (no seednode)")
+						reached, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr)
+						if err != nil {
+							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc-peer] peer failed, trying next")
+							continue
+						}
+						// Slot-restart recovery, fast-sync half — same reasoning
+						// as the seednode-backed branch below: bulk catch-up
+						// writes bypass the live commit hooks, so re-running
+						// recovery against the now-populated local tip is what
+						// actually seeds it.
+						//
+						// Runs on ANY error-free catch-up, including one that
+						// applied nothing, and BEFORE the progress check below:
+						// these two loops are its only call sites outside
+						// startup, and it is documented as safe to call any
+						// number of times, so a no-op round must not take its
+						// retry away.
+						if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
+							log.Error().Err(err).Msg("[ReconcileFunc-peer] slot recovery after catchup failed — this node remains blocked from voting/proposing")
+						}
+						if !catchUpAdvanced(reached, tipBefore, tipErr) {
+							mainLogger().Warn(rctx, "[ReconcileFunc-peer] peer served no new blocks, trying next",
+								ion.Uint64("reached", reached), ion.Uint64("tip", tipBefore), ion.String("peer", p.PeerID))
+							continue
+						}
+						mainLogger().Info(rctx, "[ReconcileFunc-peer] catchup succeeded", ion.String("peer", p.PeerID))
+						return nil
+					}
+					return fmt.Errorf("[ReconcileFunc-peer] all %d sampled peer(s) failed catchup", len(peers))
+				})
+
+				// Same nudge the seednode-backed branch wires below: when the
+				// block-propagation linkage check detects a height gap, run an
+				// immediate check instead of waiting for the next periodic
+				// tick. Best-effort; the gap block is rejected regardless.
+				localMonitor := syncMonitor
+				messaging.SetCatchUpRequester(func(fromBlock uint64) {
+					if localMonitor == nil {
+						return
+					}
+					log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering peer-sampled catch-up (no seednode)")
+					localMonitor.RequestCheck()
+				})
+			}
+
+			if err := syncMonitor.Start(ctx); err != nil {
+				log.Error().Err(err).Msg("[SyncMonitor] peer-sampled fallback failed to start — continuing without any periodic check")
+				syncMonitor = nil
+			} else {
+				log.Info().
+					Bool("catchup", cfg.FastSync.EnableCatchup).
+					Dur("interval", cfg.FastSync.SyncCheckInterval).
+					Msg("[SyncMonitor] started (peer-sampled fallback, no seednode)")
+			}
 		} else {
 			selfPeerID := n.Host.ID().String()
 			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
 			if err != nil {
 				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
 			} else {
-				blockInfo := NodeInfo.NewSyncStruct()
 				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
-				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
+				// Thebe-native reporter: reports (tip height, tip StateRoot) — an
+				// O(1) cumulative commitment — instead of the retired MMR fingerprint.
+				syncMonitor = syncmonitor.New(thebesync.ChainReporter{}, reporter, cfg.FastSync.SyncCheckInterval)
 
 				// Only wire reconciliation on non-sequencer nodes.
 				// The sequencer sets enable_catchup=false — it is the authoritative source,
@@ -1201,6 +1911,8 @@ func main() {
 						if len(peers) == 0 {
 							return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
 						}
+						// Tip before any attempt — see the peer-sampled branch above.
+						tipBefore, _, tipErr := thebesync.ChainReporter{}.TipState(rctx)
 						for _, p := range peers {
 							if len(p.Multiaddrs) == 0 {
 								log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
@@ -1212,11 +1924,39 @@ func main() {
 								Str("addr", targetMultiaddr).
 								Uint64("from_block", fromBlock).
 								Msg("[ReconcileFunc] attempting catchup")
-							if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+							// ThebeSync (FastSync v4) log-shipping catch-up replaces the
+							// FastsyncV2 Merkle-bisection path. It auto-detects the range
+							// from the local tip, so fromBlock is no longer passed.
+							reached, err := thebesync.CatchUp(rctx, n.Host, targetMultiaddr)
+							if err != nil {
 								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
 								continue
 							}
-							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							// Slot-restart recovery, fast-sync half
+							// (docs/COMMITTEE-SNAPSHOT-FREEZE-TODO.md item 8,
+							// point 5): bulk catch-up writes bypass the live
+							// commit hooks entirely (slot_store.go's own
+							// documented scope), so DefaultSlotStore.haveCommitted
+							// is still false here even after this node just
+							// wrote thousands of blocks — re-running recovery
+							// against the now-populated local tip is what
+							// actually seeds it. No-ops if this node is
+							// already live (e.g. it was never behind and this
+							// reconcile was a no-op tick).
+							// Runs on ANY error-free catch-up, including one that
+							// applied nothing, and BEFORE the progress check
+							// below: these two loops are its only call sites
+							// outside startup, so a no-op round must not take
+							// its retry away.
+							if err := messaging.EnsureSlotStoreRecovered(slotStoreRecoveryGetTip); err != nil {
+								log.Error().Err(err).Msg("[ReconcileFunc] slot recovery after catchup failed — this node remains blocked from voting/proposing")
+							}
+							if !catchUpAdvanced(reached, tipBefore, tipErr) {
+								mainLogger().Warn(rctx, "[ReconcileFunc] peer served no new blocks, trying next",
+									ion.Uint64("reached", reached), ion.Uint64("tip", tipBefore), ion.String("peer", p.PeerID))
+								continue
+							}
+							mainLogger().Info(rctx, "[ReconcileFunc] catchup succeeded", ion.String("peer", p.PeerID))
 							return nil
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
@@ -1233,8 +1973,11 @@ func main() {
 							return
 						}
 						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
-						go localMonitor.TriggerCheck(context.Background())
+						localMonitor.RequestGapCatchUp()
 					})
+					// The vote path sees the gap first on a node that missed a
+					// broadcast (it never receives a block, only vote requests).
+					Vote.GapCatchUpHook = messaging.RequestCatchUp
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {
@@ -1255,9 +1998,22 @@ func main() {
 					// only signals a debounced, async pusher (never blocks the
 					// apply path); the periodic timer remains the backstop.
 					localMon := syncMonitor
-					DB_OPs.SetLatestBlockAdvanceHook(startSeedBlockHeadPusher(ctx, func(c context.Context) {
-						localMon.TriggerCheck(c)
-					}))
+					// TriggerCheckAfterApply, NOT TriggerCheck: the push fires
+					// ~750ms after the store, inside runCheck's 30s propagation
+					// guard, so TriggerCheck skipped itself on every block and the
+					// seednode only ever saw the periodic (1–30 min) report.
+					seedPushHook := startSeedBlockHeadPusher(ctx, func(c context.Context) {
+						localMon.TriggerCheckAfterApply(c)
+					})
+					// Compose with the unconditionally-registered Stage 6
+					// compaction hook above rather than overwriting it —
+					// DB_OPs.SetLatestBlockAdvanceHook holds exactly one
+					// function, and voteCompactionHook is already running
+					// regardless of whether this branch is ever reached.
+					DB_OPs.SetLatestBlockAdvanceHook(func(head uint64) {
+						seedPushHook(head)
+						voteCompactionHook(head)
+					})
 					log.Info().Msg("[SeedPush] event-driven block-head reporting wired")
 				}
 			}
@@ -1286,7 +2042,18 @@ func main() {
 			return MessagePassing.GateDecision(localTipKnown, tip, 0, false)
 		}
 		st := gateMonitor.GetStatus()
-		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
+		// st.HeadAuthenticated is REQUIRED here, not decorative. SequencerHead
+		// is ALSO produced by thebesync.PeerReporter on a seedless node, where
+		// it is the maximum height claimed by up to 8 unauthenticated peers
+		// with no corroboration. Acting on that would let a single peer
+		// answering FetchHead with tip+3 push this node past
+		// MaxConsensusLagBlocks and make it abstain — removing a validator from
+		// quorum for the cost of one lie, and a lie small enough to pass for
+		// ordinary propagation lag. Treating an unvouched head as UNKNOWN takes
+		// the documented fail-open path instead, which is the same posture this
+		// node already adopts during a seednode outage.
+		// See syncmonitor.SyncStatus.HeadAuthenticated.
+		headKnown := st.SequencerHead > 0 && st.HeadAuthenticated && !st.SeednodeUnreachable
 		return MessagePassing.GateDecision(localTipKnown, tip, st.SequencerHead, headKnown)
 	})
 
@@ -1307,26 +2074,300 @@ func main() {
 	// seed-served key (persisted to config/seedAuth.json; override with
 	// JMDN_SEED_AUTH_FILE). The verified snapshot is cached, so the seed is queried
 	// about once per refresh window, not per block.
-	if cfg.FastSync.EnableCatchup && cfg.Network.SeedNode != "" {
+	// Wire the authenticated committee sources at STARTUP whenever we have a
+	// seednode AND either a pinned authority OR catchup. The pin branch guarantees
+	// the reward-address + eligibility sources are set before the first
+	// attachAVCConsensusFields on the sequencer too (otherwise reward_split_enabled
+	// fails every block closed until the lazy NewConsensus wiring runs). Idempotent
+	// with Sequencer/consensus_statemachine.go's NewConsensus wiring — same pinned,
+	// authenticated snapshot. The `|| EnableCatchup` arm preserves the prior
+	// empty-pin TOFU read path for catchup nodes (CommitteeSourcesAuto pin-or-TOFU).
+	// D-26(d)/CON-03: wire the vote-result-requester gate's authoritative
+	// source (AVC/BuddyNodes/MessagePassing/consensus_vote_authz.go) here,
+	// unconditionally, for every node role (sequencer or buddy) and before
+	// branching on role below — the closure itself reads config and the
+	// committee-eligibility source LAZILY on each call, not at wiring time,
+	// so it does not need WireCommitteeSources or the seed client below to
+	// have run first; it only needs to be wired before this node's stream
+	// handler can plausibly receive a request (node.NewNode(), earlier in
+	// startup than this point), which one unconditional call site here
+	// guarantees regardless of which role branch below actually executes.
+	MessagePassing.SetAuthorizedRequesterSource(func() (map[peer.ID]struct{}, bool) {
+		var committee []peer.ID
+		if members, err := messaging.EligibleCommitteePeerIDs(); err == nil {
+			committee = make([]peer.ID, 0, len(members))
+			for pid := range members {
+				if p, decErr := peer.Decode(pid); decErr == nil {
+					committee = append(committee, p)
+				}
+			}
+		}
+		// Committee resolution failing does not make the whole source
+		// indeterminate: the pinned sequencer is a static config value that
+		// never depends on live committee resolution, so it is still
+		// authorized on its own even during a committee-source hiccup —
+		// this is the liveness property the pin exists to provide. ok is
+		// always true: an unresolved committee degrades the set (possibly
+		// to pin-only, or empty if unpinned too), it never makes the
+		// decision indeterminate.
+		var pinned peer.ID
+		if raw := sequencerid.Get(); raw != "" && raw != sequencerid.Unknown {
+			if p, decErr := peer.Decode(raw); decErr == nil {
+				pinned = p
+			} else {
+				log.Error().Err(decErr).Str("configured_value", raw).
+					Msg("[D-26d] consensus.sequencer_pinned_peer_id is not a valid peer ID — sequencer will not be authorized via the pin until this is corrected")
+			}
+		}
+		return MessagePassing.AuthorizedRequesterSet(committee, pinned), true
+	})
+
+	if cfg.Network.SeedNode != "" && (cfg.Consensus.SeedAuthorityBLSPub != "" || cfg.FastSync.EnableCatchup) {
 		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
 			log.Error().Err(err).
 				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
 		} else {
-			messaging.SetCommitteeEligibilitySource(elCli.CommitteeEligibilityAuto(
+			// Eligibility + reward-address sources from the SAME committeeSource
+			// (SAME cached, verified snapshot), so buddy staking-reward fee
+			// distribution (R4/R5) derives from the identical authenticated snapshot
+			// as vote eligibility. The reward source is a no-op unless
+			// consensus.reward_split_enabled is on; when it is, R5's recompute needs
+			// this map, and leaving it unset would (correctly) fail closed.
+			elFn, rewardFn := elCli.CommitteeSourcesAuto(
 				cfg.Consensus.SeedAuthorityBLSPub,
 				cfg.Consensus.CommitteeEpochSeconds,
 				seednode.SeedAuthPinPath(),
 				cfg.Network.SeedNode,
 				60*time.Second,
-			))
-			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
+				cfg.Consensus.CommitteeStrictBoundary,
+			)
+			messaging.SetCommitteeEligibilitySource(elFn)
+			messaging.SetRewardAddressSource(rewardFn)
+			log.Info().Msg("[Committee] eligibility + reward-address sources wired at startup (pinned or catchup; pin-or-TOFU committee snapshot)")
+
+			// W1 (committee anchor): the seed's current signed snapshot, for the
+			// proposer to carry on anchor blocks and for every node's start-up
+			// preflight. Previously wired only in Sequencer.WireCommitteeSources,
+			// which a pinned sequencer reaches lazily (NewConsensus) - after its
+			// first attachAVCConsensusFields - and buddies never reach.
+			messaging.SetCommitteeAnchorSource(func(ctx context.Context) (*seedcommittee.CommitteeSnapshot, error) {
+				return elCli.FetchCommitteeSnapshot(ctx, 0)
+			})
+			if messaging.CommitteeAnchoringEnabled() {
+				go func() {
+					if epoch, members, perr := messaging.PreflightCommitteeAnchorSource(); perr != nil {
+						log.Error().Err(perr).Msg("committee anchor preflight FAILED - fix before the chain reaches consensus.committee_anchor_activation_height")
+					} else {
+						log.Info().Uint64("seed_epoch", epoch).Int("members", members).
+							Msg("committee anchor preflight OK: seed snapshot verifies against the pinned authority")
+					}
+				}()
+			}
+		}
+	} else if !cfg.FastSync.EnableCatchup {
+		// SEQUENCER (enable_catchup=false, so the branch above is skipped). Wire
+		// the same two sources HERE, at startup, from the pinned snapshot.
+		//
+		// This was previously left to Sequencer.NewConsensus on the theory that
+		// the sequencer "wires its own pinned source in the block-production
+		// path". That path wires it too late: Block.processZKBlock calls
+		// attachAVCConsensusFields — which needs the reward source whenever
+		// consensus.reward_split_enabled is on — BEFORE it constructs the
+		// Consensus. The first block therefore failed with "reward-address source
+		// not configured (fail closed)" and returned 503 before NewConsensus ran,
+		// so the source was never wired for the life of the process and every
+		// later block failed identically. Block/grpc_server.go has the same
+		// inversion. NewConsensus still calls WireCommitteeSources, so this is
+		// belt-and-braces rather than a relocation.
+		if Sequencer.WireCommitteeSources(n.Host) {
+			log.Info().Msg("[Committee] eligibility + reward-address sources wired on sequencer at startup (pinned committee snapshot)")
+		} else {
+			log.Warn().
+				Bool("reward_split_enabled", cfg.Consensus.RewardSplitEnabled).
+				Msg("[Committee] sequencer has no pinned consensus.seed_authority_bls_pub (or no network.seednode) — reward-address source stays UNSET; with reward_split_enabled on, every block fails closed at attachAVCConsensusFields")
+		}
+	}
+
+	// ── Fallback aggregate store — rebuild from persisted certificates ────────
+	//
+	// PLACED HERE, NOT WITH SLOT RECOVERY (D-37). It used to sit next to slot
+	// recovery, ~400 lines above, which reads naturally — both are "restore
+	// in-memory state from committed history" — and was a guaranteed no-op.
+	// The replay calls VerifyAndRecordPrevCert, which resolves the eligible
+	// pool via fleetCommitteeSnapshotFor -> FleetEligibleForEpoch, and
+	// that returns "committee eligibility source not configured (fail closed)"
+	// until SetCommitteeEligibilitySource / WireCommitteeSources have run —
+	// both of which need n.Host and therefore cannot run before
+	// node.NewNode(). So every replayed block failed, `recovered` was always 0,
+	// and neither call-site branch printed anything, while up to
+	// maxRecoveryScanBlocks "parent certificate failed verification" errors
+	// were logged, which reads as tampering rather than a wiring bug.
+	//
+	// The old position's stated reason — "before node.NewNode() so no live
+	// commit hook can race a half-rebuilt store" — does not survive contact
+	// with what the race actually costs. defaultAggSigStore is mutex-guarded,
+	// so there is no data race; the worst case is a fold running against a
+	// partially-rebuilt window, which fails CLOSED, which is the designed
+	// outcome for a short window anyway. A small, safe, fail-closed race beats
+	// a rebuild that provably never recovers anything.
+	//
+	// Same placement argument as the checkpoint block below: this needs the
+	// committee-eligibility source wired above.
+	//
+	// Thebe gate: without ThebeDB there is no ExtraData persistence, so there
+	// are no durable certificates to replay.
+	if cfg.Thebe.Enabled {
+		if tip, terr := slotStoreRecoveryGetTip(); terr == nil && tip != nil {
+			recovered, rerr := messaging.RecoverAggSigStoreAtStartup(
+				tip.Slot, tip.BlockNumber,
+				func(height uint64) (*config.ZKBlock, error) {
+					return DB_OPs.GetZKBlockByNumber(nil, height)
+				})
+			switch {
+			case rerr != nil:
+				log.Error().Err(rerr).Msg("fallback recovery: rebuilding the aggregate store failed — a fallback epoch may fail closed on this node until enough in-window blocks commit")
+			case recovered > 0:
+				fmt.Printf("✅ fallback aggregate store rebuilt (%d window slot(s)) from persisted certificates\n", recovered)
+			default:
+				// Explicit: D-37 was invisible precisely because zero was
+				// indistinguishable from "not run". Never let that recur.
+				log.Info().Msg("fallback recovery: no in-window certificates were replayed (expected when the collection window has only just opened, or when JMDN_AVC_AGG_CERT is off)")
+			}
+		}
+
+		// ── Entropy restart recovery (RANDAO reveals, mix(e), VDF sealing) ──
+		// Same placement argument as the aggregate rebuild above: replaying a
+		// block verifies its parent certificate and resolves the entropy
+		// committee, both of which need the committee sources wired above; and
+		// the beacon was installed (and rehydrated from disk) earlier. Always
+		// disarms the decision gate armed next to slot recovery.
+		entropyLog := mainLogger()
+		var entropyTipHeight uint64
+		entropyTip, entropyTipErr := slotStoreRecoveryGetTip()
+		entropyHaveTip := entropyTipErr == nil && entropyTip != nil
+		if entropyHaveTip {
+			entropyTipHeight = entropyTip.BlockNumber
+		} else if entropyTipErr != nil && !errors.Is(entropyTipErr, messaging.ErrNoCommittedBlock) && entropyLog != nil {
+			entropyLog.Error(ctx, "entropy recovery: cannot read the committed tip — skipping replay", entropyTipErr)
+		}
+		rep, rerr := messaging.RunEntropyStartupRecovery(beaconInstalled, entropyTipHeight, entropyHaveTip,
+			func(height uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, height) })
+		if entropyLog != nil {
+			if rerr != nil {
+				entropyLog.Error(ctx, "entropy recovery: replay failed — the current epoch's mix may be missing or differ on this node until the next epoch; VDF proof recovery from peers still applies", rerr)
+			} else if rep.Blocks > 0 {
+				entropyLog.Info(ctx, "entropy recovery: reveals, certificates and epoch decisions replayed from committed blocks",
+					ion.Uint64("tip_height", rep.TipHeight), ion.Uint64("tip_slot", rep.TipSlot),
+					ion.Uint64("from_height", rep.FromHeight), ion.Uint64("from_epoch", rep.FromEpoch), ion.Uint64("tip_epoch", rep.TipEpoch),
+					ion.Int("blocks", rep.Blocks), ion.Int("mixes_restored", rep.MixesRestored),
+					ion.Bool("sealing_resumed", rep.Resumed), ion.Uint64("resumed_epoch", rep.ResumedEpoch))
+			}
+		}
+	}
+
+	// ── Committee-signed chain-head checkpoints (Option A anchor) ─────────────
+	// Placed here (not right after the KV handle) deliberately: the boot
+	// verifier resolves committee keys via messaging.AuthorizedCommittee, which
+	// needs the committee-eligibility source wired above.
+	//
+	// Boot gate: verify the recomputed canonical head against the latest
+	// signed checkpoint, walking only the log after the floor checkpoint
+	// (from seq 0 when there is no floor), with a floor from
+	// checkpoint.floor_file / checkpoint.min_seq so a rolled-back store or
+	// deleted checkpoint keys are caught. fail-closed policy is config-gated.
+	//   - error         → log.Fatal when boot_fail_closed, else log.Error+continue
+	//   - (false, nil)  → no checkpoint and no floor: info
+	//   - (true, nil)   → verified (floor raised): info
+	//
+	// Sequencer discriminator: enable_catchup==false marks the authoritative
+	// producer (same discriminator the sync monitor + committee-source wiring
+	// use). Every node signs checkpoints of its own log; the sequencer may not
+	// run the light storage profile.
+	isSequencer := !cfg.FastSync.EnableCatchup
+	if err := cfg.ValidateStorage(isSequencer); err != nil {
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "[storage] invalid storage settings — refusing to start", err)
+		}
+		os.Exit(1)
+	}
+	if cfg.Checkpoint.Enabled && checkpointKV != nil {
+
+		// Resolve the floor file once so every log line names the real path; a
+		// relative path depends on the working directory.
+		floorFile := cfg.Checkpoint.FloorFile
+		if floorFile != "" {
+			if abs, absErr := filepath.Abs(floorFile); absErr == nil {
+				floorFile = abs
+			}
+		}
+
+		// The signer key: the configured pin, else this node's own BLS key.
+		// No manual copy step; an explicit pin in jmdn.yaml still wins.
+		signerPub, signerSource := messaging.ResolveCheckpointSigner(cfg.Checkpoint.SignerBLSPub)
+
+		verified, verr := messaging.CheckpointBootGate(context.Background(), checkpointKV,
+			messaging.CheckpointSigVerifierFor(signerPub), floorFile, cfg.Checkpoint.MinSeq,
+			12, 10*time.Second)
+		switch {
+		case verr != nil && cfg.Checkpoint.BootFailClosed:
+			log.Fatal().Err(verr).Msg("[checkpoint] boot verification FAILED (fail-closed) — refusing to start on a chain that does not match its signed checkpoint. If this node's BLS key was rotated, boot once with checkpoint.boot_fail_closed: false (see GETTING_STARTED \"Rotating the signing key\")")
+		case verr != nil:
+			log.Error().Err(verr).Msg("[checkpoint] boot verification failed (boot_fail_closed=false) — continuing; the canonical log does NOT match its signed checkpoint")
+		case !verified:
+			log.Info().Msg("[checkpoint] no checkpoint of this node's own and no floor — boot gate skipped")
+		default:
+			log.Info().Str("floor_file", floorFile).Msg("[checkpoint] boot verification passed — canonical head matches its signed checkpoint")
+		}
+
+		// Wire the per-committed-block signing hook (every node signs its own
+		// log; no-op when the cadence does not fire).
+		messaging.EnableCheckpointSigning(checkpointKV, cfg.Checkpoint.Enabled, cfg.Checkpoint.CadenceBlocks, n.Host.ID().String(), floorFile, signerPub)
+		log.Info().
+			Bool("sequencer", isSequencer).
+			Str("signer_source", signerSource).
+			Str("signer_bls_pub", signerPub).
+			Uint64("cadence_blocks", cfg.Checkpoint.CadenceBlocks).
+			Str("floor_file", floorFile).
+			Str("storage_profile", cfg.Storage.Profile).
+			Msg("[checkpoint] chain-head checkpoint feature enabled")
+
+		// The boot gate checked only the log after the floor checkpoint; on a
+		// node that keeps the whole log, re-walk it from seq 0 off the boot path.
+		if cfg.Checkpoint.BackgroundFullVerify && !cfg.Storage.IsLight() {
+			verify := messaging.CheckpointSigVerifierFor(signerPub)
+			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CheckpointFullVerifyThread, func(ctx context.Context) error {
+				messaging.StartBackgroundFullVerify(ctx, checkpointKV, verify)
+				return nil
+			}); err != nil {
+				if logger := mainLogger(); logger != nil {
+					logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.CheckpointFullVerifyThread))
+				}
+			}
+		}
+
+		// Light profile: prune the canonical log below a checkpoint at or
+		// below the floor, keeping about light_keep_blocks blocks.
+		if cfg.Storage.IsLight() {
+			keep, every := cfg.Storage.LightKeepBlocks, cfg.Storage.PruneInterval
+			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.LightLogPrunerThread, func(ctx context.Context) error {
+				messaging.RunLightLogPruner(ctx, checkpointKV, floorFile, keep, every)
+				return nil
+			}); err != nil {
+				if logger := mainLogger(); logger != nil {
+					logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.LightLogPrunerThread))
+				}
+			}
+			if logger := mainLogger(); logger != nil {
+				logger.Info(context.Background(), "[storage] light profile: canonical log older than light_keep_blocks is pruned",
+					ion.Uint64("light_keep_blocks", keep), ion.Duration("prune_interval", every))
+			}
 		}
 	}
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
 		initYggdrasilMessaging(ctx)
-		log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
+		mainLogger().Info(context.Background(), fmt.Sprintf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort))
 	}
 
 	// Display node identity
@@ -1350,12 +2391,17 @@ func main() {
 	defer Block.CloseMempoolClient()
 
 	// Initialize routing client to the same address as mempool
-	_, err = Block.NewRoutingServiceClient(logger_ctx, address)
+	_, err = Block.NewRoutingServiceClient(address)
 	if err != nil {
 		log.Printf("Failed to connect to routing service: %v", err)
 	} else {
 		log.Printf("Routing client initialized successfully")
 	}
+
+	// Transaction-status resolution (default-off). Wired here, after the routing
+	// client exists and before StartFacadeServer, so the RPC facade sees a
+	// resolver that can already reach the mempool.
+	initTxStatus(cfg)
 
 	// Initialize node manager
 	nodeManager, err = node.NewNodeManagerWithLogger(n)
@@ -1369,13 +2415,21 @@ func main() {
 	nodeManager.StartHeartbeat(cfg.Network.HeartbeatInterval)
 	defer nodeManager.Shutdown()
 
-	// Initialize DID propagation handler
-	n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleDIDStream)
+	// DID propagation (/gossipnode/did/2.0.0) is retired and its protocol ID
+	// deleted: it let any peer write an account row on every node, unsigned.
+	// Never re-add a handler for it. Accounts are created only by block
+	// application, by their first incoming transfer.
 
-	// Initialize DID propagation system
-	if err := messaging.InitDIDPropagation(nil); err != nil {
-		fmt.Printf("Failed to initialize DID propagation: %v\n", err)
-		log.Error().Err(err).Msg("Failed to initialize DID propagation")
+	// The contract push protocol (config.ContractPropagationProtocol) is not
+	// registered. Nothing sends it since push propagation was retired (see
+	// messaging/ContractPropagation.go), and its handler accepted a message from
+	// any peer, stored the ABI and deployer first-writer-wins, and re-flooded it
+	// to every peer under a sender-chosen ID.
+	// Pull-on-demand: peers can request missed contract metadata from us
+	n.Host.SetStreamHandler(config.ContractPullProtocol, saferun.Stream(string(config.ContractPullProtocol), messaging.HandleContractPullStream))
+
+	if err := messaging.InitContractPropagation(); err != nil {
+		mainLogger().Error(context.Background(), "Failed to initialize contract propagation", err)
 	}
 
 	// We'll initialize the DID system in the DID server to avoid blocking main
@@ -1383,40 +2437,67 @@ func main() {
 	if cfg.Ports.DID > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.DIDThread, func(ctx context.Context) error {
 			didAddr := fmt.Sprintf("%s:%d", cfg.Binds.DID, cfg.Ports.DID)
-			log.Info().Str("address", didAddr).Msg("Starting DID gRPC server")
+			mainLogger().Info(context.Background(), "Starting DID gRPC server", ion.String("address", didAddr))
 			if err := startDIDServer(ctx, n.Host, didAddr); err != nil {
 				fmt.Println("Failed to start DID gRPC server:", err)
-				log.Error().Err(err).Msg("Failed to start DID gRPC server")
+				mainLogger().Error(context.Background(), "Failed to start DID gRPC server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.DIDThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.DIDThread))
 		}
 	}
 
 	if cfg.Ports.BlockGen > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
-			log.Info().Msgf("Starting block generator on port %d", cfg.Ports.BlockGen)
+			mainLogger().Info(context.Background(), fmt.Sprintf("Starting block generator on port %d", cfg.Ports.BlockGen))
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", cfg.Ports.BlockGen)
 			if err := Block.StartserverWithContext(ctx, cfg.Binds.BlockGen, cfg.Ports.BlockGen, n.Host, cfg.Network.ChainID); err != nil {
-				log.Error().Err(err).Msg("Block generator server stopped")
+				mainLogger().Error(context.Background(), "Block generator server stopped", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.BlockgenThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockgenThread))
 		}
 	}
 
 	if cfg.Ports.BlockGRPC > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgRPCThread, func(ctx context.Context) error {
-			log.Info().Int("port", cfg.Ports.BlockGRPC).Msg("Starting block gRPC server")
+			mainLogger().Info(context.Background(), "Starting block gRPC server", ion.Int("port", cfg.Ports.BlockGRPC))
 			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", cfg.Ports.BlockGRPC)
-			if err := Block.StartGRPCServer(cfg.Binds.BlockGRPC, cfg.Ports.BlockGRPC, n.Host, cfg.Network.ChainID); err != nil {
-				log.Error().Err(err).Msg("Failed to start block gRPC server")
+			if err := Block.StartGRPCServer(cfg.Ports.BlockGRPC, n.Host, cfg.Network.ChainID); err != nil {
+				mainLogger().Error(context.Background(), "Failed to start block gRPC server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.BlockgRPCThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockgRPCThread))
+		}
+	}
+
+	// Start internal gETH server if port > 0
+	if cfg.Ports.Geth > 0 {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.GETHgRPCThread, func(ctx context.Context) error {
+			mainLogger().Info(context.Background(), "Starting internal gETH gRPC server", ion.Int("port", cfg.Ports.Geth))
+			if err := gETH.StartGRPC(cfg.Ports.Geth, cfg.Network.ChainID); err != nil {
+				mainLogger().Error(context.Background(), "Failed to start gETH gRPC server", err)
+			}
+			return nil
+		}); err != nil {
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.GETHgRPCThread))
+		}
+	}
+
+	// Start integrated Smart Contract server if port > 0
+	if cfg.Ports.Smart > 0 {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SmartContractThread, func(ctx context.Context) error {
+			mainLogger().Info(context.Background(), "Starting integrated Smart Contract gRPC server", ion.Int("port", cfg.Ports.Smart))
+			didAddr := fmt.Sprintf("%s:%d", cfg.Binds.DID, cfg.Ports.DID)
+			if err := SmartContract.StartIntegratedServer(ctx, cfg.Ports.Smart, cfg.Network.ChainID, cfg.Ports.Geth, didAddr, cfg.Ports.BlockGen, cas); err != nil {
+				mainLogger().Error(context.Background(), "Failed to start Smart Contract integrated server", err)
+			}
+			return nil
+		}); err != nil {
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.SmartContractThread))
 		}
 	}
 
@@ -1426,7 +2507,7 @@ func main() {
 		seedClient, err := seednode.NewClient(cfg.Network.SeedNode)
 		if err != nil {
 			fmt.Printf("Failed to create seed node client: %v\n", err)
-			log.Error().Err(err).Msg("Failed to create seed node client")
+			mainLogger().Error(context.Background(), "Failed to create seed node client", err)
 		} else {
 			defer seedClient.Close()
 
@@ -1436,19 +2517,19 @@ func main() {
 				err = seedClient.RegisterPeerWithAlias(n.Host, cfg.Node.Alias)
 				if err != nil {
 					fmt.Printf("Failed to register with seed node using alias: %v\n", err)
-					log.Error().Err(err).Msg("Failed to register with seed node using alias")
+					mainLogger().Error(context.Background(), "Failed to register with seed node using alias", err)
 				} else {
 					fmt.Printf("Successfully registered with seed node using alias '%s'\n", cfg.Node.Alias)
-					log.Info().Str("alias", cfg.Node.Alias).Msg("Successfully registered with seed node using alias")
+					mainLogger().Info(context.Background(), "Successfully registered with seed node using alias", ion.String("alias", cfg.Node.Alias))
 				}
 			} else {
 				err = seedClient.RegisterPeer(n.Host)
 				if err != nil {
 					fmt.Printf("Failed to register with seed node: %v\n", err)
-					log.Error().Err(err).Msg("Failed to register with seed node")
+					mainLogger().Error(context.Background(), "Failed to register with seed node", err)
 				} else {
 					fmt.Println("Successfully registered with seed node")
-					log.Info().Msg("Successfully registered with seed node")
+					mainLogger().Info(context.Background(), "Successfully registered with seed node")
 				}
 			}
 
@@ -1457,34 +2538,33 @@ func main() {
 			err = seedClient.DiscoverAndAddNeighbors(n.Host, nodeManager)
 			if err != nil {
 				fmt.Printf("⚠️  Neighbor discovery failed: %v\n", err)
-				log.Error().Err(err).Msg("Neighbor discovery failed")
+				mainLogger().Error(context.Background(), "Neighbor discovery failed", err)
 			} else {
 				fmt.Println("✅ Neighbor discovery completed successfully")
-				log.Info().Msg("Neighbor discovery completed successfully")
+				mainLogger().Info(context.Background(), "Neighbor discovery completed successfully")
 			}
 		}
 	}
 
 	if cfg.Ports.API > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
-			log.Info().Msgf("Starting ImmuDB API on port %d", cfg.Ports.API)
-			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", cfg.Ports.API)
+			mainLogger().Info(context.Background(), fmt.Sprintf("Starting Explorer API on port %d", cfg.Ports.API))
+			fmt.Printf("\nExplorer API available at http://localhost:%d/api\n", cfg.Ports.API)
 
 			// Initialize API server
 			apiAddr := fmt.Sprintf("%s:%d", cfg.Binds.API, cfg.Ports.API)
 			if err := StartAPIServer(ctx, apiAddr); err != nil {
-				log.Error().Err(err).Msg("Failed to start API server")
+				mainLogger().Error(context.Background(), "Failed to start API server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.ExplorerThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ExplorerThread))
 		}
 	}
 
 	cmdHandler := &cli.CommandHandler{
 		Node:            n,
 		NodeManager:     nodeManager,
-		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,
@@ -1493,29 +2573,22 @@ func main() {
 		PullAllowed:     cfg.FastSync.EnablePulling,
 	}
 
-	// Only set database clients if they're properly initialized
-	if mainDBClient != nil {
-		cmdHandler.MainClient = mainDBClient
-		fmt.Println(config.ColorGreen + "Main database client connected" + config.ColorReset)
-	} else {
-		fmt.Println(config.ColorYellow + "Warning: Main database client not available - some commands disabled" + config.ColorReset)
-	}
-
-	if didDBClient != nil {
-		cmdHandler.DIDClient = didDBClient
-		fmt.Println(config.ColorGreen + "DID database client connected" + config.ColorReset)
-	} else {
-		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
-	}
-
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)
-		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID, syncMonitor)
+		StartFacadeServer(
+			cfg.Binds.Facade,
+			cfg.Ports.Facade,
+			cfg.Binds.ThebeDebug,
+			cfg.Ports.ThebeDebug,
+			cfg.Network.ChainID,
+			cfg.Ports.Smart,
+			syncMonitor,
+		)
 	}
 
 	if cfg.Ports.WS > 0 {
 		fmt.Printf("Starting gETH WSServer on port %d\n", cfg.Ports.WS)
-		StartWSServer(cfg.Binds.WS, cfg.Ports.WS, cfg.Network.ChainID)
+		StartWSServer(cfg.Binds.WS, cfg.Ports.WS, cfg.Network.ChainID, cfg.Ports.Smart)
 	}
 
 	// Start CLI without timeout - run indefinitely
@@ -1526,16 +2599,16 @@ func main() {
 			done <- cmdHandler.StartCLI(ctx, cfg.Binds.CLI, cfg.Ports.CLI)
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.CLIThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.CLIThread))
 			done <- err
 		}
 
 		// Wait for CLI to complete or error
 		if err := <-done; err != nil {
-			log.Error().Err(err).Msg("Failed to start CLI")
+			mainLogger().Error(context.Background(), "Failed to start CLI", err)
 		}
 	} else {
-		log.Info().Msg("CLI server disabled (port = 0)")
+		mainLogger().Info(context.Background(), "CLI server disabled (port = 0)")
 		// Keep the node running even without CLI
 		select {}
 	}

@@ -11,12 +11,13 @@
 // peers, 4 of 5 committee members connected, every round refused.
 //
 // WHY THIS IS SAFE (the property that must not break): the committee itself is
-// UNCHANGED — still the fixed, deterministic eligible set (seed-signed snapshot
-// MINUS block_buddy, hard-capped by consensus.max_validators and trimmed by
-// sorted peer_id). The certificate threshold is UNCHANGED — VerifyCertificate
-// still computes n = len(eligibleMembers()) and requires ByzantineQuorum(n).
-// Nothing about verification moves. We only stop REFUSING TO START a round that
-// could have reached quorum.
+// UNCHANGED — still the fixed, deterministic eligible set (seed-signed snapshot,
+// hard-capped by consensus.max_validators and trimmed by sorted peer_id). The
+// certificate threshold is UNCHANGED — VerifyCertificate computes the quorum
+// denominator n from the FLEET-AGREED committee (authenticatedCommittee: snapshot
+// + fleet-uniform cap, NOT reduced by the local block_buddy blocklist — CON-12)
+// and requires ByzantineQuorum(n). Nothing about verification moves. We only stop
+// REFUSING TO START a round that could have reached quorum.
 //
 // Quorum intersection therefore still holds: two quorums of q = ceil(2n/3)
 // drawn from the SAME fixed n intersect in >= 2q-n >= f+1 members, so at least
@@ -46,7 +47,7 @@ import (
 )
 
 // requiredMainPeers returns the minimum number of connected committee members
-// needed to FORM a round: the BFT quorum over the authenticated eligible set,
+// needed to FORM a round: the BFT quorum over the fleet-agreed committee size,
 // clamped to [1, config.MaxMainPeers].
 //
 // FALLBACK IS THE OLD BEHAVIOUR, DELIBERATELY: when the committee source is not
@@ -62,15 +63,19 @@ func requiredMainPeers() int {
 		return config.MaxMainPeers
 	}
 
-	eligible, err := messaging.EligibleCommitteePeerIDs()
-	if err != nil || len(eligible) == 0 {
+	// n is the fleet-agreed committee size, not this node's blocklist-filtered
+	// set (H3): with a peer blocked, the filtered n shrank and so did q, so a
+	// blocklisting sequencer started rounds the certificate check could not
+	// pass. Blocked seats still count in n; their votes do not count.
+	n, err := messaging.FleetCommitteeSize()
+	if err != nil || n == 0 {
 		// Fail to the STRICTER rule, not the laxer one.
 		log.Warn().Err(err).
 			Msg("committee quorum: eligible set unavailable, requiring the full committee (unchanged behaviour)")
 		return config.MaxMainPeers
 	}
 
-	q := messaging.ByzantineQuorum(len(eligible))
+	q := messaging.ByzantineQuorum(n)
 
 	// Never require more than the sequencer would actually select: MainCandidates
 	// is capped at MaxMainPeers, so demanding more than that is unsatisfiable.

@@ -1,0 +1,309 @@
+// MODULE: DB_OPs/thebegateway/outbox_store.go
+// PURPOSE: SQLite-backed OutboxStore — persists failed ThebeGateway write payloads
+//          for retry by OutboxWorker. WAL for the ThebeDB integration layer.
+//
+// CORE DATA STRUCTURES:
+//   - sqliteOutboxStore: holds *sql.DB (SQLite connection); stateless per-call after init
+//   - thebe_outbox table: unbounded rows; entries deleted on Ack; entries with
+//     attempts >= MaxOutboxAttempts are skipped by Next() and left for operator inspection
+//
+// TO MODIFY BEHAVIOR:
+//   - Change retry ceiling: update MaxOutboxAttempts constant in types.go
+//   - Change backoff formula: edit ExponentialBackoff() in this file
+//   - Change storage backend: implement OutboxStore interface with different *sql.DB
+//
+// DO NOT:
+//   - Import gossipnode/DB_OPs (cycle risk)
+//   - Store request-scoped state on sqliteOutboxStore (stateless by design)
+//   - Use string interpolation in SQL queries (parameterized only)
+//
+// EXTENSION POINT: swap SQLite for another backend → implement OutboxStore interface
+//
+// CHANGE SCENARIOS:
+//   Increase max attempts: change MaxOutboxAttempts in types.go AND update the literal `3`
+//     in sqlCreateOutboxIndex DDL — SQLite partial-index filters are SQL literals, not Go
+//     constants, so they do not auto-update. Both must be kept in sync manually.
+//   Add dead-letter queue: add ListExhausted() method returning entries where attempts >= max
+
+package thebegateway
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// Compile-time interface check.
+var _ OutboxStore = (*sqliteOutboxStore)(nil)
+
+const (
+	sqlCreateOutboxTable = `
+        CREATE TABLE IF NOT EXISTS thebe_outbox (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace     TEXT    NOT NULL,
+            method        TEXT    NOT NULL,
+            payload       BLOB    NOT NULL,
+            attempts      INTEGER NOT NULL DEFAULT 0,
+            next_retry_at INTEGER NOT NULL DEFAULT 0,
+            created_at    INTEGER NOT NULL DEFAULT 0
+        )`
+
+	// v2: the WHERE literal must equal MaxOutboxAttempts. Renamed (not altered)
+	// because CREATE INDEX IF NOT EXISTS never rebuilds an existing index; the
+	// old idx_outbox_next_retry (attempts < 3) is simply unused from now on.
+	sqlCreateOutboxIndex = `
+        CREATE INDEX IF NOT EXISTS idx_outbox_next_retry_v2
+            ON thebe_outbox(next_retry_at ASC)
+            WHERE attempts < 12`
+
+	sqlEnqueue = `
+        INSERT INTO thebe_outbox (namespace, method, payload, attempts, next_retry_at, created_at)
+        VALUES (?, ?, ?, 0, ?, ?)`
+
+	sqlNext = `
+        SELECT id, namespace, method, payload, attempts, next_retry_at, created_at
+        FROM thebe_outbox
+        WHERE next_retry_at <= ? AND attempts < ?
+        ORDER BY next_retry_at ASC
+        LIMIT ?`
+
+	sqlAck = `DELETE FROM thebe_outbox WHERE id = ?`
+
+	sqlIncrementAttempts = `
+        UPDATE thebe_outbox
+        SET attempts = attempts + 1, next_retry_at = ?
+        WHERE id = ?`
+
+	sqlRequeueExhausted = `
+        UPDATE thebe_outbox
+        SET attempts = 0, next_retry_at = ?
+        WHERE attempts >= ?`
+
+	sqlMaxID = `SELECT COALESCE(MAX(id), 0) FROM thebe_outbox`
+
+	sqlDeleteAfter = `DELETE FROM thebe_outbox WHERE id > ?`
+
+	// Exhausted rows (attempts >= MaxOutboxAttempts) older than the cutoff.
+	sqlPruneExhausted = `DELETE FROM thebe_outbox WHERE attempts >= ? AND created_at < ?`
+
+	// Connection setup. WAL keeps the single-writer worker from blocking the
+	// enqueueing apply path; auto_vacuum=INCREMENTAL lets Compact return freed
+	// pages to the OS (full VACUUM would lock the file). auto_vacuum only takes
+	// effect for a NEW file or after one manual VACUUM — an existing outbox.db
+	// that has already grown must be VACUUMed once by the operator.
+	sqlPragmas = `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA auto_vacuum=INCREMENTAL;`
+	sqlCompact = `PRAGMA incremental_vacuum;`
+)
+
+type sqliteOutboxStore struct {
+	db *sql.DB
+}
+
+// NewOutboxStore opens (or creates) a SQLite database at dbPath, creates the
+// thebe_outbox table and index, and returns an OutboxStore.
+// Time: O(1) — single DDL round trip on first call
+func NewOutboxStore(dbPath string) (OutboxStore, error) {
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: open sqlite3 at %q: %w", dbPath, err)
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("outbox: ping sqlite3: %w", err)
+	}
+
+	if _, err := db.ExecContext(context.Background(), sqlPragmas); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("outbox: pragmas: %w", err)
+	}
+
+	if _, err := db.ExecContext(context.Background(), sqlCreateOutboxTable); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("outbox: create table: %w", err)
+	}
+
+	if _, err := db.ExecContext(context.Background(), sqlCreateOutboxIndex); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("outbox: create index: %w", err)
+	}
+
+	return &sqliteOutboxStore{db: db}, nil
+}
+
+// Enqueue inserts a new OutboxEntry into the WAL.
+// If entry.NextRetryAt is zero, time.Now() is used.
+// Time: O(1) — single INSERT
+func (s *sqliteOutboxStore) Enqueue(ctx context.Context, entry OutboxEntry) error {
+	nextRetryAt := entry.NextRetryAt
+	if nextRetryAt.IsZero() {
+		nextRetryAt = time.Now()
+	}
+
+	createdAt := entry.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, sqlEnqueue,
+		string(entry.Namespace),
+		entry.Method,
+		entry.Payload,
+		nextRetryAt.Unix(),
+		createdAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("outbox: enqueue: %w", err)
+	}
+	return nil
+}
+
+// Next returns up to limit entries ready for retry
+// (next_retry_at <= now AND attempts < MaxOutboxAttempts).
+// Time: O(limit) — indexed scan by next_retry_at
+// DS: idx_outbox_next_retry covers this query exactly
+func (s *sqliteOutboxStore) Next(ctx context.Context, limit int) ([]OutboxEntry, error) {
+	now := time.Now().Unix()
+
+	rows, err := s.db.QueryContext(ctx, sqlNext, now, MaxOutboxAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: next query: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []OutboxEntry
+	for rows.Next() {
+		var e OutboxEntry
+		var ns string
+		var nextRetryUnix, createdAtUnix int64
+
+		if err := rows.Scan(
+			&e.ID,
+			&ns,
+			&e.Method,
+			&e.Payload,
+			&e.Attempts,
+			&nextRetryUnix,
+			&createdAtUnix,
+		); err != nil {
+			return nil, fmt.Errorf("outbox: next scan: %w", err)
+		}
+
+		e.Namespace = Namespace(ns)
+		e.NextRetryAt = time.Unix(nextRetryUnix, 0)
+		e.CreatedAt = time.Unix(createdAtUnix, 0)
+		entries = append(entries, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("outbox: next rows: %w", err)
+	}
+
+	return entries, nil
+}
+
+// Ack deletes the entry by ID after a successful retry.
+// Time: O(1) — DELETE by PK
+func (s *sqliteOutboxStore) Ack(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, sqlAck, id)
+	if err != nil {
+		return fmt.Errorf("outbox: ack id=%d: %w", id, err)
+	}
+	return nil
+}
+
+// IncrementAttempts bumps the attempts counter and sets the next retry time.
+// Time: O(1) — UPDATE by PK
+func (s *sqliteOutboxStore) IncrementAttempts(ctx context.Context, id int64, nextRetryAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, sqlIncrementAttempts, nextRetryAt.Unix(), id)
+	if err != nil {
+		return fmt.Errorf("outbox: increment attempts id=%d: %w", id, err)
+	}
+	return nil
+}
+
+// RequeueExhausted resets attempts=0 and next_retry_at=now on every entry that
+// has reached MaxOutboxAttempts (and is therefore permanently skipped by Next()),
+// so the worker will retry them. Exhausted entries are RETAINED in the table (Ack
+// deletes only on success), so this reliably finds them. Returns the count
+// requeued. Safe/idempotent: the projection appliers are ON CONFLICT DO NOTHING,
+// so a requeued entry that turns out to already be projected simply Acks.
+// Time: O(rows updated).
+func (s *sqliteOutboxStore) RequeueExhausted(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, sqlRequeueExhausted, time.Now().Unix(), MaxOutboxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: requeue exhausted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("outbox: requeue exhausted rows: %w", err)
+	}
+	return int(n), nil
+}
+
+// PruneExhausted deletes entries that have reached MaxOutboxAttempts and were
+// created more than olderThan ago. Returns the number removed. Exhausted rows
+// are otherwise retained (RequeueExhausted can still revive the recent ones).
+// Time: O(rows deleted) via idx_outbox_next_retry_v2 partial scan.
+func (s *sqliteOutboxStore) PruneExhausted(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan).Unix()
+	res, err := s.db.ExecContext(ctx, sqlPruneExhausted, MaxOutboxAttempts, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: prune exhausted: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// Compact returns free pages to the filesystem (PRAGMA incremental_vacuum).
+// A no-op unless the file was created with auto_vacuum=INCREMENTAL (see
+// sqlPragmas) — for an outbox.db that predates that, run VACUUM once.
+func (s *sqliteOutboxStore) Compact(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, sqlCompact); err != nil {
+		return fmt.Errorf("outbox: compact: %w", err)
+	}
+	return nil
+}
+
+// MaxID returns the highest entry id currently in the table, or 0 when empty.
+// Used as the high-water mark the D-858 store-failure rollback samples before a
+// store so it can DeleteAfter exactly what that store enqueued.
+// Time: O(1) — MAX over the integer PK.
+func (s *sqliteOutboxStore) MaxID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, sqlMaxID).Scan(&id); err != nil {
+		return 0, fmt.Errorf("outbox: max id: %w", err)
+	}
+	return id, nil
+}
+
+// DeleteAfter removes every entry with id > sinceID and returns the count removed.
+// A sinceID < 0 is treated as "unknown high-water mark" and deletes NOTHING — it
+// must never be a delete-all, since the rollback caller passes an unknown mark as a
+// negative sentinel.
+// Time: O(rows deleted) — range delete on the integer PK.
+func (s *sqliteOutboxStore) DeleteAfter(ctx context.Context, sinceID int64) (int64, error) {
+	if sinceID < 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, sqlDeleteAfter, sinceID)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: delete after id=%d: %w", sinceID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("outbox: delete after rows: %w", err)
+	}
+	return n, nil
+}
+
+// ExponentialBackoff returns the next retry time for a given attempt count.
+// Formula: min(2^attempts seconds, 5 minutes)
+// attempts=0 → 1s, 1 → 2s, 2 → 4s … 8 → 256s, then 5 min (MaxOutboxAttempts=12 ≈ 21 min total)
+// Time: O(1)
+func ExponentialBackoff(attempts int) time.Time {
+	delay := min(time.Duration(1<<uint(attempts))*time.Second, 5*time.Minute)
+	return time.Now().Add(delay)
+}

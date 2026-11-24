@@ -19,7 +19,7 @@ import (
 // Publish publishes a message to a topic (now uses enhanced implementation)
 func Publish(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
 	// Start trace span
-	tracer := logger().NamedLogger.Tracer("Publish")
+	tracer := logger().Tracer("Publish")
 	trace_ctx, span := tracer.Start(logger_ctx, "Publish.Publish")
 	defer span.End()
 
@@ -29,7 +29,7 @@ func Publish(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic
 		attribute.String("sender", gps.Host.ID().String()),
 	)
 
-	logger().NamedLogger.Info(trace_ctx, "Publishing message to topic",
+	logger().Info(trace_ctx, "Publishing message to topic",
 		ion.String("topic", topic),
 		ion.String("sender", gps.Host.ID().String()),
 		ion.String("function", "Publish.Publish"))
@@ -48,7 +48,7 @@ func Publish(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to publish message",
+		logger().Error(trace_ctx, "Failed to publish message",
 			err,
 			ion.String("topic", topic),
 			ion.Float64("duration", duration),
@@ -58,7 +58,7 @@ func Publish(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(trace_ctx, "Successfully published message to topic",
+	logger().Info(trace_ctx, "Successfully published message to topic",
 		ion.String("topic", topic),
 		ion.Float64("duration", duration),
 		ion.String("function", "Publish.Publish"))
@@ -69,7 +69,7 @@ func Publish(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic
 // publishOriginal is the original publish implementation (renamed for clarity)
 func publishOriginal(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
 	// Start trace span
-	tracer := logger().NamedLogger.Tracer("Publish")
+	tracer := logger().Tracer("Publish")
 	trace_ctx, span := tracer.Start(logger_ctx, "Publish.publishOriginal")
 	defer span.End()
 
@@ -146,7 +146,7 @@ func publishOriginal(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 		span.SetAttributes(attribute.String("status", "marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to marshal message",
+		logger().Error(trace_ctx, "Failed to marshal message",
 			err,
 			ion.String("topic", topic),
 			ion.String("message_id", messageGossip.ID),
@@ -166,7 +166,7 @@ func publishOriginal(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 		if err := publishViaGossipSub(gps, topic, messageBytes); err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("fallback", "custom_gossip"))
-			logger().NamedLogger.Warn(trace_ctx, "Failed to publish via GossipSub, falling back to custom gossip",
+			logger().Warn(trace_ctx, "Failed to publish via GossipSub, falling back to custom gossip",
 				ion.String("error", err.Error()),
 				ion.String("topic", topic),
 				ion.String("function", "Publish.publishOriginal"))
@@ -183,7 +183,7 @@ func publishOriginal(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(trace_ctx, "Published message to topic",
+	logger().Info(trace_ctx, "Published message to topic",
 		ion.String("topic", topic),
 		ion.String("message_id", messageGossip.ID),
 		ion.Float64("duration", duration),
@@ -195,7 +195,7 @@ func publishOriginal(logger_ctx context.Context, gps *PubSubMessages.GossipPubSu
 // gossipMessage forwards a message to connected peers
 func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Publish")
+	tracer := logger().Tracer("Publish")
 	trace_ctx, span := tracer.Start(logger_ctx, "Publish.GossipMessage")
 	defer span.End()
 
@@ -211,25 +211,24 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to create local manager",
+			logger().Error(trace_ctx, "Failed to create local manager",
 				err,
 				ion.String("function", "Publish.GossipMessage"))
 			return
 		}
 	}
-	fmt.Printf("=== Publish.GossipMessage CALLED ===\n")
-	fmt.Printf("Message Bytes: %s\n", string(messageBytes))
-	fmt.Printf("From Peer: %s\n", gps.Host.ID())
-	fmt.Printf("Message ID: %d\n", gps.MessageID)
-	fmt.Printf("Protocol: %s\n", gps.Protocol)
-	fmt.Printf("Message Cache: %v\n", gps.MessageCache)
+	logger().Debug(trace_ctx, "=== Publish.GossipMessage CALLED ===",
+		ion.String("message_bytes", string(messageBytes)),
+		ion.String("from_peer", gps.Host.ID().String()),
+		ion.Int("message_id", int(gps.MessageID)),
+		ion.String("protocol", string(gps.Protocol)))
 
 	// Parse the message to get the topic
 	var gossipMsg PubSubMessages.GossipMessage
 	if err := json.Unmarshal(messageBytes, &gossipMsg); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "parse_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to parse message for topic routing",
+		logger().Error(trace_ctx, "Failed to parse message for topic routing",
 			err,
 			ion.String("function", "Publish.GossipMessage"))
 		return
@@ -268,7 +267,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 			}
 		}
 		span.SetAttributes(attribute.String("routing_method", "topic_based"))
-		logger().NamedLogger.Info(trace_ctx, "Using topic-based routing",
+		logger().Info(trace_ctx, "Using topic-based routing",
 			ion.Int("subscribers", len(peersToSend)),
 			ion.String("function", "Publish.GossipMessage"))
 	} else {
@@ -279,7 +278,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 			}
 		}
 		span.SetAttributes(attribute.String("routing_method", "broadcast"))
-		logger().NamedLogger.Info(trace_ctx, "Using broadcast fallback",
+		logger().Info(trace_ctx, "Using broadcast fallback",
 			ion.Int("peers", len(peersToSend)),
 			ion.String("function", "Publish.GossipMessage"))
 	}
@@ -298,14 +297,14 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 			if err := sendToPeer(gps, peerID, messageBytes); err != nil {
 				peerSpan.RecordError(err)
 				peerSpan.SetAttributes(attribute.String("status", "send_failed"))
-				logger().NamedLogger.Error(peerSpanCtx, "Failed to gossip message to peer",
+				logger().Error(peerSpanCtx, "Failed to gossip message to peer",
 					err,
 					ion.String("peer", peerID.String()),
 					ion.String("topic", topic),
 					ion.String("function", "Publish.GossipMessage"))
 			} else {
 				peerSpan.SetAttributes(attribute.String("status", "success"))
-				logger().NamedLogger.Info(peerSpanCtx, "Sent message to peer",
+				logger().Info(peerSpanCtx, "Sent message to peer",
 					ion.String("peer", peerID.String()),
 					ion.String("topic", topic),
 					ion.String("function", "Publish.GossipMessage"))
@@ -313,7 +312,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 			return nil
 		}); err != nil {
 			span.RecordError(err)
-			logger().NamedLogger.Error(trace_ctx, "Failed to start goroutine for peer",
+			logger().Error(trace_ctx, "Failed to start goroutine for peer",
 				err,
 				ion.String("peer", peerID.String()),
 				ion.String("function", "Publish.GossipMessage"))
@@ -322,7 +321,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(trace_ctx, "Gossip message completed",
+	logger().Info(trace_ctx, "Gossip message completed",
 		ion.Int("peers_sent", len(peersToSend)),
 		ion.Float64("duration", duration),
 		ion.String("function", "Publish.GossipMessage"))
@@ -331,7 +330,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 // sendToPeer sends a message to a specific peer
 func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes []byte) error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Publish")
+	tracer := logger().Tracer("Publish")
 	trace_ctx, span := tracer.Start(logger_ctx, "Publish.sendToPeer")
 	defer span.End()
 
@@ -348,7 +347,7 @@ func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes [
 		span.SetAttributes(attribute.String("status", "stream_creation_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to create stream to peer",
+		logger().Error(trace_ctx, "Failed to create stream to peer",
 			err,
 			ion.String("peer", peerID.String()),
 			ion.String("function", "Publish.sendToPeer"))
@@ -362,7 +361,7 @@ func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes [
 		span.SetAttributes(attribute.String("status", "write_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to write message to peer",
+		logger().Error(trace_ctx, "Failed to write message to peer",
 			err,
 			ion.String("peer", peerID.String()),
 			ion.String("function", "Publish.sendToPeer"))
@@ -371,7 +370,7 @@ func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes [
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(trace_ctx, "Successfully sent message to peer",
+	logger().Info(trace_ctx, "Successfully sent message to peer",
 		ion.String("peer", peerID.String()),
 		ion.Float64("duration", duration),
 		ion.String("function", "Publish.sendToPeer"))
@@ -387,7 +386,7 @@ func writeMessage(stream network.Stream, message []byte) error {
 // publishViaGossipSub publishes a message using libp2p GossipSub
 func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, messageBytes []byte) error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Publish")
+	tracer := logger().Tracer("Publish")
 	trace_ctx, span := tracer.Start(logger_ctx, "Publish.publishViaGossipSub")
 	defer span.End()
 
@@ -404,7 +403,7 @@ func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, mes
 		span.SetAttributes(attribute.String("status", "topic_join_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to get or join topic",
+		logger().Error(trace_ctx, "Failed to get or join topic",
 			err,
 			ion.String("topic", topicName),
 			ion.String("function", "Publish.publishViaGossipSub"))
@@ -418,7 +417,7 @@ func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, mes
 		span.SetAttributes(attribute.String("status", "publish_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to publish message to topic",
+		logger().Error(trace_ctx, "Failed to publish message to topic",
 			err,
 			ion.String("topic", topicName),
 			ion.String("function", "Publish.publishViaGossipSub"))
@@ -427,7 +426,7 @@ func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, mes
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(trace_ctx, "Published via GossipSub to topic",
+	logger().Info(trace_ctx, "Published via GossipSub to topic",
 		ion.String("topic", topicName),
 		ion.Float64("duration", duration),
 		ion.String("function", "Publish.publishViaGossipSub"))

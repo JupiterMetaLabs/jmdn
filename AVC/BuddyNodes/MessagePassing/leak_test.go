@@ -2,6 +2,7 @@ package MessagePassing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,7 +48,13 @@ func TestStreamLeak(t *testing.T) {
 		// Read the request to clear buffer/window
 		buf := make([]byte, 1024)
 		s.Read(buf)
-		// Hang longer than the sender's timeout (100ms)
+		// Hang, then close. NOTE: this does NOT outlast the sender's read
+		// deadline — SendMessageToPeer sets 20s (MessageListener.go), so the
+		// receiver's Close() below always wins and the sender sees EOF, never
+		// "i/o timeout". An older comment here claimed a 100ms sender timeout;
+		// that stopped being true when the deadline moved to 20s. Hanging past
+		// 20s would make this 50-iteration test take >16 minutes, so the
+		// assertion below accepts either teardown reason instead.
 		time.Sleep(300 * time.Millisecond)
 		// Close on receiver side eventually
 		s.Close()
@@ -86,20 +93,37 @@ func TestStreamLeak(t *testing.T) {
 
 	fmt.Printf("Starting leak test with %d iterations (Timeout simulation)...\n", iterations)
 
+	// Failures are COUNTED and reported once, not asserted per iteration.
+	// assert.* records a failure but does not stop the loop, so one wrong
+	// expectation used to print 50 identical blocks and bury the FD/stream
+	// results below. require.* is not an option either: it would abort the
+	// loop and skip the leak check, which is the whole point of this test.
+	var sendsWithoutError, unexpectedErrors int
+	var firstUnexpected string
 	for i := 0; i < iterations; i++ {
 		// Send a dummy subscription request
 		msg := `{"type": "subscription_request"}`
 		err := sl.SendMessageToPeer(ctx, h2.ID(), msg)
 
-		// Assert that we got an error (deadline exceeded)
-		assert.Error(t, err, "Expected error from SendMessageToPeer due to timeout")
-		if err != nil {
-			assert.Contains(t, err.Error(), "i/o timeout", "Error should be a timeout")
+		switch {
+		case err == nil:
+			sendsWithoutError++
+		case !isStreamTornDown(err):
+			unexpectedErrors++
+			if firstUnexpected == "" {
+				firstUnexpected = err.Error()
+			}
 		}
 
 		// Allow small sleep for generic async cleanup
 		time.Sleep(10 * time.Millisecond)
 	}
+	assert.Zerof(t, sendsWithoutError,
+		"%d/%d sends succeeded; every send to a non-answering peer must fail",
+		sendsWithoutError, iterations)
+	assert.Zerof(t, unexpectedErrors,
+		"%d/%d sends failed for an unexpected reason (want EOF or i/o timeout); first was: %s",
+		unexpectedErrors, iterations, firstUnexpected)
 
 	// Final FD count
 	finalFDs := getFDCount()
@@ -124,4 +148,31 @@ func TestStreamLeak(t *testing.T) {
 	} else {
 		fmt.Println("SUCCESS: No leaks detected.")
 	}
+}
+
+// isStreamTornDown reports whether err is the expected outcome of sending to a
+// peer that never answers: the stream went away. Which reason wins is a timing
+// detail, not a property worth pinning a test to —
+//
+//   - EOF            the receiver closed first (what happens today: the test
+//     handler closes after 300ms, the sender waits 20s)
+//   - i/o timeout    the sender's read deadline fired first (what would happen
+//     if the handler outlasted MessageListener's 20s deadline)
+//
+// Accepting both keeps this test honest if either side's timing changes. What
+// it must NOT accept is success, or a different error class (dial failure,
+// protocol mismatch) — those mean the test is no longer exercising the leak
+// path it claims to.
+func isStreamTornDown(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "stream reset")
 }

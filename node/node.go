@@ -8,6 +8,9 @@ import (
 	"os"
 	"time"
 
+	"gossipnode/internal/saferun"
+
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/config"
@@ -15,7 +18,10 @@ import (
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
+	"gossipnode/thebesync"
 
+	fssync "github.com/JupiterMetaLabs/JMDN-FastSync/thebesync"
+	"github.com/JupiterMetaLabs/ion"
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -68,13 +74,14 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 				return nil, "", fmt.Errorf("failed to derive peer ID: %v", err)
 			}
 
-			fmt.Println(colorgreen+"Loaded existing peer ID:"+colorreset, peerID.String())
+			logger().Info(context.Background(), colorgreen+"Loaded existing peer ID:"+colorreset,
+				ion.String("peer", peerID.String()))
 			return privKey, peerID, nil
 		}
 	}
 
 	// Generate new key pair
-	fmt.Println("Generating new peer identity...")
+	logger().Info(context.Background(), "Generating new peer identity")
 	privKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, 0)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate key pair: %v", err)
@@ -99,7 +106,9 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 	config.PeerID = peerID.String()
 	config.PrivKeyB64 = privKeyB64
 
-	file, err := os.Create(peerFile)
+	// peer.json holds the node's marshaled private key — restrict to owner-only
+	// (0600) instead of the world-readable 0644 that os.Create would apply.
+	file, err := os.OpenFile(peerFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create peer.json: %v", err)
 	}
@@ -109,7 +118,8 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 		return nil, "", fmt.Errorf("failed to write peer.json: %v", err)
 	}
 
-	fmt.Printf("Generated new peer ID: %s\n", peerID.String())
+	logger().Info(context.Background(), "Generated new peer ID",
+		ion.String("peer", peerID.String()))
 	return privKey, peerID, nil
 }
 
@@ -125,16 +135,16 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	}
 
 	// Load or create Peer ID
-	fmt.Println("Loading or creating private key...")
+	logger().Info(context.Background(), "Loading or creating private key")
 	privKey, peerID, err := loadOrCreatePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load/create Peer ID: %v", err)
 	}
-	fmt.Println("Private key loaded successfully")
+	logger().Info(context.Background(), "Private key loaded successfully")
 
-	fmt.Println("Getting libp2p metrics registerer...")
+	logger().Info(context.Background(), "Getting libp2p metrics registerer")
 	libp2pRegisterer := metrics.GetLibp2pRegisterer()
-	fmt.Println("Creating libp2p host...")
+	logger().Info(context.Background(), "Creating libp2p host")
 
 	// Build listen addresses conditionally
 	listenAddrs := []string{
@@ -149,9 +159,11 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 		// Dynamically construct the Yggdrasil address
 		config.IP6YGG = "/ip6/" + config.Yggdrasil_Address + "/tcp/15000"
 		listenAddrs = append(listenAddrs, config.IP6YGG)
-		fmt.Printf("Adding Yggdrasil address to listen addresses: %s\n", config.IP6YGG)
+		logger().Info(context.Background(), "Adding Yggdrasil address to listen addresses",
+			ion.String("address", config.IP6YGG))
 	} else {
-		fmt.Printf("Skipping Yggdrasil address (not available or invalid): %s\n", config.Yggdrasil_Address)
+		logger().Info(context.Background(), "Skipping Yggdrasil address (not available or invalid)",
+			ion.String("address", config.Yggdrasil_Address))
 	}
 
 	h, err := libp2p.New(
@@ -170,13 +182,13 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
 	}
-	fmt.Println("libp2p host created successfully")
+	logger().Info(context.Background(), "libp2p host created successfully")
 
-	fmt.Println("Initializing block propagation...")
+	logger().Info(context.Background(), "Initializing block propagation")
 	if err := messaging.InitBlockPropagation(h); err != nil {
 		return nil, fmt.Errorf("failed to initialize block propagation: %v", err)
 	}
-	fmt.Println("Block propagation initialized successfully")
+	logger().Info(context.Background(), "Block propagation initialized successfully")
 
 	// Verify the host's peer ID matches what we expect
 	if peerID.String() != h.ID().String() {
@@ -191,19 +203,98 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 
 	messaging.SetHostInstance(h)
 	// Set up stream handlers for messages (TCP) and files (QUIC)
-	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
-	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
-	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
-		MessagePassing.HandleBuddyNodeStream(h, s)
+	h.SetStreamHandler(config.MessageProtocol, saferun.Stream(string(config.MessageProtocol), messaging.HandleMessageStream))
+	h.SetStreamHandler(config.BroadcastProtocol, saferun.Stream(string(config.BroadcastProtocol), messaging.HandleBroadcastStream))
+	h.SetStreamHandler(config.BlockPropagationProtocol, saferun.Stream(string(config.BlockPropagationProtocol), messaging.HandleBlockStream))
+	// ThebeSync (FastSync v4) read-only serving handlers: head handshake + bounded
+	// GetBlocks range serve. The engine lives in the JMDN-FastSync module (opaque
+	// blocks); jmdn supplies the block store via thebesync.Provider. Safe to
+	// register unconditionally — read-only, answers explicit peer requests only.
+	// See docs/THEBESYNC-DESIGN.md.
+	thebeSyncServer := &fssync.Server{Provider: thebesync.Provider{}}
+	h.SetStreamHandler(fssync.HeadProtocol, saferun.Stream(string(fssync.HeadProtocol), thebeSyncServer.HeadHandler))
+	h.SetStreamHandler(fssync.GetBlocksProtocol, saferun.Stream(string(fssync.GetBlocksProtocol), thebeSyncServer.GetBlocksHandler))
+	// Architecture §4.4 RevealPush — receive an entropy-committee member's
+	// RANDAO reveal pushed directly to this node when it is the current slot's
+	// proposer. Registered on EVERY node, not only proposers: which node
+	// proposes a given slot changes, and a node without the handler would
+	// refuse the stream outright, which under Rule 1 costs the whole epoch.
+	// Added 2026-08-20 with M4 Decision A.
+	h.SetStreamHandler(config.RevealPushProtocol, saferun.Stream(string(config.RevealPushProtocol), messaging.HandleRevealPushStream))
+	// The M0/§7.1c timeout-certificate rejoin RPC was registered here until
+	// 94e8fb6 (#196) retired the whole timeout-certificate flow. That commit
+	// deleted both config.TimeoutCertRejoinProtocol and
+	// messaging.HandleTimeoutCertRejoinStream but left this registration
+	// behind, so the node package could not compile. Removed with the flow.
+	// Stage-F VDF proof pull — answer "do you have the VDF proof for entropy
+	// epoch E" for a peer that missed the epoch-boundary block, restarted, or
+	// joined late. Registered on EVERY node for the same reason as the two
+	// handlers above: any peer could be the one asked, and a node without the
+	// handler refuses the stream outright.
+	//
+	// Bounded work: one direct KV read of vdf_proof:<epoch>. It never scans the
+	// chain and never starts an evaluation. See messaging/entropy_vdf_pull.go.
+	h.SetStreamHandler(config.VDFProofRequestProtocol, saferun.Stream(string(config.VDFProofRequestProtocol), messaging.HandleVDFProofRequestStream))
+
+	// The recovery DISPATCHER. messaging owns the deadline logic but cannot
+	// reach the libp2p host or the peer set, so it hands an epoch here.
+	//
+	// This closure is what keeps proof recovery off the block-processing path:
+	// it launches a goroutine and returns immediately. messaging's
+	// maybeTriggerVDFProofRecovery is called inline during block application,
+	// so anything slower than a map lookup must happen out here.
+	//
+	// Peers are this node's CURRENTLY CONNECTED set. A proof is verified
+	// against our own mix regardless of who supplied it, so peer selection is
+	// a latency question, not a trust one — asking whoever we already have a
+	// connection to avoids a dial for the common case.
+	messaging.SetVDFProofRecoveryDispatcher(func(forEpoch uint64, boundarySlot uint64) {
+		go func() {
+			// Recovery is ADDITIVE. It exists to help a node that fell behind,
+			// and that node's own VDF evaluation continues with or without it.
+			// A panic on a DETACHED goroutine takes the whole process down, so
+			// a bug on this path must never be able to kill a node whose local
+			// sealing was perfectly healthy — that would turn a liveness AID
+			// into a liveness HAZARD. Same guard shape as
+			// Sequencer/RejectionReport/report.go.
+			defer func() {
+				if rec := recover(); rec != nil {
+					if lg := logger(); lg != nil {
+						lg.Error(context.Background(),
+							"vdf recovery: panic during proof pull — recovery abandoned for this epoch, local evaluation unaffected",
+							fmt.Errorf("panic: %v", rec),
+							ion.Uint64("epoch", forEpoch))
+					}
+				}
+			}()
+
+			peers := h.Network().Peers()
+			if len(peers) == 0 {
+				return
+			}
+			messaging.RecoverVDFProofFromPeers(h, peers, forEpoch, boundarySlot)
+		}()
 	})
+	// NOTE: three places register a handler for config.BuddyNodesMessageProtocol
+	// (node.NewNode, Pubsub.NewGossipPubSub via initPubSub, MessagePassing.NewBuddyNode)
+	// and libp2p keeps only the latest one. Between boot and the first
+	// NewBuddyNode call the custom gossip handler owns the protocol; afterwards
+	// the buddy handler does, and gossip-format messages on it (the custom-gossip
+	// fallback in Publisher.Publish, and the currently unused AVC/BFT adapter)
+	// are dropped. Live votes use SubmitMessageProtocol and consensus pubsub uses
+	// libp2p GossipSub topics, so neither depends on which handler wins. Route both
+	// formats through one handler before relying on either path.
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, saferun.Stream(string(config.BuddyNodesMessageProtocol), func(s network.Stream) {
+		MessagePassing.HandleBuddyNodeStream(h, s)
+	}))
 
 	// Set up SubmitMessageProtocol handler for all nodes (so they can receive subscription requests)
-	h.SetStreamHandler(config.SubmitMessageProtocol, func(s network.Stream) {
+	h.SetStreamHandler(config.SubmitMessageProtocol, saferun.Stream(string(config.SubmitMessageProtocol), func(s network.Stream) {
 		// Initialize ForListner for this node so it can handle subscription requests
 		// This is needed because ListenerHandler.handleAskForSubscription requires ForListner to be set
 		if AVCStruct.NewGlobalVariables().Get_ForListner() == nil {
-			fmt.Printf("=== Initializing ForListner for regular node: %s ===\n", h.ID())
+			logger().Info(context.Background(), "=== Initializing ForListner for regular node ===",
+				ion.String("node", h.ID().String()))
 			// Create a basic BuddyNode for this regular node
 			defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
 			// Create StreamCache for this node
@@ -219,13 +310,21 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			// Initialize CRDT Layer
 			CRDTLayer := ServiceLayer.GetServiceController()
 
+			// VoteCRDTLayer (docs/JMDN-CRDT-VOTE-MIGRATION-LLD.md): the live
+			// vote store. The D-26(a)/D-51 cutover made it the only keyspace
+			// the tally reads, and the legacy-CRDT migration left CRDTLayer
+			// above with zero writers and zero readers — still constructed,
+			// empty, pending Phase 6 removal.
+			VoteCRDTLayer := DataLayer.GetVoteCRDTLayer()
+
 			basicBuddyNode := &AVCStruct.BuddyNode{
-				PeerID:      h.ID(),
-				Host:        h,
-				PubSub:      nil, // Will be set when needed
-				BuddyNodes:  *defaultBuddies,
-				StreamCache: streamCache, // Initialize with proper StreamCache
-				CRDTLayer:   CRDTLayer,   // Initialize CRDT Layer
+				PeerID:        h.ID(),
+				Host:          h,
+				PubSub:        nil, // Will be set when needed
+				BuddyNodes:    *defaultBuddies,
+				StreamCache:   streamCache, // Initialize with proper StreamCache
+				CRDTLayer:     CRDTLayer,   // Initialize CRDT Layer
+				VoteCRDTLayer: VoteCRDTLayer,
 				MetaData: AVCStruct.MetaData{
 					Received:  0,
 					Sent:      0,
@@ -234,9 +333,10 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 				},
 			}
 			AVCStruct.NewGlobalVariables().Set_ForListner(basicBuddyNode)
-			fmt.Printf("=== ForListner initialized successfully ===\n")
+			logger().Info(context.Background(), "=== ForListner initialized successfully ===")
 		} else {
-			fmt.Printf("=== ForListner already initialized for node: %s ===\n", h.ID())
+			logger().Info(context.Background(), "=== ForListner already initialized for node ===",
+				ion.String("node", h.ID().String()))
 		}
 
 		// Create a clear listener handler for handling subscription requests, votes, and responses
@@ -248,7 +348,7 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 			listenerHandler.HandleSubmitMessageStream(logger_ctx, stream)
 			return nil
 		})
-	})
+	}))
 
 	// Capture host in closure
 	host := h
@@ -267,7 +367,8 @@ func SendMessage(n *config.Node, target string, message string) error {
 		return err
 	}
 
-	fmt.Println("Connected to peer:", isConnected)
+	logger().Info(context.Background(), "Connected to peer",
+		ion.Bool("connected", isConnected))
 
 	// Connect to the peer
 	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
@@ -311,14 +412,14 @@ func GetPeerID() string {
 func GetPeerIDFromJSON() string {
 	// Check if file exists
 	if _, err := os.Stat(peerFile); err != nil {
-		fmt.Println("Failed to stat peer.json:", err)
+		logger().Error(context.Background(), "Failed to stat peer.json", err)
 		return ""
 	}
 
 	// Open the file
 	file, err := os.Open(peerFile)
 	if err != nil {
-		fmt.Println("Failed to open peer.json:", err)
+		logger().Error(context.Background(), "Failed to open peer.json", err)
 		return ""
 	}
 	defer file.Close()
@@ -326,14 +427,11 @@ func GetPeerIDFromJSON() string {
 	// Decode JSON
 	var config config.PeerConfig
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		fmt.Println("Failed to decode peer.json:", err)
+		logger().Error(context.Background(), "Failed to decode peer.json", err)
 		return ""
 	}
 
-	fmt.Println("Peer ID from peer.json:", config.PeerID)
+	logger().Info(context.Background(), "Peer ID from peer.json",
+		ion.String("peer", config.PeerID))
 	return config.PeerID
-}
-
-func GetHost() host.Host {
-	return localNode.Host
 }

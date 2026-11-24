@@ -14,6 +14,10 @@ const (
 	ServiceEthGRPC         = "eth_grpc"
 	ServiceBFTBuddy        = "bft_buddy"
 	ServiceBFTSequencer    = "bft_sequencer"
+	// ServiceAdminHTTP is not a listener: it is the policy for admin-only
+	// operations served on other listeners (POST /sync/reconcile, and
+	// solc_compile / debug_traceTransaction when enabled).
+	ServiceAdminHTTP = "admin_http"
 )
 
 // AuthType defines the authentication method required for a service
@@ -49,9 +53,26 @@ type Policy struct {
 // It replaces the old scattered env vars and simple structs.
 type SecurityConfig struct {
 	// Global Settings
+	//
+	// Enabled=false makes the gatekeeper skip every service policy (auth, TLS,
+	// rate limiting). Production posture refuses to boot with it (SEC-03,
+	// ValidateSecurityPosture).
 	Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
 	CertDir     string `mapstructure:"cert_dir" yaml:"cert_dir"`
 	IPCacheSize int    `mapstructure:"ip_cache_size" yaml:"ip_cache_size"` // Size of the LRU cache for Rate Limiting
+
+	// StrictPosture (SEC-03): when true, the node REFUSES to boot if any
+	// gatekeeper-mediated service is bound to a non-loopback address with
+	// auth_type=none (an open public/remote service). Default false: the same
+	// condition is logged as a loud boot WARNING instead of being fatal, so a
+	// deliberately-open deployment (e.g. public RPC behind an external gateway)
+	// still starts. Set true to fail closed.
+	StrictPosture bool `mapstructure:"strict_posture" yaml:"strict_posture"`
+
+	// AllowUnprotectedTxs accepts submitted legacy transactions signed without
+	// a chain ID (pre-EIP-155, v = 27/28). Off by default: such a signature is
+	// valid on every chain, so it can be replayed from another network.
+	AllowUnprotectedTxs bool `mapstructure:"allow_unprotected_txs" yaml:"allow_unprotected_txs"`
 
 	// Global Rate Limit (Layer 1: aggregate per-IP cap across all services)
 	GlobalRateLimit float64 `mapstructure:"global_rate_limit" yaml:"global_rate_limit"` // 0 = disabled
@@ -69,6 +90,9 @@ type SecurityConfig struct {
 	// Legacy Secrets (Moved here for unification)
 	ExplorerAPIKey string `mapstructure:"explorer_api_key" yaml:"explorer_api_key"`
 	JWTSecret      string `mapstructure:"jwt_secret" yaml:"jwt_secret"`
+	// AdminToken authorizes admin-only operations (admin_http policy). Empty
+	// means no request is authorized: those operations are refused.
+	AdminToken string `mapstructure:"admin_token" yaml:"admin_token"`
 
 	// Services map service name (e.g., "block_api") to its policy
 	Services map[string]Policy `mapstructure:"services" yaml:"services"`
@@ -82,30 +106,62 @@ type SecurityConfig struct {
 // DefaultSecurityConfig returns a safe-by-default configuration
 func DefaultSecurityConfig() SecurityConfig {
 	return SecurityConfig{
-		Enabled:         true,
-		CertDir:         "certs",
-		IPCacheSize:     1000,
-		GlobalRateLimit: 0, // Disabled global limits by default for back-compat
-		GlobalBurst:     0,
+		Enabled:     true,
+		CertDir:     "certs",
+		IPCacheSize: 1000,
+		// SEC-05: ship a conservative per-IP anti-abuse floor instead of 0
+		// (disabled). 50 req/s sustained, burst 100 — generous for legitimate
+		// clients, a floor against trivial floods. Operators raise/lower via YAML
+		// (security.global_rate_limit / global_burst); 0 disables.
+		GlobalRateLimit: 50,
+		GlobalBurst:     100,
 
 		Services: map[string]Policy{
 			// 1. Explorer API (HTTP public - Had basic token auth before)
 			ServiceExplorerAPI: {
-				TLS:       false,
-				AuthType:  AuthTypeToken,
-				TokenEnv:  "EXPLORER_API_KEY",
-				RateLimit: 0,
-				Burst:     0,
+				TLS:      false,
+				AuthType: AuthTypeToken,
+				TokenEnv: "EXPLORER_API_KEY",
+				// SEC-05: per-service anti-abuse floor for the public read API.
+				RateLimit: 20,
+				Burst:     40,
 			},
 			// 2. Block/Sequencer API (Internal)
+			// SECURITY (Ibnu76 / review B5): default CLOSED, not open. This service
+			// carries /api/l1-commit(-range), which the sequencer re-broadcasts under
+			// its own libp2p identity — so an unauthenticated POST is a confused-deputy
+			// that launders a forged L1-finality flag past the gossip check. The shipped
+			// jmdn_default.yaml already token-gates it; making the COMPILED default match
+			// means the guarantee no longer depends on that YAML being present. Empty
+			// SEQUENCER_TOKEN is fail-closed (token.go rejects when the resolved token is
+			// ""), so a node without the env var refuses block-ingest rather than opening
+			// it. Operators who intentionally run it open must set auth_type: none.
 			ServiceBlockIngestHTTP: {
 				TLS:      false,
-				AuthType: AuthTypeNone,
+				AuthType: AuthTypeToken,
+				TokenEnv: "SEQUENCER_TOKEN",
 			},
 			// 3. JSON-RPC (HTTP public)
+			//
+			// This is the most exposed surface the node has — binds.facade
+			// defaults to 0.0.0.0 and there is no auth — and it was the only
+			// public service with no per-service limit of its own: with
+			// RateLimit unset, gatekeeper's ratelimit.go skips the per-service
+			// limiter entirely and the endpoint falls back to
+			// security.global_rate_limit. ServiceExplorerAPI, which is strictly
+			// less exposed, already carries 20/40.
+			//
+			// 50/100 keeps it at the global default it was effectively getting
+			// while making the limit explicit and tunable per node: an archive
+			// node fronted by a CDN wants a different number from a validator
+			// that serves RPC incidentally. Batch requests are charged per
+			// element (http_server.go AllowAdditional), so this bounds work,
+			// not just HTTP calls.
 			ServiceEthRPC: {
-				TLS:      false,
-				AuthType: AuthTypeNone,
+				TLS:       false,
+				AuthType:  AuthTypeNone,
+				RateLimit: 50,
+				Burst:     100,
 			},
 			// 4. CLI Admin (gRPC local)
 			ServiceCLI: {
@@ -142,6 +198,13 @@ func DefaultSecurityConfig() SecurityConfig {
 				TLS:      false,
 				AuthType: AuthTypeNone,
 			},
+			// Admin-only operations: always token-gated. An empty
+			// security.admin_token refuses every request (fail closed).
+			ServiceAdminHTTP: {
+				TLS:      false,
+				AuthType: AuthTypeToken,
+				TokenEnv: "ADMIN_TOKEN",
+			},
 		},
 	}
 }
@@ -171,6 +234,11 @@ func (c *SecurityConfig) ResolveTokens() {
 				c.resolvedTokens[policy.TokenEnv] = c.JWTSecret
 				continue
 			}
+		case "ADMIN_TOKEN":
+			if c.AdminToken != "" {
+				c.resolvedTokens[policy.TokenEnv] = c.AdminToken
+				continue
+			}
 		}
 		// Fallback: env var lookup (done once, not per request)
 		c.resolvedTokens[policy.TokenEnv] = os.Getenv(policy.TokenEnv)
@@ -191,6 +259,11 @@ func (c *SecurityConfig) GetResolvedToken(tokenEnv string) string {
 		return c.ExplorerAPIKey
 	case "JWT_SECRET":
 		return c.JWTSecret
+	case "ADMIN_TOKEN":
+		if c.AdminToken != "" {
+			return c.AdminToken
+		}
+		return os.Getenv(tokenEnv)
 	default:
 		return os.Getenv(tokenEnv)
 	}

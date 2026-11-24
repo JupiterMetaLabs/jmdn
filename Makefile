@@ -15,7 +15,9 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test test-unit fmt lint lint-fix version deploy
+.PHONY: all build clean run test test-unit fmt fmt-check lint lint-new version deploy \
+	telemetry-lint telemetry-backlog telemetry-manifest \
+        local-replace local-replace-undo build-local verify-pins
 
 all: build
 
@@ -46,8 +48,9 @@ deploy: build
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.
+# Infrastructure setup has moved to Scripts/install_services.sh.
 
-# Run all unit tests (requires live ImmuDB + seed node for integration tests)
+# Run all unit tests (requires live ThebeDB + seed node for integration tests)
 test:
 	go test ./...
 
@@ -72,3 +75,68 @@ lint:
 # Useful when a lint backlog exists and you don't want to be blocked by old violations.
 lint-new:
 	golangci-lint run --new-from-rev=HEAD~1
+
+# ── Telemetry conventions (docs/telemetry/) ──────────────────────────────────
+# Mirrors the PR gate: only code you changed relative to the v3base merge point.
+telemetry-lint:
+	golangci-lint run --config .golangci-telemetry.yml \
+	  --new-from-rev=$$(git merge-base HEAD origin/v3base)
+
+# Mirrors nightly: the full outstanding backlog, informational.
+telemetry-backlog:
+	@golangci-lint run --config .golangci-telemetry.yml --tests 2>&1 | tail -1
+
+# The output allowlist, extracted from the //nolint reasons that justify it.
+telemetry-manifest:
+	@grep -rn "nolint:forbidigo" --include='*.go' . \
+	  | sed 's/:.*nolint:forbidigo *\/\/ */ -> /' | sort
+
+# ── Offline build via local replaces (no git credentials needed) ──────────────
+# Point the private/sibling JupiterMetaLabs modules at local checkouts sitting
+# next to this repo (../ThebeDB, ../avc, ../JMDN-FastSync, ../JMDN_Merkletree),
+# so `go build` resolves them from disk and never contacts GitHub. Use this on a
+# box with no SSH key / token for the private repos (the symptom is a build error
+# "could not read Username for 'https://github.com'" or "Host key verification
+# failed"). Reverse with `make local-replace-undo`.
+#
+# WARNING: do NOT commit the resulting `=> ../` replaces — `make verify-pins`
+# (and CI) reject filesystem replaces. Run local-replace-undo before pushing.
+local-replace:
+	go mod edit -replace github.com/JupiterMetaLabs/ThebeDB=../ThebeDB
+	go mod edit -replace github.com/JupiterMetaLabs/avc=../avc
+	go mod edit -replace github.com/JupiterMetaLabs/JMDN-FastSync=../JMDN-FastSync
+	go mod edit -replace github.com/JupiterMetaLabs/JMDN_Merkletree=../JMDN_Merkletree
+	@echo "local-replace: 4 modules now resolve from ../ siblings. Build with 'make build' (or 'make build-local'). Undo with 'make local-replace-undo'."
+
+# Remove the local filesystem replaces added by local-replace, restoring the
+# pinned versions in go.mod.
+local-replace-undo:
+	go mod edit -dropreplace github.com/JupiterMetaLabs/ThebeDB
+	go mod edit -dropreplace github.com/JupiterMetaLabs/avc
+	go mod edit -dropreplace github.com/JupiterMetaLabs/JMDN-FastSync
+	go mod edit -dropreplace github.com/JupiterMetaLabs/JMDN_Merkletree
+	@echo "local-replace-undo: removed the 4 local replaces (pinned versions restored)."
+
+# One-shot offline build: apply local replaces, then build.
+build-local: local-replace build
+
+# THE PRE-PUSH GATE. Proves the versions pinned in go.mod actually resolve,
+# independently of any workspace file or local replace. If you develop with
+# GOWORK exported, this is the only thing that catches a broken pin — and it is
+# what CI enforces.
+verify-pins:
+	GOWORK=off go mod verify
+	GOWORK=off go build ./...
+	@! grep -nE '^[[:space:]]*replace[[:space:]]+\S+[[:space:]]+=>[[:space:]]+\.{1,2}/' go.mod \
+	  || { echo "ERROR: local filesystem replace in go.mod — pin a published tag instead."; \
+	       echo "       Run 'make local-replace-undo' before pushing."; exit 1; }
+	@# Module->module replaces too. The filesystem check above cannot see them, so an
+	@# inert genproto replace sat in go.mod unnoticed from #125 until it was removed.
+	@# A replace on a reproducible freeze branch overrides version selection invisibly:
+	@# it needs a reviewed reason, not to arrive as a side effect of unrelated work.
+	@! grep -nE '^[[:space:]]*replace[[:space:]]' go.mod \
+	  || { echo "ERROR: replace directive in go.mod. v3base is a reproducible freeze —"; \
+	       echo "       a replace silently overrides version selection for everyone who builds."; \
+	       echo "       If it is genuinely required: put a comment above it saying why, and"; \
+	       echo "       narrow the grep in this target to exclude that one module path."; exit 1; }
+	@echo "verify-pins: OK"

@@ -37,7 +37,18 @@ const (
 	// PoPChallengeVersion — seedNodes/pkg/peer/bls_pop.go.
 	PoPChallengeVersion = "jmdt/bls-pop/v1"
 	// CommitteeSnapshotVersion — seedNodes/pkg/peer/committee_snapshot.go.
-	CommitteeSnapshotVersion = "jmdt/committee/v1"
+	// v2 (staking rewards, R1): committee entries gained reward_address. The
+	// canonical bytes changed, so v1 and v2 signatures are NOT interchangeable —
+	// a v2 seed and a v1 jmdn reject each other outright (the intended failure
+	// mode). MUST match seedNodes pkg/peer/committee_snapshot.go byte-for-byte.
+	CommitteeSnapshotVersion = "jmdt/committee/v2"
+	// CommitteeSnapshotVersionV3 — the same snapshot with the fleet sequencer's
+	// peer ID signed in after the seed:
+	//   jmdt/committee/v3|epoch|seed|sequencer_peer_id|<entries>
+	// A snapshot is v3 exactly when it carries a sequencer peer ID, so a v3
+	// signature never verifies as v2 or with another sequencer. Both versions are
+	// accepted. MUST match seedNodes pkg/peer/committee_snapshot.go.
+	CommitteeSnapshotVersionV3 = "jmdt/committee/v3"
 	// SeqAuthVersion — seedNodes/pkg/peer/sequencer_auth.go.
 	SeqAuthVersion = "jmdt/seed-auth/v1"
 
@@ -106,6 +117,13 @@ func VerifyBLSProofOfPossession(peerID, blsPubHex, blsPopHex string) error {
 type CommitteeEntry struct {
 	PeerID string `json:"peer_id"`
 	BLSPub string `json:"bls_pub"` // lowercase hex
+	// RewardAddress is the peer's bound operator wallet (lowercase "0x" + 40 hex),
+	// or "" when the peer has bound none. Empty is a legitimate value carried
+	// verbatim into the canonical bytes (three colon-separated fields ALWAYS —
+	// an unset address is a trailing colon, never dropped, never placeholdered).
+	// jmdn applies its own fallback for a signer with no address (omit from the
+	// fee split). Must match seedNodes CommitteeEntry.RewardAddress.
+	RewardAddress string `json:"reward_address"`
 }
 
 // CommitteeSnapshot mirrors the seed's authenticated, epoch-pinned eligible set.
@@ -113,6 +131,7 @@ type CommitteeSnapshot struct {
 	Epoch           uint64           `json:"epoch"`
 	Entries         []CommitteeEntry `json:"entries"`
 	Seed            string           `json:"seed,omitempty"`
+	SequencerPeerID string           `json:"sequencer_peer_id,omitempty"` // v3 only
 	AuthorityPubHex string           `json:"authority_pubkey"`
 	Signature       string           `json:"signature"`
 }
@@ -122,9 +141,13 @@ type CommitteeSnapshot struct {
 func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 	out := make([]CommitteeEntry, len(entries))
 	for i, e := range entries {
-		out[i] = CommitteeEntry{PeerID: e.PeerID, BLSPub: strings.ToLower(strings.TrimSpace(e.BLSPub))}
+		out[i] = CommitteeEntry{
+			PeerID:        e.PeerID,
+			BLSPub:        strings.ToLower(strings.TrimSpace(e.BLSPub)),
+			RewardAddress: strings.ToLower(strings.TrimSpace(e.RewardAddress)),
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].PeerID < out[j].PeerID })
 	return out
 }
 
@@ -132,11 +155,24 @@ func sortedEntries(entries []CommitteeEntry) []CommitteeEntry {
 // version|epoch|seed|<peer_id:bls_pub>,... (entries sorted by peer_id).
 // MUST match seedNodes canonicalCommitteeBytes byte-for-byte.
 func CanonicalCommitteeBytes(epoch uint64, seed string, entries []CommitteeEntry) []byte {
+	return CanonicalCommitteeBytesWithSequencer(epoch, seed, "", entries)
+}
+
+// CanonicalCommitteeBytesWithSequencer is the v2 bytes for an empty
+// sequencerPeerID and the v3 bytes (sequencer peer ID after the seed)
+// otherwise. MUST match seedNodes canonicalCommitteeBytesWithSequencer.
+func CanonicalCommitteeBytesWithSequencer(epoch uint64, seed, sequencerPeerID string, entries []CommitteeEntry) []byte {
 	parts := make([]string, 0, len(entries))
 	for _, e := range sortedEntries(entries) {
-		parts = append(parts, e.PeerID+":"+e.BLSPub)
+		// Three colon-separated fields ALWAYS; an unset reward_address is a
+		// trailing colon, never dropped. Must match seedNodes byte-for-byte.
+		parts = append(parts, e.PeerID+":"+e.BLSPub+":"+e.RewardAddress)
 	}
-	return []byte(CommitteeSnapshotVersion + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + strings.Join(parts, ","))
+	seq := strings.TrimSpace(sequencerPeerID)
+	if seq == "" {
+		return []byte(CommitteeSnapshotVersion + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + strings.Join(parts, ","))
+	}
+	return []byte(CommitteeSnapshotVersionV3 + "|" + strconv.FormatUint(epoch, 10) + "|" + seed + "|" + seq + "|" + strings.Join(parts, ","))
 }
 
 // VerifyCommitteeSnapshot verifies the authority signature over the snapshot's
@@ -163,7 +199,7 @@ func VerifyCommitteeSnapshot(snap *CommitteeSnapshot, expectedAuthorityPubHex st
 	if err != nil {
 		return fmt.Errorf("bad snapshot signature hex: %w", err)
 	}
-	if err := blssign.BLSVerify(pubBytes, CanonicalCommitteeBytes(snap.Epoch, snap.Seed, snap.Entries), sigBytes); err != nil {
+	if err := blssign.BLSVerify(pubBytes, CanonicalCommitteeBytesWithSequencer(snap.Epoch, snap.Seed, snap.SequencerPeerID, snap.Entries), sigBytes); err != nil {
 		return fmt.Errorf("committee snapshot signature invalid: %w", err)
 	}
 	return nil
@@ -186,6 +222,25 @@ func (snap *CommitteeSnapshot) BLSPubByPeer() map[string]string {
 	m := make(map[string]string, len(snap.Entries))
 	for _, e := range snap.Entries {
 		m[e.PeerID] = strings.ToLower(strings.TrimSpace(e.BLSPub))
+	}
+	return m
+}
+
+// RewardAddrByPeer maps peer_id -> lowercase reward-address hex from the
+// snapshot — the AUTHENTICATED buddy->wallet binding the fee split is derived
+// from. A peer with no bound address is OMITTED from the map (its "" is not a
+// destination); the fee-split builder treats an absent entry as "no reward,
+// redistribute to address-having buddies". Call only on a snapshot that
+// VerifyCommitteeSnapshot accepted. Must stay consistent with the canonical
+// bytes' normalization (lowercase+trim).
+func (snap *CommitteeSnapshot) RewardAddrByPeer() map[string]string {
+	m := make(map[string]string, len(snap.Entries))
+	for _, e := range snap.Entries {
+		addr := strings.ToLower(strings.TrimSpace(e.RewardAddress))
+		if addr == "" {
+			continue
+		}
+		m[e.PeerID] = addr
 	}
 	return m
 }
@@ -232,7 +287,7 @@ func CheckSnapshotEpochFresh(snapEpoch uint64, nowUnix, epochSeconds int64) erro
 // SequencerAuthChallenge is the canonical string the sequencer signs and the
 // seed reconstructs: version|method|sequencer_peer_id|unix_ts. MUST match seed.
 func SequencerAuthChallenge(method, sequencerPeerID string, unixTs int64) []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%d", SeqAuthVersion, method, sequencerPeerID, unixTs))
+	return fmt.Appendf(nil, "%s|%s|%s|%d", SeqAuthVersion, method, sequencerPeerID, unixTs)
 }
 
 // SignSequencerRequest signs a selection request with the sequencer's libp2p
