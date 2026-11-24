@@ -3,13 +3,16 @@
 # jmdn v3base node seeded from the canary snapshot in S3.
 #
 # Before running (once per node):
-#   1. Attach an IAM role with s3:ListBucket + s3:GetObject on the snapshot bucket
-#      (AWS). The script checks it.
+#   1. S3 read access, detected automatically:
+#      - AWS VM: attach the read role (s3:ListBucket + s3:GetObject on the bucket).
+#      - GCP VM: nothing on the VM. The script gets the VM service account's Google
+#        identity token from the metadata server and exchanges it for the AWS role
+#        GCP_AWS_ROLE_ARN (trusts accounts.google.com, limited to the service
+#        accounts' unique IDs). No keys on the VM.
+#      - Anything else: a links file at /root/jmdn-links.env (see LINKS_FILE).
 #   2. Nothing to copy for the config: the fleet template (the canary's yaml with
 #      per-node secrets blanked) is downloaded from S3, SSE-KMS encrypted; the read
 #      role needs kms:Decrypt on that key. LOCAL_CONFIG=/path overrides it.
-#      Non-AWS hosts (GCP): put a links file at /root/jmdn-links.env instead (made on
-#      the canary with `aws s3 presign`); then no AWS role is needed on this host.
 #   3. Get the canary's BLS public key as HEX (bls.json stores it as base64). On the canary:
 #        python3 -c 'import json,base64;print(base64.b64decode(json.load(open("/opt/jmdn/config/bls.json"))["bls_pub"]).hex())'
 #   4. Have a GitHub fine-grained token (Contents: read) for jmdn, avc, ThebeDB,
@@ -47,7 +50,10 @@ REWARD_ADDRESS="${REWARD_ADDRESS:-}"
 # shredded once the node config is written. LOCAL_CONFIG=/path uses a local file.
 CONFIG_S3="${CONFIG_S3:-s3://jmdt-v3-snapshots/jmdn-config/v3base-node-template.yaml}"
 LOCAL_CONFIG="${LOCAL_CONFIG:-}"
-# Non-AWS hosts (GCP, other clouds): a links file with time-limited HTTPS URLs,
+# GCP: AWS role assumed with the VM's Google identity (see header, step 1).
+GCP_AWS_ROLE_ARN="${GCP_AWS_ROLE_ARN:-arn:aws:iam::419231909261:role/jmdn-gcp-reader-role}"
+GCP_AUDIENCE="${GCP_AUDIENCE:-jmdn-s3-reader}"
+# Hosts on neither AWS nor GCP: a links file with time-limited HTTPS URLs,
 # made on a machine that can read the bucket. Defines CONFIG_URL, PGDUMP_URL,
 # TAR_URL, SUMS_URL and HEIGHT_URL. When present, no AWS credentials are used;
 # the downloads are still checked against the pinned checksums.
@@ -61,6 +67,27 @@ if [ -f "$LINKS_FILE" ]; then
   done
   USE_LINKS=1
 fi
+# aws_ready: AWS credentials from the instance role, else from the GCP VM identity.
+aws_ready() {
+  aws sts get-caller-identity --region "$BUCKET_REGION" >/dev/null 2>&1 && return 0
+  local tok req creds err
+  tok=$(curl -fsS -m 3 -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=$GCP_AUDIENCE&format=full" 2>/dev/null) \
+    || die "no AWS credentials and not a GCP VM with a service account: attach the read role (AWS), or provide $LINKS_FILE"
+  info "GCP VM detected: exchanging its Google identity for $GCP_AWS_ROLE_ARN"
+  req=$(mktemp); chmod 600 "$req"
+  python3 -c 'import json,sys; json.dump({"RoleArn":sys.argv[1],"RoleSessionName":sys.argv[2],"DurationSeconds":14400,"WebIdentityToken":sys.stdin.read().strip()}, open(sys.argv[3],"w"))' \
+    "$GCP_AWS_ROLE_ARN" "jmdn-bootstrap-$(hostname -s)" "$req" <<<"$tok"
+  unset tok
+  creds=$(aws sts assume-role-with-web-identity --region "$BUCKET_REGION" --cli-input-json "file://$req" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>"$req.err") \
+    || { err=$(head -c 400 "$req.err"); rm -f "$req" "$req.err"; die "AWS refused the GCP identity: $err (check the role's trust policy has this VM's service account unique ID)"; }
+  rm -f "$req" "$req.err"
+  read -r AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<<"$creds"
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+  unset creds
+  aws sts get-caller-identity --region "$BUCKET_REGION" >/dev/null 2>&1 || die "assumed $GCP_AWS_ROLE_ARN but the credentials do not work"
+}
 fetch_url() { curl -fsSL --retry 3 -o "$2" "$1" || die "download failed for $(basename "$2") (link expired? make a new links file)"; }
 CANARY_YAML="${LOCAL_CONFIG:-/root/jmdn-config-template.yaml}"
 SRC="/root/src"
@@ -186,7 +213,7 @@ if ! done_phase 03-deps || ! done_phase 07-config; then
       ( umask 077; fetch_url "$CONFIG_URL" "$CANARY_YAML" )
     else
       step "Config template from $CONFIG_S3"
-      aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM, or provide $LINKS_FILE"
+      aws_ready
       ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
         || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
     fi
@@ -342,7 +369,7 @@ if ! done_phase 08-snapshot; then
     fetch_url "$HEIGHT_URL" "$IMPORT_DIR/COPY_HEIGHT"
   else
     step "8/10 Snapshot s3://$BUCKET/$PREFIX/"
-    aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM, or provide $LINKS_FILE"
+    aws_ready
     aws s3 cp "s3://$BUCKET/$PREFIX/" "$IMPORT_DIR/" --recursive --region "$BUCKET_REGION" --only-show-errors
   fi
   ( cd "$IMPORT_DIR" && sha256sum -c SHA256SUMS >/dev/null ) || die "SHA256SUMS check failed"
