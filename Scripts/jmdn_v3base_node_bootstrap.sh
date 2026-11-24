@@ -204,7 +204,7 @@ if ! done_phase 01-apt; then
   # AWS CLI: apt where the distro still ships it, else the snap (Ubuntu 24.04+
   # images without an awscli apt candidate, e.g. on GCP).
   if ! command -v aws >/dev/null 2>&1; then
-    if apt-cache policy awscli 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+    if apt-cache policy awscli 2>/dev/null | grep 'Candidate: [0-9]' >/dev/null; then
       apt_wait; apt-get install -y -q awscli >/dev/null
     else
       command -v snap >/dev/null 2>&1 || die "no awscli apt package and no snap; install the AWS CLI and rerun"
@@ -323,7 +323,7 @@ ALTER ROLE $PG_USER LOGIN REPLICATION PASSWORD '$PG_APP_PASSWORD';
 ALTER SYSTEM SET wal_level = 'logical';
 ALTER SYSTEM SET max_slot_wal_keep_size = '2GB';
 SQL
-  sudo -u postgres psql -p "$PGPORT" -Atc "SELECT 1 FROM pg_database WHERE datname='$PG_DB'" | grep -q 1 \
+  sudo -u postgres psql -p "$PGPORT" -Atc "SELECT 1 FROM pg_database WHERE datname='$PG_DB'" | grep 1 >/dev/null \
     || sudo -u postgres createdb -p "$PGPORT" -O "$PG_USER" "$PG_DB"
   systemctl restart postgresql
   sleep 3
@@ -341,7 +341,7 @@ if ! done_phase 05-build; then
   ( cd "$REPO" && bash ./Scripts/build.sh )
   git -C "$REPO" checkout -q -- go.mod go.sum 2>/dev/null || true
   [ -x "$REPO/jmdn" ] || die "build.sh did not produce $REPO/jmdn"
-  "$REPO/jmdn" --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "built jmdn is not $JMDN_REF: $("$REPO/jmdn" --version 2>&1 | head -1)"
+  "$REPO/jmdn" --version 2>&1 | grep "${JMDN_REF:0:7}" >/dev/null || die "built jmdn is not $JMDN_REF: $("$REPO/jmdn" --version 2>&1 | head -1)"
   install -m 0755 "$REPO/jmdn" /usr/local/bin/jmdn
   mark 05-build; ok "built and installed: $(/usr/local/bin/jmdn --version 2>&1 | head -1)"
 fi
@@ -353,7 +353,7 @@ if ! done_phase 06-service; then
   ( cd "$REPO" && printf 'n\n' | bash ./Scripts/install_services.sh --mode local )
   systemctl stop jmdn 2>/dev/null || true
   [ -n "$(ls -A "$JMDN_DATA/certs" 2>/dev/null)" ] || die "no certs in $JMDN_DATA/certs"
-  /usr/local/bin/jmdn --version 2>&1 | grep -q "${JMDN_REF:0:7}" || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
+  /usr/local/bin/jmdn --version 2>&1 | grep "${JMDN_REF:0:7}" >/dev/null || die "installed /usr/local/bin/jmdn is not $JMDN_REF after install_services"
   mark 06-service; ok "service installed and stopped; certs in $JMDN_DATA/certs"
 fi
 
@@ -416,7 +416,8 @@ if ! done_phase 09-restore; then
   fi
   [ -z "$(ls -A "$JMDN_DATA/storage" 2>/dev/null)" ] || die "$JMDN_DATA/storage is not empty and was not filled by this script; move it aside and rerun"
   grep -qs "$CANARY_PEER_ID" "$JMDN_DATA/config/peer.json" && die "$JMDN_DATA/config/peer.json holds the canary's identity"
-  if tar -tf "$IMPORT_DIR/chaindata.tar" | grep -qE '(^|/)config/(peer|bls)\.json$'; then
+  listing=$(tar -tf "$IMPORT_DIR/chaindata.tar") || die "cannot list chaindata.tar"
+  if grep -qE '(^|/)config/(peer|bls)\.json$' <<<"$listing"; then
     die "chaindata.tar contains node identity files (config/peer.json or bls.json); refusing to extract"
   fi
   export PGHOST=127.0.0.1 PGPORT PGUSER="$PG_USER" PGDATABASE="$PG_DB" PGSSLMODE=disable
@@ -426,7 +427,7 @@ if ! done_phase 09-restore; then
   touch "$MARK/09-restore.started"
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -Atc "SELECT pg_drop_replication_slot('$CDC_SLOT') FROM pg_replication_slots WHERE slot_name='$CDC_SLOT'" >/dev/null
   sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -Atc "DROP PUBLICATION IF EXISTS $CDC_PUB" >/dev/null
-  tar -C "$JMDN_DATA" -xf "$IMPORT_DIR/chaindata.tar"
+  tar -C "$JMDN_DATA" --exclude=config/peer.json --exclude=config/bls.json -xf "$IMPORT_DIR/chaindata.tar"
   rm -f "$JMDN_DATA/checkpoint-floor.json"
   info "pg_restore (a few minutes)"
   pg_restore --no-owner --no-privileges --no-publications --no-subscriptions -j 4 -d "$PG_DB" "$IMPORT_DIR/thebe.pgdump" || die "pg_restore reported errors (above)"
