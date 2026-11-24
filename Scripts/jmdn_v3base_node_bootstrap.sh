@@ -153,7 +153,7 @@ if [ -t 0 ]; then
   read -r -p "    Proceed? [y/N]: " go; [[ "$go" =~ ^[Yy]$ ]] || die "stopped at your request"
 fi
 export DEBIAN_FRONTEND=noninteractive
-export PATH="/usr/local/go/bin:$PATH"
+export PATH="/usr/local/go/bin:$PATH:/snap/bin"
 export GOTOOLCHAIN=local
 
 apt_wait() {
@@ -200,8 +200,19 @@ if ! done_phase 01-apt; then
   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
   apt_wait; apt-get -o Acquire::http::Timeout=30 update -q
   apt_wait; apt-get -o Acquire::http::Timeout=30 install -y -q \
-    git gcc make build-essential curl wget rsync python3 python3-yaml tar sqlite3 ca-certificates unzip awscli psmisc openssl >/dev/null
-  mark 01-apt; ok "packages installed"
+    git gcc make build-essential curl wget rsync python3 python3-yaml tar sqlite3 ca-certificates unzip psmisc openssl >/dev/null
+  # AWS CLI: apt where the distro still ships it, else the snap (Ubuntu 24.04+
+  # images without an awscli apt candidate, e.g. on GCP).
+  if ! command -v aws >/dev/null 2>&1; then
+    if apt-cache policy awscli 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+      apt_wait; apt-get install -y -q awscli >/dev/null
+    else
+      command -v snap >/dev/null 2>&1 || die "no awscli apt package and no snap; install the AWS CLI and rerun"
+      snap install aws-cli --classic >/dev/null
+    fi
+  fi
+  aws --version >/dev/null 2>&1 || die "AWS CLI not usable after install"
+  mark 01-apt; ok "packages installed ($(aws --version 2>&1 | cut -d' ' -f1))"
 fi
 
 # ---- config template (after the AWS CLI is installed) ------------------------------
