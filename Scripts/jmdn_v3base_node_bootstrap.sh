@@ -412,7 +412,7 @@ if ! done_phase 09-restore; then
   # Otherwise autovacuum does it after boot and the slot holds that WAL
   # (about 1 GB) as lag until the first replicated commit.
   info "VACUUM (FREEZE, ANALYZE) of the restored tables (a few minutes)"
-  psql -v ON_ERROR_STOP=1 -q -c "VACUUM (FREEZE, ANALYZE)" || die "VACUUM after restore failed"
+  sudo -u postgres psql -p "$PGPORT" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c "VACUUM (FREEZE, ANALYZE)" || die "VACUUM after restore failed"
   sudo -u postgres psql -p "$PGPORT" -v ON_ERROR_STOP=1 -q -c "CHECKPOINT" || die "CHECKPOINT failed"
   naccounts=$(psql -Atc "SELECT count(*) FROM accounts")
   unset PGPASSWORD
@@ -463,5 +463,5 @@ cat <<EOF
     then confirm "boot verification passed" again
   - admin token: /root/jmdn-admin-token (0600)
   - clean up when stable: rm -rf $IMPORT_DIR $MARK/pgpass
-  - links file (non-AWS hosts): shred -u $LINKS_FILE once the node is up
 EOF
+if [ "$USE_LINKS" = 1 ]; then echo "  - links file: shred -u $LINKS_FILE now that the node is up"; fi
