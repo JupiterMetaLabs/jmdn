@@ -40,6 +40,9 @@ CANARY_BLS_PUB="${CANARY_BLS_PUB:-}"
 REWARD_ADDRESS="${REWARD_ADDRESS:-}"
 CANARY_YAML_SET="${CANARY_YAML:-}"
 CANARY_YAML="${CANARY_YAML:-/root/canary-jmdn.yaml}"
+# Fleet config template (canary yaml with per-node secrets blanked), stored
+# SSE-KMS encrypted. Fetched when CANARY_YAML does not exist locally.
+CONFIG_S3="${CONFIG_S3:-s3://jmdt-v3-snapshots/jmdn-config/v3base-node-template.yaml}"
 SRC="/root/src"
 REPO="/root/jmdn"
 JMDN_DATA="/opt/jmdn"
@@ -94,7 +97,7 @@ ask NODE_ALIAS "Node alias (e.g. jmdn-aws-us-west-1-v3base-2)" '^[A-Za-z0-9._-]+
 ask CANARY_BLS_PUB "Canary BLS public key, HEX (see script header for the command)" '^[0-9a-fA-F]{64,}$'
 ask REWARD_ADDRESS "Reward address 0x... (validators only; Enter to skip)" '^0x[0-9a-fA-F]{40}$' optional
 ask CANARY_YAML "Path to the canary's jmdn.yaml copy" '^/.+'
-[ -f "$CANARY_YAML" ] || die "$CANARY_YAML not found (copy the canary's /etc/jmdn/jmdn.yaml here)"
+[ -f "$CANARY_YAML" ] || info "$CANARY_YAML not present; it is fetched from $CONFIG_S3 after step 1"
 ( umask 077; printf 'NODE_ALIAS=%q\nCANARY_BLS_PUB=%q\nREWARD_ADDRESS=%q\nCANARY_YAML=%q\n' \
     "$NODE_ALIAS" "$CANARY_BLS_PUB" "$REWARD_ADDRESS" "$CANARY_YAML" > "$INPUTS" )
 ok "alias $NODE_ALIAS; reward address ${REWARD_ADDRESS:-none}; canary yaml $CANARY_YAML"
@@ -152,6 +155,17 @@ if ! done_phase 01-apt; then
     git gcc make build-essential curl wget rsync python3 python3-yaml tar sqlite3 ca-certificates unzip awscli psmisc openssl >/dev/null
   mark 01-apt; ok "packages installed"
 fi
+
+# ---- config template (after the AWS CLI is installed) ------------------------------
+if [ ! -f "$CANARY_YAML" ]; then
+  step "Config template from $CONFIG_S3"
+  aws sts get-caller-identity >/dev/null 2>&1 || die "no AWS credentials: attach the read role to this VM"
+  ( umask 077; aws s3 cp "$CONFIG_S3" "$CANARY_YAML" --region "$BUCKET_REGION" --only-show-errors ) \
+    || die "could not fetch $CONFIG_S3 (needs s3:GetObject and kms:Decrypt on the config key)"
+  chmod 600 "$CANARY_YAML"
+  ok "fetched to $CANARY_YAML (0600)"
+fi
+python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$CANARY_YAML" || die "$CANARY_YAML does not parse"
 
 # ---- 2. source: jmdn + private sister repos (HTTPS) -----------------------------
 if ! done_phase 02-src; then
