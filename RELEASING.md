@@ -12,18 +12,54 @@ vMAJOR.MINOR.PATCH
 - **MINOR** — new features or improvements
 - **PATCH** — bug fixes or stability improvements
 
+Pre-releases add a suffix: `vMAJOR.MINOR.PATCH-beta.N` while the release is still
+taking features, then `vMAJOR.MINOR.PATCH-rc.N` once it is frozen.
+
 ## Branch Model
 
 ```
-main             active development, all features merge here
-release/1.1.x    maintained release line, receives cherry-picked patches only
-release/1.2.x    next release line, branched from main when ready
+main             active development, all features merge here; betas are tagged here
+release/3.0.x    next release line, branched from main at the first release candidate
+release/2.0.x    previous release line, receives cherry-picked patches only
 ```
 
 - `main` is always the source of truth for new development
 - Release branches are never merged back into `main`
 - Patches go to `main` first, then cherry-pick to release branches
-- Tags are only created on release branches
+- Betas (`-beta.N`) are tagged on `main`; release candidates and final releases are
+  tagged on their release branch
+
+## Creating a Beta
+
+Example: releasing `v3.0.0-beta.2`. CI must be green on the `main` commit being tagged.
+
+```bash
+git checkout main
+git pull --ff-only origin main
+
+git tag -a v3.0.0-beta.2 -m "v3.0.0-beta.2"
+git push origin v3.0.0-beta.2
+```
+
+No release branch is needed for a beta. A GitHub Release is optional; if one is created,
+mark it as a pre-release.
+
+## Cutting a Release Branch
+
+Example: freezing `v3.0.0` at its first release candidate.
+
+```bash
+git checkout main
+git pull --ff-only origin main
+
+git checkout -b release/3.0.x
+git push -u origin release/3.0.x
+
+git tag -a v3.0.0-rc.1 -m "v3.0.0-rc.1"
+git push origin v3.0.0-rc.1
+```
+
+Further release candidates and the final `v3.0.0` are tagged on `release/3.0.x`.
 
 ## Creating a Minor Release
 
@@ -36,7 +72,7 @@ git pull --ff-only origin main
 git checkout -b release/2.0.x
 git push -u origin release/2.0.x
 
-git tag -a v2.0.0 -m "Release v2.0.0"
+git tag -a v2.0.0 -m "v2.0.0"
 git push origin v2.0.0
 ```
 
@@ -52,12 +88,29 @@ git pull --ff-only origin release/2.0.x
 
 git cherry-pick <commit-sha>
 
-git tag -a v2.0.1 -m "Release v2.0.1"
+git tag -a v2.0.1 -m "v2.0.1"
 git push origin release/2.0.x
 git push origin v2.0.1
 ```
 
 Create the GitHub Release from the tag.
+
+## Tags Are Immutable
+
+Release tags (`v*`) cannot be moved, re-pushed or deleted once pushed: rulesets block it.
+Check the commit and the message before pushing:
+
+```bash
+git for-each-ref refs/tags/v3.0.0-beta.2 --format='%(contents:subject) -> %(*objectname)'
+```
+
+A wrong tag is fixed by tagging the next version, not by replacing the tag.
+
+## Container Images
+
+Pushing a `v*` tag runs `.github/workflows/docker.yml`, which publishes
+`ghcr.io/jupitermetalabs/jmdn:<tag>`. Only a final release (`vX.Y.Z`) moves `:latest`;
+betas and release candidates never do.
 
 ## Release Artifacts
 
@@ -85,6 +138,6 @@ git checkout v2.0.0
 
 Before tagging a release:
 
-- [ ] All CI checks pass on the release branch
+- [ ] All CI checks pass on the commit being tagged
 - [ ] SonarQube quality gate passes
 - [ ] SECURITY.md version table is updated
