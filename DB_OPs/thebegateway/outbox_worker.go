@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,6 +75,13 @@ type OutboxWorker struct {
 	stop     chan struct{}
 	once     sync.Once // guards Stop() — closing a closed channel panics
 	ticks    int       // poll ticks since the last maintenance pass
+
+	// done is closed when run() returns, so StopAndWait can wait for the
+	// worker before ThebeDB is closed under it. started records that run()
+	// was launched (StopAndWait must not wait on a worker never started).
+	done      chan struct{}
+	startOnce sync.Once
+	started   atomic.Bool
 }
 
 // NewOutboxWorker creates an OutboxWorker. Call Start() to begin polling.
@@ -87,6 +95,7 @@ func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Dura
 		gateway:  gateway,
 		interval: interval,
 		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -94,16 +103,34 @@ func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Dura
 // Call Stop() to shut it down gracefully.
 // Time: O(1) to start; poll loop is O(batchSize) per tick — bounded by defaultBatchSize=32
 func (w *OutboxWorker) Start() {
-	go w.run()
+	w.startOnce.Do(func() {
+		w.started.Store(true)
+		go w.run()
+	})
 }
 
-// Stop signals the worker to stop after the current batch completes.
-// Safe to call multiple times — subsequent calls are no-ops.
+// Stop signals the worker to stop and returns at once; it does not wait for
+// the worker goroutine. Safe to call multiple times — subsequent calls are
+// no-ops. Use StopAndWait before closing the store or gateway the worker uses.
 func (w *OutboxWorker) Stop() {
 	w.once.Do(func() { close(w.stop) })
 }
 
+// StopAndWait signals the worker to stop and waits until its goroutine has
+// returned, so no retry is in flight afterwards. Stop cancels the context of
+// an in-flight dispatch and the drain stops between entries, so the wait is
+// as long as a write takes to notice cancellation; aborted and unreached
+// entries stay in the outbox for the next start. Returns at once if Start was never
+// called. Shutdown calls this (under a timeout) before closing ThebeDB.
+func (w *OutboxWorker) StopAndWait() {
+	w.Stop()
+	if w.started.Load() {
+		<-w.done
+	}
+}
+
 func (w *OutboxWorker) run() {
+	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
@@ -130,22 +157,69 @@ func (w *OutboxWorker) run() {
 }
 
 func (w *OutboxWorker) drainBatch() {
-	ctx := context.Background()
+	// Cancelled as soon as w.stop closes (as maintain() does), so Stop aborts
+	// an in-flight dispatch instead of letting it run on: shutdown closes
+	// ThebeDB right after StopAndWait, and a slow write must not hold that
+	// up or be cut by the close. An aborted write leaves its entry in the
+	// outbox for the next start.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-w.stop:
+			cancel()
+		case <-done:
+		}
+	}()
+
 	entries, err := w.store.Next(ctx, defaultBatchSize)
 	if err != nil {
 		// log or ignore — worker must not crash on store errors
 		return
 	}
 	for _, entry := range entries {
+		// Stop between entries, not only between ticks: shutdown waits for
+		// this goroutine (StopAndWait) before closing ThebeDB, so the wait is
+		// one dispatch at most. Unprocessed entries stay in the outbox.
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
 		if entry.Attempts >= MaxOutboxAttempts {
 			continue // exhausted — left for operator inspection
 		}
 		if err := w.dispatch(ctx, entry); err != nil {
-			_ = w.store.IncrementAttempts(ctx, entry.ID, ExponentialBackoff(entry.Attempts))
+			if ctx.Err() != nil {
+				// Aborted by Stop, not a failed write: do not count it as an
+				// attempt. The entry stays queued for the next start.
+				return
+			}
+			w.bookkeep(func(bctx context.Context) error {
+				return w.store.IncrementAttempts(bctx, entry.ID, ExponentialBackoff(entry.Attempts))
+			})
 		} else {
-			_ = w.store.Ack(ctx, entry.ID)
+			// The write succeeded; record that even if Stop landed meanwhile.
+			// Using the drain context here would fail the Ack once Stop has
+			// cancelled it, and the entry would be written again next start.
+			w.bookkeep(func(bctx context.Context) error { return w.store.Ack(bctx, entry.ID) })
 		}
 	}
+}
+
+// bookkeepTimeout bounds one outbox bookkeeping call (Ack/IncrementAttempts)
+// made after a dispatch, so it cannot hold StopAndWait up for long.
+const bookkeepTimeout = time.Second
+
+// bookkeep runs one outbox bookkeeping call on its own short-lived context,
+// independent of the drain context: the outcome of a dispatch that has
+// already happened must be recorded even when Stop cancelled the drain.
+func (w *OutboxWorker) bookkeep(fn func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), bookkeepTimeout)
+	defer cancel()
+	_ = fn(ctx)
 }
 
 // maintain drops exhausted rows older than ExhaustedRetention and asks the

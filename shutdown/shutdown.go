@@ -7,6 +7,7 @@ import (
 	"runtime/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/config/GRO"
@@ -26,7 +27,144 @@ func atomicPrint(data []byte) error {
 	return err
 }
 
+var (
+	inProgress   atomic.Bool
+	shutdownOnce sync.Once
+	shutdownOK   bool
+	// shutdownBody is the real shutdown sequence; a variable so tests can
+	// replace it without a GRO runtime.
+	shutdownBody = runShutdown
+)
+
+// Begin marks that a shutdown has started. Shutdown calls it first; a caller
+// that starts a shutdown on another goroutine calls it before doing so, so
+// InProgress is already true by the time any part of the shutdown runs.
+func Begin() {
+	if inProgress.CompareAndSwap(false, true) && !started.Load() {
+		// Remember that this shutdown began during startup. Startup may
+		// finish while the shutdown runs (it prints metrics first), but main
+		// was still opening resources when the stop came, so they stay open.
+		beganDuringStartup.Store(true)
+	}
+}
+
+// InProgress reports whether a shutdown has started. main checks it when the
+// CLI returns: GRO's shutdown cancels the CLI, and main must not return then,
+// because returning from main ends the process at once with status 0, before
+// the shutdown has closed resources, flushed the logger and chosen the exit
+// code.
+func InProgress() bool { return inProgress.Load() }
+
+// Shutdown runs the shutdown sequence (GRO, resource closers, logger) and
+// reports whether it all completed cleanly. It runs once per process: a
+// second caller (a signal arriving during a CLI stopService, say) waits for
+// the first run and gets its result, instead of shutting GRO and the logger
+// down a second time.
 func Shutdown() bool {
+	Begin()
+	shutdownOnce.Do(func() {
+		cancelMain()
+		shutdownOK = shutdownBody()
+	})
+	return shutdownOK
+}
+
+// ShutdownAndExitInBackground runs ShutdownAndExit on a plain goroutine and
+// returns at once. For callers that are themselves GRO-tracked goroutines
+// (the CLI stopService command): calling Shutdown inline there makes GRO's
+// shutdown wait on its own caller until its timeout. The caller should return
+// right after this, so GRO has nothing of it left to wait for. InProgress is
+// true before this returns.
+func ShutdownAndExitInBackground() {
+	Begin()
+	SetDeadline(time.Now().Add(watchdogBudget - 2*time.Second))
+	go ShutdownAndExit(false)
+}
+
+// ShutdownAndExit runs Shutdown and then always exits: 1 if the shutdown was
+// not clean or failed is true, 0 otherwise. A watchdog exits with 1 if the
+// whole sequence has not finished within watchdogBudget, so a blocked step
+// (GRO's forced shutdown, the logger) cannot leave the process running until
+// the supervisor kills it. The resource closers get a deadline 2s inside that
+// budget, as on the signal path in main.go, which has its own watchdog.
+func ShutdownAndExit(failed bool) {
+	Begin()
+	SetDeadline(time.Now().Add(watchdogBudget - 2*time.Second))
+	stopWatchdog := startWatchdog(watchdogBudget)
+	ok := Shutdown()
+	stopWatchdog()
+	Exit(ok && !failed)
+}
+
+// watchdogBudget bounds ShutdownAndExit as a whole: the same 25s the signal
+// handler in main.go uses, under Docker's 30s stop_grace_period. A variable so
+// tests can shorten it.
+var watchdogBudget = 25 * time.Second
+
+// startWatchdog exits the process with 1 once budget has passed, unless the
+// returned stop function is called first.
+func startWatchdog(budget time.Duration) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(budget):
+			notice("shutdown did not finish within %s; exiting\n", budget)
+			OS_EXIT(1)
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
+var (
+	mainCancelMu sync.Mutex
+	mainCancel   func()
+)
+
+// SetMainCancel registers the function that cancels main's context. Shutdown
+// calls it first, on every path, so components that run on main's context
+// (rather than under GRO) stop before the resource closers run.
+func SetMainCancel(cancel func()) {
+	mainCancelMu.Lock()
+	mainCancel = cancel
+	mainCancelMu.Unlock()
+}
+
+func cancelMain() {
+	mainCancelMu.Lock()
+	c := mainCancel
+	mainCancelMu.Unlock()
+	if c != nil {
+		c()
+	}
+}
+
+// started records that startup has finished (MarkStarted). Until then the
+// shutdown runs no closers: main is still opening and using ThebeDB and the
+// network, and closing them under it is worse than leaving them open, which is
+// what the SIGKILL that ended every stop before did.
+var started atomic.Bool
+
+// beganDuringStartup records that the shutdown began before MarkStarted.
+var beganDuringStartup atomic.Bool
+
+// MarkStarted records that startup has finished and every long-lived resource
+// is registered. main calls it once, after the last startup step.
+func MarkStarted() { started.Store(true) }
+
+// closePhase runs fn (an early or regular closer phase) only if startup had
+// finished when the shutdown began, and reports its result. Otherwise it
+// skips, logs, and reports false.
+func closePhase(name string, fn func() bool) bool {
+	if !started.Load() || beganDuringStartup.Load() {
+		notice("shutdown: startup not finished; skipping %s and leaving resources open\n", name)
+		return false
+	}
+	return fn()
+}
+
+func runShutdown() bool {
 	// Print metrics header
 	header := "\n" + strings.Repeat("=", 80) + "\n" +
 		"SHUTDOWN INITIATED - Printing GRO Metrics\n" +
@@ -55,15 +193,22 @@ func Shutdown() bool {
 	_ = atomicPrint([]byte(shutdownMsg))
 	os.Stdout.Sync()
 
+	// Early phase: close the producers of work (the libp2p host) before GRO's
+	// shutdown, so no new block or vote starts an apply while the node winds
+	// down. See RegisterEarly.
+	ok := closePhase("early closers", RunEarlyClosers)
+
+	if GRO.GlobalGRO == nil {
+		// GRO was never set up (a failure early in startup): nothing to stop.
+		return finishShutdown(closePhase("closers", RunClosers) && ok)
+	}
+
 	// NOW start the actual shutdown process
 	done := make(chan struct{})
 	go func() {
 		GRO.GlobalGRO.Shutdown(true)
 		close(done)
 	}()
-
-	// Default to success
-	exitCode := 0
 
 	select {
 	case <-done:
@@ -81,9 +226,24 @@ func Shutdown() bool {
 		_, _ = fmt.Fprintf(os.Stderr, "\n==== goroutine dump (shutdown timeout) ====\n%s\n", buf.String())
 
 		GRO.GlobalGRO.Shutdown(false)
-		exitCode = 1 // Mark as failure
+		// Not counted as a failure. goroutine-orchestrator v0.1.5 waits its
+		// full timeout for any goroutine started without AddToWaitGroup, so
+		// this branch runs on EVERY stop; counting it made every stop exit 1
+		// and hid whether the closers below succeeded. The exit code reports
+		// the closers. The goroutine dump above stays for diagnosis.
 	}
 
+	// Release the registered resources (outbox worker, ThebeDB / Badger,
+	// Postgres pools), newest first, each with its own time limit. ThebeDB's
+	// closer takes the state-apply lock and the append slot first and skips
+	// the close if a write is still in flight (DB_OPs.CloseThebeDBGated).
+	notice("Closing resources...\n")
+	return finishShutdown(closePhase("closers", RunClosers) && ok)
+}
+
+// finishShutdown shuts the logger down and returns ok: the last step of every
+// shutdown.
+func finishShutdown(ok bool) bool {
 	// Shutdown the logger after GRO shutdown completes
 	// This ensures all logs are flushed and resources are cleaned up
 	fmt.Println("Shutting down logger...")
@@ -98,9 +258,38 @@ func Shutdown() bool {
 		fmt.Println("Logger shutdown completed")
 	}
 
-	return exitCode == 0
+	return ok
 }
 
+// exitFn is os.Exit; a variable so tests can observe the exit code.
+var exitFn = os.Exit
+
 func OS_EXIT(code int) {
-	os.Exit(code)
+	exitFn(code)
+}
+
+// Exit ends the process after Shutdown: code 0 when ok, 1 otherwise. It ALWAYS
+// exits. Callers used to exit only when Shutdown returned true, so a shutdown
+// that timed out left the process parked (main() waits in select {}) until the
+// supervisor killed it: ~90s under systemd, 30s under Docker.
+func Exit(ok bool) {
+	if ok {
+		OS_EXIT(0)
+		return
+	}
+	OS_EXIT(1)
+}
+
+// ForceExitOnSignal waits for one more signal on sigCh and then exits at once
+// with code 1, skipping the rest of the shutdown. Start it right after the
+// first signal is received, so a second Ctrl+C / SIGTERM is an escape hatch
+// when the graceful path is stuck. sigCh is read only once by the handler, so
+// without this a second signal did nothing.
+func ForceExitOnSignal(sigCh <-chan os.Signal) {
+	sig, ok := <-sigCh
+	if !ok {
+		return
+	}
+	notice("\nsecond %v received during shutdown; exiting now\n", sig)
+	OS_EXIT(1)
 }

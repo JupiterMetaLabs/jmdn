@@ -287,6 +287,11 @@ ExecStart=${JMDN_BIN}/start_jmdn_wrapper.sh
 ExecStopPost=${docker_bin} compose -f ${compose_file} stop
 Restart=always
 RestartSec=10
+# TimeoutStopSec bounds the jmdn stop AND the ExecStopPost compose stop. jmdn
+# bounds its own shutdown at 25s; compose gives Postgres up to 120s
+# (stop_grace_period in docker-compose.yml) so it is never SIGKILLed mid-WAL
+# write. 150s covers both; 30s here would cut the compose stop short.
+TimeoutStopSec=150
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}
@@ -449,6 +454,8 @@ Environment="DATA_DIR=${JMDN_DATA}/data"
 ExecStart=${JMDN_BIN}/start_jmdn_wrapper.sh
 Restart=always
 RestartSec=10
+# jmdn bounds its own shutdown at 25s; give it 30s before SIGKILL (default 90s).
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}

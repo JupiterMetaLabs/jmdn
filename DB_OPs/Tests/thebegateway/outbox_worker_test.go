@@ -3,6 +3,7 @@ package thebegateway_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -205,4 +206,182 @@ func TestStop_SafeMultipleCalls(t *testing.T) {
 
 	w.Stop()
 	w.Stop()
+}
+
+// blockingGateway blocks WriteBlock until release is closed, so a test can
+// stop the worker while a dispatch is in flight.
+type blockingGateway struct {
+	spyGateway
+	entered chan struct{}
+	release chan struct{}
+	calls   int32
+	mu      sync.Mutex
+}
+
+func (g *blockingGateway) WriteBlock(_ context.Context, _ *thebegateway.BlockRecord) error {
+	g.mu.Lock()
+	g.calls++
+	first := g.calls == 1
+	g.mu.Unlock()
+	if first {
+		close(g.entered)
+	}
+	<-g.release
+	return nil
+}
+
+func (g *blockingGateway) callCount() int32 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
+// Review PP-2bffdd: shutdown closes ThebeDB right after stopping the outbox
+// worker, so StopAndWait must not return while a dispatch is in flight, and
+// the drain must stop between entries instead of finishing the batch.
+func TestStopAndWait_WaitsForInFlightDispatch(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &oneShotOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 1, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+		{ID: 2, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+		{ID: 3, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &blockingGateway{entered: make(chan struct{}), release: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+
+	stopped := make(chan struct{})
+	go func() { w.StopAndWait(); close(stopped) }()
+
+	select {
+	case <-stopped:
+		t.Fatal("StopAndWait returned while a dispatch was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(gw.release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAndWait did not return after the dispatch finished")
+	}
+	if n := gw.callCount(); n != 1 {
+		t.Fatalf("drain dispatched %d entries after Stop, want 1 (stop between entries)", n)
+	}
+}
+
+// StopAndWait on a worker that was never started must not block.
+func TestStopAndWait_NotStartedReturns(t *testing.T) {
+	w := thebegateway.NewOutboxWorker(&spyOutbox{}, &spyGateway{}, time.Second)
+	done := make(chan struct{})
+	go func() { w.StopAndWait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("StopAndWait blocked on a worker that was never started")
+	}
+}
+
+// ctxGateway blocks WriteBlock until its context is cancelled, like a write
+// to a hung Postgres; it never returns on its own.
+type ctxGateway struct {
+	spyGateway
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *ctxGateway) WriteBlock(ctx context.Context, _ *thebegateway.BlockRecord) error {
+	g.once.Do(func() { close(g.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Review PP-70462b: Stop must cancel an in-flight dispatch, so StopAndWait
+// returns quickly even when the write would never finish on its own, and the
+// aborted entry is not counted as a failed attempt.
+func TestStopAndWait_CancelsInFlightDispatch(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &oneShotOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 7, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &ctxGateway{entered: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+
+	start := time.Now()
+	w.StopAndWait()
+	if took := time.Since(start); took > 200*time.Millisecond {
+		t.Fatalf("StopAndWait took %v: the in-flight dispatch was not cancelled", took)
+	}
+	if n := oso.incrCount(); n != 0 {
+		t.Fatalf("aborted dispatch counted as %d failed attempt(s), want 0", n)
+	}
+	if n := oso.ackCount(); n != 0 {
+		t.Fatalf("aborted entry was acked (%d), want it left in the outbox", n)
+	}
+}
+
+// ctxAckOutbox fails Ack and IncrementAttempts when given a cancelled
+// context, as a context-aware store does.
+type ctxAckOutbox struct {
+	oneShotOutbox
+}
+
+func (o *ctxAckOutbox) Ack(ctx context.Context, id int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return o.oneShotOutbox.Ack(ctx, id)
+}
+
+// succeedOnStopGateway finishes its write successfully only after Stop has
+// cancelled the drain: a write that completes just as Stop lands.
+type succeedOnStopGateway struct {
+	spyGateway
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *succeedOnStopGateway) WriteBlock(ctx context.Context, _ *thebegateway.BlockRecord) error {
+	g.once.Do(func() { close(g.entered) })
+	<-ctx.Done()
+	return nil
+}
+
+// Review PP-f79e5d: a write that succeeded must be acked even when Stop has
+// cancelled the drain context, or it is written again on the next start.
+func TestStopAndWait_AcksWriteThatSucceededDuringStop(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &ctxAckOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 9, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &succeedOnStopGateway{entered: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+	w.StopAndWait()
+
+	if ids := oso.ackIDs(); len(ids) != 1 || ids[0] != 9 {
+		t.Fatalf("acked %v, want [9]: a successful write must be acked even after Stop", ids)
+	}
 }
