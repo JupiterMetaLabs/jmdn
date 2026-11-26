@@ -1049,6 +1049,9 @@ func main() {
 	// tracks, so a GRO-tracked handler would make the shutdown wait on itself.
 	go func() {
 		<-sigCh
+		// Mark the shutdown as started before anything is cancelled, so main
+		// sees it when the CLI returns (see the end of main).
+		shutdown.Begin()
 
 		fmt.Println("\nShutdown signal received, closing connections...")
 
@@ -2619,10 +2622,22 @@ func main() {
 			done <- err
 		}
 
-		// Wait for CLI to complete or error
-		if err := <-done; err != nil {
-			mainLogger().Error(context.Background(), "Failed to start CLI", err)
+		// Wait for the CLI to return.
+		err := <-done
+		if shutdown.InProgress() {
+			// A shutdown is running (a signal, or the CLI's stopService) and
+			// ends the process itself with the right exit code. GRO cancels
+			// the CLI as part of it, which is why the CLI returned. Returning
+			// from main here would end the process at once with status 0 and
+			// cut that shutdown short (closers, logger flush, exit code).
+			select {}
 		}
+		// The CLI stopped on its own, without a shutdown (it failed to
+		// start). Shut down properly instead of returning from main.
+		if err != nil {
+			mainLogger().Error(context.Background(), "CLI stopped", err)
+		}
+		shutdown.Exit(shutdown.Shutdown())
 	} else {
 		mainLogger().Info(context.Background(), "CLI server disabled (port = 0)")
 		// Keep the node running even without CLI

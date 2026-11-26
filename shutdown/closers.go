@@ -37,6 +37,12 @@ const DefaultCloserTimeout = 3 * time.Second
 // deadline main sets when the signal arrives, so the watchdog's os.Exit cannot
 // land in the middle of a closer (ThebeDB's Badger Close in particular). A
 // closer with no time left is skipped and logged instead.
+//
+// A closer that is started but runs past its own limit (or the time left) is
+// abandoned, and the process exits after the remaining steps. This is
+// deliberate: a ThebeDB Close given 6s of its 10s usually finishes, and if it
+// does not, being cut mid-close leaves Badger exactly as not closing it would
+// (recovery on the next start), so starting it is never worse than skipping.
 const closersBudget = 13 * time.Second
 
 var (

@@ -182,10 +182,10 @@ func (h *CommandHandler) StartCLI(ctx context.Context, bindAddr string, grpcPort
 		input := strings.TrimSpace(scanner.Text())
 		if input == "stopService" {
 			fmt.Println("stopService")
-			// Use centralized shutdown function for safety
-			// Always exit, 0 or 1: exiting only on success left the process
-			// running after a timed-out shutdown.
-			shutdown.Exit(shutdown.Shutdown())
+			// Shut down on a plain goroutine, which always exits (0 or 1), and
+			// return: this goroutine is GRO-tracked, so running the shutdown
+			// here would make GRO's shutdown wait on its own caller.
+			shutdown.ShutdownAndExitInBackground()
 			fmt.Println("Exiting...")
 			return nil
 		}
@@ -202,9 +202,8 @@ func (h *CommandHandler) StartCLI(ctx context.Context, bindAddr string, grpcPort
 			input := strings.TrimSpace(scanner.Text())
 			if input == "stopService" {
 				fmt.Println("stopService")
-				// Use centralized shutdown function for safety
-				// Always exit, 0 or 1 (see above).
-				shutdown.Exit(shutdown.Shutdown())
+				// Same as above: shut down off this GRO-tracked goroutine.
+				shutdown.ShutdownAndExitInBackground()
 				fmt.Println("Exiting...")
 				return nil
 			}

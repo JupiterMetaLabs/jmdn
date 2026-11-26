@@ -7,6 +7,7 @@ import (
 	"runtime/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/config/GRO"
@@ -26,7 +27,56 @@ func atomicPrint(data []byte) error {
 	return err
 }
 
+var (
+	inProgress   atomic.Bool
+	shutdownOnce sync.Once
+	shutdownOK   bool
+	// shutdownBody is the real shutdown sequence; a variable so tests can
+	// replace it without a GRO runtime.
+	shutdownBody = runShutdown
+)
+
+// Begin marks that a shutdown has started. Shutdown calls it first; a caller
+// that starts a shutdown on another goroutine calls it before doing so, so
+// InProgress is already true by the time any part of the shutdown runs.
+func Begin() { inProgress.Store(true) }
+
+// InProgress reports whether a shutdown has started. main checks it when the
+// CLI returns: GRO's shutdown cancels the CLI, and main must not return then,
+// because returning from main ends the process at once with status 0, before
+// the shutdown has closed resources, flushed the logger and chosen the exit
+// code.
+func InProgress() bool { return inProgress.Load() }
+
+// Shutdown runs the shutdown sequence (GRO, resource closers, logger) and
+// reports whether it all completed cleanly. It runs once per process: a
+// second caller (a signal arriving during a CLI stopService, say) waits for
+// the first run and gets its result, instead of shutting GRO and the logger
+// down a second time.
 func Shutdown() bool {
+	Begin()
+	shutdownOnce.Do(func() { shutdownOK = shutdownBody() })
+	return shutdownOK
+}
+
+// ShutdownAndExitInBackground starts Shutdown followed by Exit on a plain
+// goroutine and returns at once. For callers that are themselves GRO-tracked
+// goroutines (the CLI stopService command): calling Shutdown inline there
+// makes GRO's shutdown wait on its own caller until its timeout. The caller
+// should return right after this, so GRO has nothing of it left to wait for.
+// InProgress is true before this returns.
+func ShutdownAndExitInBackground() {
+	Begin()
+	SetDeadline(time.Now().Add(backgroundShutdownBudget))
+	go func() { Exit(Shutdown()) }()
+}
+
+// backgroundShutdownBudget is the closers' deadline for a shutdown started
+// with ShutdownAndExitInBackground, which has no watchdog of its own: the
+// same 25s - 2s main gives a signal-driven shutdown.
+const backgroundShutdownBudget = 23 * time.Second
+
+func runShutdown() bool {
 	// Print metrics header
 	header := "\n" + strings.Repeat("=", 80) + "\n" +
 		"SHUTDOWN INITIATED - Printing GRO Metrics\n" +

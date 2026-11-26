@@ -138,15 +138,18 @@ func TestRegister_IgnoresNil(t *testing.T) {
 	}
 }
 
+// exitMu guards the slice captureExit records into; exit may be called from
+// another goroutine.
+var exitMu sync.Mutex
+
 func captureExit(t *testing.T) *[]int {
 	t.Helper()
 	var codes []int
-	var mu sync.Mutex
 	prev := exitFn
 	exitFn = func(c int) {
-		mu.Lock()
+		exitMu.Lock()
 		codes = append(codes, c)
-		mu.Unlock()
+		exitMu.Unlock()
 	}
 	t.Cleanup(func() { exitFn = prev })
 	return &codes
