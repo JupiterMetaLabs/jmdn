@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// resetClosersForTest clears the registry and any deadline.
+func resetClosersForTest() {
+	closersMu.Lock()
+	closers = nil
+	closersMu.Unlock()
+	SetDeadline(time.Time{})
+}
+
 func TestRunClosers_ReverseOrder(t *testing.T) {
 	resetClosersForTest()
 	t.Cleanup(resetClosersForTest)
@@ -177,5 +185,48 @@ func TestForceExitOnSignal_ClosedChannelDoesNotExit(t *testing.T) {
 	ForceExitOnSignal(sigCh)
 	if len(*codes) != 0 {
 		t.Fatalf("closed channel must not exit, got %v", *codes)
+	}
+}
+
+// Review PP-61ae8a: the closers must finish before main's watchdog, not just
+// within their own budget. A deadline closer than the budget shortens it.
+func TestRunClosers_DeadlineCapsBudget(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+
+	skippedRan := false
+	Register("thebedb", 5*time.Second, func() error { skippedRan = true; return nil })
+	Register("stuck", 5*time.Second, func() error { <-block; return nil })
+
+	SetDeadline(time.Now().Add(200 * time.Millisecond))
+	start := time.Now()
+	if runClosers(10 * time.Second) {
+		t.Fatal("expected false: the deadline cut the closers short")
+	}
+	if took := time.Since(start); took > 600*time.Millisecond {
+		t.Fatalf("deadline not honoured: took %v (budget 10s, deadline 200ms)", took)
+	}
+	if skippedRan {
+		t.Fatal("a closer with no time left must be skipped, not started")
+	}
+}
+
+func TestEffectiveBudget(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	if got := effectiveBudget(time.Second); got != time.Second {
+		t.Fatalf("no deadline: %v, want 1s", got)
+	}
+	SetDeadline(time.Now().Add(time.Hour))
+	if got := effectiveBudget(time.Second); got != time.Second {
+		t.Fatalf("far deadline: %v, want 1s", got)
+	}
+	SetDeadline(time.Now().Add(-time.Second))
+	if got := effectiveBudget(time.Second); got > 0 {
+		t.Fatalf("past deadline: %v, want <= 0", got)
 	}
 }

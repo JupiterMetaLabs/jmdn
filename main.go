@@ -1035,12 +1035,13 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// shutdownSequenceBudget bounds steps 1-3 below as a whole. Each step is
-	// already individually bounded (profiler: 5s; shutdown.Shutdown(): GRO
-	// ~10s + ~0.4s of flush sleeps + resource closers 12s), but no single bound
-	// otherwise caps the SEQUENCE — a stall anywhere in it could still run past
-	// Docker's `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed
-	// with no log line explaining why. Kept under that 30s so this fires first,
-	// logs why, and exits instead of being killed blind.
+	// already individually bounded (profiler: 5s, run concurrently;
+	// shutdown.Shutdown(): ~0.4s of flush sleeps + GRO ~10s + resource closers
+	// 13s, cut short by shutdown.SetDeadline), but no single bound otherwise
+	// caps the SEQUENCE — a stall anywhere in it could still run past Docker's
+	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with no
+	// log line explaining why. Kept under that 30s so this fires first, logs
+	// why, and exits instead of being killed blind.
 	const shutdownSequenceBudget = 25 * time.Second
 
 	// The signal handler is a plain goroutine, NOT started through GRO: GRO's
@@ -1050,6 +1051,11 @@ func main() {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
+
+		// The resource closers must finish before the watchdog below fires, so
+		// its os.Exit cannot cut a close (Badger) in half. 2s of margin covers
+		// the logger flush that follows the closers.
+		shutdown.SetDeadline(time.Now().Add(shutdownSequenceBudget - 2*time.Second))
 
 		// A second SIGINT/SIGTERM while this runs exits at once.
 		go shutdown.ForceExitOnSignal(sigCh)
@@ -1061,23 +1067,26 @@ func main() {
 			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
 			cancel()
 
-			// 2. Shutdown profiler (with timeout)
+			// 2. Shutdown profiler concurrently with step 3 (with timeout), so
+			// its up-to-5s wait does not come out of the closers' time.
 			if profilerServer != nil {
-				if logger := mainLogger(); logger != nil {
-					logger.Info(context.Background(), "Shutting down profiler server...")
-				}
-				// Give it 5 seconds to finish active profiles/requests
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer shutdownCancel()
-				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+				go func() {
 					if logger := mainLogger(); logger != nil {
-						logger.Error(context.Background(), "Profiler server forced to shutdown", err)
+						logger.Info(context.Background(), "Shutting down profiler server...")
 					}
-				} else {
-					if logger := mainLogger(); logger != nil {
-						logger.Info(context.Background(), "Profiler server stopped gracefully")
+					// Give it 5 seconds to finish active profiles/requests
+					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer shutdownCancel()
+					if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+						if logger := mainLogger(); logger != nil {
+							logger.Error(context.Background(), "Profiler server forced to shutdown", err)
+						}
+					} else {
+						if logger := mainLogger(); logger != nil {
+							logger.Info(context.Background(), "Profiler server stopped gracefully")
+						}
 					}
-				}
+				}()
 			}
 
 			// 3. Centralized shutdown (GRO, then resource closers, then logger),
@@ -1285,7 +1294,7 @@ func main() {
 		// DB pressure; review finding R2).
 		outboxWorker := thebegateway.NewOutboxWorker(outbox, gw, 5*time.Second)
 		outboxWorker.Start()
-		shutdown.RegisterFunc("outbox worker", 2*time.Second, outboxWorker.Stop)
+		shutdown.RegisterFunc("outbox worker", time.Second, outboxWorker.Stop)
 
 		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
 		// writing a missing snapshot does not un-skip tx rows that already exhausted
@@ -2420,7 +2429,7 @@ func main() {
 	fmt.Println("Node manager initialized successfully")
 
 	nodeManager.StartHeartbeat(cfg.Network.HeartbeatInterval)
-	shutdown.RegisterFunc("node manager", 2*time.Second, nodeManager.Shutdown)
+	shutdown.RegisterFunc("node manager", time.Second, nodeManager.Shutdown)
 
 	// DID propagation (/gossipnode/did/2.0.0) is retired and its protocol ID
 	// deleted: it let any peer write an account row on every node, unsigned.

@@ -27,10 +27,46 @@ import (
 // DefaultCloserTimeout bounds one closer when Register is given timeout <= 0.
 const DefaultCloserTimeout = 3 * time.Second
 
-// closersBudget bounds RunClosers as a whole. Shutdown spends up to
-// gracefulShutdownTimeout (10s) on GRO first and main.go caps the whole
-// sequence at 25s, so the closers get 12s: 10s + ~0.4s + 12s stays under 25s.
-const closersBudget = 12 * time.Second
+// closersBudget bounds RunClosers as a whole. Shutdown spends ~0.4s on flush
+// sleeps and up to gracefulShutdownTimeout (10s) on GRO first, and main.go's
+// watchdog caps the whole sequence at 25s: 0.4s + 10s + 13s leaves ~1.6s for
+// metrics printing and the logger. main.go runs the profiler shutdown
+// concurrently, so it does not eat into this.
+//
+// The budget is also capped by SetDeadline: RunClosers never runs past the
+// deadline main sets when the signal arrives, so the watchdog's os.Exit cannot
+// land in the middle of a closer (ThebeDB's Badger Close in particular). A
+// closer with no time left is skipped and logged instead.
+const closersBudget = 13 * time.Second
+
+var (
+	deadlineMu sync.Mutex
+	deadline   time.Time
+)
+
+// SetDeadline sets the time by which RunClosers must have finished. main sets
+// it when the shutdown signal arrives, a margin before its watchdog fires. The
+// zero time means no deadline beyond closersBudget.
+func SetDeadline(t time.Time) {
+	deadlineMu.Lock()
+	deadline = t
+	deadlineMu.Unlock()
+}
+
+// effectiveBudget is budget, shortened to the time left before the deadline
+// set with SetDeadline.
+func effectiveBudget(budget time.Duration) time.Duration {
+	deadlineMu.Lock()
+	d := deadline
+	deadlineMu.Unlock()
+	if d.IsZero() {
+		return budget
+	}
+	if left := time.Until(d); left < budget {
+		return left
+	}
+	return budget
+}
 
 type closer struct {
 	name    string
@@ -80,13 +116,13 @@ func runClosers(budget time.Duration) bool {
 	copy(list, closers)
 	closersMu.Unlock()
 
-	deadline := time.Now().Add(budget)
+	end := time.Now().Add(effectiveBudget(budget))
 	ok := true
 	for i := len(list) - 1; i >= 0; i-- {
 		c := list[i]
 		c.once.Do(func() {
 			wait := c.timeout
-			if left := time.Until(deadline); left < wait {
+			if left := time.Until(end); left < wait {
 				wait = left
 			}
 			if wait <= 0 {
@@ -125,11 +161,4 @@ func runOne(c *closer, wait time.Duration) bool {
 		_, _ = fmt.Fprintf(os.Stderr, "shutdown: closer %q did not finish within %s; abandoning it\n", c.name, wait)
 		return false
 	}
-}
-
-// resetClosersForTest clears the registry. Tests only.
-func resetClosersForTest() {
-	closersMu.Lock()
-	closers = nil
-	closersMu.Unlock()
 }
