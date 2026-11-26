@@ -1107,7 +1107,13 @@ func main() {
 	// refuses every reservation (ledger_unavailable) instead of signing.
 	roundlock.RequireDurableStore(true)
 	if !cfg.Thebe.Enabled {
-		log.Warn().Msg("[roundlock] ThebeDB is disabled: signing records have no durable store, so this node will refuse to sign consensus votes and results (ledger_unavailable)")
+		const msg = "[roundlock] ThebeDB is disabled: signing records have no durable store, so this node will refuse to sign consensus votes and results (ledger_unavailable)"
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), msg)
+		}
+		// Also on stderr: an operator must see this at boot even when the
+		// telemetry logger is not shipping anywhere.
+		fmt.Fprintln(os.Stderr, "WARN "+msg)
 	}
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
