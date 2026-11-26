@@ -12,6 +12,7 @@ import (
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/version"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 
@@ -105,7 +106,9 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	ClientVersion := "JMDT/v1.0.0"
+	// Build-stamped "JMDT/<tag>/<os>-<arch>/<go>" (config/version): tooling and
+	// the seed dashboard read the node's build from this.
+	clientVersion := version.ClientVersion()
 
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ClientVersion returned to the client", "ClientVersion", 1); err != nil {
@@ -113,7 +116,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 		logger().Error(opCtx, "Failed to log ClientVersion operation", err)
 	}
 
-	return ClientVersion, nil
+	return clientVersion, nil
 }
 
 func (s *ServiceImpl) Accounts(ctx context.Context) ([]string, error) {
