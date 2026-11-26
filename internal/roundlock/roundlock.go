@@ -29,7 +29,9 @@
 // read back the first time a height is touched after a restart, so a restart
 // cannot be used to sign a different block at a round already signed. A store
 // read or write failure refuses the reservation (Unavailable). Without a
-// Store the ledger is in-memory only.
+// Store the ledger is in-memory only, and a restart would forget what this
+// node signed; RequireDurableStore (set by main) turns that into a refusal
+// (Unavailable) instead, so a production node never signs from memory.
 package roundlock
 
 import (
@@ -37,7 +39,26 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
+
+// requireDurable makes every Ledger refuse reservations while it has no
+// Store. Off by default so tests and tools keep in-memory ledgers; main turns
+// it on for every node.
+var requireDurable atomic.Bool
+
+// RequireDurableStore sets whether a Ledger without a Store refuses every
+// reservation (Unavailable). A node whose signing records live only in memory
+// could, after a restart, sign a second block for a round it already signed;
+// with this on it refuses to sign instead (fail closed: liveness, never safety).
+func RequireDurableStore(on bool) { requireDurable.Store(on) }
+
+// Durable reports whether the ledger writes its records to a Store.
+func (l *Ledger) Durable() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.store != nil
+}
 
 // Round identifies one consensus round.
 type Round struct {
@@ -226,6 +247,9 @@ func (l *Ledger) TryLockFresh(r Round, block string) (ok bool, refusal Refusal, 
 	defer l.mu.Unlock()
 	if l.haveCommitted && r.Height <= l.committed {
 		return false, Committed, l.highest[r.Height], false
+	}
+	if l.store == nil && requireDurable.Load() {
+		return false, Unavailable, l.highest[r.Height], false
 	}
 	if err := l.loadHeightLocked(r.Height); err != nil {
 		return false, Unavailable, l.highest[r.Height], false

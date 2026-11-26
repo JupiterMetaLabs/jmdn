@@ -1570,7 +1570,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
 		response := AVCStruct.NewMessageBuilder(nil).
 			SetSender(listenerNode.PeerID).
-			SetMessage(`{"error":"node not synced; abstaining from consensus"}`).
+			SetMessage(abstainNotSyncedMessage(message.Message)).
 			SetTimestamp(time.Now().UTC().Unix()).
 			SetACK(ackMessage)
 		responseBytes, _ := json.Marshal(response)

@@ -1,7 +1,10 @@
 package messaging
 
 import (
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 
 	"gossipnode/config"
@@ -24,27 +27,126 @@ import (
 // (roundlock R1), and under committee v2 with a pool larger than the
 // committee it seats a different committee.
 //
-// In-memory. After a restart a height starts again at 0; buddies that already
-// signed a higher period refuse with their highest signed period, and
-// NoteRefusal/AdvanceAfterFailure use those reports to resume above it.
+// Durable when a Store is set (SetStore, wired by main next to the roundlock
+// ledgers). ClaimPeriod writes the period it hands out BEFORE the proposal is
+// stamped, so after a restart the height resumes at last-proposed+1: the
+// outcome of that round is unknown, so it is treated as burned. Without a
+// Store (tests, or a node that never proposes) the counter is in-memory and a
+// restart starts the height again at 0; buddies that already signed a higher
+// period refuse with their highest signed period, and
+// NoteRefusal/AdvanceAfterFailure use those reports to resume above it. That
+// hint path stays as the fallback (e.g. a new sequencer with an empty store).
 type ProposerPeriods struct {
 	mu     sync.Mutex
 	period map[uint64]uint64
 	hints  map[uint64]map[string]uint64
+
+	store  roundlock.Store
+	prefix string
+	loaded map[uint64]bool
+	// onDisk marks heights known to have a non-empty stored record: written by
+	// ClaimPeriod, or read back by loadLocked. ForgetThrough clears only these,
+	// so a commit never writes a key for a height that was never stored (the
+	// same rule as roundlock.Ledger's onDisk). An empty put is not a delete in
+	// the KV: it leaves a zero-length entry, one per block on every node.
+	onDisk map[uint64]bool
 }
 
 // NewProposerPeriods returns an empty counter.
 func NewProposerPeriods() *ProposerPeriods {
-	return &ProposerPeriods{period: make(map[uint64]uint64), hints: make(map[uint64]map[string]uint64)}
+	return &ProposerPeriods{
+		period: make(map[uint64]uint64),
+		hints:  make(map[uint64]map[string]uint64),
+		loaded: make(map[uint64]bool),
+		onDisk: make(map[uint64]bool),
+	}
+}
+
+// proposedRecord is the stored form of one height: the last period a proposal
+// at it was stamped with.
+type proposedRecord struct {
+	LastProposed uint64 `json:"last_proposed"`
+}
+
+// SetStore makes the counter durable under the given key prefix. Call once at
+// startup, before any block is built.
+func (p *ProposerPeriods) SetStore(store roundlock.Store, prefix string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.store, p.prefix = store, prefix
+	p.loaded = make(map[uint64]bool)
+	p.onDisk = make(map[uint64]bool)
+}
+
+func (p *ProposerPeriods) key(height uint64) string {
+	return p.prefix + strconv.FormatUint(height, 10)
+}
+
+// loadLocked reads height's stored record the first time the height is
+// touched and raises the in-memory counter to last-proposed+1 (capped). It only
+// raises, so it can never move a height back. Caller holds p.mu.
+func (p *ProposerPeriods) loadLocked(height uint64) error {
+	if p.store == nil || p.loaded[height] {
+		return nil
+	}
+	raw, err := p.store.Get(p.key(height))
+	if err != nil {
+		return fmt.Errorf("proposer period: read height %d: %w", height, err)
+	}
+	if len(raw) > 0 {
+		var rec proposedRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return fmt.Errorf("proposer period: decode height %d: %w", height, err)
+		}
+		next := rec.LastProposed
+		if limit := config.MaxPeriodAt(height); next >= limit {
+			next = limit
+		} else {
+			next++
+		}
+		if next > p.period[height] {
+			p.period[height] = next
+		}
+		p.onDisk[height] = true
+	}
+	p.loaded[height] = true
+	return nil
+}
+
+// ClaimPeriod returns the period the next proposal at height is stamped with
+// and durably records it before returning. The block builder calls this, not
+// PeriodFor. Fail-closed: if the record cannot be read or written the caller
+// must not propose, since a restart could then reuse a period buddies signed.
+func (p *ProposerPeriods) ClaimPeriod(height uint64) (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.loadLocked(height); err != nil {
+		return 0, err
+	}
+	period := p.period[height]
+	if p.store != nil {
+		raw, err := json.Marshal(proposedRecord{LastProposed: period})
+		if err != nil {
+			return 0, fmt.Errorf("proposer period: encode height %d: %w", height, err)
+		}
+		if err := p.store.Put(p.key(height), raw); err != nil {
+			return 0, fmt.Errorf("proposer period: write height %d: %w", height, err)
+		}
+		p.onDisk[height] = true
+	}
+	return period, nil
 }
 
 // DefaultProposerPeriods is the process-wide counter the block builder uses.
 var DefaultProposerPeriods = NewProposerPeriods()
 
 // PeriodFor returns the period the next proposal at height is stamped with.
+// Read-only; a store read error leaves the in-memory value (ClaimPeriod is the
+// fail-closed path).
 func (p *ProposerPeriods) PeriodFor(height uint64) uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	_ = p.loadLocked(height)
 	return p.period[height]
 }
 
@@ -80,6 +182,8 @@ func (p *ProposerPeriods) NoteRefusal(height uint64, buddy string, highest uint6
 func (p *ProposerPeriods) AdvanceAfterFailure(height uint64, committeeSize int) (next uint64, capped bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Best effort: ClaimPeriod already loaded this height before the round.
+	_ = p.loadLocked(height)
 	// Every comparison is against MaxPeriod before adding, so neither the
 	// counter nor a reported hint (up to 2^64-1) can overflow.
 	floor := p.period[height]
@@ -117,9 +221,30 @@ func hintFloor(reports map[string]uint64, committeeSize int) (uint64, bool) {
 
 // ForgetThrough drops the counter and hints of every height at or below
 // height, which is committed: no proposal at it can be made again.
+//
+// Stored records are cleared only for heights at or below it that this
+// process knows have one (onDisk). Every node calls this on every commit
+// (NoteHeightCommitted), including nodes that never propose and every block
+// applied by catch-up, so clearing unconditionally would write a key per block
+// on every node; an empty put leaves a zero-length entry, it does not delete.
+// Best effort: a record left behind (failed write, or stored before a restart
+// and never touched again) is for a committed height, which is never proposed
+// at again, so it is only unused space.
 func (p *ProposerPeriods) ForgetThrough(height uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for h := range p.onDisk {
+		if h <= height {
+			if p.store == nil || p.store.Put(p.key(h), []byte{}) == nil {
+				delete(p.onDisk, h)
+			}
+		}
+	}
+	for h := range p.loaded {
+		if h <= height {
+			delete(p.loaded, h)
+		}
+	}
 	for h := range p.period {
 		if h <= height {
 			delete(p.period, h)

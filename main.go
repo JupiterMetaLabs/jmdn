@@ -1101,6 +1101,18 @@ func main() {
 	// below no-ops when nil, so this changes nothing when the feature is off.
 	var checkpointKV kv.Store
 
+	// Signing records (roundlock) must be durable: a node that keeps them only
+	// in memory could, after a restart, sign a second block for a round it
+	// already signed. With this on, a ledger without a store (ThebeDB off)
+	// refuses every reservation (ledger_unavailable) instead of signing.
+	roundlock.RequireDurableStore(true)
+	if !cfg.Thebe.Enabled {
+		const msg = "[roundlock] ThebeDB is disabled: signing records have no durable store, so this node will refuse to sign consensus votes and results (ledger_unavailable)"
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), msg)
+		}
+	}
+
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
 		fmt.Fprintf(os.Stderr, "thebedb: init — kv_path=%s dsn=%s\n", cfg.Thebe.KVPath, maskDSN(cfg.Thebe.SQLDSN))
@@ -1328,6 +1340,9 @@ func main() {
 		// The time each height was first proposed, so the period bound does
 		// not restart at a restart (roundlock.Pace).
 		roundlock.DefaultPace.SetStore(DB_OPs.ConsensusLockStore{}, "pacelock:")
+		// The proposer's per-height period counter, so a restarted sequencer
+		// resumes above the last round it proposed instead of reusing it.
+		messaging.DefaultProposerPeriods.SetStore(DB_OPs.ConsensusLockStore{}, "proposerperiod:")
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 
 		// Finish any tx apply that was interrupted by the previous shutdown

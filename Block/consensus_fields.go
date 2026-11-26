@@ -97,7 +97,13 @@ func attachAVCConsensusFields(block *config.ZKBlock) error {
 	// R3: the proposer's own retry counter; it moves up after each failed
 	// round at this height (Sequencer.BroadcastAndProcessBlock). Verifiers
 	// read Period from the block, never from this counter.
-	block.Period = messaging.DefaultProposerPeriods.PeriodFor(block.BlockNumber)
+	// ClaimPeriod records the period durably before it is used, so a restart
+	// resumes this height above it instead of reusing a round buddies signed.
+	period, perr := messaging.DefaultProposerPeriods.ClaimPeriod(block.BlockNumber)
+	if perr != nil {
+		return fmt.Errorf("attachAVCConsensusFields: claiming period for block %d: %w", block.BlockNumber, perr)
+	}
+	block.Period = period
 	// F-6 / messaging.checkConsensusBinding: that check rejects a block whose
 	// Period is nonzero with a still-zero ConsensusHash - the invariant this
 	// function must uphold is that EVERY early return between here and the
