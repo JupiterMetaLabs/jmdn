@@ -74,7 +74,10 @@ func MaxPeriodAt(height uint64) uint64 {
 const MaxBlockMessageBytes = 8 * 1024 * 1024
 
 var (
-	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
+	// DefaultGasPrice is the eth_gasPrice suggestion and the eth_feeHistory
+	// fallback base fee: the protocol base fee (BaseFeeWei, 35 gwei). RPC
+	// display only; fees charged at block apply come from config.GasFee.
+	DefaultGasPrice          = big.NewInt(BaseFeeWei)
 	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
 )
 

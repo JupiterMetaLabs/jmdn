@@ -7,6 +7,14 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`eth_gasPrice` suggests the protocol base fee (35 gwei).** It returned
+  1 gwei, below the 35 gwei base fee every block carries, so wallets that
+  price from `eth_gasPrice` proposed a fee under the base fee. The
+  `eth_feeHistory` fallback base fee is 35 gwei too. `eth_maxPriorityFeePerGas`
+  stays 1 gwei. RPC suggestion only: fees charged at block apply are unchanged.
+
 ## [2.0.2] - 2026-11-23
 
 Consensus liveness and serving fixes. A single offline committee member no
