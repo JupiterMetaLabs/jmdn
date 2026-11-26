@@ -56,7 +56,10 @@
 
 package DB_OPs
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 var stateApplyMu sync.Mutex
 
@@ -65,3 +68,19 @@ func LockStateApply() { stateApplyMu.Lock() }
 
 // UnlockStateApply releases the global state-application lock.
 func UnlockStateApply() { stateApplyMu.Unlock() }
+
+// TryLockStateApplyWithin tries to take the state-apply lock for up to wait
+// and reports whether it got it. Used at shutdown, where blocking forever on
+// a stuck writer is not acceptable. The caller owns the lock on true.
+func TryLockStateApplyWithin(wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		if stateApplyMu.TryLock() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

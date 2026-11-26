@@ -39,7 +39,14 @@ var (
 // Begin marks that a shutdown has started. Shutdown calls it first; a caller
 // that starts a shutdown on another goroutine calls it before doing so, so
 // InProgress is already true by the time any part of the shutdown runs.
-func Begin() { inProgress.Store(true) }
+func Begin() {
+	if inProgress.CompareAndSwap(false, true) && !started.Load() {
+		// Remember that this shutdown began during startup. Startup may
+		// finish while the shutdown runs (it prints metrics first), but main
+		// was still opening resources when the stop came, so they stay open.
+		beganDuringStartup.Store(true)
+	}
+}
 
 // InProgress reports whether a shutdown has started. main checks it when the
 // CLI returns: GRO's shutdown cancels the CLI, and main must not return then,
@@ -133,6 +140,30 @@ func cancelMain() {
 	}
 }
 
+// started records that startup has finished (MarkStarted). Until then the
+// shutdown runs no closers: main is still opening and using ThebeDB and the
+// network, and closing them under it is worse than leaving them open, which is
+// what the SIGKILL that ended every stop before did.
+var started atomic.Bool
+
+// beganDuringStartup records that the shutdown began before MarkStarted.
+var beganDuringStartup atomic.Bool
+
+// MarkStarted records that startup has finished and every long-lived resource
+// is registered. main calls it once, after the last startup step.
+func MarkStarted() { started.Store(true) }
+
+// closePhase runs fn (an early or regular closer phase) only if startup had
+// finished when the shutdown began, and reports its result. Otherwise it
+// skips, logs, and reports false.
+func closePhase(name string, fn func() bool) bool {
+	if !started.Load() || beganDuringStartup.Load() {
+		notice("shutdown: startup not finished; skipping %s and leaving resources open\n", name)
+		return false
+	}
+	return fn()
+}
+
 func runShutdown() bool {
 	// Print metrics header
 	header := "\n" + strings.Repeat("=", 80) + "\n" +
@@ -162,15 +193,22 @@ func runShutdown() bool {
 	_ = atomicPrint([]byte(shutdownMsg))
 	os.Stdout.Sync()
 
+	// Early phase: close the producers of work (the libp2p host) before GRO's
+	// shutdown, so no new block or vote starts an apply while the node winds
+	// down. See RegisterEarly.
+	ok := closePhase("early closers", RunEarlyClosers)
+
+	if GRO.GlobalGRO == nil {
+		// GRO was never set up (a failure early in startup): nothing to stop.
+		return finishShutdown(closePhase("closers", RunClosers) && ok)
+	}
+
 	// NOW start the actual shutdown process
 	done := make(chan struct{})
 	go func() {
 		GRO.GlobalGRO.Shutdown(true)
 		close(done)
 	}()
-
-	// Default to success
-	exitCode := 0
 
 	select {
 	case <-done:
@@ -188,19 +226,24 @@ func runShutdown() bool {
 		_, _ = fmt.Fprintf(os.Stderr, "\n==== goroutine dump (shutdown timeout) ====\n%s\n", buf.String())
 
 		GRO.GlobalGRO.Shutdown(false)
-		exitCode = 1 // Mark as failure
+		// Not counted as a failure. goroutine-orchestrator v0.1.5 waits its
+		// full timeout for any goroutine started without AddToWaitGroup, so
+		// this branch runs on EVERY stop; counting it made every stop exit 1
+		// and hid whether the closers below succeeded. The exit code reports
+		// the closers. The goroutine dump above stays for diagnosis.
 	}
 
 	// Release the registered resources (outbox worker, ThebeDB / Badger,
-	// Postgres pools, libp2p host), newest first, each with its own time limit.
-	// This runs even when the GRO step timed out: goroutines have been
-	// cancelled by then, and skipping it is what left Badger unclosed on every
-	// stop. See closers.go.
+	// Postgres pools), newest first, each with its own time limit. ThebeDB's
+	// closer takes the state-apply lock and the append slot first and skips
+	// the close if a write is still in flight (DB_OPs.CloseThebeDBGated).
 	notice("Closing resources...\n")
-	if !RunClosers() {
-		exitCode = 1
-	}
+	return finishShutdown(closePhase("closers", RunClosers) && ok)
+}
 
+// finishShutdown shuts the logger down and returns ok: the last step of every
+// shutdown.
+func finishShutdown(ok bool) bool {
 	// Shutdown the logger after GRO shutdown completes
 	// This ensures all logs are flushed and resources are cleaned up
 	fmt.Println("Shutting down logger...")
@@ -215,7 +258,7 @@ func runShutdown() bool {
 		fmt.Println("Logger shutdown completed")
 	}
 
-	return exitCode == 0
+	return ok
 }
 
 // exitFn is os.Exit; a variable so tests can observe the exit code.

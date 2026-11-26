@@ -1024,11 +1024,18 @@ func main() {
 	}
 
 	// Create a cancellable context for clean shutdown
-	// If main returns early (a startup step failed), release the resources
-	// registered with the shutdown package. Deferred BEFORE cancel so it runs
-	// AFTER it (defers run last-in, first-out): components on ctx stop before
-	// ThebeDB and the pools are closed. Each closer runs at most once.
-	defer shutdown.RunClosers()
+	// main returns only when a startup step failed (no node, no mempool, no
+	// node manager). Run the full shutdown then and exit 1, instead of
+	// returning with status 0 while GRO goroutines still run. Startup has not
+	// finished on those paths, so the shutdown stops GRO and flushes the
+	// logger but leaves ThebeDB and the network open (see
+	// shutdown.MarkStarted). Deferred BEFORE cancel so it runs AFTER it
+	// (defers run last-in, first-out).
+	defer func() {
+		if !shutdown.InProgress() {
+			shutdown.ShutdownAndExit(true)
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1193,26 +1200,27 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
-		// Closes Badger (KV) and the write pool (SQL). 10s: ThebeDB.Close itself
-		// waits up to 5s for its CDC consumer.
+		// Closes Badger (KV) and the write pool (SQL), but only when no state
+		// write is in flight (DB_OPs.CloseThebeDBGated): it first takes the
+		// state-apply lock (live block apply, revoke+rollback, reconciliation)
+		// and ThebeDB's single append slot (every 2PC append), within 3s, and
+		// keeps both until exit so nothing can start after the close. If it
+		// cannot take them it leaves the database open, which is how every
+		// stop ended before graceful shutdown (SIGKILL). 10s total: Close
+		// itself waits up to 5s for its CDC consumer.
 		//
-		// Writers stopped before this closer runs: the outbox worker
-		// (StopAndWait, registered later so it closes first) and goroutines
-		// GRO stopped. NOT stopped: the account sync worker (no stop hook; it
-		// blocks up to 30s on Redis and 60s per DB write, beyond the whole
-		// shutdown budget) and any GRO goroutine still running after GRO's
-		// forced shutdown (goroutine-orchestrator v0.1.5 cancels without
-		// waiting). A new Badger call after this Close returns an error
-		// (ErrDBClosed / ErrBlockedWrites). A call already in flight when
-		// Close runs can instead panic (Badger sets its memtable to nil while
-		// closing), ending the process with exit 2 and possibly losing the
-		// last log lines. Either way no committed data is lost (SyncWrites is
-		// on; Badger recovers on the next start, as after the SIGKILL that
-		// ended every stop before this change), and their own recovery covers
-		// the cut write: Redis PEL replay (LWW-idempotent), the recon intent
-		// marker, the outbox. Stopping them cleanly needs the GRO wait-group
-		// fix and a stop hook in the account sync worker.
-		shutdown.Register("thebedb", 10*time.Second, db.Close)
+		// Producers are stopped first: the libp2p host closes in the early
+		// phase (before GRO), the outbox worker is waited for (StopAndWait,
+		// registered later so it closes first), the RPC servers stop when GRO
+		// cancels their context. Not covered by the gate: the account sync
+		// worker's BatchRestoreAccounts (it does not take the state-apply lock;
+		// LWW-merged, replayed from Redis) and direct KV writes. A Badger call
+		// of theirs that is already running when Close runs can panic (exit 2,
+		// last log lines possibly lost); no committed data is lost, since
+		// SyncWrites is on and Badger recovers on the next start.
+		shutdown.Register("thebedb", 10*time.Second, func() error {
+			return DB_OPs.CloseThebeDBGated(db, 3*time.Second)
+		})
 
 		// Capture the canonical KV handle for the chain-head checkpoint boot gate
 		// + signing hook wired later (after the committee-eligibility source is
@@ -1629,7 +1637,9 @@ func main() {
 		fmt.Println("Error starting node:", err)
 		return
 	}
-	shutdown.Register("libp2p host", 3*time.Second, n.Host.Close)
+	// Early phase (before GRO's shutdown): closing the host first stops new
+	// blocks, votes and sync traffic arriving while the node winds down.
+	shutdown.RegisterEarly("libp2p host", 3*time.Second, n.Host.Close)
 	fmt.Println("Node created successfully")
 
 	// Set the host instance for broadcast messaging
@@ -2437,7 +2447,7 @@ func main() {
 	if err := Block.InitMempoolClient(logger_ctx, address); err != nil {
 		log.Printf("Failed to connect to mempool: %v", err)
 	}
-	defer Block.CloseMempoolClient()
+	shutdown.RegisterFunc("mempool client", time.Second, Block.CloseMempoolClient)
 
 	// Initialize routing client to the same address as mempool
 	_, err = Block.NewRoutingServiceClient(address)
@@ -2639,6 +2649,11 @@ func main() {
 		fmt.Printf("Starting gETH WSServer on port %d\n", cfg.Ports.WS)
 		StartWSServer(cfg.Binds.WS, cfg.Ports.WS, cfg.Network.ChainID, cfg.Ports.Smart)
 	}
+
+	// Startup is complete and every long-lived resource is registered. From
+	// here a shutdown closes them; before here it leaves them open (main may
+	// still be opening and using them).
+	shutdown.MarkStarted()
 
 	// Start CLI without timeout - run indefinitely
 	// Only start CLI when port > 0 (disabled by default per jmdn_default.yaml)

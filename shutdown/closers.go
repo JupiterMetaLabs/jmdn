@@ -83,12 +83,52 @@ type closer struct {
 	timeout time.Duration
 	fn      func() error
 	once    sync.Once
+	// ok is this closer's outcome, written inside once. sync.Once makes every
+	// caller of Do wait for the first to finish, so a second RunClosers caller
+	// reads the real outcome instead of assuming success.
+	ok bool
 }
 
 var (
-	closersMu sync.Mutex
-	closers   []*closer
+	closersMu    sync.Mutex
+	closers      []*closer
+	earlyClosers []*closer
 )
+
+// earlyClosersBudget bounds the early phase, which runs BEFORE GRO's
+// shutdown. It is part of the 25s sequence: early 3s + ~0.4s + GRO 10s leaves
+// the regular closers ~9.6s before the deadline main sets at 23s.
+const earlyClosersBudget = 3 * time.Second
+
+// RegisterEarly adds a closer that runs in the early phase, before GRO's
+// shutdown, newest first. For the producers of work (the libp2p host): closing
+// them first stops new blocks and votes arriving while the rest of the node
+// winds down.
+func RegisterEarly(name string, timeout time.Duration, fn func() error) {
+	if fn == nil {
+		return
+	}
+	if timeout <= 0 {
+		timeout = DefaultCloserTimeout
+	}
+	closersMu.Lock()
+	earlyClosers = append(earlyClosers, &closer{name: name, timeout: timeout, fn: fn})
+	closersMu.Unlock()
+}
+
+// RunEarlyClosers runs the early phase (see RegisterEarly) and reports
+// whether every early closer finished cleanly in time.
+func RunEarlyClosers() bool {
+	return runList(snapshot(&earlyClosers), earlyClosersBudget)
+}
+
+func snapshot(list *[]*closer) []*closer {
+	closersMu.Lock()
+	defer closersMu.Unlock()
+	out := make([]*closer, len(*list))
+	copy(out, *list)
+	return out
+}
 
 // Register adds a resource to release at shutdown. timeout bounds this one
 // closer (DefaultCloserTimeout if <= 0); a closer that does not return in time
@@ -121,11 +161,13 @@ func RunClosers() bool {
 }
 
 func runClosers(budget time.Duration) bool {
-	closersMu.Lock()
-	list := make([]*closer, len(closers))
-	copy(list, closers)
-	closersMu.Unlock()
+	return runList(snapshot(&closers), budget)
+}
 
+// runList runs list newest first within budget (capped by SetDeadline) and
+// reports whether every closer in it finished cleanly. Each closer runs once
+// per process; a caller that finds it already run gets its recorded outcome.
+func runList(list []*closer, budget time.Duration) bool {
 	end := time.Now().Add(effectiveBudget(budget))
 	ok := true
 	for i := len(list) - 1; i >= 0; i-- {
@@ -137,13 +179,13 @@ func runClosers(budget time.Duration) bool {
 			}
 			if wait <= 0 {
 				notice("shutdown: closer %q skipped: shutdown budget used up\n", c.name)
-				ok = false
 				return
 			}
-			if !runOne(c, wait) {
-				ok = false
-			}
+			c.ok = runOne(c, wait)
 		})
+		if !c.ok {
+			ok = false
+		}
 	}
 	return ok
 }
@@ -160,12 +202,14 @@ func runOne(c *closer, wait time.Duration) bool {
 		}()
 		done <- c.fn()
 	}()
+	start := time.Now()
 	select {
 	case err := <-done:
 		if err != nil {
-			notice("shutdown: closer %q failed: %v\n", c.name, err)
+			notice("shutdown: closer %q failed after %s: %v\n", c.name, time.Since(start).Round(time.Millisecond), err)
 			return false
 		}
+		notice("shutdown: closer %q closed in %s\n", c.name, time.Since(start).Round(time.Millisecond))
 		return true
 	case <-time.After(wait):
 		notice("shutdown: closer %q did not finish within %s; abandoning it\n", c.name, wait)

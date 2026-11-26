@@ -17,12 +17,17 @@ func clearDeadlineForTest() {
 	deadlineMu.Unlock()
 }
 
-// resetClosersForTest clears the registry and any deadline.
+// resetClosersForTest clears both registries, any deadline and the
+// startup flag.
 func resetClosersForTest() {
 	closersMu.Lock()
 	closers = nil
+	earlyClosers = nil
 	closersMu.Unlock()
 	clearDeadlineForTest()
+	started.Store(false)
+	beganDuringStartup.Store(false)
+	inProgress.Store(false)
 }
 
 func TestRunClosers_ReverseOrder(t *testing.T) {
@@ -257,5 +262,114 @@ func TestSetDeadline_KeepsEarliest(t *testing.T) {
 	SetDeadline(time.Now().Add(50 * time.Millisecond))
 	if got := effectiveBudget(10 * time.Second); got > 50*time.Millisecond {
 		t.Fatalf("budget %v: an earlier SetDeadline was ignored", got)
+	}
+}
+
+// Review A1 (option 1): early closers run in their own phase, newest first,
+// and never in the regular phase.
+func TestEarlyClosers_SeparatePhase(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	var mu sync.Mutex
+	var got []string
+	rec := func(name string) func() error {
+		return func() error { mu.Lock(); got = append(got, name); mu.Unlock(); return nil }
+	}
+	Register("thebedb", time.Second, rec("thebedb"))
+	RegisterEarly("host-a", time.Second, rec("host-a"))
+	RegisterEarly("host-b", time.Second, rec("host-b"))
+
+	if !RunEarlyClosers() {
+		t.Fatal("early phase failed")
+	}
+	mu.Lock()
+	early := append([]string(nil), got...)
+	mu.Unlock()
+	if len(early) != 2 || early[0] != "host-b" || early[1] != "host-a" {
+		t.Fatalf("early phase ran %v, want [host-b host-a]", early)
+	}
+	if !runClosers(time.Second) {
+		t.Fatal("regular phase failed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 || got[2] != "thebedb" {
+		t.Fatalf("all closers ran %v, want early ones then thebedb, each once", got)
+	}
+}
+
+// Review B1: a shutdown during startup closes nothing.
+func TestClosePhase_SkipsBeforeStartupFinished(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	ran := false
+	Register("thebedb", time.Second, func() error { ran = true; return nil })
+
+	if closePhase("closers", RunClosers) {
+		t.Fatal("closePhase must report false while startup is not finished")
+	}
+	if ran {
+		t.Fatal("a closer ran before startup finished")
+	}
+
+	MarkStarted()
+	if !closePhase("closers", RunClosers) || !ran {
+		t.Fatal("after MarkStarted the closers must run")
+	}
+}
+
+// Review C2: a second caller gets the real outcome of a closer the first
+// caller ran, not success.
+func TestRunClosers_SecondCallerGetsRealOutcome(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	release := make(chan struct{})
+	Register("failing", time.Second, func() error { <-release; return errors.New("boom") })
+
+	results := make(chan bool, 2)
+	go func() { results <- runClosers(5 * time.Second) }()
+	time.Sleep(50 * time.Millisecond) // the first caller is inside the closer
+	go func() { results <- runClosers(5 * time.Second) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if <-results {
+			t.Fatal("a caller reported success for a closer that failed")
+		}
+	}
+}
+
+// Review B1, as found in a real run: a stop that arrives during startup must
+// keep resources open even if startup finishes while the shutdown is still
+// printing metrics, before it reaches the closers.
+func TestClosePhase_StopDuringStartupStaysSkippedAfterStartupFinishes(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	ran := false
+	Register("thebedb", time.Second, func() error { ran = true; return nil })
+
+	Begin()       // the signal arrives during startup
+	MarkStarted() // startup finishes while the shutdown runs
+	if closePhase("closers", RunClosers) || ran {
+		t.Fatal("resources were closed although the stop began during startup")
+	}
+}
+
+func TestClosePhase_StopAfterStartupCloses(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	ran := false
+	Register("thebedb", time.Second, func() error { ran = true; return nil })
+
+	MarkStarted()
+	Begin()
+	if !closePhase("closers", RunClosers) || !ran {
+		t.Fatal("a stop after startup must close resources")
 	}
 }
