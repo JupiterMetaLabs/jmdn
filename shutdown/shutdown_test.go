@@ -16,7 +16,7 @@ func resetShutdownForTest(t *testing.T, body func() bool) {
 		inProgress.Store(false)
 		shutdownOnce = sync.Once{}
 		shutdownOK = false
-		SetDeadline(time.Time{})
+		clearDeadlineForTest()
 	}
 	reset()
 	shutdownBody = body

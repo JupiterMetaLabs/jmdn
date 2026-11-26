@@ -1202,11 +1202,16 @@ func main() {
 		// blocks up to 30s on Redis and 60s per DB write, beyond the whole
 		// shutdown budget) and any GRO goroutine still running after GRO's
 		// forced shutdown (goroutine-orchestrator v0.1.5 cancels without
-		// waiting). A write of theirs cut by this Close fails as it did under
-		// the SIGKILL that ended every stop before this change, and their own
-		// recovery covers it: Redis PEL replay (LWW-idempotent), the recon
-		// intent marker, the outbox. Stopping them cleanly needs the GRO
-		// wait-group fix and a stop hook in the account sync worker.
+		// waiting). A new Badger call after this Close returns an error
+		// (ErrDBClosed / ErrBlockedWrites). A call already in flight when
+		// Close runs can instead panic (Badger sets its memtable to nil while
+		// closing), ending the process with exit 2 and possibly losing the
+		// last log lines. Either way no committed data is lost (SyncWrites is
+		// on; Badger recovers on the next start, as after the SIGKILL that
+		// ended every stop before this change), and their own recovery covers
+		// the cut write: Redis PEL replay (LWW-idempotent), the recon intent
+		// marker, the outbox. Stopping them cleanly needs the GRO wait-group
+		// fix and a stop hook in the account sync worker.
 		shutdown.Register("thebedb", 10*time.Second, db.Close)
 
 		// Capture the canonical KV handle for the chain-head checkpoint boot gate

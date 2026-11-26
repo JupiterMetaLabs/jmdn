@@ -50,12 +50,16 @@ var (
 	deadline   time.Time
 )
 
-// SetDeadline sets the time by which RunClosers must have finished. main sets
-// it when the shutdown signal arrives, a margin before its watchdog fires. The
-// zero time means no deadline beyond closersBudget.
+// SetDeadline sets the time by which RunClosers must have finished. Each
+// shutdown trigger (signal, CLI stopService, CLI failure) sets it a margin
+// before its own watchdog fires. The EARLIEST deadline wins: a later trigger
+// (a SIGTERM during a stopService) must not move the deadline past a watchdog
+// that is already running, or that watchdog could exit mid-close.
 func SetDeadline(t time.Time) {
 	deadlineMu.Lock()
-	deadline = t
+	if deadline.IsZero() || t.Before(deadline) {
+		deadline = t
+	}
 	deadlineMu.Unlock()
 }
 

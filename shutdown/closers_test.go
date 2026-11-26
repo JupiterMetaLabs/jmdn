@@ -9,12 +9,20 @@ import (
 	"time"
 )
 
+// clearDeadlineForTest removes any deadline. SetDeadline only ever moves it
+// earlier, so tests clear it directly.
+func clearDeadlineForTest() {
+	deadlineMu.Lock()
+	deadline = time.Time{}
+	deadlineMu.Unlock()
+}
+
 // resetClosersForTest clears the registry and any deadline.
 func resetClosersForTest() {
 	closersMu.Lock()
 	closers = nil
 	closersMu.Unlock()
-	SetDeadline(time.Time{})
+	clearDeadlineForTest()
 }
 
 func TestRunClosers_ReverseOrder(t *testing.T) {
@@ -231,5 +239,23 @@ func TestEffectiveBudget(t *testing.T) {
 	SetDeadline(time.Now().Add(-time.Second))
 	if got := effectiveBudget(time.Second); got > 0 {
 		t.Fatalf("past deadline: %v, want <= 0", got)
+	}
+}
+
+// Review PP-dc993a: a later shutdown trigger must not move the deadline past
+// an earlier one, whose watchdog is already running.
+func TestSetDeadline_KeepsEarliest(t *testing.T) {
+	resetClosersForTest()
+	t.Cleanup(resetClosersForTest)
+
+	SetDeadline(time.Now().Add(200 * time.Millisecond))
+	SetDeadline(time.Now().Add(time.Hour))
+	if got := effectiveBudget(10 * time.Second); got > 200*time.Millisecond {
+		t.Fatalf("budget %v: a later SetDeadline moved the deadline out", got)
+	}
+	// An earlier deadline still takes over.
+	SetDeadline(time.Now().Add(50 * time.Millisecond))
+	if got := effectiveBudget(10 * time.Second); got > 50*time.Millisecond {
+		t.Fatalf("budget %v: an earlier SetDeadline was ignored", got)
 	}
 }
