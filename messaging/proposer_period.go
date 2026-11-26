@@ -44,6 +44,12 @@ type ProposerPeriods struct {
 	store  roundlock.Store
 	prefix string
 	loaded map[uint64]bool
+	// onDisk marks heights known to have a non-empty stored record: written by
+	// ClaimPeriod, or read back by loadLocked. ForgetThrough clears only these,
+	// so a commit never writes a key for a height that was never stored (the
+	// same rule as roundlock.Ledger's onDisk). An empty put is not a delete in
+	// the KV: it leaves a zero-length entry, one per block on every node.
+	onDisk map[uint64]bool
 }
 
 // NewProposerPeriods returns an empty counter.
@@ -52,6 +58,7 @@ func NewProposerPeriods() *ProposerPeriods {
 		period: make(map[uint64]uint64),
 		hints:  make(map[uint64]map[string]uint64),
 		loaded: make(map[uint64]bool),
+		onDisk: make(map[uint64]bool),
 	}
 }
 
@@ -68,6 +75,7 @@ func (p *ProposerPeriods) SetStore(store roundlock.Store, prefix string) {
 	defer p.mu.Unlock()
 	p.store, p.prefix = store, prefix
 	p.loaded = make(map[uint64]bool)
+	p.onDisk = make(map[uint64]bool)
 }
 
 func (p *ProposerPeriods) key(height uint64) string {
@@ -99,6 +107,7 @@ func (p *ProposerPeriods) loadLocked(height uint64) error {
 		if next > p.period[height] {
 			p.period[height] = next
 		}
+		p.onDisk[height] = true
 	}
 	p.loaded[height] = true
 	return nil
@@ -123,6 +132,7 @@ func (p *ProposerPeriods) ClaimPeriod(height uint64) (uint64, error) {
 		if err := p.store.Put(p.key(height), raw); err != nil {
 			return 0, fmt.Errorf("proposer period: write height %d: %w", height, err)
 		}
+		p.onDisk[height] = true
 	}
 	return period, nil
 }
@@ -212,26 +222,22 @@ func hintFloor(reports map[string]uint64, committeeSize int) (uint64, bool) {
 // ForgetThrough drops the counter and hints of every height at or below
 // height, which is committed: no proposal at it can be made again.
 //
-// The stored record of height and of every remembered height below it is
-// cleared too. Best effort: a record left behind is for a committed height,
-// which is never proposed at again, so it is only unused space.
+// Stored records are cleared only for heights at or below it that this
+// process knows have one (onDisk). Every node calls this on every commit
+// (NoteHeightCommitted), including nodes that never propose and every block
+// applied by catch-up, so clearing unconditionally would write a key per block
+// on every node; an empty put leaves a zero-length entry, it does not delete.
+// Best effort: a record left behind (failed write, or stored before a restart
+// and never touched again) is for a committed height, which is never proposed
+// at again, so it is only unused space.
 func (p *ProposerPeriods) ForgetThrough(height uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.store != nil {
-		toClear := map[uint64]bool{height: true}
-		for h := range p.period {
-			if h <= height {
-				toClear[h] = true
+	for h := range p.onDisk {
+		if h <= height {
+			if p.store == nil || p.store.Put(p.key(h), []byte{}) == nil {
+				delete(p.onDisk, h)
 			}
-		}
-		for h := range p.loaded {
-			if h <= height {
-				toClear[h] = true
-			}
-		}
-		for h := range toClear {
-			_ = p.store.Put(p.key(h), []byte{})
 		}
 	}
 	for h := range p.loaded {
