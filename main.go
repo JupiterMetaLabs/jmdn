@@ -1024,19 +1024,6 @@ func main() {
 	}
 
 	// Create a cancellable context for clean shutdown
-	// main returns only when a startup step failed (no node, no mempool, no
-	// node manager). Run the full shutdown then and exit 1, instead of
-	// returning with status 0 while GRO goroutines still run. Startup has not
-	// finished on those paths, so the shutdown stops GRO and flushes the
-	// logger but leaves ThebeDB and the network open (see
-	// shutdown.MarkStarted). Deferred BEFORE cancel so it runs AFTER it
-	// (defers run last-in, first-out).
-	defer func() {
-		if !shutdown.InProgress() {
-			shutdown.ShutdownAndExit(true)
-		}
-	}()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Every shutdown path (signal, CLI stopService, CLI failure) cancels the
@@ -1635,7 +1622,12 @@ func main() {
 	n, err := node.NewNode(logger_ctx)
 	if err != nil {
 		fmt.Println("Error starting node:", err)
-		return
+		// A startup step failed: run the shutdown and exit 1 instead of
+		// returning from main with status 0 while GRO goroutines still run.
+		// Startup has not finished, so ThebeDB and the network stay open
+		// (shutdown.MarkStarted). Called here, not deferred: a deferred exit
+		// would also run on a panic and hide its message and stack trace.
+		shutdown.ShutdownAndExit(true)
 	}
 	// Early phase (before GRO's shutdown): closing the host first stops new
 	// blocks, votes and sync traffic arriving while the node winds down.
@@ -2440,7 +2432,7 @@ func main() {
 
 	if cfg.Network.Mempool == "" {
 		log.Printf("No mempool gRPC address provided; cannot proceed.")
-		return
+		shutdown.ShutdownAndExit(true) // startup failed; see "Error starting node" above
 	}
 
 	address := cfg.Network.Mempool
@@ -2466,7 +2458,7 @@ func main() {
 	nodeManager, err = node.NewNodeManagerWithLogger(n)
 	if err != nil {
 		fmt.Printf("Failed to initialize node manager: %v\n", err)
-		return
+		shutdown.ShutdownAndExit(true) // startup failed; see "Error starting node" above
 	}
 	// Debugging
 	fmt.Println("Node manager initialized successfully")
