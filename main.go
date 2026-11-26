@@ -18,6 +18,7 @@ import (
 	"gossipnode/internal/roundlock"
 	"gossipnode/internal/saferun"
 
+	"sync"
 	"syscall"
 	"time"
 
@@ -181,6 +182,26 @@ func initAppandLocalGRO() {
 	}
 }
 
+// stopEarly derives a context from ctx that the shutdown's early phase cancels
+// (before GRO's shutdown and long before ThebeDB closes), and returns it with
+// a function the caller must call once serving has returned. The early closer
+// cancels the context and waits for that call, so the RPC server's graceful
+// Shutdown (in-flight requests allowed to finish) completes before the rest
+// of the node winds down. Without it the servers stopped only when GRO
+// cancelled them, and nothing waited for them.
+func stopEarly(ctx context.Context, name string) (context.Context, func()) {
+	sctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var once sync.Once
+	served := func() { once.Do(func() { close(done) }) }
+	shutdown.RegisterEarly(name, 3*time.Second, func() error {
+		cancel()
+		<-done
+		return nil
+	})
+	return sctx, served
+}
+
 func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPort int, chainID int, smartRPC int, mon *syncmonitor.Monitor) {
 	if MainLM == nil {
 		if logger := mainLogger(); logger != nil {
@@ -206,7 +227,9 @@ func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPor
 		if debugPort > 0 {
 			debugAddr := fmt.Sprintf("%s:%d", debugBindAddr, debugPort)
 			go func() {
-				if err := httpServer.ServeDebugWithContext(ctx, debugAddr); err != nil {
+				dctx, served := stopEarly(ctx, "facade debug rpc")
+				defer served()
+				if err := httpServer.ServeDebugWithContext(dctx, debugAddr); err != nil {
 					if logger := mainLogger(); logger != nil {
 						logger.Error(ctx, "Facade debug server stopped", err, ion.String("addr", debugAddr))
 					}
@@ -215,7 +238,9 @@ func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPor
 		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
-		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
+		sctx, served := stopEarly(ctx, "facade rpc")
+		defer served()
+		if err := httpServer.ServeWithContext(sctx, addr); err != nil {
 			if logger := mainLogger(); logger != nil {
 				logger.Error(ctx, "Facade server stopped", err, ion.String("addr", addr))
 			}
@@ -238,7 +263,9 @@ func StartWSServer(bindAddr string, port int, chainID int, smartRPC int) {
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID, smartRPC))
-		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("%s:%d", bindAddr, port)); err != nil {
+		sctx, served := stopEarly(ctx, "ws rpc")
+		defer served()
+		if err := WSServer.ServeWithContext(sctx, fmt.Sprintf("%s:%d", bindAddr, port)); err != nil {
 			if logger := mainLogger(); logger != nil {
 				logger.Error(ctx, "Failed to start WSServer", err)
 			}

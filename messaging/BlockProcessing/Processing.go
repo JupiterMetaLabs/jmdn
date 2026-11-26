@@ -405,6 +405,12 @@ func ProcessBlockTransactionsAndStore(logger_ctx context.Context, block *config.
 }
 
 func processBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection, store func() error) error {
+	// Hold the block-apply gate for the whole apply (transactions, rollback,
+	// post-apply checks, apply-halt record), so shutdown never closes ThebeDB
+	// in the middle of it (DB_OPs.CloseThebeDBGated).
+	DB_OPs.EnterBlockApply()
+	defer DB_OPs.ExitBlockApply()
+
 	// Every transaction credits the coinbase and zkVM addresses; a block that
 	// carries transactions without them cannot be applied. Checked before any
 	// state is touched (the apply loop dereferences both).

@@ -96,9 +96,11 @@ var (
 )
 
 // earlyClosersBudget bounds the early phase, which runs BEFORE GRO's
-// shutdown. It is part of the 25s sequence: early 3s + ~0.4s + GRO 10s leaves
-// the regular closers ~9.6s before the deadline main sets at 23s.
-const earlyClosersBudget = 3 * time.Second
+// shutdown: the libp2p host and the RPC servers (graceful HTTP shutdown). It
+// is part of the 25s sequence: early 5s + ~0.4s + GRO 10s leaves the regular
+// closers ~7.6s before the deadline main sets at 23s. Usually each early
+// closer finishes in milliseconds.
+const earlyClosersBudget = 5 * time.Second
 
 // RegisterEarly adds a closer that runs in the early phase, before GRO's
 // shutdown, newest first. For the producers of work (the libp2p host): closing

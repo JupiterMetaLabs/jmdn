@@ -24,13 +24,16 @@ var ErrThebeCloseSkipped = errors.New("thebedb close skipped: a write is still i
 // lost). Before graceful shutdown existed the process was killed instead, and
 // in-flight work finished with the database open.
 //
-// It first takes, within wait:
-//  1. the state-apply lock (LockStateApply), which live block apply, the
-//     revoke+rollback pair and reconciliation hold for each commit; and
-//  2. ThebeDB's append slot (KVPool, width 1), which every 2PC append holds.
+// It first takes, within wait and in this order:
+//  1. the block-apply gate (EnterBlockApply), which every block apply holds
+//     for its whole duration, including its rollback and any apply-halt
+//     record it writes;
+//  2. the state-apply lock (LockStateApply), which reconciliation and each
+//     block-apply commit hold; and
+//  3. ThebeDB's append slot (KVPool, width 1), which every 2PC append holds.
 //
-// Both are kept for the rest of the process, so no apply, rollback or append
-// can start after the close. If either cannot be taken in time, it does NOT
+// All three are kept for the rest of the process, so no block apply, rollback,
+// reconciliation or append can start after the close. If either cannot be taken in time, it does NOT
 // close and returns ErrThebeCloseSkipped: the database is left open, which is
 // how every stop ended before (SIGKILL), and Badger recovers on the next start.
 func CloseThebeDBGated(db *thebedb.ThebeDB, wait time.Duration) error {
@@ -44,15 +47,21 @@ func CloseThebeDBGated(db *thebedb.ThebeDB, wait time.Duration) error {
 			return err
 		}
 	}
-	return closeGated(TryLockStateApplyWithin, acquireAppend, db.Close, wait)
+	return closeGated(tryCloseBlockApplyWithin, TryLockStateApplyWithin, acquireAppend, db.Close, wait)
 }
 
 // closeGated is CloseThebeDBGated's logic with its dependencies injected, for
-// tests. acquireAppend may be nil (no append slot to take).
-func closeGated(lockApply func(time.Duration) bool, acquireAppend func(context.Context) error, closeFn func() error, wait time.Duration) error {
+// tests. All waits share one budget, wait. acquireAppend may be nil (no append
+// slot to take).
+func closeGated(lockBlockApply, lockApply func(time.Duration) bool, acquireAppend func(context.Context) error, closeFn func() error, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
-	if !lockApply(wait) {
-		return fmt.Errorf("%w (state-apply lock busy for %s)", ErrThebeCloseSkipped, wait)
+	if !lockBlockApply(wait) {
+		return fmt.Errorf("%w (a block apply is still running after %s)", ErrThebeCloseSkipped, wait)
+	}
+	// The block-apply gate is now held and is not released: no block apply
+	// may start after this point.
+	if !lockApply(time.Until(deadline)) {
+		return fmt.Errorf("%w (state-apply lock busy)", ErrThebeCloseSkipped)
 	}
 	// The state-apply lock is now held and is not released: no apply or
 	// rollback may start after this point.
