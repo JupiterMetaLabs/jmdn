@@ -3,6 +3,7 @@ package thebegateway_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -205,4 +206,85 @@ func TestStop_SafeMultipleCalls(t *testing.T) {
 
 	w.Stop()
 	w.Stop()
+}
+
+// blockingGateway blocks WriteBlock until release is closed, so a test can
+// stop the worker while a dispatch is in flight.
+type blockingGateway struct {
+	spyGateway
+	entered chan struct{}
+	release chan struct{}
+	calls   int32
+	mu      sync.Mutex
+}
+
+func (g *blockingGateway) WriteBlock(_ context.Context, _ *thebegateway.BlockRecord) error {
+	g.mu.Lock()
+	g.calls++
+	first := g.calls == 1
+	g.mu.Unlock()
+	if first {
+		close(g.entered)
+	}
+	<-g.release
+	return nil
+}
+
+func (g *blockingGateway) callCount() int32 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
+// Review PP-2bffdd: shutdown closes ThebeDB right after stopping the outbox
+// worker, so StopAndWait must not return while a dispatch is in flight, and
+// the drain must stop between entries instead of finishing the batch.
+func TestStopAndWait_WaitsForInFlightDispatch(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &oneShotOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 1, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+		{ID: 2, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+		{ID: 3, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &blockingGateway{entered: make(chan struct{}), release: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+
+	stopped := make(chan struct{})
+	go func() { w.StopAndWait(); close(stopped) }()
+
+	select {
+	case <-stopped:
+		t.Fatal("StopAndWait returned while a dispatch was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(gw.release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAndWait did not return after the dispatch finished")
+	}
+	if n := gw.callCount(); n != 1 {
+		t.Fatalf("drain dispatched %d entries after Stop, want 1 (stop between entries)", n)
+	}
+}
+
+// StopAndWait on a worker that was never started must not block.
+func TestStopAndWait_NotStartedReturns(t *testing.T) {
+	w := thebegateway.NewOutboxWorker(&spyOutbox{}, &spyGateway{}, time.Second)
+	done := make(chan struct{})
+	go func() { w.StopAndWait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("StopAndWait blocked on a worker that was never started")
+	}
 }

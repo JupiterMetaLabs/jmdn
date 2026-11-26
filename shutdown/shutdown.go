@@ -55,7 +55,10 @@ func InProgress() bool { return inProgress.Load() }
 // down a second time.
 func Shutdown() bool {
 	Begin()
-	shutdownOnce.Do(func() { shutdownOK = shutdownBody() })
+	shutdownOnce.Do(func() {
+		cancelMain()
+		shutdownOK = shutdownBody()
+	})
 	return shutdownOK
 }
 
@@ -75,6 +78,29 @@ func ShutdownAndExitInBackground() {
 // with ShutdownAndExitInBackground, which has no watchdog of its own: the
 // same 25s - 2s main gives a signal-driven shutdown.
 const backgroundShutdownBudget = 23 * time.Second
+
+var (
+	mainCancelMu sync.Mutex
+	mainCancel   func()
+)
+
+// SetMainCancel registers the function that cancels main's context. Shutdown
+// calls it first, on every path, so components that run on main's context
+// (rather than under GRO) stop before the resource closers run.
+func SetMainCancel(cancel func()) {
+	mainCancelMu.Lock()
+	mainCancel = cancel
+	mainCancelMu.Unlock()
+}
+
+func cancelMain() {
+	mainCancelMu.Lock()
+	c := mainCancel
+	mainCancelMu.Unlock()
+	if c != nil {
+		c()
+	}
+}
 
 func runShutdown() bool {
 	// Print metrics header

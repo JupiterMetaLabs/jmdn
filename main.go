@@ -1026,6 +1026,10 @@ func main() {
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// Every shutdown path (signal, CLI stopService, CLI failure) cancels the
+	// main context first, so components given ctx stop before the resource
+	// closers run. Before this only the signal handler cancelled it.
+	shutdown.SetMainCancel(cancel)
 	// If main ever returns normally (CLI mode ends), release the resources
 	// registered with the shutdown package. Each closer runs at most once.
 	defer shutdown.RunClosers()
@@ -1188,6 +1192,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
 		// Closes Badger (KV) and the write pool (SQL). 10s: ThebeDB.Close itself
 		// waits up to 5s for its CDC consumer.
+		//
+		// Writers stopped before this closer runs: the outbox worker
+		// (StopAndWait, registered later so it closes first) and goroutines
+		// GRO stopped. NOT stopped: the account sync worker (no stop hook; it
+		// blocks up to 30s on Redis and 60s per DB write, beyond the whole
+		// shutdown budget) and any GRO goroutine still running after GRO's
+		// forced shutdown (goroutine-orchestrator v0.1.5 cancels without
+		// waiting). A write of theirs cut by this Close fails as it did under
+		// the SIGKILL that ended every stop before this change, and their own
+		// recovery covers it: Redis PEL replay (LWW-idempotent), the recon
+		// intent marker, the outbox. Stopping them cleanly needs the GRO
+		// wait-group fix and a stop hook in the account sync worker.
 		shutdown.Register("thebedb", 10*time.Second, db.Close)
 
 		// Capture the canonical KV handle for the chain-head checkpoint boot gate
@@ -1297,7 +1313,11 @@ func main() {
 		// DB pressure; review finding R2).
 		outboxWorker := thebegateway.NewOutboxWorker(outbox, gw, 5*time.Second)
 		outboxWorker.Start()
-		shutdown.RegisterFunc("outbox worker", time.Second, outboxWorker.Stop)
+		// StopAndWait, not Stop: Stop returns before the worker does, and the
+		// next closer (ThebeDB) must not close Badger and the write pool under
+		// an in-flight retry. A drain stops between entries, so this waits for
+		// one dispatch at most; 2s bounds it.
+		shutdown.RegisterFunc("outbox worker", 2*time.Second, outboxWorker.StopAndWait)
 
 		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
 		// writing a missing snapshot does not un-skip tx rows that already exhausted
@@ -2633,11 +2653,12 @@ func main() {
 			select {}
 		}
 		// The CLI stopped on its own, without a shutdown (it failed to
-		// start). Shut down properly instead of returning from main.
+		// start). Shut down properly instead of returning from main, and exit
+		// 1 if the CLI failed, so a supervisor's on-failure restart sees it.
 		if err != nil {
 			mainLogger().Error(context.Background(), "CLI stopped", err)
 		}
-		shutdown.Exit(shutdown.Shutdown())
+		shutdown.Exit(shutdown.Shutdown() && err == nil)
 	} else {
 		mainLogger().Info(context.Background(), "CLI server disabled (port = 0)")
 		// Keep the node running even without CLI

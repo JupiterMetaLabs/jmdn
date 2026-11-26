@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,6 +75,13 @@ type OutboxWorker struct {
 	stop     chan struct{}
 	once     sync.Once // guards Stop() — closing a closed channel panics
 	ticks    int       // poll ticks since the last maintenance pass
+
+	// done is closed when run() returns, so StopAndWait can wait for the
+	// worker before ThebeDB is closed under it. started records that run()
+	// was launched (StopAndWait must not wait on a worker never started).
+	done      chan struct{}
+	startOnce sync.Once
+	started   atomic.Bool
 }
 
 // NewOutboxWorker creates an OutboxWorker. Call Start() to begin polling.
@@ -87,6 +95,7 @@ func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Dura
 		gateway:  gateway,
 		interval: interval,
 		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -94,16 +103,33 @@ func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Dura
 // Call Stop() to shut it down gracefully.
 // Time: O(1) to start; poll loop is O(batchSize) per tick — bounded by defaultBatchSize=32
 func (w *OutboxWorker) Start() {
-	go w.run()
+	w.startOnce.Do(func() {
+		w.started.Store(true)
+		go w.run()
+	})
 }
 
-// Stop signals the worker to stop after the current batch completes.
-// Safe to call multiple times — subsequent calls are no-ops.
+// Stop signals the worker to stop and returns at once; it does not wait for
+// the worker goroutine. Safe to call multiple times — subsequent calls are
+// no-ops. Use StopAndWait before closing the store or gateway the worker uses.
 func (w *OutboxWorker) Stop() {
 	w.once.Do(func() { close(w.stop) })
 }
 
+// StopAndWait signals the worker to stop and waits until its goroutine has
+// returned, so no retry is in flight afterwards. A drain stops between
+// entries, so the wait is at most one in-flight dispatch; entries not reached
+// stay in the outbox for the next start. Returns at once if Start was never
+// called. Shutdown calls this (under a timeout) before closing ThebeDB.
+func (w *OutboxWorker) StopAndWait() {
+	w.Stop()
+	if w.started.Load() {
+		<-w.done
+	}
+}
+
 func (w *OutboxWorker) run() {
+	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
@@ -137,6 +163,14 @@ func (w *OutboxWorker) drainBatch() {
 		return
 	}
 	for _, entry := range entries {
+		// Stop between entries, not only between ticks: shutdown waits for
+		// this goroutine (StopAndWait) before closing ThebeDB, so the wait is
+		// one dispatch at most. Unprocessed entries stay in the outbox.
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
 		if entry.Attempts >= MaxOutboxAttempts {
 			continue // exhausted — left for operator inspection
 		}

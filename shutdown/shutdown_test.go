@@ -103,3 +103,18 @@ func TestShutdownAndExitInBackground(t *testing.T) {
 		t.Fatalf("exit codes = %v, want [0]", *codes)
 	}
 }
+
+// Every shutdown path cancels main's context before the sequence runs, not
+// only the signal handler (review open hypothesis on stopService).
+func TestShutdown_CancelsMainContextFirst(t *testing.T) {
+	cancelled := false
+	sawCancelled := false
+	resetShutdownForTest(t, func() bool { sawCancelled = cancelled; return true })
+	SetMainCancel(func() { cancelled = true })
+	t.Cleanup(func() { SetMainCancel(nil) })
+
+	Shutdown()
+	if !sawCancelled {
+		t.Fatal("main's context must be cancelled before the shutdown sequence runs")
+	}
+}
