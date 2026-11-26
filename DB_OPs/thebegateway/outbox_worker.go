@@ -117,9 +117,10 @@ func (w *OutboxWorker) Stop() {
 }
 
 // StopAndWait signals the worker to stop and waits until its goroutine has
-// returned, so no retry is in flight afterwards. A drain stops between
-// entries, so the wait is at most one in-flight dispatch; entries not reached
-// stay in the outbox for the next start. Returns at once if Start was never
+// returned, so no retry is in flight afterwards. Stop cancels the context of
+// an in-flight dispatch and the drain stops between entries, so the wait is
+// as long as a write takes to notice cancellation; aborted and unreached
+// entries stay in the outbox for the next start. Returns at once if Start was never
 // called. Shutdown calls this (under a timeout) before closing ThebeDB.
 func (w *OutboxWorker) StopAndWait() {
 	w.Stop()
@@ -156,7 +157,23 @@ func (w *OutboxWorker) run() {
 }
 
 func (w *OutboxWorker) drainBatch() {
-	ctx := context.Background()
+	// Cancelled as soon as w.stop closes (as maintain() does), so Stop aborts
+	// an in-flight dispatch instead of letting it run on: shutdown closes
+	// ThebeDB right after StopAndWait, and a slow write must not hold that
+	// up or be cut by the close. An aborted write leaves its entry in the
+	// outbox for the next start.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-w.stop:
+			cancel()
+		case <-done:
+		}
+	}()
+
 	entries, err := w.store.Next(ctx, defaultBatchSize)
 	if err != nil {
 		// log or ignore — worker must not crash on store errors
@@ -175,6 +192,11 @@ func (w *OutboxWorker) drainBatch() {
 			continue // exhausted — left for operator inspection
 		}
 		if err := w.dispatch(ctx, entry); err != nil {
+			if ctx.Err() != nil {
+				// Aborted by Stop, not a failed write: do not count it as an
+				// attempt. The entry stays queued for the next start.
+				return
+			}
 			_ = w.store.IncrementAttempts(ctx, entry.ID, ExponentialBackoff(entry.Attempts))
 		} else {
 			_ = w.store.Ack(ctx, entry.ID)

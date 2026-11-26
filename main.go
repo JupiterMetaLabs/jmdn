@@ -1315,8 +1315,10 @@ func main() {
 		outboxWorker.Start()
 		// StopAndWait, not Stop: Stop returns before the worker does, and the
 		// next closer (ThebeDB) must not close Badger and the write pool under
-		// an in-flight retry. A drain stops between entries, so this waits for
-		// one dispatch at most; 2s bounds it.
+		// an in-flight retry. Stop cancels an in-flight dispatch's context and
+		// the drain stops between entries, so this returns as soon as the
+		// write notices the cancellation. 2s is a backstop for a write that
+		// ignores its context.
 		shutdown.RegisterFunc("outbox worker", 2*time.Second, outboxWorker.StopAndWait)
 
 		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):

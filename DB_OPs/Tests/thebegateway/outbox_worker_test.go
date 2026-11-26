@@ -288,3 +288,49 @@ func TestStopAndWait_NotStartedReturns(t *testing.T) {
 		t.Fatal("StopAndWait blocked on a worker that was never started")
 	}
 }
+
+// ctxGateway blocks WriteBlock until its context is cancelled, like a write
+// to a hung Postgres; it never returns on its own.
+type ctxGateway struct {
+	spyGateway
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *ctxGateway) WriteBlock(ctx context.Context, _ *thebegateway.BlockRecord) error {
+	g.once.Do(func() { close(g.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Review PP-70462b: Stop must cancel an in-flight dispatch, so StopAndWait
+// returns quickly even when the write would never finish on its own, and the
+// aborted entry is not counted as a failed attempt.
+func TestStopAndWait_CancelsInFlightDispatch(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &oneShotOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 7, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &ctxGateway{entered: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+
+	start := time.Now()
+	w.StopAndWait()
+	if took := time.Since(start); took > 200*time.Millisecond {
+		t.Fatalf("StopAndWait took %v: the in-flight dispatch was not cancelled", took)
+	}
+	if n := oso.incrCount(); n != 0 {
+		t.Fatalf("aborted dispatch counted as %d failed attempt(s), want 0", n)
+	}
+	if n := oso.ackCount(); n != 0 {
+		t.Fatalf("aborted entry was acked (%d), want it left in the outbox", n)
+	}
+}
