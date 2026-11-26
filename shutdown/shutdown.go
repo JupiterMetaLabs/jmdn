@@ -62,22 +62,53 @@ func Shutdown() bool {
 	return shutdownOK
 }
 
-// ShutdownAndExitInBackground starts Shutdown followed by Exit on a plain
-// goroutine and returns at once. For callers that are themselves GRO-tracked
-// goroutines (the CLI stopService command): calling Shutdown inline there
-// makes GRO's shutdown wait on its own caller until its timeout. The caller
-// should return right after this, so GRO has nothing of it left to wait for.
-// InProgress is true before this returns.
+// ShutdownAndExitInBackground runs ShutdownAndExit on a plain goroutine and
+// returns at once. For callers that are themselves GRO-tracked goroutines
+// (the CLI stopService command): calling Shutdown inline there makes GRO's
+// shutdown wait on its own caller until its timeout. The caller should return
+// right after this, so GRO has nothing of it left to wait for. InProgress is
+// true before this returns.
 func ShutdownAndExitInBackground() {
 	Begin()
-	SetDeadline(time.Now().Add(backgroundShutdownBudget))
-	go func() { Exit(Shutdown()) }()
+	SetDeadline(time.Now().Add(watchdogBudget - 2*time.Second))
+	go ShutdownAndExit(false)
 }
 
-// backgroundShutdownBudget is the closers' deadline for a shutdown started
-// with ShutdownAndExitInBackground, which has no watchdog of its own: the
-// same 25s - 2s main gives a signal-driven shutdown.
-const backgroundShutdownBudget = 23 * time.Second
+// ShutdownAndExit runs Shutdown and then always exits: 1 if the shutdown was
+// not clean or failed is true, 0 otherwise. A watchdog exits with 1 if the
+// whole sequence has not finished within watchdogBudget, so a blocked step
+// (GRO's forced shutdown, the logger) cannot leave the process running until
+// the supervisor kills it. The resource closers get a deadline 2s inside that
+// budget, as on the signal path in main.go, which has its own watchdog.
+func ShutdownAndExit(failed bool) {
+	Begin()
+	SetDeadline(time.Now().Add(watchdogBudget - 2*time.Second))
+	stopWatchdog := startWatchdog(watchdogBudget)
+	ok := Shutdown()
+	stopWatchdog()
+	Exit(ok && !failed)
+}
+
+// watchdogBudget bounds ShutdownAndExit as a whole: the same 25s the signal
+// handler in main.go uses, under Docker's 30s stop_grace_period. A variable so
+// tests can shorten it.
+var watchdogBudget = 25 * time.Second
+
+// startWatchdog exits the process with 1 once budget has passed, unless the
+// returned stop function is called first.
+func startWatchdog(budget time.Duration) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-time.After(budget):
+			notice("shutdown did not finish within %s; exiting\n", budget)
+			OS_EXIT(1)
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
 
 var (
 	mainCancelMu sync.Mutex

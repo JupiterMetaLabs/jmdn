@@ -82,7 +82,7 @@ func TestShutdownAndExitInBackground(t *testing.T) {
 	if !InProgress() {
 		t.Fatal("InProgress must be true when ShutdownAndExitInBackground returns")
 	}
-	if effectiveBudget(time.Hour) > backgroundShutdownBudget {
+	if effectiveBudget(time.Hour) > watchdogBudget-2*time.Second {
 		t.Fatal("background shutdown must set a closer deadline")
 	}
 	close(release)
@@ -116,5 +116,81 @@ func TestShutdown_CancelsMainContextFirst(t *testing.T) {
 	Shutdown()
 	if !sawCancelled {
 		t.Fatal("main's context must be cancelled before the shutdown sequence runs")
+	}
+}
+
+// shortWatchdogForTest shortens the ShutdownAndExit watchdog.
+func shortWatchdogForTest(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := watchdogBudget
+	watchdogBudget = d
+	t.Cleanup(func() { watchdogBudget = prev })
+}
+
+func waitForExitCodes(t *testing.T, codes *[]int, n int, within time.Duration) []int {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		exitMu.Lock()
+		got := append([]int(nil), (*codes)...)
+		exitMu.Unlock()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Review open hypothesis: stopService and the CLI-failure path had no
+// watchdog. A shutdown step that blocks must not keep the process running.
+func TestShutdownAndExit_WatchdogExitsWhenShutdownBlocks(t *testing.T) {
+	codes := captureExit(t)
+	block := make(chan struct{})
+	resetShutdownForTest(t, func() bool { <-block; return true })
+	shortWatchdogForTest(t, 100*time.Millisecond)
+
+	finished := make(chan struct{})
+	go func() { ShutdownAndExit(false); close(finished) }()
+	got := waitForExitCodes(t, codes, 1, 2*time.Second)
+
+	// In production the watchdog's exit ends the process here. The test stub
+	// does not, so release the blocked shutdown and wait for it before the
+	// cleanups reset the package state it is still using.
+	close(block)
+	<-finished
+
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("exit codes = %v, want [1] from the watchdog", got)
+	}
+}
+
+func TestShutdownAndExit_ExitCodes(t *testing.T) {
+	cases := []struct {
+		name   string
+		clean  bool
+		failed bool
+		want   int
+	}{
+		{"clean", true, false, 0},
+		{"unclean shutdown", false, false, 1},
+		{"caller failed", true, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			codes := captureExit(t)
+			clean := tc.clean
+			resetShutdownForTest(t, func() bool { return clean })
+			shortWatchdogForTest(t, 200*time.Millisecond)
+
+			ShutdownAndExit(tc.failed)
+			// Wait past the watchdog: a stopped watchdog must not add a second exit.
+			time.Sleep(300 * time.Millisecond)
+			exitMu.Lock()
+			got := append([]int(nil), (*codes)...)
+			exitMu.Unlock()
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("exit codes = %v, want [%d]", got, tc.want)
+			}
+		})
 	}
 }

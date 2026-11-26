@@ -197,11 +197,29 @@ func (w *OutboxWorker) drainBatch() {
 				// attempt. The entry stays queued for the next start.
 				return
 			}
-			_ = w.store.IncrementAttempts(ctx, entry.ID, ExponentialBackoff(entry.Attempts))
+			w.bookkeep(func(bctx context.Context) error {
+				return w.store.IncrementAttempts(bctx, entry.ID, ExponentialBackoff(entry.Attempts))
+			})
 		} else {
-			_ = w.store.Ack(ctx, entry.ID)
+			// The write succeeded; record that even if Stop landed meanwhile.
+			// Using the drain context here would fail the Ack once Stop has
+			// cancelled it, and the entry would be written again next start.
+			w.bookkeep(func(bctx context.Context) error { return w.store.Ack(bctx, entry.ID) })
 		}
 	}
+}
+
+// bookkeepTimeout bounds one outbox bookkeeping call (Ack/IncrementAttempts)
+// made after a dispatch, so it cannot hold StopAndWait up for long.
+const bookkeepTimeout = time.Second
+
+// bookkeep runs one outbox bookkeeping call on its own short-lived context,
+// independent of the drain context: the outcome of a dispatch that has
+// already happened must be recorded even when Stop cancelled the drain.
+func (w *OutboxWorker) bookkeep(fn func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), bookkeepTimeout)
+	defer cancel()
+	_ = fn(ctx)
 }
 
 // maintain drops exhausted rows older than ExhaustedRetention and asks the

@@ -334,3 +334,54 @@ func TestStopAndWait_CancelsInFlightDispatch(t *testing.T) {
 		t.Fatalf("aborted entry was acked (%d), want it left in the outbox", n)
 	}
 }
+
+// ctxAckOutbox fails Ack and IncrementAttempts when given a cancelled
+// context, as a context-aware store does.
+type ctxAckOutbox struct {
+	oneShotOutbox
+}
+
+func (o *ctxAckOutbox) Ack(ctx context.Context, id int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return o.oneShotOutbox.Ack(ctx, id)
+}
+
+// succeedOnStopGateway finishes its write successfully only after Stop has
+// cancelled the drain: a write that completes just as Stop lands.
+type succeedOnStopGateway struct {
+	spyGateway
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *succeedOnStopGateway) WriteBlock(ctx context.Context, _ *thebegateway.BlockRecord) error {
+	g.once.Do(func() { close(g.entered) })
+	<-ctx.Done()
+	return nil
+}
+
+// Review PP-f79e5d: a write that succeeded must be acked even when Stop has
+// cancelled the drain context, or it is written again on the next start.
+func TestStopAndWait_AcksWriteThatSucceededDuringStop(t *testing.T) {
+	payload, _ := json.Marshal(thebegateway.BlockRecord{BlockNumber: 1})
+	oso := &ctxAckOutbox{}
+	oso.nextEntries = []thebegateway.OutboxEntry{
+		{ID: 9, Namespace: thebegateway.NamespaceBlock, Payload: payload},
+	}
+	gw := &succeedOnStopGateway{entered: make(chan struct{})}
+
+	w := thebegateway.NewOutboxWorker(oso, gw, time.Millisecond)
+	w.Start()
+	select {
+	case <-gw.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never started")
+	}
+	w.StopAndWait()
+
+	if ids := oso.ackIDs(); len(ids) != 1 || ids[0] != 9 {
+		t.Fatalf("acked %v, want [9]: a successful write must be acked even after Stop", ids)
+	}
+}

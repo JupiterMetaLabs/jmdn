@@ -1024,15 +1024,18 @@ func main() {
 	}
 
 	// Create a cancellable context for clean shutdown
+	// If main returns early (a startup step failed), release the resources
+	// registered with the shutdown package. Deferred BEFORE cancel so it runs
+	// AFTER it (defers run last-in, first-out): components on ctx stop before
+	// ThebeDB and the pools are closed. Each closer runs at most once.
+	defer shutdown.RunClosers()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Every shutdown path (signal, CLI stopService, CLI failure) cancels the
 	// main context first, so components given ctx stop before the resource
 	// closers run. Before this only the signal handler cancelled it.
 	shutdown.SetMainCancel(cancel)
-	// If main ever returns normally (CLI mode ends), release the resources
-	// registered with the shutdown package. Each closer runs at most once.
-	defer shutdown.RunClosers()
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -2657,10 +2660,11 @@ func main() {
 		// The CLI stopped on its own, without a shutdown (it failed to
 		// start). Shut down properly instead of returning from main, and exit
 		// 1 if the CLI failed, so a supervisor's on-failure restart sees it.
+		// ShutdownAndExit carries the same 25s watchdog as the signal path.
 		if err != nil {
 			mainLogger().Error(context.Background(), "CLI stopped", err)
 		}
-		shutdown.Exit(shutdown.Shutdown() && err == nil)
+		shutdown.ShutdownAndExit(err != nil)
 	} else {
 		mainLogger().Info(context.Background(), "CLI server disabled (port = 0)")
 		// Keep the node running even without CLI
