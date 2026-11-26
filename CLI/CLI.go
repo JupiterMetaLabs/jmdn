@@ -183,9 +183,9 @@ func (h *CommandHandler) StartCLI(ctx context.Context, bindAddr string, grpcPort
 		if input == "stopService" {
 			fmt.Println("stopService")
 			// Use centralized shutdown function for safety
-			if shutdown.Shutdown() {
-				defer shutdown.OS_EXIT(0)
-			}
+			// Always exit, 0 or 1: exiting only on success left the process
+			// running after a timed-out shutdown.
+			shutdown.Exit(shutdown.Shutdown())
 			fmt.Println("Exiting...")
 			return nil
 		}
@@ -203,9 +203,8 @@ func (h *CommandHandler) StartCLI(ctx context.Context, bindAddr string, grpcPort
 			if input == "stopService" {
 				fmt.Println("stopService")
 				// Use centralized shutdown function for safety
-				if shutdown.Shutdown() {
-					defer shutdown.OS_EXIT(0)
-				}
+				// Always exit, 0 or 1 (see above).
+				shutdown.Exit(shutdown.Shutdown())
 				fmt.Println("Exiting...")
 				return nil
 			}

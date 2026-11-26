@@ -1026,24 +1026,33 @@ func main() {
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// If main ever returns normally (CLI mode ends), release the resources
+	// registered with the shutdown package. Each closer runs at most once.
+	defer shutdown.RunClosers()
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
-	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
-	// window: ~10s + ~0.4s of flush sleeps), but no single bound otherwise caps
-	// the SEQUENCE — a stall anywhere in it could still run past Docker's
-	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
-	// no log line explaining why. Kept comfortably under that 30s so this
-	// fires first, logs why, and exits cleanly instead of being killed blind.
+	// shutdownSequenceBudget bounds steps 1-3 below as a whole. Each step is
+	// already individually bounded (profiler: 5s; shutdown.Shutdown(): GRO
+	// ~10s + ~0.4s of flush sleeps + resource closers 12s), but no single bound
+	// otherwise caps the SEQUENCE — a stall anywhere in it could still run past
+	// Docker's `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed
+	// with no log line explaining why. Kept under that 30s so this fires first,
+	// logs why, and exits instead of being killed blind.
 	const shutdownSequenceBudget = 25 * time.Second
 
-	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
+	// The signal handler is a plain goroutine, NOT started through GRO: GRO's
+	// own shutdown (inside shutdown.Shutdown) waits on every goroutine it
+	// tracks, so a GRO-tracked handler would make the shutdown wait on itself.
+	go func() {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
+
+		// A second SIGINT/SIGTERM while this runs exits at once.
+		go shutdown.ForceExitOnSignal(sigCh)
 
 		shutdownDone := make(chan struct{})
 		go func() {
@@ -1052,48 +1061,42 @@ func main() {
 			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
 			cancel()
 
-			// 2. Shutdown profiler concurrently with other cleanups (with timeout)
+			// 2. Shutdown profiler (with timeout)
 			if profilerServer != nil {
 				if logger := mainLogger(); logger != nil {
-					logger.Info(ctx, "Shutting down profiler server...")
+					logger.Info(context.Background(), "Shutting down profiler server...")
 				}
 				// Give it 5 seconds to finish active profiles/requests
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer shutdownCancel()
 				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
 					if logger := mainLogger(); logger != nil {
-						logger.Error(ctx, "Profiler server forced to shutdown", err)
+						logger.Error(context.Background(), "Profiler server forced to shutdown", err)
 					}
 				} else {
 					if logger := mainLogger(); logger != nil {
-						logger.Info(ctx, "Profiler server stopped gracefully")
+						logger.Info(context.Background(), "Profiler server stopped gracefully")
 					}
 				}
 			}
 
-			// 4. Delegate final shutdown to the centralized handler
-			if shutdown.Shutdown() {
-				logger_cancel()
-				defer shutdown.OS_EXIT(0)
-			}
+			// 3. Centralized shutdown (GRO, then resource closers, then logger),
+			// then ALWAYS exit: 0 if everything stopped cleanly, 1 otherwise.
+			// It used to exit only on success, so a timed-out shutdown left the
+			// process parked in select {} until the supervisor killed it.
+			ok := shutdown.Shutdown()
+			logger_cancel()
+			shutdown.Exit(ok)
 		}()
 
 		select {
 		case <-shutdownDone:
-			// Completed within budget. If step 4 succeeded, shutdown.OS_EXIT(0)
-			// already terminated the process before this select could observe
-			// the close — this case is only reachable if shutdown.Shutdown()
-			// returned false (no exit call was made).
+			// Not reached in practice: step 3 always exits the process.
 		case <-time.After(shutdownSequenceBudget):
 			log.Error().Msg("shutdown sequence exceeded its budget — forcing exit so Docker's stop_grace_period doesn't SIGKILL blind")
 			shutdown.OS_EXIT(1)
 		}
-		return nil
-	}); err != nil {
-		if logger := mainLogger(); logger != nil {
-			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ShutdownThread))
-		}
-	}
+	}()
 
 	// Captured ThebeDB canonical KV handle, used AFTER the committee-eligibility
 	// source is wired to run the chain-head checkpoint boot gate + signing hook
@@ -1147,8 +1150,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "WARN thebedb: %v — lower thebe.pools.* or raise Postgres max_connections\n", berr)
 		}
 		poolCancel()
-		defer readDB.Close()
-		defer syncDB.Close()
+		// Closed at shutdown by the shutdown package, not defer: defer never runs
+		// (main does not return; the process ends via os.Exit). See shutdown/closers.go.
+		shutdown.Register("postgres read pool", 3*time.Second, readDB.Close)
+		shutdown.Register("postgres sync pool", 3*time.Second, syncDB.Close)
 		fmt.Fprintf(os.Stderr, "thebedb: task pools OK — write=%d read=%d sync=%d (total %d)\n",
 			cfg.Thebe.Pools.Write, cfg.Thebe.Pools.Read, cfg.Thebe.Pools.Sync, poolTotal)
 		metrics.RegisterDBTaskPools(func() []metrics.DBTaskPoolSample {
@@ -1169,7 +1174,9 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
-		defer db.Close()
+		// Closes Badger (KV) and the write pool (SQL). 10s: ThebeDB.Close itself
+		// waits up to 5s for its CDC consumer.
+		shutdown.Register("thebedb", 10*time.Second, db.Close)
 
 		// Capture the canonical KV handle for the chain-head checkpoint boot gate
 		// + signing hook wired later (after the committee-eligibility source is
@@ -1278,7 +1285,7 @@ func main() {
 		// DB pressure; review finding R2).
 		outboxWorker := thebegateway.NewOutboxWorker(outbox, gw, 5*time.Second)
 		outboxWorker.Start()
-		defer outboxWorker.Stop()
+		shutdown.RegisterFunc("outbox worker", 2*time.Second, outboxWorker.Stop)
 
 		// Wire the outbox requeue hook for ReprojectRange (F / JMDN_REPROJECT_RANGE):
 		// writing a missing snapshot does not un-skip tx rows that already exhausted
@@ -1580,7 +1587,7 @@ func main() {
 		fmt.Println("Error starting node:", err)
 		return
 	}
-	defer n.Host.Close()
+	shutdown.Register("libp2p host", 3*time.Second, n.Host.Close)
 	fmt.Println("Node created successfully")
 
 	// Set the host instance for broadcast messaging
@@ -2413,7 +2420,7 @@ func main() {
 	fmt.Println("Node manager initialized successfully")
 
 	nodeManager.StartHeartbeat(cfg.Network.HeartbeatInterval)
-	defer nodeManager.Shutdown()
+	shutdown.RegisterFunc("node manager", 2*time.Second, nodeManager.Shutdown)
 
 	// DID propagation (/gossipnode/did/2.0.0) is retired and its protocol ID
 	// deleted: it let any peer write an account row on every node, unsigned.
@@ -2509,7 +2516,7 @@ func main() {
 			fmt.Printf("Failed to create seed node client: %v\n", err)
 			mainLogger().Error(context.Background(), "Failed to create seed node client", err)
 		} else {
-			defer seedClient.Close()
+			shutdown.Register("seed client", 2*time.Second, seedClient.Close)
 
 			// Register this peer with the seed node (with or without alias)
 			if cfg.Node.Alias != "" {

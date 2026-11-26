@@ -287,6 +287,8 @@ ExecStart=${JMDN_BIN}/start_jmdn_wrapper.sh
 ExecStopPost=${docker_bin} compose -f ${compose_file} stop
 Restart=always
 RestartSec=10
+# jmdn bounds its own shutdown at 25s; give it 30s before SIGKILL (default 90s).
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}
@@ -449,6 +451,8 @@ Environment="DATA_DIR=${JMDN_DATA}/data"
 ExecStart=${JMDN_BIN}/start_jmdn_wrapper.sh
 Restart=always
 RestartSec=10
+# jmdn bounds its own shutdown at 25s; give it 30s before SIGKILL (default 90s).
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}

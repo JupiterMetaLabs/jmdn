@@ -84,6 +84,16 @@ func Shutdown() bool {
 		exitCode = 1 // Mark as failure
 	}
 
+	// Release the registered resources (outbox worker, ThebeDB / Badger,
+	// Postgres pools, libp2p host), newest first, each with its own time limit.
+	// This runs even when the GRO step timed out: goroutines have been
+	// cancelled by then, and skipping it is what left Badger unclosed on every
+	// stop. See closers.go.
+	fmt.Println("Closing resources...")
+	if !RunClosers() {
+		exitCode = 1
+	}
+
 	// Shutdown the logger after GRO shutdown completes
 	// This ensures all logs are flushed and resources are cleaned up
 	fmt.Println("Shutting down logger...")
@@ -101,6 +111,35 @@ func Shutdown() bool {
 	return exitCode == 0
 }
 
+// exitFn is os.Exit; a variable so tests can observe the exit code.
+var exitFn = os.Exit
+
 func OS_EXIT(code int) {
-	os.Exit(code)
+	exitFn(code)
+}
+
+// Exit ends the process after Shutdown: code 0 when ok, 1 otherwise. It ALWAYS
+// exits. Callers used to exit only when Shutdown returned true, so a shutdown
+// that timed out left the process parked (main() waits in select {}) until the
+// supervisor killed it: ~90s under systemd, 30s under Docker.
+func Exit(ok bool) {
+	if ok {
+		OS_EXIT(0)
+		return
+	}
+	OS_EXIT(1)
+}
+
+// ForceExitOnSignal waits for one more signal on sigCh and then exits at once
+// with code 1, skipping the rest of the shutdown. Start it right after the
+// first signal is received, so a second Ctrl+C / SIGTERM is an escape hatch
+// when the graceful path is stuck. sigCh is read only once by the handler, so
+// without this a second signal did nothing.
+func ForceExitOnSignal(sigCh <-chan os.Signal) {
+	sig, ok := <-sigCh
+	if !ok {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "\nsecond %v received during shutdown; exiting now\n", sig)
+	OS_EXIT(1)
 }
