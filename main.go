@@ -1111,9 +1111,6 @@ func main() {
 		if logger := mainLogger(); logger != nil {
 			logger.Warn(context.Background(), msg)
 		}
-		// Also on stderr: an operator must see this at boot even when the
-		// telemetry logger is not shipping anywhere.
-		fmt.Fprintln(os.Stderr, "WARN "+msg)
 	}
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
