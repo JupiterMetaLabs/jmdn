@@ -126,7 +126,7 @@ func runClosers(budget time.Duration) bool {
 				wait = left
 			}
 			if wait <= 0 {
-				_, _ = fmt.Fprintf(os.Stderr, "shutdown: closer %q skipped: shutdown budget used up\n", c.name)
+				notice("shutdown: closer %q skipped: shutdown budget used up\n", c.name)
 				ok = false
 				return
 			}
@@ -153,12 +153,20 @@ func runOne(c *closer, wait time.Duration) bool {
 	select {
 	case err := <-done:
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "shutdown: closer %q failed: %v\n", c.name, err)
+			notice("shutdown: closer %q failed: %v\n", c.name, err)
 			return false
 		}
 		return true
 	case <-time.After(wait):
-		_, _ = fmt.Fprintf(os.Stderr, "shutdown: closer %q did not finish within %s; abandoning it\n", c.name, wait)
+		notice("shutdown: closer %q did not finish within %s; abandoning it\n", c.name, wait)
 		return false
 	}
+}
+
+// notice writes a shutdown diagnostic to stderr. These lines are printed while
+// the telemetry logger is being shut down (it is closed at the end of this
+// same sequence, and may already be gone when a second signal arrives), so
+// they cannot go through it.
+func notice(format string, args ...any) {
+	_, _ = fmt.Fprintf(os.Stderr, format, args...) //nolint:forbidigo // stderr: shutdown diagnostics written while the telemetry logger is being torn down
 }

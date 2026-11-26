@@ -89,7 +89,7 @@ func Shutdown() bool {
 	// This runs even when the GRO step timed out: goroutines have been
 	// cancelled by then, and skipping it is what left Badger unclosed on every
 	// stop. See closers.go.
-	fmt.Println("Closing resources...")
+	notice("Closing resources...\n")
 	if !RunClosers() {
 		exitCode = 1
 	}
@@ -140,6 +140,6 @@ func ForceExitOnSignal(sigCh <-chan os.Signal) {
 	if !ok {
 		return
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "\nsecond %v received during shutdown; exiting now\n", sig)
+	notice("\nsecond %v received during shutdown; exiting now\n", sig)
 	OS_EXIT(1)
 }
